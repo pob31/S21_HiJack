@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<JUCERPROJECT id="R1cnKQ" name="Digico-S_OSCinjector" projectType="guiapp"
+              useAppConfig="0" addUsingNamespaceToJuceHeader="0" displaySplashScreen="1"
+              jucerFormatVersion="1" cppLanguageStandard="17">
+  <MAINGROUP id="x2EvyA" name="Digico-S_OSCinjector">
+    <GROUP id="{A94CCEBA-68D3-DFD9-6CBC-BA321824505C}" name="Source">
+      <FILE id="U42NBn" name="GraphicEq.cpp" compile="1" resource="0" file="Source/GraphicEq.cpp"/>
+      <FILE id="wwSNB4" name="GraphicEq.h" compile="0" resource="0" file="Source/GraphicEq.h"/>
+      <FILE id="oiIThI" name="ControlGroup.cpp" compile="1" resource="0"
+            file="Source/ControlGroup.cpp"/>
+      <FILE id="yfgadO" name="ControlGroup.h" compile="0" resource="0" file="Source/ControlGroup.h"/>
+      <FILE id="Tg8ylF" name="FaderMuteSolo.cpp" compile="1" resource="0"
+            file="Source/FaderMuteSolo.cpp"/>
+      <FILE id="CFOnTE" name="FaderMuteSolo.h" compile="0" resource="0" file="Source/FaderMuteSolo.h"/>
+      <FILE id="NDTwja" name="OSCvalues.cpp" compile="1" resource="0" file="Source/OSCvalues.cpp"/>
+      <FILE id="UlfLEv" name="OSCvalues.h" compile="0" resource="0" file="Source/OSCvalues.h"/>
+      <FILE id="LoQDTo" name="Main.cpp" compile="1" resource="0" file="Source/Main.cpp"/>
+      <FILE id="Yu4Cpz" name="MainComponent.h" compile="0" resource="0" file="Source/MainComponent.h"/>
+      <FILE id="v3QfbW" name="MainComponent.cpp" compile="1" resource="0"
+            file="Source/MainComponent.cpp"/>
+    </GROUP>
+  </MAINGROUP>
+  <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
+  <EXPORTFORMATS>
+    <VS2019 targetFolder="Builds/VisualStudio2019">
+      <CONFIGURATIONS>
+        <CONFIGURATION isDebug="1" name="Debug" targetName="NewProject"/>
+        <CONFIGURATION isDebug="0" name="Release" targetName="NewProject"/>
+      </CONFIGURATIONS>
+      <MODULEPATHS>
+        <MODULEPATH id="juce_core" path="../../../JUCE/modules"/>
+        <MODULEPATH id="juce_data_structures" path="../../../JUCE/modules"/>
+        <MODULEPATH id="juce_events" path="../../../JUCE/modules"/>
+        <MODULEPATH id="juce_graphics" path="../../../JUCE/modules"/>
+        <MODULEPATH id="juce_gui_basics" path="../../../JUCE/modules"/>
+        <MODULEPATH id="juce_gui_extra" path="../../../JUCE/modules"/>
+        <MODULEPATH id="juce_osc" path="../../../JUCE/modules"/>
+      </MODULEPATHS>
+    </VS2019>
+  </EXPORTFORMATS>
+  <MODULES>
+    <MODULE id="juce_core" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_data_structures" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_events" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_graphics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_gui_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_gui_extra" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_osc" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+  </MODULES>
+  <LIVE_SETTINGS>
+    <WINDOWS/>
+  </LIVE_SETTINGS>
+</JUCERPROJECT>
