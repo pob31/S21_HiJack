@@ -42,10 +42,10 @@ private:
     
 };
 
-Class GraphicEq
+class GraphicEq
 {
 public:
-    GraphicEq (int geqID);
+    GraphicEq(int geqID);
     ~GraphicEq();
 
 private:
@@ -53,9 +53,5 @@ private:
 
     GeqGain geqGain{ oscMethod };
     GeqIn geqIn{ oscMethod };
-    
-};
-
-private:
 
 };
