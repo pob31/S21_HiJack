@@ -8,6 +8,8 @@ use tracing::{info, error};
 
 use crate::console::connection::ConnectionManager;
 use crate::console::cue_manager::CueManager;
+use crate::console::macro_engine::MacroEngine;
+use crate::console::macro_manager::MacroManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::snapshot::CueList;
 use crate::model::state::ConsoleState;
@@ -45,6 +47,7 @@ pub fn draw_setup_tab(
     setup: &mut SetupTabState,
     state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
+    macro_manager: &Arc<RwLock<MacroManager>>,
     snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
     sender: &mut Option<OscSender>,
     connected: &Arc<AtomicBool>,
@@ -83,8 +86,8 @@ pub fn draw_setup_tab(
         if !is_connected {
             if ui.button("Connect").clicked() {
                 start_connection(
-                    setup, state, cue_manager, snapshot_engine, sender, connected,
-                    runtime, ui_tx, egui_ctx,
+                    setup, state, cue_manager, macro_manager, snapshot_engine, sender,
+                    connected, runtime, ui_tx, egui_ctx,
                 );
             }
         } else {
@@ -181,18 +184,23 @@ pub fn draw_setup_tab(
     ui.heading("Show File");
     ui.horizontal(|ui| {
         if ui.button("Load Show").clicked() {
-            load_show_file(setup, cue_manager, runtime, ui_tx);
+            load_show_file(setup, cue_manager, macro_manager, runtime, ui_tx);
         }
         if ui.button("Save Show").clicked() {
-            save_show_file(setup, state, cue_manager, runtime, ui_tx);
+            save_show_file(setup, state, cue_manager, macro_manager, runtime, ui_tx);
         }
         if ui.button("New Show").clicked() {
             let cue_mgr = cue_manager.clone();
+            let macro_mgr = macro_manager.clone();
             runtime.spawn(async move {
                 let mut mgr = cue_mgr.write().await;
                 mgr.cue_list = CueList::default();
                 mgr.snapshots.clear();
                 mgr.scope_templates.clear();
+                drop(mgr);
+                let mut mmgr = macro_mgr.write().await;
+                mmgr.macros.clear();
+                mmgr.quick_trigger_ids.clear();
             });
             setup.show_file_path.clear();
             setup.status_message = Some("New show created".into());
@@ -207,6 +215,7 @@ fn start_connection(
     setup: &mut SetupTabState,
     state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
+    macro_manager: &Arc<RwLock<MacroManager>>,
     _snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
     _sender: &mut Option<OscSender>,
     connected: &Arc<AtomicBool>,
@@ -255,12 +264,13 @@ fn start_connection(
 
     let st = state.clone();
     let cue_mgr = cue_manager.clone();
+    let macro_mgr = macro_manager.clone();
     let conn_flag = connected.clone();
     let tx = ui_tx.clone();
     let ctx = egui_ctx.clone();
 
     runtime.spawn(async move {
-        match ConnectionManager::connect_with_state(local_addr, console_addr, st.clone()).await {
+        match ConnectionManager::connect_with_state(local_addr, console_addr, st.clone(), macro_mgr).await {
             Ok(manager) => {
                 info!("Connected to console via UI");
                 conn_flag.store(true, Ordering::Relaxed);
@@ -269,8 +279,11 @@ fn start_connection(
                 match TriggerListener::start(trigger_addr).await {
                     Ok(mut trigger_rx) => {
                         let engine = Arc::new(SnapshotEngine::new(st.clone(), manager.sender()));
+                        let macro_eng = Arc::new(MacroEngine::new(st.clone(), manager.sender()));
                         let trigger_cue_mgr = cue_mgr.clone();
+                        let trigger_macro_mgr = manager.macro_manager();
                         let trigger_engine = engine.clone();
+                        let trigger_macro_eng = macro_eng.clone();
 
                         // Spawn trigger processing
                         tokio::spawn(async move {
@@ -316,7 +329,19 @@ fn start_connection(
                                         info!(current, %reply_addr, "Trigger /cue/current query");
                                     }
                                     TriggerEvent::MacroFire(name) => {
-                                        tracing::warn!(name, "Macro triggers not yet implemented (Phase 4)");
+                                        let mgr = trigger_macro_mgr.read().await;
+                                        if let Some(macro_def) = mgr.find_by_name_or_id(&name).cloned() {
+                                            drop(mgr);
+                                            let result = trigger_macro_eng.execute(&macro_def).await;
+                                            info!(
+                                                name = %result.macro_name,
+                                                executed = result.steps_executed,
+                                                skipped = result.steps_skipped,
+                                                "Trigger MacroFire complete"
+                                            );
+                                        } else {
+                                            tracing::warn!(name, "MacroFire: macro not found");
+                                        }
                                     }
                                 }
                             }
@@ -346,6 +371,7 @@ fn start_connection(
 fn load_show_file(
     setup: &mut SetupTabState,
     cue_manager: &Arc<RwLock<CueManager>>,
+    macro_manager: &Arc<RwLock<MacroManager>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
@@ -356,6 +382,7 @@ fn load_show_file(
 
     let path = std::path::PathBuf::from(&setup.show_file_path);
     let cue_mgr = cue_manager.clone();
+    let macro_mgr = macro_manager.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
 
@@ -372,6 +399,16 @@ fn load_show_file(
                 for tmpl in show.scope_templates {
                     mgr.scope_templates.insert(tmpl.id, tmpl);
                 }
+                drop(mgr);
+
+                // Restore macros
+                let mut mmgr = macro_mgr.write().await;
+                mmgr.macros.clear();
+                for macro_def in show.macros {
+                    mmgr.macros.insert(macro_def.id, macro_def);
+                }
+                mmgr.quick_trigger_ids = show.macro_quick_trigger_ids;
+
                 info!("Show file loaded: {path_str}");
                 let _ = tx.send(UiEvent::ShowFileLoaded(path_str));
             }
@@ -386,6 +423,7 @@ fn save_show_file(
     setup: &mut SetupTabState,
     state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
+    macro_manager: &Arc<RwLock<MacroManager>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
@@ -397,12 +435,14 @@ fn save_show_file(
     let path = std::path::PathBuf::from(&setup.show_file_path);
     let st = state.clone();
     let cue_mgr = cue_manager.clone();
+    let macro_mgr = macro_manager.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
 
     runtime.spawn(async move {
         let state_guard = st.read().await;
         let mgr = cue_mgr.read().await;
+        let mmgr = macro_mgr.read().await;
 
         let show = ShowFile {
             version: 2,
@@ -410,10 +450,13 @@ fn save_show_file(
             scope_templates: mgr.scope_templates.values().cloned().collect(),
             snapshots: mgr.snapshots.values().cloned().collect(),
             cue_list: mgr.cue_list.clone(),
+            macros: mmgr.macros.values().cloned().collect(),
+            macro_quick_trigger_ids: mmgr.quick_trigger_ids.clone(),
         };
 
         drop(state_guard);
         drop(mgr);
+        drop(mmgr);
 
         match show.save(&path).await {
             Ok(()) => {

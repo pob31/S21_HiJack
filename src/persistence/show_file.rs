@@ -3,6 +3,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::model::config::ConsoleConfig;
+use crate::model::macro_def::MacroDef;
 use crate::model::snapshot::{CueList, ScopeTemplate, Snapshot};
 
 /// Top-level show file — the persistent state of the daemon.
@@ -21,6 +22,12 @@ pub struct ShowFile {
     /// The cue list.
     #[serde(default)]
     pub cue_list: CueList,
+    /// All macros (Phase 4).
+    #[serde(default)]
+    pub macros: Vec<MacroDef>,
+    /// UUIDs of macros pinned to the Live tab quick-trigger bar.
+    #[serde(default)]
+    pub macro_quick_trigger_ids: Vec<uuid::Uuid>,
 }
 
 impl ShowFile {
@@ -31,6 +38,8 @@ impl ShowFile {
             scope_templates: Vec::new(),
             snapshots: Vec::new(),
             cue_list: CueList::default(),
+            macros: Vec::new(),
+            macro_quick_trigger_ids: Vec::new(),
         }
     }
 
@@ -114,6 +123,46 @@ mod tests {
         assert!(loaded.scope_templates.is_empty());
         assert!(loaded.snapshots.is_empty());
         assert!(loaded.cue_list.cues.is_empty());
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn v2_file_loads_with_macro_defaults() {
+        // A v2 file has no macros or macro_quick_trigger_ids fields
+        let v2_json = r#"{
+            "version": 2,
+            "console_config": {
+                "console_name": "",
+                "console_serial": "",
+                "session_filename": null,
+                "input_channel_count": 48,
+                "aux_output_count": 8,
+                "group_output_count": 16,
+                "matrix_output_count": 8,
+                "matrix_input_count": 10,
+                "control_group_count": 10,
+                "graphic_eq_count": 16,
+                "talkback_output_count": 0,
+                "mix_output_types": [],
+                "mix_output_modes": [],
+                "input_modes": [],
+                "group_modes": []
+            },
+            "scope_templates": [],
+            "snapshots": [],
+            "cue_list": { "id": "00000000-0000-0000-0000-000000000000", "name": "Main", "cues": [] }
+        }"#;
+
+        let dir = std::env::temp_dir().join("s21_hijack_test");
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let path = dir.join("test_v2_macro_compat.json");
+        tokio::fs::write(&path, v2_json).await.unwrap();
+
+        let loaded = ShowFile::load(&path).await.unwrap();
+        assert_eq!(loaded.version, 2);
+        assert!(loaded.macros.is_empty());
+        assert!(loaded.macro_quick_trigger_ids.is_empty());
 
         let _ = tokio::fs::remove_file(&path).await;
     }

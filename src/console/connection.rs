@@ -7,6 +7,7 @@ use tokio::time;
 use tracing::{info, warn, debug, error};
 
 use crate::console::discovery;
+use crate::console::macro_manager::MacroManager;
 use crate::model::config::ConsoleConfig;
 use crate::model::state::ConsoleState;
 use crate::osc::client::{OscClient, OscSender, ReceivedOscMessage};
@@ -23,6 +24,7 @@ const DISCOVERY_WAIT_SECS: u64 = 3;
 pub struct ConnectionManager {
     state: Arc<RwLock<ConsoleState>>,
     sender: OscSender,
+    macro_manager: Arc<RwLock<MacroManager>>,
 }
 
 impl ConnectionManager {
@@ -30,10 +32,11 @@ impl ConnectionManager {
     pub async fn connect(
         local_addr: SocketAddr,
         console_addr: SocketAddr,
+        macro_manager: Arc<RwLock<MacroManager>>,
     ) -> std::io::Result<Self> {
         let config = ConsoleConfig::default();
         let state = Arc::new(RwLock::new(ConsoleState::new(config)));
-        Self::connect_with_state(local_addr, console_addr, state).await
+        Self::connect_with_state(local_addr, console_addr, state, macro_manager).await
     }
 
     /// Connect using a pre-existing shared state (for UI mode where state is created before connection).
@@ -41,6 +44,7 @@ impl ConnectionManager {
         local_addr: SocketAddr,
         console_addr: SocketAddr,
         state: Arc<RwLock<ConsoleState>>,
+        macro_manager: Arc<RwLock<MacroManager>>,
     ) -> std::io::Result<Self> {
         info!(
             "Connecting to console at {console_addr}, local port {}",
@@ -53,10 +57,11 @@ impl ConnectionManager {
         let manager = Self {
             state: state.clone(),
             sender: sender.clone(),
+            macro_manager: macro_manager.clone(),
         };
 
         // Spawn the main processing loop
-        tokio::spawn(run_loop(sender, rx, state));
+        tokio::spawn(run_loop(sender, rx, state, macro_manager));
 
         Ok(manager)
     }
@@ -70,6 +75,11 @@ impl ConnectionManager {
     pub fn sender(&self) -> OscSender {
         self.sender.clone()
     }
+
+    /// Get a reference to the macro manager.
+    pub fn macro_manager(&self) -> Arc<RwLock<MacroManager>> {
+        self.macro_manager.clone()
+    }
 }
 
 /// Main processing loop: discovery, then state mirror + keepalive.
@@ -77,6 +87,7 @@ async fn run_loop(
     sender: OscSender,
     mut rx: tokio::sync::mpsc::Receiver<ReceivedOscMessage>,
     state: Arc<RwLock<ConsoleState>>,
+    macro_manager: Arc<RwLock<MacroManager>>,
 ) {
     // Phase 1: Discovery — send request and collect responses
     info!("Starting console discovery...");
@@ -110,7 +121,7 @@ async fn run_loop(
                     }
                     // During discovery, still process other messages
                     _ => {
-                        process_message_inner(&parsed, &state, &sender).await;
+                        process_message_inner(&parsed, &state, &sender, &macro_manager).await;
                     }
                 }
             }
@@ -154,7 +165,7 @@ async fn run_loop(
             // Process incoming OSC messages
             Some(msg) = rx.recv() => {
                 let parsed = parse::parse_gp_osc(&msg.path, &msg.args);
-                process_message_inner(&parsed, &state, &sender).await;
+                process_message_inner(&parsed, &state, &sender, &macro_manager).await;
             }
 
             // Send keepalive ping
@@ -186,11 +197,18 @@ async fn process_message_inner(
     parsed: &ParsedOscMessage,
     state: &Arc<RwLock<ConsoleState>>,
     sender: &OscSender,
+    macro_manager: &Arc<RwLock<MacroManager>>,
 ) {
     match parsed {
         ParsedOscMessage::ParameterUpdate(addr, value) => {
             debug!(%addr, %value, "Parameter update");
             state.write().await.update(addr.clone(), value.clone());
+
+            // Feed into macro learn mode if recording
+            let mut mgr = macro_manager.write().await;
+            if mgr.is_recording() {
+                mgr.record_change(addr.clone(), value.clone());
+            }
         }
         ParsedOscMessage::Ping => {
             debug!("Received ping from console — sending pong");

@@ -1,5 +1,6 @@
 pub mod app;
 pub mod live_tab;
+pub mod macros_tab;
 pub mod scope_editor;
 pub mod setup_tab;
 pub mod snapshots_tab;
@@ -10,6 +11,7 @@ pub mod theme;
 pub enum Tab {
     Setup,
     Snapshots,
+    Macros,
     Live,
 }
 
@@ -25,6 +27,13 @@ pub enum UiEvent {
     CueRecalled {
         cue_number: f32,
         params_sent: usize,
+    },
+    MacroExecuted {
+        name: String,
+        steps_executed: usize,
+    },
+    MacroRecordingStopped {
+        step_count: usize,
     },
     ShowFileLoaded(String),
     ShowFileSaved(String),

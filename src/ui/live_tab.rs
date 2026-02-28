@@ -5,6 +5,8 @@ use eframe::egui;
 use tokio::sync::RwLock;
 
 use crate::console::cue_manager::CueManager;
+use crate::console::macro_engine::MacroEngine;
+use crate::console::macro_manager::MacroManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use super::theme;
 use super::UiEvent;
@@ -27,7 +29,9 @@ pub fn draw_live_tab(
     ui: &mut egui::Ui,
     live: &mut LiveTabState,
     cue_manager: &Arc<RwLock<CueManager>>,
+    macro_manager: &Arc<RwLock<MacroManager>>,
     snapshot_engine: &Option<Arc<SnapshotEngine>>,
+    macro_engine: &Option<Arc<MacroEngine>>,
     connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -157,6 +161,41 @@ pub fn draw_live_tab(
         // Last recall result
         if let Some(info) = &live.last_recall_info {
             ui.label(egui::RichText::new(info).weak());
+        }
+
+        // Macro quick-trigger buttons
+        if let Ok(mgr) = macro_manager.try_read() {
+            if !mgr.quick_trigger_ids.is_empty() {
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("MACROS").strong().size(theme::FONT_SIZE_BODY));
+                ui.add_space(4.0);
+
+                // Collect quick-trigger macro info (id, name)
+                let qt_macros: Vec<_> = mgr.quick_trigger_ids.iter()
+                    .filter_map(|id| mgr.get_macro(id).map(|m| (m.id, m.name.clone())))
+                    .collect();
+                drop(mgr);
+
+                ui.horizontal_wrapped(|ui| {
+                    for (id, name) in &qt_macros {
+                        let button = egui::Button::new(
+                            egui::RichText::new(name)
+                                .color(egui::Color32::WHITE)
+                                .strong(),
+                        )
+                        .fill(if is_connected { theme::COLOR_MACRO_BUTTON } else { egui::Color32::DARK_GRAY })
+                        .min_size(theme::MACRO_BUTTON_SIZE);
+
+                        if ui.add_enabled(is_connected, button).clicked() {
+                            super::macros_tab::fire_macro_by_id(
+                                *id, macro_manager, macro_engine, runtime, ui_tx,
+                            );
+                        }
+                    }
+                });
+            }
         }
 
         if !is_connected {

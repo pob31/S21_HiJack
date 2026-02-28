@@ -5,6 +5,8 @@ use eframe::egui;
 use tokio::sync::RwLock;
 
 use crate::console::cue_manager::CueManager;
+use crate::console::macro_engine::MacroEngine;
+use crate::console::macro_manager::MacroManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::config::ConsoleConfig;
 use crate::model::snapshot::CueList;
@@ -13,6 +15,7 @@ use crate::osc::client::OscSender;
 
 use super::{Tab, UiEvent};
 use super::live_tab::LiveTabState;
+use super::macros_tab::MacrosTabState;
 use super::setup_tab::SetupTabState;
 use super::snapshots_tab::SnapshotsTabState;
 
@@ -21,7 +24,9 @@ pub struct HiJackApp {
     // Shared state
     pub state: Arc<RwLock<ConsoleState>>,
     pub cue_manager: Arc<RwLock<CueManager>>,
+    pub macro_manager: Arc<RwLock<MacroManager>>,
     pub snapshot_engine: Option<Arc<SnapshotEngine>>,
+    pub macro_engine: Option<Arc<MacroEngine>>,
 
     // Async bridge
     pub runtime: tokio::runtime::Handle,
@@ -37,6 +42,7 @@ pub struct HiJackApp {
     pub active_tab: Tab,
     pub setup: SetupTabState,
     pub snapshots: SnapshotsTabState,
+    pub macros: MacrosTabState,
     pub live: LiveTabState,
 }
 
@@ -53,7 +59,9 @@ impl HiJackApp {
         Self {
             state: Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default()))),
             cue_manager: Arc::new(RwLock::new(CueManager::new(CueList::default()))),
+            macro_manager: Arc::new(RwLock::new(MacroManager::new())),
             snapshot_engine: None,
+            macro_engine: None,
 
             runtime,
             egui_ctx: Arc::new(std::sync::OnceLock::new()),
@@ -66,6 +74,7 @@ impl HiJackApp {
             active_tab: Tab::Setup,
             setup: SetupTabState::new(console_ip, console_port, local_port, trigger_port),
             snapshots: SnapshotsTabState::default(),
+            macros: MacrosTabState::default(),
             live: LiveTabState::default(),
         }
     }
@@ -90,6 +99,19 @@ impl HiJackApp {
                 UiEvent::CueRecalled { cue_number, params_sent } => {
                     self.live.last_recall_info = Some(
                         format!("Cue {cue_number:.1} recalled ({params_sent} params sent)"),
+                    );
+                }
+                UiEvent::MacroExecuted { name, steps_executed } => {
+                    self.macros.last_execution_info = Some(
+                        format!("Executed '{name}' ({steps_executed} steps sent)"),
+                    );
+                    self.live.last_recall_info = Some(
+                        format!("Macro '{name}' ({steps_executed} steps)"),
+                    );
+                }
+                UiEvent::MacroRecordingStopped { step_count } => {
+                    self.macros.status_message = Some(
+                        format!("Recording stopped: {step_count} steps captured"),
                     );
                 }
                 UiEvent::ShowFileLoaded(path) => {
@@ -122,6 +144,7 @@ impl eframe::App for HiJackApp {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.active_tab, Tab::Setup, "Setup");
                 ui.selectable_value(&mut self.active_tab, Tab::Snapshots, "Snapshots");
+                ui.selectable_value(&mut self.active_tab, Tab::Macros, "Macros");
                 ui.selectable_value(&mut self.active_tab, Tab::Live, "Live");
             });
         });
@@ -135,6 +158,7 @@ impl eframe::App for HiJackApp {
                         &mut self.setup,
                         &self.state,
                         &self.cue_manager,
+                        &self.macro_manager,
                         &mut self.snapshot_engine,
                         &mut self.sender,
                         &self.connected,
@@ -154,12 +178,25 @@ impl eframe::App for HiJackApp {
                         &self.ui_tx,
                     );
                 }
+                Tab::Macros => {
+                    super::macros_tab::draw_macros_tab(
+                        ui,
+                        &mut self.macros,
+                        &self.macro_manager,
+                        &self.macro_engine,
+                        &self.connected,
+                        &self.runtime,
+                        &self.ui_tx,
+                    );
+                }
                 Tab::Live => {
                     super::live_tab::draw_live_tab(
                         ui,
                         &mut self.live,
                         &self.cue_manager,
+                        &self.macro_manager,
                         &self.snapshot_engine,
+                        &self.macro_engine,
                         &self.connected,
                         &self.runtime,
                         &self.ui_tx,

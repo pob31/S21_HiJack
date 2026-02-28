@@ -18,6 +18,8 @@ use tracing_subscriber::EnvFilter;
 
 use console::connection::ConnectionManager;
 use console::cue_manager::CueManager;
+use console::macro_engine::MacroEngine;
+use console::macro_manager::MacroManager;
 use console::snapshot_engine::SnapshotEngine;
 use model::snapshot::CueList;
 use osc::trigger_listener::{TriggerEvent, TriggerListener};
@@ -84,8 +86,11 @@ async fn run_headless(args: Args) {
         .parse()
         .expect("Invalid local address");
 
+    // Set up macro system
+    let macro_manager = Arc::new(RwLock::new(MacroManager::new()));
+
     // Connect to console
-    let manager = match ConnectionManager::connect(local_addr, console_addr).await {
+    let manager = match ConnectionManager::connect(local_addr, console_addr, macro_manager.clone()).await {
         Ok(m) => {
             info!("Connected successfully");
             m
@@ -96,9 +101,10 @@ async fn run_headless(args: Args) {
         }
     };
 
-    // Set up snapshot system
+    // Set up snapshot and macro systems
     let cue_manager = Arc::new(RwLock::new(CueManager::new(CueList::default())));
     let snapshot_engine = SnapshotEngine::new(manager.state(), manager.sender());
+    let macro_engine = Arc::new(MacroEngine::new(manager.state(), manager.sender()));
 
     // Start QLab trigger listener
     let trigger_addr: SocketAddr = format!("0.0.0.0:{}", args.trigger_port)
@@ -115,6 +121,8 @@ async fn run_headless(args: Args) {
 
     // Spawn trigger processing task
     let trigger_cue_mgr = cue_manager.clone();
+    let trigger_macro_mgr = macro_manager.clone();
+    let trigger_macro_eng = macro_engine.clone();
     let trigger_engine = Arc::new(snapshot_engine);
     let reply_socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok();
 
@@ -174,7 +182,19 @@ async fn run_headless(args: Args) {
                     }
                 }
                 TriggerEvent::MacroFire(name) => {
-                    warn!(name, "Macro triggers not yet implemented (Phase 4)");
+                    let mgr = trigger_macro_mgr.read().await;
+                    if let Some(macro_def) = mgr.find_by_name_or_id(&name).cloned() {
+                        drop(mgr);
+                        let result = trigger_macro_eng.execute(&macro_def).await;
+                        info!(
+                            name = %result.macro_name,
+                            executed = result.steps_executed,
+                            skipped = result.steps_skipped,
+                            "MacroFire trigger complete"
+                        );
+                    } else {
+                        warn!(name, "MacroFire: macro not found");
+                    }
                 }
             }
         }
@@ -202,6 +222,13 @@ async fn run_headless(args: Args) {
         cues = mgr.cue_list.cues.len(),
         scope_templates = mgr.scope_templates.len(),
         "Final snapshot system state"
+    );
+
+    let mmgr = macro_manager.read().await;
+    info!(
+        macros = mmgr.macros.len(),
+        quick_triggers = mmgr.quick_trigger_ids.len(),
+        "Final macro system state"
     );
 
     info!("Daemon stopped.");
