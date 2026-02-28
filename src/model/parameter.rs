@@ -700,6 +700,76 @@ impl ParameterPath {
             | ParameterPath::GeqEnabled => ParameterSection::GraphicEq,
         }
     }
+
+    /// Whether this parameter represents a continuous value suitable for
+    /// interpolation (fader levels, frequencies, gains, pan, thresholds, etc.).
+    /// Discrete parameters (mute, solo, enables, modes, names) return false.
+    pub fn is_continuous(&self) -> bool {
+        match self {
+            // Output
+            ParameterPath::Fader | ParameterPath::Pan => true,
+
+            // Input continuous
+            ParameterPath::Gain
+            | ParameterPath::Trim
+            | ParameterPath::Balance
+            | ParameterPath::Width => true,
+
+            // Delay
+            ParameterPath::DelayTime => true,
+
+            // Digitube
+            ParameterPath::DigitubeDrive | ParameterPath::DigitubeBias => true,
+
+            // EQ continuous
+            ParameterPath::HighpassFrequency
+            | ParameterPath::LowpassFrequency
+            | ParameterPath::EqBandFrequency(_)
+            | ParameterPath::EqBandGain(_)
+            | ParameterPath::EqBandQ(_)
+            | ParameterPath::EqBandDynThreshold(_)
+            | ParameterPath::EqBandDynRatio(_)
+            | ParameterPath::EqBandDynAttack(_)
+            | ParameterPath::EqBandDynRelease(_) => true,
+
+            // Dynamics 1 continuous
+            ParameterPath::Dyn1Threshold(_)
+            | ParameterPath::Dyn1Knee(_)
+            | ParameterPath::Dyn1Ratio(_)
+            | ParameterPath::Dyn1Attack(_)
+            | ParameterPath::Dyn1Release(_)
+            | ParameterPath::Dyn1Gain(_)
+            | ParameterPath::Dyn1CrossoverHigh
+            | ParameterPath::Dyn1CrossoverLow => true,
+
+            // Dynamics 2 continuous
+            ParameterPath::Dyn2Threshold
+            | ParameterPath::Dyn2Knee
+            | ParameterPath::Dyn2Ratio
+            | ParameterPath::Dyn2Range
+            | ParameterPath::Dyn2Attack
+            | ParameterPath::Dyn2Hold
+            | ParameterPath::Dyn2Release
+            | ParameterPath::Dyn2Gain
+            | ParameterPath::Dyn2Highpass
+            | ParameterPath::Dyn2Lowpass => true,
+
+            // Sends continuous
+            ParameterPath::SendLevel(_) | ParameterPath::SendPan(_) => true,
+
+            // CG level
+            ParameterPath::CgLevel => true,
+
+            // Matrix sends continuous
+            ParameterPath::MatrixSendLevel(_) => true,
+
+            // Graphic EQ band gains
+            ParameterPath::GeqBandGain(_) => true,
+
+            // Everything else is discrete
+            _ => false,
+        }
+    }
 }
 
 // ── iPad suffix parsing helpers ──────────────────────────────────────
@@ -841,6 +911,24 @@ pub enum ParameterValue {
     Int(i32),
     Bool(bool),
     String(String),
+}
+
+impl ParameterValue {
+    /// Linearly interpolate between self and target at position t (0.0..=1.0).
+    /// Returns None if types don't match or interpolation is not meaningful.
+    pub fn lerp(&self, target: &ParameterValue, t: f32) -> Option<ParameterValue> {
+        match (self, target) {
+            (ParameterValue::Float(a), ParameterValue::Float(b)) => {
+                Some(ParameterValue::Float(a + (b - a) * t))
+            }
+            (ParameterValue::Int(a), ParameterValue::Int(b)) => {
+                let fa = *a as f32;
+                let fb = *b as f32;
+                Some(ParameterValue::Int((fa + (fb - fa) * t).round() as i32))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for ParameterValue {
@@ -1037,5 +1125,95 @@ mod tests {
         assert_eq!(ParameterPath::SendLevel(3).to_ipad_suffix().unwrap(), "Aux_Send/3/send_level");
         assert_eq!(ParameterPath::GroupSendOn(4).to_ipad_suffix().unwrap(), "Group_Send/4/send_on");
         assert_eq!(ParameterPath::MasterBusOn.to_ipad_suffix().unwrap(), "Group_Send/17/send_on");
+    }
+
+    #[test]
+    fn is_continuous_true_for_levels_and_gains() {
+        assert!(ParameterPath::Fader.is_continuous());
+        assert!(ParameterPath::Pan.is_continuous());
+        assert!(ParameterPath::Gain.is_continuous());
+        assert!(ParameterPath::Trim.is_continuous());
+        assert!(ParameterPath::SendLevel(1).is_continuous());
+        assert!(ParameterPath::SendPan(2).is_continuous());
+        assert!(ParameterPath::CgLevel.is_continuous());
+        assert!(ParameterPath::MatrixSendLevel(1).is_continuous());
+        assert!(ParameterPath::GeqBandGain(5).is_continuous());
+    }
+
+    #[test]
+    fn is_continuous_true_for_eq_and_dynamics() {
+        assert!(ParameterPath::HighpassFrequency.is_continuous());
+        assert!(ParameterPath::LowpassFrequency.is_continuous());
+        assert!(ParameterPath::EqBandFrequency(1).is_continuous());
+        assert!(ParameterPath::EqBandGain(2).is_continuous());
+        assert!(ParameterPath::EqBandQ(3).is_continuous());
+        assert!(ParameterPath::Dyn1Threshold(1).is_continuous());
+        assert!(ParameterPath::Dyn1Ratio(2).is_continuous());
+        assert!(ParameterPath::Dyn2Threshold.is_continuous());
+        assert!(ParameterPath::Dyn2Attack.is_continuous());
+        assert!(ParameterPath::Dyn2Range.is_continuous());
+        assert!(ParameterPath::DelayTime.is_continuous());
+    }
+
+    #[test]
+    fn is_continuous_false_for_discrete() {
+        assert!(!ParameterPath::Name.is_continuous());
+        assert!(!ParameterPath::Mute.is_continuous());
+        assert!(!ParameterPath::Solo.is_continuous());
+        assert!(!ParameterPath::Polarity.is_continuous());
+        assert!(!ParameterPath::Phantom.is_continuous());
+        assert!(!ParameterPath::EqEnabled.is_continuous());
+        assert!(!ParameterPath::DelayEnabled.is_continuous());
+        assert!(!ParameterPath::Dyn1Enabled.is_continuous());
+        assert!(!ParameterPath::Dyn1Mode.is_continuous());
+        assert!(!ParameterPath::Dyn2Enabled.is_continuous());
+        assert!(!ParameterPath::SendEnabled(1).is_continuous());
+        assert!(!ParameterPath::GroupSendOn(1).is_continuous());
+        assert!(!ParameterPath::MasterBusOn.is_continuous());
+        assert!(!ParameterPath::InsertAEnabled.is_continuous());
+        assert!(!ParameterPath::CgMute.is_continuous());
+        assert!(!ParameterPath::MatrixSendOn(1).is_continuous());
+        assert!(!ParameterPath::GeqEnabled.is_continuous());
+        assert!(!ParameterPath::EqBandCurve(1).is_continuous());
+        assert!(!ParameterPath::GainTracking.is_continuous());
+    }
+
+    #[test]
+    fn lerp_float() {
+        let a = ParameterValue::Float(0.0);
+        let b = ParameterValue::Float(10.0);
+        assert_eq!(a.lerp(&b, 0.0), Some(ParameterValue::Float(0.0)));
+        assert_eq!(a.lerp(&b, 0.5), Some(ParameterValue::Float(5.0)));
+        assert_eq!(a.lerp(&b, 1.0), Some(ParameterValue::Float(10.0)));
+    }
+
+    #[test]
+    fn lerp_int() {
+        let a = ParameterValue::Int(0);
+        let b = ParameterValue::Int(100);
+        assert_eq!(a.lerp(&b, 0.0), Some(ParameterValue::Int(0)));
+        assert_eq!(a.lerp(&b, 0.5), Some(ParameterValue::Int(50)));
+        assert_eq!(a.lerp(&b, 1.0), Some(ParameterValue::Int(100)));
+    }
+
+    #[test]
+    fn lerp_mismatched_types() {
+        let f = ParameterValue::Float(1.0);
+        let i = ParameterValue::Int(2);
+        assert_eq!(f.lerp(&i, 0.5), None);
+    }
+
+    #[test]
+    fn lerp_bool_returns_none() {
+        let a = ParameterValue::Bool(false);
+        let b = ParameterValue::Bool(true);
+        assert_eq!(a.lerp(&b, 0.5), None);
+    }
+
+    #[test]
+    fn lerp_string_returns_none() {
+        let a = ParameterValue::String("foo".into());
+        let b = ParameterValue::String("bar".into());
+        assert_eq!(a.lerp(&b, 0.5), None);
     }
 }

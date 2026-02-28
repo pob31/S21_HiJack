@@ -155,6 +155,13 @@ impl HiJackApp {
                     self.setup.ipad_connected = false;
                     self.setup.status_message = Some(format!("iPad connection failed: {msg}"));
                 }
+                UiEvent::FadeProgress { cue_number, progress, done } => {
+                    if done {
+                        self.live.fade_progress = None;
+                    } else {
+                        self.live.fade_progress = Some((cue_number, progress));
+                    }
+                }
             }
         }
     }

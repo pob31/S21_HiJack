@@ -5,6 +5,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn, debug};
 use uuid::Uuid;
 
+use crate::console::fade_engine::{FadeController, FadeTarget};
 use crate::model::eq_palette::EqPalette;
 use crate::model::parameter::{ParameterAddress, ParameterSection, ParameterValue};
 use crate::model::snapshot::{Cue, ScopeTemplate, Snapshot};
@@ -28,11 +29,12 @@ pub struct SnapshotEngine {
     state: Arc<RwLock<ConsoleState>>,
     sender: OscSender,
     ipad_sender: Option<IpadSender>,
+    fade_controller: FadeController,
 }
 
 impl SnapshotEngine {
     pub fn new(state: Arc<RwLock<ConsoleState>>, sender: OscSender) -> Self {
-        Self { state, sender, ipad_sender: None }
+        Self { state, sender, ipad_sender: None, fade_controller: FadeController::new() }
     }
 
     /// Set (or clear) the iPad sender for iPad-only parameter recall.
@@ -174,6 +176,9 @@ impl SnapshotEngine {
     }
 
     /// Recall a cue — resolves effective scope and delegates to recall().
+    ///
+    /// When `cue.fade_time > 0`, continuous parameters are interpolated in a
+    /// background task while discrete parameters fire immediately.
     pub async fn recall_cue(
         &self,
         cue: &Cue,
@@ -185,9 +190,182 @@ impl SnapshotEngine {
             cue_number = cue.cue_number,
             cue_name = %cue.name,
             snapshot_name = %snapshot.name,
+            fade_time = cue.fade_time,
             "Recalling cue"
         );
-        self.recall(snapshot, effective_scope, palettes).await
+
+        // No fade — instant recall (existing behavior)
+        if cue.fade_time <= 0.0 {
+            // Cancel any in-progress fade from a previous cue
+            self.fade_controller.cancel_active().await;
+            return self.recall(snapshot, effective_scope, palettes).await;
+        }
+
+        // Fade recall: split parameters into discrete (immediate) and continuous (fade)
+        let state = self.state.read().await;
+        let mut sent = 0usize;
+        let mut skipped = 0usize;
+        let mut fade_targets: Vec<FadeTarget> = Vec::new();
+
+        // Track palette params handled via snapshot data
+        let mut palette_params_seen: HashMap<(Uuid, _), bool> = HashMap::new();
+
+        for (addr, snap_value) in &snapshot.data.values {
+            if !effective_scope.contains(addr) {
+                skipped += 1;
+                continue;
+            }
+
+            // Resolve palette override for EQ params
+            let effective_value = if addr.parameter.section() == ParameterSection::Eq {
+                if let Some(palette_id) = snapshot.eq_palette_refs.get(&addr.channel) {
+                    if let Some(palette) = palettes.get(palette_id) {
+                        palette_params_seen.insert((*palette_id, addr.parameter.clone()), true);
+                        palette.eq_values.get(&addr.parameter).unwrap_or(snap_value)
+                    } else {
+                        snap_value
+                    }
+                } else {
+                    snap_value
+                }
+            } else {
+                snap_value
+            };
+
+            let live_value = state.get(addr);
+
+            if live_value == Some(effective_value) {
+                skipped += 1;
+            } else if addr.parameter.is_continuous() && live_value.is_some() {
+                // Continuous param with known start → fade
+                fade_targets.push(FadeTarget {
+                    address: addr.clone(),
+                    start_value: live_value.unwrap().clone(),
+                    end_value: effective_value.clone(),
+                });
+            } else {
+                // Discrete, or continuous with unknown live value → send immediately
+                fade_targets.push(FadeTarget {
+                    address: addr.clone(),
+                    start_value: effective_value.clone(),
+                    end_value: effective_value.clone(),
+                });
+            }
+        }
+
+        // Palette-only params
+        for (channel, palette_id) in &snapshot.eq_palette_refs {
+            if let Some(palette) = palettes.get(palette_id) {
+                for (param_path, value) in &palette.eq_values {
+                    if palette_params_seen.contains_key(&(*palette_id, param_path.clone())) {
+                        continue;
+                    }
+                    let addr = ParameterAddress {
+                        channel: channel.clone(),
+                        parameter: param_path.clone(),
+                    };
+                    if !effective_scope.contains(&addr) {
+                        skipped += 1;
+                        continue;
+                    }
+                    let live_value = state.get(&addr);
+                    if live_value == Some(value) {
+                        skipped += 1;
+                        continue;
+                    }
+                    if addr.parameter.is_continuous() && live_value.is_some() {
+                        fade_targets.push(FadeTarget {
+                            address: addr,
+                            start_value: live_value.unwrap().clone(),
+                            end_value: value.clone(),
+                        });
+                    } else {
+                        fade_targets.push(FadeTarget {
+                            address: addr,
+                            start_value: value.clone(),
+                            end_value: value.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        drop(state);
+
+        // Separate discrete targets (start == end) from continuous
+        let mut discrete_targets = Vec::new();
+        let mut continuous_targets = Vec::new();
+        for target in fade_targets {
+            if target.start_value == target.end_value {
+                discrete_targets.push(target);
+            } else {
+                continuous_targets.push(target);
+            }
+        }
+
+        // Send discrete params immediately
+        for target in &discrete_targets {
+            self.send_now(&target.address, &target.end_value, &mut sent, &mut skipped).await;
+        }
+
+        // Start continuous fade in background
+        if !continuous_targets.is_empty() {
+            let fade_count = continuous_targets.len();
+            let _handle = self.fade_controller.start_fade(
+                cue.cue_number,
+                cue.fade_time,
+                continuous_targets,
+                self.sender.clone(),
+                self.ipad_sender.clone(),
+            ).await;
+            info!(fade_count, "Fade started for continuous parameters");
+        }
+
+        RecallResult {
+            parameters_sent: sent,
+            parameters_skipped: skipped,
+        }
+    }
+
+    /// Send a parameter immediately (no state comparison — already checked).
+    async fn send_now(
+        &self,
+        addr: &ParameterAddress,
+        value: &ParameterValue,
+        sent: &mut usize,
+        skipped: &mut usize,
+    ) {
+        match encode::encode_parameter(addr, value) {
+            Some((path, args)) => {
+                if let Err(e) = self.sender.send(&path, args).await {
+                    warn!(%addr, "Failed to send recall: {e}");
+                    *skipped += 1;
+                } else {
+                    debug!(%addr, %value, "Recall: sent discrete param");
+                    *sent += 1;
+                }
+            }
+            None => {
+                if let Some(ipad) = &self.ipad_sender {
+                    match ipad_encode::encode_ipad_parameter(addr, value) {
+                        Some((path, args)) => {
+                            if let Err(e) = ipad.send(&path, args).await {
+                                warn!(%addr, "Failed to send iPad recall: {e}");
+                                *skipped += 1;
+                            } else {
+                                debug!(%addr, %value, "Recall: sent discrete via iPad");
+                                *sent += 1;
+                            }
+                        }
+                        None => {
+                            *skipped += 1;
+                        }
+                    }
+                } else {
+                    *skipped += 1;
+                }
+            }
+        }
     }
 }
 
@@ -466,5 +644,120 @@ mod tests {
         let result = engine.recall(&snapshot, &scope, &palettes).await;
         // Both palette-only params sent (live is None for both)
         assert_eq!(result.parameters_sent, 2);
+    }
+
+    #[tokio::test]
+    async fn recall_cue_zero_fade_same_as_instant() {
+        let (engine, _state) = setup_test().await;
+
+        let scope = ScopeTemplate::new(
+            "Test".into(),
+            vec![ChannelScope {
+                channel: ChannelId::Input(1),
+                sections: HashSet::from([ParameterSection::FaderMutePan]),
+            }],
+        );
+
+        let mut values = HashMap::new();
+        values.insert(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
+            ParameterValue::Float(0.0),
+        );
+        values.insert(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Mute },
+            ParameterValue::Bool(true),
+        );
+
+        let snapshot = Snapshot::new("Snap".into(), scope.clone(), SnapshotData { values });
+        let cue = crate::model::snapshot::Cue::new(1.0, "Test Cue".into(), snapshot.id);
+
+        let result = engine.recall_cue(&cue, &snapshot, &no_palettes()).await;
+        // Both are new (no live state) → both sent
+        assert_eq!(result.parameters_sent, 2);
+    }
+
+    #[tokio::test]
+    async fn recall_cue_with_fade_sends_discrete_immediately() {
+        let (engine, state) = setup_test().await;
+
+        // Set live state so continuous params have a known start value
+        {
+            let mut st = state.write().await;
+            st.update(
+                ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
+                ParameterValue::Float(0.0),
+            );
+        }
+
+        let scope = ScopeTemplate::new(
+            "Test".into(),
+            vec![ChannelScope {
+                channel: ChannelId::Input(1),
+                sections: HashSet::from([ParameterSection::FaderMutePan]),
+            }],
+        );
+
+        let mut values = HashMap::new();
+        // Fader = continuous with known live value → deferred to fade
+        values.insert(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
+            ParameterValue::Float(5.0),
+        );
+        // Mute = discrete → sent immediately
+        values.insert(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Mute },
+            ParameterValue::Bool(true),
+        );
+
+        let snapshot = Snapshot::new("Snap".into(), scope.clone(), SnapshotData { values });
+        let mut cue = crate::model::snapshot::Cue::new(1.0, "Fade Cue".into(), snapshot.id);
+        cue.fade_time = 2.0;
+
+        let result = engine.recall_cue(&cue, &snapshot, &no_palettes()).await;
+        // Mute sent immediately; Fader deferred to background fade
+        assert_eq!(result.parameters_sent, 1);
+        assert_eq!(result.parameters_skipped, 0);
+    }
+
+    #[tokio::test]
+    async fn recall_cue_scope_override() {
+        let (engine, _state) = setup_test().await;
+
+        // Snapshot scope includes FaderMutePan + Eq
+        let full_scope = ScopeTemplate::new(
+            "Full".into(),
+            vec![ChannelScope {
+                channel: ChannelId::Input(1),
+                sections: HashSet::from([ParameterSection::FaderMutePan, ParameterSection::Eq]),
+            }],
+        );
+
+        // Cue scope override: only Eq
+        let eq_only_scope = ScopeTemplate::new(
+            "EQ Only".into(),
+            vec![ChannelScope {
+                channel: ChannelId::Input(1),
+                sections: HashSet::from([ParameterSection::Eq]),
+            }],
+        );
+
+        let mut values = HashMap::new();
+        values.insert(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
+            ParameterValue::Float(0.0),
+        );
+        values.insert(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqEnabled },
+            ParameterValue::Bool(true),
+        );
+
+        let snapshot = Snapshot::new("Snap".into(), full_scope, SnapshotData { values });
+        let mut cue = crate::model::snapshot::Cue::new(1.0, "Scoped".into(), snapshot.id);
+        cue.scope_override = Some(eq_only_scope);
+
+        let result = engine.recall_cue(&cue, &snapshot, &no_palettes()).await;
+        // Only EqEnabled sent (within override scope); Fader skipped
+        assert_eq!(result.parameters_sent, 1);
+        assert_eq!(result.parameters_skipped, 1);
     }
 }

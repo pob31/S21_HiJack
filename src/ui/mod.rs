@@ -53,4 +53,9 @@ pub enum UiEvent {
     ShowFileError(String),
     IpadConnected,
     IpadConnectionFailed(String),
+    FadeProgress {
+        cue_number: f32,
+        progress: f32,
+        done: bool,
+    },
 }

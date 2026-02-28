@@ -15,12 +15,14 @@ use super::UiEvent;
 /// State for the Live tab.
 pub struct LiveTabState {
     pub last_recall_info: Option<String>,
+    pub fade_progress: Option<(f32, f32)>, // (cue_number, progress 0.0..1.0)
 }
 
 impl Default for LiveTabState {
     fn default() -> Self {
         Self {
             last_recall_info: None,
+            fade_progress: None,
         }
     }
 }
@@ -163,6 +165,18 @@ pub fn draw_live_tab(
         // Last recall result
         if let Some(info) = &live.last_recall_info {
             ui.label(egui::RichText::new(info).weak());
+        }
+
+        // Fade progress bar
+        if let Some((cue_num, progress)) = &live.fade_progress {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(format!("Fade {cue_num:.1}:"));
+                ui.add(
+                    egui::ProgressBar::new(*progress)
+                        .text(format!("{:.0}%", progress * 100.0)),
+                );
+            });
         }
 
         // Macro quick-trigger buttons

@@ -21,6 +21,13 @@ pub struct SnapshotsTabState {
     pub new_cue_name: String,
     pub selected_snapshot_for_cue: Option<Uuid>,
 
+    // Cue editor
+    pub last_edited_cue_id: Option<Uuid>,
+    pub editing_fade_time: f32,
+    pub editing_scope_override_enabled: bool,
+    pub editing_scope_template_id: Option<Uuid>,
+    pub editing_cue_notes: String,
+
     // Snapshot management
     pub new_snapshot_name: String,
     pub selected_snapshot_id: Option<Uuid>,
@@ -41,6 +48,11 @@ impl Default for SnapshotsTabState {
             new_cue_number: String::new(),
             new_cue_name: String::new(),
             selected_snapshot_for_cue: None,
+            last_edited_cue_id: None,
+            editing_fade_time: 0.0,
+            editing_scope_override_enabled: false,
+            editing_scope_template_id: None,
+            editing_cue_notes: String::new(),
             new_snapshot_name: String::new(),
             selected_snapshot_id: None,
             scope_editor: ScopeEditorState::default(),
@@ -157,7 +169,16 @@ pub fn draw_snapshots_tab(
                                 .map(|s| s.name.as_str())
                                 .unwrap_or("?");
 
-                            let text = format!("{:<6.1}  {:<20}  {}", cue.cue_number, cue.name, snap_name);
+                            let fade_str = if cue.fade_time > 0.0 {
+                                format!(" [{:.1}s]", cue.fade_time)
+                            } else {
+                                String::new()
+                            };
+                            let scope_str = if cue.scope_override.is_some() { " [S]" } else { "" };
+                            let text = format!(
+                                "{:<6.1}  {:<20}  {}{}{}",
+                                cue.cue_number, cue.name, snap_name, fade_str, scope_str,
+                            );
                             if ui.selectable_label(selected, egui::RichText::new(&text).monospace()).clicked() {
                                 snap_state.selected_cue_id = Some(cue.id);
                             }
@@ -237,6 +258,82 @@ pub fn draw_snapshots_tab(
                     }
                 }
             });
+
+            // Cue editor (when a cue is selected)
+            if let Some(cue_id) = snap_state.selected_cue_id {
+                ui.add_space(8.0);
+                ui.heading("Cue Editor");
+
+                if let Ok(mgr) = cue_manager.try_read() {
+                    if let Some(cue) = mgr.cue_list.cues.iter().find(|c| c.id == cue_id) {
+                        // Sync editor state when selection changes
+                        if snap_state.last_edited_cue_id != Some(cue_id) {
+                            snap_state.editing_fade_time = cue.fade_time;
+                            snap_state.editing_scope_override_enabled = cue.scope_override.is_some();
+                            snap_state.editing_scope_template_id = cue.scope_override.as_ref().map(|s| s.id);
+                            snap_state.editing_cue_notes = cue.notes.clone();
+                            snap_state.last_edited_cue_id = Some(cue_id);
+                        }
+
+                        ui.horizontal(|ui| {
+                            ui.label("Fade Time:");
+                            ui.add(
+                                egui::Slider::new(&mut snap_state.editing_fade_time, 0.0..=60.0)
+                                    .suffix(" s")
+                                    .step_by(0.1),
+                            );
+                        });
+
+                        ui.checkbox(&mut snap_state.editing_scope_override_enabled, "Scope Override");
+
+                        if snap_state.editing_scope_override_enabled {
+                            ui.horizontal(|ui| {
+                                ui.label("Template:");
+                                let current_name = snap_state.editing_scope_template_id
+                                    .and_then(|id| mgr.scope_templates.get(&id))
+                                    .map(|t| t.name.clone())
+                                    .unwrap_or_else(|| "(select)".into());
+
+                                egui::ComboBox::from_id_salt("scope_override_selector")
+                                    .selected_text(&current_name)
+                                    .show_ui(ui, |ui| {
+                                        for tmpl in mgr.scope_templates.values() {
+                                            if ui.selectable_label(
+                                                snap_state.editing_scope_template_id == Some(tmpl.id),
+                                                &tmpl.name,
+                                            ).clicked() {
+                                                snap_state.editing_scope_template_id = Some(tmpl.id);
+                                            }
+                                        }
+                                    });
+                            });
+                        }
+
+                        ui.label("Notes:");
+                        ui.add(
+                            egui::TextEdit::multiline(&mut snap_state.editing_cue_notes)
+                                .desired_rows(2)
+                                .desired_width(f32::INFINITY),
+                        );
+
+                        if ui.button("Save Cue Changes").clicked() {
+                            let fade_time = snap_state.editing_fade_time;
+                            let scope_override = if snap_state.editing_scope_override_enabled {
+                                snap_state.editing_scope_template_id
+                                    .and_then(|id| mgr.scope_templates.get(&id).cloned())
+                            } else {
+                                None
+                            };
+                            let notes = snap_state.editing_cue_notes.clone();
+                            let cue_mgr = cue_manager.clone();
+                            runtime.spawn(async move {
+                                cue_mgr.write().await.update_cue(cue_id, fade_time, scope_override, notes);
+                            });
+                            snap_state.status_message = Some("Cue updated".into());
+                        }
+                    }
+                }
+            }
 
             ui.add_space(12.0);
             ui.separator();

@@ -184,6 +184,26 @@ impl CueManager {
         info!(name = %template.name, id = %template.id, "Added scope template");
         self.scope_templates.insert(template.id, template);
     }
+
+    /// Update cue properties (fade time, scope override, notes).
+    pub fn update_cue(
+        &mut self,
+        cue_id: Uuid,
+        fade_time: f32,
+        scope_override: Option<ScopeTemplate>,
+        notes: String,
+    ) -> bool {
+        if let Some(cue) = self.cue_list.cues.iter_mut().find(|c| c.id == cue_id) {
+            cue.fade_time = fade_time;
+            cue.scope_override = scope_override;
+            cue.notes = notes;
+            info!(cue_number = cue.cue_number, name = %cue.name, fade_time, "Updated cue");
+            true
+        } else {
+            warn!(%cue_id, "Cue not found for update");
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -267,5 +287,26 @@ mod tests {
         assert!(mgr.go_previous().is_none());
         assert!(mgr.fire_cue_number(1.0).is_none());
         assert!(mgr.current_cue().is_none());
+    }
+
+    #[test]
+    fn update_cue_modifies_fields() {
+        let mut mgr = CueManager::new(CueList::default());
+        let cue = make_cue(1.0, "Cue 1");
+        let cue_id = cue.id;
+        mgr.add_cue(cue);
+
+        assert!(mgr.update_cue(cue_id, 3.5, None, "Scene change".into()));
+
+        let updated = mgr.cue_list.cues.iter().find(|c| c.id == cue_id).unwrap();
+        assert!((updated.fade_time - 3.5).abs() < 0.001);
+        assert!(updated.scope_override.is_none());
+        assert_eq!(updated.notes, "Scene change");
+    }
+
+    #[test]
+    fn update_cue_nonexistent_returns_false() {
+        let mut mgr = CueManager::new(CueList::default());
+        assert!(!mgr.update_cue(Uuid::new_v4(), 1.0, None, String::new()));
     }
 }
