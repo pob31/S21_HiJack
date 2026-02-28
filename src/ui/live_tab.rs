@@ -5,6 +5,7 @@ use eframe::egui;
 use tokio::sync::RwLock;
 
 use crate::console::cue_manager::CueManager;
+use crate::console::eq_palette_manager::EqPaletteManager;
 use crate::console::macro_engine::MacroEngine;
 use crate::console::macro_manager::MacroManager;
 use crate::console::snapshot_engine::SnapshotEngine;
@@ -30,6 +31,7 @@ pub fn draw_live_tab(
     live: &mut LiveTabState,
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
+    eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     snapshot_engine: &Option<Arc<SnapshotEngine>>,
     macro_engine: &Option<Arc<MacroEngine>>,
     connected: &Arc<AtomicBool>,
@@ -136,7 +138,7 @@ pub fn draw_live_tab(
             .min_size(theme::GO_BUTTON_SIZE);
 
             if ui.add_enabled(buttons_enabled, go_button).clicked() {
-                fire_go(cue_manager, snapshot_engine, runtime, ui_tx);
+                fire_go(cue_manager, eq_palette_manager, snapshot_engine, runtime, ui_tx);
             }
 
             ui.add_space(20.0);
@@ -152,7 +154,7 @@ pub fn draw_live_tab(
             .min_size(theme::PREV_BUTTON_SIZE);
 
             if ui.add_enabled(buttons_enabled, prev_button).clicked() {
-                fire_prev(cue_manager, snapshot_engine, runtime, ui_tx);
+                fire_prev(cue_manager, eq_palette_manager, snapshot_engine, runtime, ui_tx);
             }
         });
 
@@ -210,12 +212,14 @@ pub fn draw_live_tab(
 
 fn fire_go(
     cue_manager: &Arc<RwLock<CueManager>>,
+    eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     snapshot_engine: &Option<Arc<SnapshotEngine>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
     let Some(engine) = snapshot_engine.clone() else { return };
     let cue_mgr = cue_manager.clone();
+    let eq_mgr = eq_palette_manager.clone();
     let tx = ui_tx.clone();
 
     runtime.spawn(async move {
@@ -224,7 +228,8 @@ fn fire_go(
             let cue = cue.clone();
             if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                 drop(mgr);
-                let result = engine.recall_cue(&cue, &snapshot).await;
+                let pmgr = eq_mgr.read().await;
+                let result = engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
                 let _ = tx.send(UiEvent::CueRecalled {
                     cue_number: cue.cue_number,
                     params_sent: result.parameters_sent,
@@ -236,12 +241,14 @@ fn fire_go(
 
 fn fire_prev(
     cue_manager: &Arc<RwLock<CueManager>>,
+    eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     snapshot_engine: &Option<Arc<SnapshotEngine>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
     let Some(engine) = snapshot_engine.clone() else { return };
     let cue_mgr = cue_manager.clone();
+    let eq_mgr = eq_palette_manager.clone();
     let tx = ui_tx.clone();
 
     runtime.spawn(async move {
@@ -250,7 +257,8 @@ fn fire_prev(
             let cue = cue.clone();
             if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                 drop(mgr);
-                let result = engine.recall_cue(&cue, &snapshot).await;
+                let pmgr = eq_mgr.read().await;
+                let result = engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
                 let _ = tx.send(UiEvent::CueRecalled {
                     cue_number: cue.cue_number,
                     params_sent: result.parameters_sent,

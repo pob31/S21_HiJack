@@ -18,9 +18,12 @@ use tracing_subscriber::EnvFilter;
 
 use console::connection::ConnectionManager;
 use console::cue_manager::CueManager;
+use console::eq_palette_manager::EqPaletteManager;
+use console::ipad_connection;
 use console::macro_engine::MacroEngine;
 use console::macro_manager::MacroManager;
 use console::snapshot_engine::SnapshotEngine;
+use model::operating_mode::OperatingMode;
 use model::snapshot::CueList;
 use osc::trigger_listener::{TriggerEvent, TriggerListener};
 
@@ -44,6 +47,14 @@ struct Args {
     #[arg(long, default_value_t = 53001)]
     trigger_port: u16,
 
+    /// Console iPad remote port (for Mode 2/3)
+    #[arg(long, default_value_t = 0)]
+    ipad_port: u16,
+
+    /// Operating mode: mode1, mode2, mode3
+    #[arg(long, default_value = "mode1")]
+    mode: String,
+
     /// Run in headless mode (no UI, daemon only)
     #[arg(long)]
     headless: bool,
@@ -60,9 +71,11 @@ fn main() {
 
     let args = Args::parse();
 
+    let mode = OperatingMode::from_cli(&args.mode).unwrap_or_default();
+
     info!(
-        "S21 HiJack starting — console {}:{}, local port {}, trigger port {}, headless={}",
-        args.console_ip, args.console_port, args.local_port, args.trigger_port, args.headless
+        "S21 HiJack starting — console {}:{}, local port {}, trigger port {}, mode={}, ipad_port={}, headless={}",
+        args.console_ip, args.console_port, args.local_port, args.trigger_port, mode, args.ipad_port, args.headless
     );
 
     if args.headless {
@@ -101,10 +114,58 @@ async fn run_headless(args: Args) {
         }
     };
 
-    // Set up snapshot and macro systems
+    // Parse operating mode
+    let mode = OperatingMode::from_cli(&args.mode).unwrap_or_default();
+
+    // Set up snapshot, macro, and palette systems
     let cue_manager = Arc::new(RwLock::new(CueManager::new(CueList::default())));
-    let snapshot_engine = SnapshotEngine::new(manager.state(), manager.sender());
+    let eq_palette_manager = Arc::new(RwLock::new(EqPaletteManager::new()));
+    let mut snapshot_engine = SnapshotEngine::new(manager.state(), manager.sender());
     let macro_engine = Arc::new(MacroEngine::new(manager.state(), manager.sender()));
+
+    // iPad protocol connection (Mode 2 or 3)
+    if mode.uses_ipad_protocol() && args.ipad_port > 0 {
+        let ipad_addr: SocketAddr = format!("{}:{}", args.console_ip, args.ipad_port)
+            .parse()
+            .expect("Invalid iPad address");
+
+        match mode {
+            OperatingMode::Mode2 => {
+                let ipad_local: SocketAddr = "0.0.0.0:0".parse().unwrap();
+                match ipad_connection::connect_mode2(ipad_addr, ipad_local, manager.state()).await {
+                    Ok((ipad_sender, result, _handle)) => {
+                        info!(
+                            name = %result.config.console_name,
+                            "Mode 2: iPad protocol connected"
+                        );
+                        snapshot_engine.set_ipad_sender(Some(ipad_sender));
+                    }
+                    Err(e) => {
+                        error!("Mode 2: iPad connection failed: {e}");
+                    }
+                }
+            }
+            OperatingMode::Mode3 => {
+                let listen_addr: SocketAddr = format!("0.0.0.0:{}", args.ipad_port)
+                    .parse()
+                    .expect("Invalid iPad listen address");
+                let outbound_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
+                match ipad_connection::connect_mode3(ipad_addr, listen_addr, outbound_addr, manager.state()).await {
+                    Ok((ipad_sender, _forwarder, result, _handle)) => {
+                        info!(
+                            name = %result.config.console_name,
+                            "Mode 3: iPad proxy started"
+                        );
+                        snapshot_engine.set_ipad_sender(Some(ipad_sender));
+                    }
+                    Err(e) => {
+                        error!("Mode 3: iPad proxy setup failed: {e}");
+                    }
+                }
+            }
+            OperatingMode::Mode1 => {}
+        }
+    }
 
     // Start QLab trigger listener
     let trigger_addr: SocketAddr = format!("0.0.0.0:{}", args.trigger_port)
@@ -122,6 +183,7 @@ async fn run_headless(args: Args) {
     // Spawn trigger processing task
     let trigger_cue_mgr = cue_manager.clone();
     let trigger_macro_mgr = macro_manager.clone();
+    let trigger_eq_mgr = eq_palette_manager.clone();
     let trigger_macro_eng = macro_engine.clone();
     let trigger_engine = Arc::new(snapshot_engine);
     let reply_socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok();
@@ -135,7 +197,8 @@ async fn run_headless(args: Args) {
                         let cue = cue.clone();
                         if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                             drop(mgr);
-                            let result = trigger_engine.recall_cue(&cue, &snapshot).await;
+                            let pmgr = trigger_eq_mgr.read().await;
+                            let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
                             info!(sent = result.parameters_sent, "Cue GO recall complete");
                         } else {
                             warn!(snapshot_id = %cue.snapshot_id, "Snapshot not found for cue");
@@ -148,7 +211,8 @@ async fn run_headless(args: Args) {
                         let cue = cue.clone();
                         if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                             drop(mgr);
-                            let result = trigger_engine.recall_cue(&cue, &snapshot).await;
+                            let pmgr = trigger_eq_mgr.read().await;
+                            let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
                             info!(sent = result.parameters_sent, "Cue PREVIOUS recall complete");
                         } else {
                             warn!(snapshot_id = %cue.snapshot_id, "Snapshot not found for cue");
@@ -161,7 +225,8 @@ async fn run_headless(args: Args) {
                         let cue = cue.clone();
                         if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                             drop(mgr);
-                            let result = trigger_engine.recall_cue(&cue, &snapshot).await;
+                            let pmgr = trigger_eq_mgr.read().await;
+                            let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
                             info!(number, sent = result.parameters_sent, "Cue FIRE recall complete");
                         } else {
                             warn!(snapshot_id = %cue.snapshot_id, "Snapshot not found for cue");
@@ -229,6 +294,12 @@ async fn run_headless(args: Args) {
         macros = mmgr.macros.len(),
         quick_triggers = mmgr.quick_trigger_ids.len(),
         "Final macro system state"
+    );
+
+    let pmgr = eq_palette_manager.read().await;
+    info!(
+        palettes = pmgr.palettes.len(),
+        "Final EQ palette system state"
     );
 
     info!("Daemon stopped.");

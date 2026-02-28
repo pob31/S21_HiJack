@@ -50,6 +50,10 @@ pub struct Snapshot {
     pub scope: ScopeTemplate,
     /// The stored parameter values.
     pub data: SnapshotData,
+    /// EQ palette links: channel → palette ID. When set, recall uses palette EQ
+    /// values instead of the snapshot's stored values for that channel.
+    #[serde(default, with = "palette_refs_serde")]
+    pub eq_palette_refs: HashMap<ChannelId, Uuid>,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
 }
@@ -63,6 +67,7 @@ impl Snapshot {
             name,
             scope,
             data,
+            eq_palette_refs: HashMap::new(),
             created_at: now,
             modified_at: now,
         }
@@ -110,6 +115,43 @@ mod parameter_map {
     {
         let entries: Vec<Entry> = Vec::deserialize(deserializer)?;
         Ok(entries.into_iter().map(|e| (e.address, e.value)).collect())
+    }
+}
+
+/// Custom serde for HashMap<ChannelId, Uuid> — serializes as Vec of entries
+/// since ChannelId (a tagged enum) cannot be a JSON map key.
+mod palette_refs_serde {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    struct Entry {
+        channel: ChannelId,
+        palette_id: Uuid,
+    }
+
+    pub fn serialize<S>(
+        map: &HashMap<ChannelId, Uuid>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let entries: Vec<Entry> = map
+            .iter()
+            .map(|(k, v)| Entry { channel: k.clone(), palette_id: *v })
+            .collect();
+        entries.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<HashMap<ChannelId, Uuid>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let entries: Vec<Entry> = Vec::deserialize(deserializer)?;
+        Ok(entries.into_iter().map(|e| (e.channel, e.palette_id)).collect())
     }
 }
 
@@ -273,6 +315,39 @@ mod tests {
             }),
             Some(&ParameterValue::Float(-10.0))
         );
+    }
+
+    #[test]
+    fn snapshot_palette_refs_serde_round_trip() {
+        let scope = ScopeTemplate::new("Test".into(), vec![]);
+        let mut snapshot = Snapshot::new("Test Snap".into(), scope, SnapshotData::new());
+
+        let palette_id = Uuid::new_v4();
+        snapshot.eq_palette_refs.insert(ChannelId::Input(1), palette_id);
+        snapshot.eq_palette_refs.insert(ChannelId::Aux(3), Uuid::new_v4());
+
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let loaded: Snapshot = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(loaded.eq_palette_refs.len(), 2);
+        assert_eq!(loaded.eq_palette_refs.get(&ChannelId::Input(1)), Some(&palette_id));
+        assert!(loaded.eq_palette_refs.contains_key(&ChannelId::Aux(3)));
+    }
+
+    #[test]
+    fn snapshot_backward_compat_no_palette_refs() {
+        // Simulate a v2 snapshot JSON without the eq_palette_refs field
+        let json = r#"{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Old Snap",
+            "scope": {"id": "00000000-0000-0000-0000-000000000002", "name": "S", "channel_scopes": []},
+            "data": {"values": []},
+            "created_at": "2025-01-01T00:00:00Z",
+            "modified_at": "2025-01-01T00:00:00Z"
+        }"#;
+
+        let loaded: Snapshot = serde_json::from_str(json).unwrap();
+        assert!(loaded.eq_palette_refs.is_empty());
     }
 
     #[test]

@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
+use super::channel::ChannelId;
 use super::config::ConsoleConfig;
-use super::parameter::{ParameterAddress, ParameterValue};
+use super::parameter::{ParameterAddress, ParameterPath, ParameterSection, ParameterValue};
 use super::snapshot::{ScopeTemplate, SnapshotData};
 
 /// Live mirror of the full console state.
@@ -59,6 +60,19 @@ impl ConsoleState {
     pub fn iter_parameters(&self) -> impl Iterator<Item = (&ParameterAddress, &ParameterValue)> {
         self.parameters.iter()
     }
+
+    /// Capture only EQ-section parameters for a specific channel.
+    /// Returns a map of ParameterPath → ParameterValue (channel stored separately in palette).
+    pub fn capture_eq(&self, channel: &ChannelId) -> HashMap<ParameterPath, ParameterValue> {
+        self.parameters
+            .iter()
+            .filter(|(addr, _)| {
+                &addr.channel == channel
+                    && addr.parameter.section() == ParameterSection::Eq
+            })
+            .map(|(addr, value)| (addr.parameter.clone(), value.clone()))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -87,6 +101,47 @@ mod tests {
         // Update overwrites
         state.update(addr.clone(), ParameterValue::Float(0.0));
         assert_eq!(state.get(&addr), Some(&ParameterValue::Float(0.0)));
+    }
+
+    #[test]
+    fn capture_eq_for_channel() {
+        let mut state = ConsoleState::new(ConsoleConfig::default());
+
+        // Add EQ and non-EQ params for Input 1
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqEnabled },
+            ParameterValue::Bool(true),
+        );
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqBandFrequency(1) },
+            ParameterValue::Float(1000.0),
+        );
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqBandGain(1) },
+            ParameterValue::Float(3.0),
+        );
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
+            ParameterValue::Float(-10.0),
+        );
+        // EQ for Input 2 — should not appear
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(2), parameter: ParameterPath::EqEnabled },
+            ParameterValue::Bool(false),
+        );
+
+        let eq = state.capture_eq(&ChannelId::Input(1));
+        assert_eq!(eq.len(), 3);
+        assert_eq!(eq.get(&ParameterPath::EqEnabled), Some(&ParameterValue::Bool(true)));
+        assert_eq!(eq.get(&ParameterPath::EqBandFrequency(1)), Some(&ParameterValue::Float(1000.0)));
+        assert!(!eq.contains_key(&ParameterPath::Fader));
+    }
+
+    #[test]
+    fn capture_eq_empty_for_no_data() {
+        let state = ConsoleState::new(ConsoleConfig::default());
+        let eq = state.capture_eq(&ChannelId::Input(99));
+        assert!(eq.is_empty());
     }
 
     #[test]

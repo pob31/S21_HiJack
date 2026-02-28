@@ -8,9 +8,11 @@ use tracing::{info, error};
 
 use crate::console::connection::ConnectionManager;
 use crate::console::cue_manager::CueManager;
+use crate::console::eq_palette_manager::EqPaletteManager;
 use crate::console::macro_engine::MacroEngine;
 use crate::console::macro_manager::MacroManager;
 use crate::console::snapshot_engine::SnapshotEngine;
+use crate::model::operating_mode::OperatingMode;
 use crate::model::snapshot::CueList;
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
@@ -26,6 +28,9 @@ pub struct SetupTabState {
     pub trigger_port: String,
     pub show_file_path: String,
     pub status_message: Option<String>,
+    pub operating_mode: OperatingMode,
+    pub ipad_port: String,
+    pub ipad_connected: bool,
 }
 
 impl SetupTabState {
@@ -37,6 +42,9 @@ impl SetupTabState {
             trigger_port: trigger_port.to_string(),
             show_file_path: String::new(),
             status_message: None,
+            operating_mode: OperatingMode::Mode1,
+            ipad_port: "8001".to_string(),
+            ipad_connected: false,
         }
     }
 }
@@ -48,6 +56,7 @@ pub fn draw_setup_tab(
     state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
+    eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
     sender: &mut Option<OscSender>,
     connected: &Arc<AtomicBool>,
@@ -86,8 +95,8 @@ pub fn draw_setup_tab(
         if !is_connected {
             if ui.button("Connect").clicked() {
                 start_connection(
-                    setup, state, cue_manager, macro_manager, snapshot_engine, sender,
-                    connected, runtime, ui_tx, egui_ctx,
+                    setup, state, cue_manager, macro_manager, eq_palette_manager,
+                    snapshot_engine, sender, connected, runtime, ui_tx, egui_ctx,
                 );
             }
         } else {
@@ -124,9 +133,40 @@ pub fn draw_setup_tab(
     // Operating mode
     ui.horizontal(|ui| {
         ui.label("Operating Mode:");
-        ui.label("Mode 1 (GP OSC)");
-        ui.weak("  Modes 2/3: Phase 6");
+        egui::ComboBox::from_id_salt("operating_mode")
+            .selected_text(setup.operating_mode.label())
+            .width(200.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut setup.operating_mode, OperatingMode::Mode1, OperatingMode::Mode1.label());
+                ui.selectable_value(&mut setup.operating_mode, OperatingMode::Mode2, OperatingMode::Mode2.label());
+                ui.selectable_value(&mut setup.operating_mode, OperatingMode::Mode3, OperatingMode::Mode3.label());
+            });
     });
+
+    // iPad protocol port (visible when mode 2 or 3)
+    if setup.operating_mode.uses_ipad_protocol() {
+        ui.horizontal(|ui| {
+            ui.label("iPad Remote Port:");
+            ui.add_enabled(
+                !is_connected,
+                egui::TextEdit::singleline(&mut setup.ipad_port).desired_width(80.0),
+            );
+
+            // iPad connection status
+            let (color, text) = if setup.ipad_connected {
+                (super::theme::COLOR_CONNECTED, "iPad Connected")
+            } else {
+                (super::theme::COLOR_DISCONNECTED, "iPad Not Connected")
+            };
+            let circle_size = 10.0;
+            let (rect, _) = ui.allocate_exact_size(
+                egui::Vec2::splat(circle_size),
+                egui::Sense::hover(),
+            );
+            ui.painter().circle_filled(rect.center(), circle_size / 2.0, color);
+            ui.label(text);
+        });
+    }
 
     ui.add_space(8.0);
     ui.separator();
@@ -184,14 +224,15 @@ pub fn draw_setup_tab(
     ui.heading("Show File");
     ui.horizontal(|ui| {
         if ui.button("Load Show").clicked() {
-            load_show_file(setup, cue_manager, macro_manager, runtime, ui_tx);
+            load_show_file(setup, cue_manager, macro_manager, eq_palette_manager, runtime, ui_tx);
         }
         if ui.button("Save Show").clicked() {
-            save_show_file(setup, state, cue_manager, macro_manager, runtime, ui_tx);
+            save_show_file(setup, state, cue_manager, macro_manager, eq_palette_manager, runtime, ui_tx);
         }
         if ui.button("New Show").clicked() {
             let cue_mgr = cue_manager.clone();
             let macro_mgr = macro_manager.clone();
+            let eq_mgr = eq_palette_manager.clone();
             runtime.spawn(async move {
                 let mut mgr = cue_mgr.write().await;
                 mgr.cue_list = CueList::default();
@@ -201,6 +242,9 @@ pub fn draw_setup_tab(
                 let mut mmgr = macro_mgr.write().await;
                 mmgr.macros.clear();
                 mmgr.quick_trigger_ids.clear();
+                drop(mmgr);
+                let mut pmgr = eq_mgr.write().await;
+                pmgr.palettes.clear();
             });
             setup.show_file_path.clear();
             setup.status_message = Some("New show created".into());
@@ -216,6 +260,7 @@ fn start_connection(
     state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
+    eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     _snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
     _sender: &mut Option<OscSender>,
     connected: &Arc<AtomicBool>,
@@ -265,6 +310,7 @@ fn start_connection(
     let st = state.clone();
     let cue_mgr = cue_manager.clone();
     let macro_mgr = macro_manager.clone();
+    let eq_mgr = eq_palette_manager.clone();
     let conn_flag = connected.clone();
     let tx = ui_tx.clone();
     let ctx = egui_ctx.clone();
@@ -282,6 +328,7 @@ fn start_connection(
                         let macro_eng = Arc::new(MacroEngine::new(st.clone(), manager.sender()));
                         let trigger_cue_mgr = cue_mgr.clone();
                         let trigger_macro_mgr = manager.macro_manager();
+                        let trigger_eq_mgr = eq_mgr.clone();
                         let trigger_engine = engine.clone();
                         let trigger_macro_eng = macro_eng.clone();
 
@@ -296,7 +343,8 @@ fn start_connection(
                                             let cue = cue.clone();
                                             if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                                                 drop(mgr);
-                                                let result = trigger_engine.recall_cue(&cue, &snapshot).await;
+                                                let pmgr = trigger_eq_mgr.read().await;
+                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
                                                 info!(sent = result.parameters_sent, "Trigger GO recall complete");
                                             }
                                         }
@@ -307,7 +355,8 @@ fn start_connection(
                                             let cue = cue.clone();
                                             if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                                                 drop(mgr);
-                                                let result = trigger_engine.recall_cue(&cue, &snapshot).await;
+                                                let pmgr = trigger_eq_mgr.read().await;
+                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
                                                 info!(sent = result.parameters_sent, "Trigger PREV recall complete");
                                             }
                                         }
@@ -318,7 +367,8 @@ fn start_connection(
                                             let cue = cue.clone();
                                             if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                                                 drop(mgr);
-                                                let result = trigger_engine.recall_cue(&cue, &snapshot).await;
+                                                let pmgr = trigger_eq_mgr.read().await;
+                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
                                                 info!(number, sent = result.parameters_sent, "Trigger FIRE recall complete");
                                             }
                                         }
@@ -372,6 +422,7 @@ fn load_show_file(
     setup: &mut SetupTabState,
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
+    eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
@@ -383,6 +434,7 @@ fn load_show_file(
     let path = std::path::PathBuf::from(&setup.show_file_path);
     let cue_mgr = cue_manager.clone();
     let macro_mgr = macro_manager.clone();
+    let eq_mgr = eq_palette_manager.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
 
@@ -408,6 +460,14 @@ fn load_show_file(
                     mmgr.macros.insert(macro_def.id, macro_def);
                 }
                 mmgr.quick_trigger_ids = show.macro_quick_trigger_ids;
+                drop(mmgr);
+
+                // Restore EQ palettes
+                let mut pmgr = eq_mgr.write().await;
+                pmgr.palettes.clear();
+                for palette in show.eq_palettes {
+                    pmgr.palettes.insert(palette.id, palette);
+                }
 
                 info!("Show file loaded: {path_str}");
                 let _ = tx.send(UiEvent::ShowFileLoaded(path_str));
@@ -424,6 +484,7 @@ fn save_show_file(
     state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
+    eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
@@ -436,6 +497,7 @@ fn save_show_file(
     let st = state.clone();
     let cue_mgr = cue_manager.clone();
     let macro_mgr = macro_manager.clone();
+    let eq_mgr = eq_palette_manager.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
 
@@ -443,20 +505,23 @@ fn save_show_file(
         let state_guard = st.read().await;
         let mgr = cue_mgr.read().await;
         let mmgr = macro_mgr.read().await;
+        let pmgr = eq_mgr.read().await;
 
         let show = ShowFile {
-            version: 2,
+            version: 3,
             console_config: state_guard.config.clone(),
             scope_templates: mgr.scope_templates.values().cloned().collect(),
             snapshots: mgr.snapshots.values().cloned().collect(),
             cue_list: mgr.cue_list.clone(),
             macros: mmgr.macros.values().cloned().collect(),
             macro_quick_trigger_ids: mmgr.quick_trigger_ids.clone(),
+            eq_palettes: pmgr.palettes.values().cloned().collect(),
         };
 
         drop(state_guard);
         drop(mgr);
         drop(mmgr);
+        drop(pmgr);
 
         match show.save(&path).await {
             Ok(()) => {

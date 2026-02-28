@@ -5,6 +5,7 @@ use eframe::egui;
 use tokio::sync::RwLock;
 
 use crate::console::cue_manager::CueManager;
+use crate::console::eq_palette_manager::EqPaletteManager;
 use crate::console::macro_engine::MacroEngine;
 use crate::console::macro_manager::MacroManager;
 use crate::console::snapshot_engine::SnapshotEngine;
@@ -12,8 +13,10 @@ use crate::model::config::ConsoleConfig;
 use crate::model::snapshot::CueList;
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
+use crate::osc::ipad_client::IpadSender;
 
 use super::{Tab, UiEvent};
+use super::eq_palettes_ui::EqPalettesUiState;
 use super::live_tab::LiveTabState;
 use super::macros_tab::MacrosTabState;
 use super::setup_tab::SetupTabState;
@@ -25,6 +28,7 @@ pub struct HiJackApp {
     pub state: Arc<RwLock<ConsoleState>>,
     pub cue_manager: Arc<RwLock<CueManager>>,
     pub macro_manager: Arc<RwLock<MacroManager>>,
+    pub eq_palette_manager: Arc<RwLock<EqPaletteManager>>,
     pub snapshot_engine: Option<Arc<SnapshotEngine>>,
     pub macro_engine: Option<Arc<MacroEngine>>,
 
@@ -37,6 +41,7 @@ pub struct HiJackApp {
     // Connection state
     pub connected: Arc<AtomicBool>,
     pub sender: Option<OscSender>,
+    pub ipad_sender: Option<IpadSender>,
 
     // Tab state
     pub active_tab: Tab,
@@ -44,6 +49,7 @@ pub struct HiJackApp {
     pub snapshots: SnapshotsTabState,
     pub macros: MacrosTabState,
     pub live: LiveTabState,
+    pub eq_palettes_ui: EqPalettesUiState,
 }
 
 impl HiJackApp {
@@ -60,6 +66,7 @@ impl HiJackApp {
             state: Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default()))),
             cue_manager: Arc::new(RwLock::new(CueManager::new(CueList::default()))),
             macro_manager: Arc::new(RwLock::new(MacroManager::new())),
+            eq_palette_manager: Arc::new(RwLock::new(EqPaletteManager::new())),
             snapshot_engine: None,
             macro_engine: None,
 
@@ -70,12 +77,14 @@ impl HiJackApp {
 
             connected: Arc::new(AtomicBool::new(false)),
             sender: None,
+            ipad_sender: None,
 
             active_tab: Tab::Setup,
             setup: SetupTabState::new(console_ip, console_port, local_port, trigger_port),
             snapshots: SnapshotsTabState::default(),
             macros: MacrosTabState::default(),
             live: LiveTabState::default(),
+            eq_palettes_ui: EqPalettesUiState::default(),
         }
     }
 
@@ -114,6 +123,21 @@ impl HiJackApp {
                         format!("Recording stopped: {step_count} steps captured"),
                     );
                 }
+                UiEvent::PaletteCaptured { name, param_count } => {
+                    self.eq_palettes_ui.status_message = Some(
+                        format!("Captured palette '{name}' ({param_count} EQ params)"),
+                    );
+                }
+                UiEvent::PaletteLinked { palette_name, snapshot_name } => {
+                    self.eq_palettes_ui.status_message = Some(
+                        format!("Linked '{palette_name}' to '{snapshot_name}'"),
+                    );
+                }
+                UiEvent::PaletteUpdated { name, affected_count } => {
+                    self.eq_palettes_ui.status_message = Some(
+                        format!("Updated '{name}' — {affected_count} snapshots affected"),
+                    );
+                }
                 UiEvent::ShowFileLoaded(path) => {
                     self.setup.status_message = Some(format!("Loaded: {path}"));
                 }
@@ -122,6 +146,14 @@ impl HiJackApp {
                 }
                 UiEvent::ShowFileError(msg) => {
                     self.setup.status_message = Some(msg);
+                }
+                UiEvent::IpadConnected => {
+                    self.setup.ipad_connected = true;
+                    self.setup.status_message = Some("iPad protocol connected".into());
+                }
+                UiEvent::IpadConnectionFailed(msg) => {
+                    self.setup.ipad_connected = false;
+                    self.setup.status_message = Some(format!("iPad connection failed: {msg}"));
                 }
             }
         }
@@ -159,6 +191,7 @@ impl eframe::App for HiJackApp {
                         &self.state,
                         &self.cue_manager,
                         &self.macro_manager,
+                        &self.eq_palette_manager,
                         &mut self.snapshot_engine,
                         &mut self.sender,
                         &self.connected,
@@ -171,8 +204,10 @@ impl eframe::App for HiJackApp {
                     super::snapshots_tab::draw_snapshots_tab(
                         ui,
                         &mut self.snapshots,
+                        &mut self.eq_palettes_ui,
                         &self.state,
                         &self.cue_manager,
+                        &self.eq_palette_manager,
                         &self.connected,
                         &self.runtime,
                         &self.ui_tx,
@@ -195,6 +230,7 @@ impl eframe::App for HiJackApp {
                         &mut self.live,
                         &self.cue_manager,
                         &self.macro_manager,
+                        &self.eq_palette_manager,
                         &self.snapshot_engine,
                         &self.macro_engine,
                         &self.connected,

@@ -179,6 +179,209 @@ impl ParameterPath {
         }
     }
 
+    /// Convert to iPad protocol path suffix (after /{ChannelType}/{number}/).
+    /// Returns None for parameters with no iPad representation (GP OSC-only).
+    pub fn to_ipad_suffix(&self) -> Option<String> {
+        match self {
+            // Output
+            ParameterPath::Name => Some("Channel_Input/name".into()),
+            ParameterPath::Fader => Some("fader".into()),
+            ParameterPath::Mute => Some("mute".into()),
+            ParameterPath::Solo => Some("solo".into()),
+            ParameterPath::Pan => Some("Panner/pan".into()),
+
+            // Input section
+            ParameterPath::Gain => Some("Channel_Input/analog_gain".into()),
+            ParameterPath::Trim => Some("Channel_Input/trim".into()),
+            ParameterPath::Polarity => Some("Channel_Input/phase".into()),
+            ParameterPath::Phantom => Some("Channel_Input/phantom".into()),
+            ParameterPath::MainAltIn => Some("Channel_Input/main_alt_in".into()),
+            ParameterPath::StereoMode => Some("Channel_Input/stereo_mode".into()),
+
+            // GP OSC-only input params
+            ParameterPath::GainTracking
+            | ParameterPath::Balance
+            | ParameterPath::Width => None,
+
+            // Delay
+            ParameterPath::DelayEnabled => Some("Channel_Delay/delay_on".into()),
+            ParameterPath::DelayTime => Some("Channel_Delay/delay".into()),
+
+            // Digitube — not in iPad protocol
+            ParameterPath::DigitubeEnabled
+            | ParameterPath::DigitubeDrive
+            | ParameterPath::DigitubeBias => None,
+
+            // EQ
+            ParameterPath::EqEnabled => Some("EQ/eq_in".into()),
+            ParameterPath::HighpassEnabled => Some("Filters/lo_filter_in".into()),
+            ParameterPath::HighpassFrequency => Some("Filters/lo_filter_freq".into()),
+            ParameterPath::LowpassEnabled => Some("Filters/hi_filter_in".into()),
+            ParameterPath::LowpassFrequency => Some("Filters/hi_filter_freq".into()),
+            ParameterPath::EqBandFrequency(b) => Some(format!("EQ/eq_freq_{b}")),
+            ParameterPath::EqBandGain(b) => Some(format!("EQ/eq_gain_{b}")),
+            ParameterPath::EqBandQ(b) => Some(format!("EQ/eq_Q_{b}")),
+            ParameterPath::EqBandCurve(b) => Some(format!("EQ/eq_curve_{b}")),
+            ParameterPath::EqBandDynEnabled(b) => Some(format!("EQ/dynamic_eq_on_{b}")),
+            ParameterPath::EqBandDynThreshold(b) => Some(format!("EQ/eq_thresh_{b}")),
+            ParameterPath::EqBandDynRatio(b) => Some(format!("EQ/eq_ratio_{b}")),
+            ParameterPath::EqBandDynAttack(b) => Some(format!("EQ/eq_attack_{b}")),
+            ParameterPath::EqBandDynRelease(b) => Some(format!("EQ/eq_release_{b}")),
+            ParameterPath::EqBandDynOverUnder(b) => Some(format!("EQ/eq_over-under_{b}")),
+
+            // Dynamics 1 (compressor)
+            ParameterPath::Dyn1Enabled => Some("Dynamics/comp_in".into()),
+            ParameterPath::Dyn1Mode => None, // GP OSC-only; iPad uses comp_knee per band
+            ParameterPath::Dyn1MultibandDeesser => Some("Dynamics/comp-multiband-desser".into()),
+            ParameterPath::Dyn1Threshold(1) => Some("Dynamics/comp_thresh".into()),
+            ParameterPath::Dyn1Threshold(b) => Some(format!("Dynamics/comp_thresh_{b}")),
+            ParameterPath::Dyn1Knee(1) => Some("Dynamics/comp_knee".into()),
+            ParameterPath::Dyn1Knee(b) => Some(format!("Dynamics/comp_knee_{b}")),
+            ParameterPath::Dyn1Ratio(1) => Some("Dynamics/comp_ratio".into()),
+            ParameterPath::Dyn1Ratio(b) => Some(format!("Dynamics/comp_ratio_{b}")),
+            ParameterPath::Dyn1Attack(1) => Some("Dynamics/comp_attack".into()),
+            ParameterPath::Dyn1Attack(b) => Some(format!("Dynamics/comp_attack_{b}")),
+            ParameterPath::Dyn1Release(1) => Some("Dynamics/comp_release".into()),
+            ParameterPath::Dyn1Release(b) => Some(format!("Dynamics/comp_release_{b}")),
+            ParameterPath::Dyn1Gain(1) => Some("Dynamics/comp_gain".into()),
+            ParameterPath::Dyn1Gain(b) => Some(format!("Dynamics/comp_auto-gain_{b}")),
+            ParameterPath::Dyn1Listen(b) => Some(format!("Dynamics/comp_listen_{b}")),
+            ParameterPath::Dyn1CrossoverHigh => Some("Dynamics/comp_HP_crossover_1".into()),
+            ParameterPath::Dyn1CrossoverLow => Some("Dynamics/comp_LP_crossover_1".into()),
+
+            // Dynamics 2 (gate)
+            ParameterPath::Dyn2Enabled => Some("Dynamics/gate_in".into()),
+            ParameterPath::Dyn2Mode => Some("Dynamics/gate-duck-comp".into()),
+            ParameterPath::Dyn2Threshold => Some("Dynamics/gate_thresh".into()),
+            ParameterPath::Dyn2Attack => Some("Dynamics/gate_attack".into()),
+            ParameterPath::Dyn2Hold => Some("Dynamics/gate_hold".into()),
+            ParameterPath::Dyn2Release => Some("Dynamics/gate_release".into()),
+            ParameterPath::Dyn2Range => Some("Dynamics/gate_range".into()),
+            ParameterPath::Dyn2Highpass => Some("Dynamics/gate_hp".into()),
+            ParameterPath::Dyn2Lowpass => Some("Dynamics/gate_lp".into()),
+            ParameterPath::Dyn2KeySolo => Some("Dynamics/key_solo".into()),
+            // Dyn2 params not in iPad protocol
+            ParameterPath::Dyn2Knee
+            | ParameterPath::Dyn2Ratio
+            | ParameterPath::Dyn2Gain
+            | ParameterPath::Dyn2Listen => None,
+
+            // Sends
+            ParameterPath::SendLevel(s) => Some(format!("Aux_Send/{s}/send_level")),
+            ParameterPath::SendPan(s) => Some(format!("Aux_Send/{s}/send_pan")),
+            ParameterPath::SendEnabled(s) => Some(format!("Aux_Send/{s}/send_on")),
+
+            // Group routing (iPad-only)
+            ParameterPath::GroupSendOn(g) => Some(format!("Group_Send/{g}/send_on")),
+            ParameterPath::MasterBusOn => Some("Group_Send/17/send_on".into()),
+
+            // Inserts (iPad-only)
+            ParameterPath::InsertAEnabled => Some("Insert/insert_A_in".into()),
+            ParameterPath::InsertBEnabled => Some("Insert/insert_B_in".into()),
+
+            // CG membership (iPad-only)
+            ParameterPath::CgLevel => Some("CGs_level".into()),
+            ParameterPath::CgMute => Some("CGs_mute".into()),
+
+            // Matrix sends (iPad-only, on MatrixInput channels)
+            ParameterPath::MatrixSendLevel(s) => Some(format!("Matrix_Send/{s}/send_level")),
+            ParameterPath::MatrixSendOn(s) => Some(format!("Matrix_Send/{s}/send_on")),
+
+            // Graphic EQ (iPad-only, on GraphicEq channels)
+            ParameterPath::GeqBandGain(b) => Some(format!("geq_gain_{b}")),
+            ParameterPath::GeqEnabled => Some("geq_in".into()),
+        }
+    }
+
+    /// Parse from an iPad protocol path suffix (the remaining path after the channel prefix).
+    /// Expects input like "/fader" or "/EQ/eq_gain_2" (with leading /).
+    pub fn from_ipad_suffix(suffix: &str) -> Option<Self> {
+        let suffix = suffix.strip_prefix('/').unwrap_or(suffix);
+
+        // Direct matches
+        match suffix {
+            "fader" => return Some(ParameterPath::Fader),
+            "mute" => return Some(ParameterPath::Mute),
+            "solo" => return Some(ParameterPath::Solo),
+            "Panner/pan" => return Some(ParameterPath::Pan),
+            "Channel_Input/name" => return Some(ParameterPath::Name),
+            "Channel_Input/analog_gain" => return Some(ParameterPath::Gain),
+            "Channel_Input/trim" => return Some(ParameterPath::Trim),
+            "Channel_Input/phase" => return Some(ParameterPath::Polarity),
+            "Channel_Input/phantom" => return Some(ParameterPath::Phantom),
+            "Channel_Input/main_alt_in" => return Some(ParameterPath::MainAltIn),
+            "Channel_Input/stereo_mode" => return Some(ParameterPath::StereoMode),
+            "Channel_Delay/delay_on" => return Some(ParameterPath::DelayEnabled),
+            "Channel_Delay/delay" => return Some(ParameterPath::DelayTime),
+            "EQ/eq_in" => return Some(ParameterPath::EqEnabled),
+            "Filters/lo_filter_in" => return Some(ParameterPath::HighpassEnabled),
+            "Filters/lo_filter_freq" => return Some(ParameterPath::HighpassFrequency),
+            "Filters/hi_filter_in" => return Some(ParameterPath::LowpassEnabled),
+            "Filters/hi_filter_freq" => return Some(ParameterPath::LowpassFrequency),
+            "Dynamics/comp_in" => return Some(ParameterPath::Dyn1Enabled),
+            "Dynamics/comp-multiband-desser" => return Some(ParameterPath::Dyn1MultibandDeesser),
+            "Dynamics/comp_thresh" => return Some(ParameterPath::Dyn1Threshold(1)),
+            "Dynamics/comp_knee" => return Some(ParameterPath::Dyn1Knee(1)),
+            "Dynamics/comp_ratio" => return Some(ParameterPath::Dyn1Ratio(1)),
+            "Dynamics/comp_attack" => return Some(ParameterPath::Dyn1Attack(1)),
+            "Dynamics/comp_release" => return Some(ParameterPath::Dyn1Release(1)),
+            "Dynamics/comp_gain" => return Some(ParameterPath::Dyn1Gain(1)),
+            "Dynamics/comp_HP_crossover_1" => return Some(ParameterPath::Dyn1CrossoverHigh),
+            "Dynamics/comp_LP_crossover_1" => return Some(ParameterPath::Dyn1CrossoverLow),
+            "Dynamics/gate_in" => return Some(ParameterPath::Dyn2Enabled),
+            "Dynamics/gate-duck-comp" => return Some(ParameterPath::Dyn2Mode),
+            "Dynamics/gate_thresh" => return Some(ParameterPath::Dyn2Threshold),
+            "Dynamics/gate_attack" => return Some(ParameterPath::Dyn2Attack),
+            "Dynamics/gate_hold" => return Some(ParameterPath::Dyn2Hold),
+            "Dynamics/gate_release" => return Some(ParameterPath::Dyn2Release),
+            "Dynamics/gate_range" => return Some(ParameterPath::Dyn2Range),
+            "Dynamics/gate_hp" => return Some(ParameterPath::Dyn2Highpass),
+            "Dynamics/gate_lp" => return Some(ParameterPath::Dyn2Lowpass),
+            "Dynamics/key_solo" => return Some(ParameterPath::Dyn2KeySolo),
+            "Insert/insert_A_in" => return Some(ParameterPath::InsertAEnabled),
+            "Insert/insert_B_in" => return Some(ParameterPath::InsertBEnabled),
+            "CGs_level" => return Some(ParameterPath::CgLevel),
+            "CGs_mute" => return Some(ParameterPath::CgMute),
+            "geq_in" => return Some(ParameterPath::GeqEnabled),
+            _ => {}
+        }
+
+        // EQ band parameters: EQ/eq_{param}_{band}
+        if let Some(rest) = suffix.strip_prefix("EQ/") {
+            return parse_ipad_eq_suffix(rest);
+        }
+
+        // Dynamics multiband: Dynamics/comp_{param}_{band}
+        if let Some(rest) = suffix.strip_prefix("Dynamics/comp_") {
+            return parse_ipad_dyn1_suffix(rest);
+        }
+
+        // Sends: Aux_Send/{n}/send_{param}
+        if let Some(rest) = suffix.strip_prefix("Aux_Send/") {
+            return parse_ipad_send_suffix(rest);
+        }
+
+        // Group routing: Group_Send/{n}/send_on
+        if let Some(rest) = suffix.strip_prefix("Group_Send/") {
+            return parse_ipad_group_send_suffix(rest);
+        }
+
+        // Matrix sends: Matrix_Send/{n}/send_{param}
+        if let Some(rest) = suffix.strip_prefix("Matrix_Send/") {
+            return parse_ipad_matrix_send_suffix(rest);
+        }
+
+        // GEQ bands: geq_gain_{band}
+        if let Some(rest) = suffix.strip_prefix("geq_gain_") {
+            let b: u8 = rest.parse().ok()?;
+            if (1..=32).contains(&b) {
+                return Some(ParameterPath::GeqBandGain(b));
+            }
+        }
+
+        None
+    }
+
     /// Parse from a GP OSC path suffix (the part after /channel/{ch}/).
     pub fn from_gp_osc_suffix(suffix: &str) -> Option<Self> {
         // Direct matches first
@@ -499,6 +702,138 @@ impl ParameterPath {
     }
 }
 
+// ── iPad suffix parsing helpers ──────────────────────────────────────
+
+/// Parse iPad EQ suffix (after "EQ/").
+fn parse_ipad_eq_suffix(rest: &str) -> Option<ParameterPath> {
+    // Try patterns: eq_freq_{b}, eq_gain_{b}, eq_Q_{b}, eq_curve_{b},
+    // dynamic_eq_on_{b}, eq_thresh_{b}, eq_over-under_{b}, eq_ratio_{b},
+    // eq_attack_{b}, eq_release_{b}
+    if let Some(b_str) = rest.strip_prefix("eq_freq_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandFrequency(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("eq_gain_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandGain(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("eq_Q_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandQ(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("eq_curve_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandCurve(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("dynamic_eq_on_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandDynEnabled(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("eq_thresh_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandDynThreshold(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("eq_over-under_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandDynOverUnder(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("eq_ratio_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandDynRatio(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("eq_attack_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandDynAttack(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("eq_release_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandDynRelease(b));
+    }
+    None
+}
+
+/// Parse iPad Dyn1 multiband suffix (after "Dynamics/comp_").
+fn parse_ipad_dyn1_suffix(rest: &str) -> Option<ParameterPath> {
+    // Multiband bands: comp_thresh_{b}, comp_knee_{b}, comp_ratio_{b}, etc.
+    if let Some(b_str) = rest.strip_prefix("thresh_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1Threshold(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("knee_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1Knee(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("ratio_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1Ratio(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("attack_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1Attack(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("release_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1Release(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("auto-gain_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1Gain(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("listen_") {
+        let b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1Listen(b));
+    }
+    if let Some(b_str) = rest.strip_prefix("HP_crossover_") {
+        let _b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1CrossoverHigh);
+    }
+    if let Some(b_str) = rest.strip_prefix("LP_crossover_") {
+        let _b: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1CrossoverLow);
+    }
+    None
+}
+
+/// Parse iPad send suffix (after "Aux_Send/").
+fn parse_ipad_send_suffix(rest: &str) -> Option<ParameterPath> {
+    // Format: {n}/send_level, {n}/send_pan, {n}/send_on
+    let (n_str, param) = rest.split_once('/')?;
+    let n: u8 = n_str.parse().ok()?;
+    match param {
+        "send_level" => Some(ParameterPath::SendLevel(n)),
+        "send_pan" => Some(ParameterPath::SendPan(n)),
+        "send_on" => Some(ParameterPath::SendEnabled(n)),
+        _ => None,
+    }
+}
+
+/// Parse iPad group send suffix (after "Group_Send/").
+fn parse_ipad_group_send_suffix(rest: &str) -> Option<ParameterPath> {
+    // Format: {n}/send_on  (17 = master bus)
+    let (n_str, param) = rest.split_once('/')?;
+    let n: u8 = n_str.parse().ok()?;
+    if param != "send_on" {
+        return None;
+    }
+    if n == 17 {
+        Some(ParameterPath::MasterBusOn)
+    } else {
+        Some(ParameterPath::GroupSendOn(n))
+    }
+}
+
+/// Parse iPad matrix send suffix (after "Matrix_Send/").
+fn parse_ipad_matrix_send_suffix(rest: &str) -> Option<ParameterPath> {
+    // Format: {n}/send_level, {n}/send_on
+    let (n_str, param) = rest.split_once('/')?;
+    let n: u8 = n_str.parse().ok()?;
+    match param {
+        "send_level" => Some(ParameterPath::MatrixSendLevel(n)),
+        "send_on" => Some(ParameterPath::MatrixSendOn(n)),
+        _ => None,
+    }
+}
+
 /// Typed parameter value.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ParameterValue {
@@ -592,5 +927,115 @@ mod tests {
         assert!(ParameterPath::CgLevel.to_gp_osc_suffix().is_none());
         assert!(ParameterPath::InsertAEnabled.to_gp_osc_suffix().is_none());
         assert!(ParameterPath::GeqBandGain(1).to_gp_osc_suffix().is_none());
+    }
+
+    #[test]
+    fn ipad_suffix_round_trip() {
+        let paths = vec![
+            // Common params (both protocols)
+            ParameterPath::Fader,
+            ParameterPath::Mute,
+            ParameterPath::Solo,
+            ParameterPath::Pan,
+            ParameterPath::Name,
+            ParameterPath::Gain,
+            ParameterPath::Trim,
+            ParameterPath::Polarity,
+            ParameterPath::DelayEnabled,
+            ParameterPath::DelayTime,
+            // EQ
+            ParameterPath::EqEnabled,
+            ParameterPath::HighpassEnabled,
+            ParameterPath::HighpassFrequency,
+            ParameterPath::LowpassEnabled,
+            ParameterPath::LowpassFrequency,
+            ParameterPath::EqBandFrequency(1),
+            ParameterPath::EqBandGain(2),
+            ParameterPath::EqBandQ(3),
+            ParameterPath::EqBandDynEnabled(1),
+            ParameterPath::EqBandDynThreshold(2),
+            ParameterPath::EqBandDynRatio(3),
+            ParameterPath::EqBandDynAttack(4),
+            ParameterPath::EqBandDynRelease(1),
+            // iPad-only EQ
+            ParameterPath::EqBandCurve(2),
+            ParameterPath::EqBandDynOverUnder(3),
+            // Dyn1
+            ParameterPath::Dyn1Enabled,
+            ParameterPath::Dyn1Threshold(1), // single comp
+            ParameterPath::Dyn1Threshold(2), // multiband
+            ParameterPath::Dyn1Knee(1),
+            ParameterPath::Dyn1Ratio(3),
+            ParameterPath::Dyn1Attack(1),
+            ParameterPath::Dyn1Release(2),
+            ParameterPath::Dyn1Gain(1), // single
+            ParameterPath::Dyn1Gain(2), // multiband
+            ParameterPath::Dyn1Listen(1),
+            ParameterPath::Dyn1CrossoverHigh,
+            ParameterPath::Dyn1CrossoverLow,
+            // Dyn2
+            ParameterPath::Dyn2Enabled,
+            ParameterPath::Dyn2Mode,
+            ParameterPath::Dyn2Threshold,
+            ParameterPath::Dyn2Attack,
+            ParameterPath::Dyn2Hold,
+            ParameterPath::Dyn2Release,
+            ParameterPath::Dyn2Range,
+            ParameterPath::Dyn2Highpass,
+            ParameterPath::Dyn2Lowpass,
+            ParameterPath::Dyn2KeySolo,
+            // Sends
+            ParameterPath::SendLevel(3),
+            ParameterPath::SendPan(1),
+            ParameterPath::SendEnabled(5),
+            // iPad-only
+            ParameterPath::Phantom,
+            ParameterPath::MainAltIn,
+            ParameterPath::StereoMode,
+            ParameterPath::Dyn1MultibandDeesser,
+            ParameterPath::GroupSendOn(4),
+            ParameterPath::MasterBusOn,
+            ParameterPath::InsertAEnabled,
+            ParameterPath::InsertBEnabled,
+            ParameterPath::CgLevel,
+            ParameterPath::CgMute,
+            ParameterPath::MatrixSendLevel(2),
+            ParameterPath::MatrixSendOn(5),
+            ParameterPath::GeqBandGain(16),
+            ParameterPath::GeqEnabled,
+        ];
+
+        for path in paths {
+            let suffix = path.to_ipad_suffix()
+                .unwrap_or_else(|| panic!("to_ipad_suffix returned None for {path:?}"));
+            // from_ipad_suffix expects leading /
+            let parsed = ParameterPath::from_ipad_suffix(&format!("/{suffix}"))
+                .unwrap_or_else(|| panic!("from_ipad_suffix failed for /{suffix} (from {path:?})"));
+            assert_eq!(parsed, path, "iPad round-trip failed for suffix: {suffix}");
+        }
+    }
+
+    #[test]
+    fn ipad_suffix_gp_only_returns_none() {
+        // These params exist only in GP OSC, not iPad
+        assert!(ParameterPath::GainTracking.to_ipad_suffix().is_none());
+        assert!(ParameterPath::Balance.to_ipad_suffix().is_none());
+        assert!(ParameterPath::Width.to_ipad_suffix().is_none());
+        assert!(ParameterPath::DigitubeEnabled.to_ipad_suffix().is_none());
+        assert!(ParameterPath::DigitubeDrive.to_ipad_suffix().is_none());
+        assert!(ParameterPath::DigitubeBias.to_ipad_suffix().is_none());
+        assert!(ParameterPath::Dyn2Knee.to_ipad_suffix().is_none());
+        assert!(ParameterPath::Dyn2Ratio.to_ipad_suffix().is_none());
+    }
+
+    #[test]
+    fn ipad_suffix_specific_values() {
+        assert_eq!(ParameterPath::Fader.to_ipad_suffix().unwrap(), "fader");
+        assert_eq!(ParameterPath::Pan.to_ipad_suffix().unwrap(), "Panner/pan");
+        assert_eq!(ParameterPath::InsertAEnabled.to_ipad_suffix().unwrap(), "Insert/insert_A_in");
+        assert_eq!(ParameterPath::GeqBandGain(1).to_ipad_suffix().unwrap(), "geq_gain_1");
+        assert_eq!(ParameterPath::SendLevel(3).to_ipad_suffix().unwrap(), "Aux_Send/3/send_level");
+        assert_eq!(ParameterPath::GroupSendOn(4).to_ipad_suffix().unwrap(), "Group_Send/4/send_on");
+        assert_eq!(ParameterPath::MasterBusOn.to_ipad_suffix().unwrap(), "Group_Send/17/send_on");
     }
 }

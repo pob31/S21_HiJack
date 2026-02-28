@@ -3,6 +3,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::model::config::ConsoleConfig;
+use crate::model::eq_palette::EqPalette;
 use crate::model::macro_def::MacroDef;
 use crate::model::snapshot::{CueList, ScopeTemplate, Snapshot};
 
@@ -28,18 +29,22 @@ pub struct ShowFile {
     /// UUIDs of macros pinned to the Live tab quick-trigger bar.
     #[serde(default)]
     pub macro_quick_trigger_ids: Vec<uuid::Uuid>,
+    /// EQ palettes (Phase 5).
+    #[serde(default)]
+    pub eq_palettes: Vec<EqPalette>,
 }
 
 impl ShowFile {
     pub fn new(config: ConsoleConfig) -> Self {
         Self {
-            version: 2,
+            version: 3,
             console_config: config,
             scope_templates: Vec::new(),
             snapshots: Vec::new(),
             cue_list: CueList::default(),
             macros: Vec::new(),
             macro_quick_trigger_ids: Vec::new(),
+            eq_palettes: Vec::new(),
         }
     }
 
@@ -76,7 +81,7 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.version, 3);
         assert_eq!(loaded.console_config.input_channel_count, 48);
         assert_eq!(loaded.console_config.control_group_count, 10);
         assert!(loaded.scope_templates.is_empty());
@@ -163,6 +168,7 @@ mod tests {
         assert_eq!(loaded.version, 2);
         assert!(loaded.macros.is_empty());
         assert!(loaded.macro_quick_trigger_ids.is_empty());
+        assert!(loaded.eq_palettes.is_empty());
 
         let _ = tokio::fs::remove_file(&path).await;
     }

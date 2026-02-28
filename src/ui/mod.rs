@@ -1,4 +1,5 @@
 pub mod app;
+pub mod eq_palettes_ui;
 pub mod live_tab;
 pub mod macros_tab;
 pub mod scope_editor;
@@ -35,7 +36,21 @@ pub enum UiEvent {
     MacroRecordingStopped {
         step_count: usize,
     },
+    PaletteCaptured {
+        name: String,
+        param_count: usize,
+    },
+    PaletteLinked {
+        palette_name: String,
+        snapshot_name: String,
+    },
+    PaletteUpdated {
+        name: String,
+        affected_count: usize,
+    },
     ShowFileLoaded(String),
     ShowFileSaved(String),
     ShowFileError(String),
+    IpadConnected,
+    IpadConnectionFailed(String),
 }

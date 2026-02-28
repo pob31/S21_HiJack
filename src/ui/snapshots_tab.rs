@@ -6,8 +6,10 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::console::cue_manager::CueManager;
+use crate::console::eq_palette_manager::EqPaletteManager;
 use crate::model::snapshot::{Cue, Snapshot};
 use crate::model::state::ConsoleState;
+use super::eq_palettes_ui::{EqPalettesUiState, draw_eq_palettes_section};
 use super::scope_editor::{ScopeEditorState, draw_scope_editor};
 use super::UiEvent;
 
@@ -53,8 +55,10 @@ impl Default for SnapshotsTabState {
 pub fn draw_snapshots_tab(
     ui: &mut egui::Ui,
     snap_state: &mut SnapshotsTabState,
+    eq_palettes_ui: &mut EqPalettesUiState,
     console_state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
+    eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -317,6 +321,21 @@ pub fn draw_snapshots_tab(
                 ui.add_space(4.0);
                 ui.colored_label(egui::Color32::YELLOW, msg);
             }
+
+            ui.add_space(12.0);
+            ui.separator();
+
+            // EQ Palettes section
+            draw_eq_palettes_section(
+                ui,
+                eq_palettes_ui,
+                console_state,
+                cue_manager,
+                eq_palette_manager,
+                is_connected,
+                runtime,
+                ui_tx,
+            );
         });
     });
 }
