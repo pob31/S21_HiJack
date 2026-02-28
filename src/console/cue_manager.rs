@@ -153,6 +153,32 @@ impl CueManager {
         removed
     }
 
+    /// Peek at the next cue (without advancing).
+    pub fn next_cue(&self) -> Option<&Cue> {
+        match self.current_cue_index {
+            None => self.cue_list.cues.first(),
+            Some(i) => self.cue_list.cues.get(i + 1),
+        }
+    }
+
+    /// Remove a snapshot by ID.
+    pub fn remove_snapshot(&mut self, id: Uuid) -> bool {
+        let removed = self.snapshots.remove(&id).is_some();
+        if removed {
+            info!(%id, "Removed snapshot");
+        }
+        removed
+    }
+
+    /// Update a snapshot's data (re-capture with fresh values).
+    pub fn update_snapshot(&mut self, id: Uuid, data: crate::model::snapshot::SnapshotData) {
+        if let Some(snapshot) = self.snapshots.get_mut(&id) {
+            snapshot.data = data;
+            snapshot.modified_at = chrono::Utc::now();
+            info!(name = %snapshot.name, %id, "Updated snapshot data");
+        }
+    }
+
     /// Add a scope template.
     pub fn add_scope_template(&mut self, template: ScopeTemplate) {
         info!(name = %template.name, id = %template.id, "Added scope template");

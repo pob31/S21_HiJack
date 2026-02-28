@@ -31,6 +31,17 @@ impl ConnectionManager {
         local_addr: SocketAddr,
         console_addr: SocketAddr,
     ) -> std::io::Result<Self> {
+        let config = ConsoleConfig::default();
+        let state = Arc::new(RwLock::new(ConsoleState::new(config)));
+        Self::connect_with_state(local_addr, console_addr, state).await
+    }
+
+    /// Connect using a pre-existing shared state (for UI mode where state is created before connection).
+    pub async fn connect_with_state(
+        local_addr: SocketAddr,
+        console_addr: SocketAddr,
+        state: Arc<RwLock<ConsoleState>>,
+    ) -> std::io::Result<Self> {
         info!(
             "Connecting to console at {console_addr}, local port {}",
             local_addr.port()
@@ -38,10 +49,6 @@ impl ConnectionManager {
 
         let client = OscClient::new(local_addr, console_addr).await?;
         let (sender, rx) = client.into_parts();
-
-        // Start with default config — will be populated by discovery
-        let config = ConsoleConfig::default();
-        let state = Arc::new(RwLock::new(ConsoleState::new(config)));
 
         let manager = Self {
             state: state.clone(),

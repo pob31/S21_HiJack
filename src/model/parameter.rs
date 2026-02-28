@@ -308,6 +308,102 @@ pub enum ParameterSection {
     MatrixSends,
 }
 
+impl ParameterSection {
+    /// All section variants in display order.
+    pub fn all_variants() -> &'static [ParameterSection] {
+        &[
+            ParameterSection::FaderMutePan,
+            ParameterSection::Name,
+            ParameterSection::InputGain,
+            ParameterSection::Delay,
+            ParameterSection::Digitube,
+            ParameterSection::Eq,
+            ParameterSection::Dyn1,
+            ParameterSection::Dyn2,
+            ParameterSection::Sends,
+            ParameterSection::GroupRouting,
+            ParameterSection::Inserts,
+            ParameterSection::CgMembership,
+            ParameterSection::GraphicEq,
+            ParameterSection::MatrixSends,
+        ]
+    }
+
+    /// Which sections are applicable to a given channel type.
+    pub fn applicable_to(channel: &ChannelId) -> Vec<ParameterSection> {
+        match channel {
+            ChannelId::Input(_) => vec![
+                ParameterSection::FaderMutePan,
+                ParameterSection::Name,
+                ParameterSection::InputGain,
+                ParameterSection::Delay,
+                ParameterSection::Digitube,
+                ParameterSection::Eq,
+                ParameterSection::Dyn1,
+                ParameterSection::Dyn2,
+                ParameterSection::Sends,
+                ParameterSection::GroupRouting,
+                ParameterSection::Inserts,
+                ParameterSection::CgMembership,
+            ],
+            ChannelId::Aux(_) => vec![
+                ParameterSection::FaderMutePan,
+                ParameterSection::Name,
+                ParameterSection::Eq,
+                ParameterSection::Dyn1,
+                ParameterSection::Dyn2,
+                ParameterSection::Inserts,
+            ],
+            ChannelId::Group(_) => vec![
+                ParameterSection::FaderMutePan,
+                ParameterSection::Name,
+                ParameterSection::Eq,
+                ParameterSection::Dyn1,
+                ParameterSection::Dyn2,
+                ParameterSection::Inserts,
+            ],
+            ChannelId::Matrix(_) => vec![
+                ParameterSection::FaderMutePan,
+                ParameterSection::Name,
+                ParameterSection::Eq,
+                ParameterSection::Dyn1,
+                ParameterSection::Dyn2,
+            ],
+            ChannelId::ControlGroup(_) => vec![
+                ParameterSection::FaderMutePan,
+                ParameterSection::Name,
+            ],
+            ChannelId::GraphicEq(_) => vec![
+                ParameterSection::GraphicEq,
+            ],
+            ChannelId::MatrixInput(_) => vec![
+                ParameterSection::MatrixSends,
+            ],
+        }
+    }
+}
+
+impl fmt::Display for ParameterSection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParameterSection::Name => write!(f, "Name"),
+            ParameterSection::InputGain => write!(f, "Input Gain"),
+            ParameterSection::Delay => write!(f, "Delay"),
+            ParameterSection::Digitube => write!(f, "Digitube"),
+            ParameterSection::Eq => write!(f, "EQ"),
+            ParameterSection::Dyn1 => write!(f, "Dynamics 1"),
+            ParameterSection::Dyn2 => write!(f, "Dynamics 2"),
+            ParameterSection::Sends => write!(f, "Sends"),
+            ParameterSection::GroupRouting => write!(f, "Group Routing"),
+            ParameterSection::Inserts => write!(f, "Inserts"),
+            ParameterSection::FaderMutePan => write!(f, "Fader/Mute/Pan"),
+            ParameterSection::CgMembership => write!(f, "CG Membership"),
+            ParameterSection::GraphicEq => write!(f, "Graphic EQ"),
+            ParameterSection::MatrixSends => write!(f, "Matrix Sends"),
+        }
+    }
+}
+
 impl ParameterPath {
     /// Classify this parameter into its section.
     pub fn section(&self) -> ParameterSection {

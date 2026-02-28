@@ -1,10 +1,11 @@
-// Public APIs are being built up across phases — suppress dead_code until UI (Phase 3) wires them in.
+// Public APIs are being built up across phases — suppress dead_code until all wired in.
 #![allow(dead_code)]
 
 mod console;
 mod model;
 mod osc;
 mod persistence;
+mod ui;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -40,10 +41,13 @@ struct Args {
     /// QLab trigger listener port
     #[arg(long, default_value_t = 53001)]
     trigger_port: u16,
+
+    /// Run in headless mode (no UI, daemon only)
+    #[arg(long)]
+    headless: bool,
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -55,10 +59,20 @@ async fn main() {
     let args = Args::parse();
 
     info!(
-        "S21 HiJack daemon starting — console {}:{}, local port {}, trigger port {}",
-        args.console_ip, args.console_port, args.local_port, args.trigger_port
+        "S21 HiJack starting — console {}:{}, local port {}, trigger port {}, headless={}",
+        args.console_ip, args.console_port, args.local_port, args.trigger_port, args.headless
     );
 
+    if args.headless {
+        let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        runtime.block_on(run_headless(args));
+    } else {
+        run_ui(args);
+    }
+}
+
+/// Run in headless mode — the original daemon behavior.
+async fn run_headless(args: Args) {
     let console_addr: SocketAddr = format!("{}:{}", args.console_ip, args.console_port)
         .parse()
         .unwrap_or_else(|e| {
@@ -167,7 +181,7 @@ async fn main() {
     });
 
     // Wait for shutdown signal
-    info!("Daemon running. Press Ctrl+C to stop.");
+    info!("Daemon running (headless). Press Ctrl+C to stop.");
     match tokio::signal::ctrl_c().await {
         Ok(()) => {
             info!("Shutdown signal received");
@@ -191,4 +205,38 @@ async fn main() {
     );
 
     info!("Daemon stopped.");
+}
+
+/// Run with the egui UI.
+fn run_ui(args: Args) {
+    let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+
+    let app = ui::app::HiJackApp::new(
+        &args.console_ip,
+        args.console_port,
+        args.local_port,
+        args.trigger_port,
+        runtime.handle().clone(),
+    );
+
+    let native_options = eframe::NativeOptions {
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_inner_size([1024.0, 600.0])
+            .with_title("S21 HiJack"),
+        ..Default::default()
+    };
+
+    // Keep runtime alive — it's dropped after run_native returns (window closed)
+    let _runtime_guard = runtime;
+
+    eframe::run_native(
+        "S21 HiJack",
+        native_options,
+        Box::new(|_cc| Ok(Box::new(app))),
+    )
+    .unwrap_or_else(|e| {
+        error!("eframe error: {e}");
+    });
+
+    info!("UI closed.");
 }
