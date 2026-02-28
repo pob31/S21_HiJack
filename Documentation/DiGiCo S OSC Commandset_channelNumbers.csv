@@ -1,0 +1,8 @@
+OSC Channels	Console Channel	Number		Method			Value Type
+1-60	Input	1-60		/console/channel/counts			INT
+70-77	AUX	1-8		/console/ping			None
+78-93	Group	1-16		/console/pong			None
+120-127	Matrix	1-8		/console/resend			None
+110-119	Control Group	1-10		/digico/snapshots/fire			INT
+				/digico/snapshots/fire/next			None
+				/digico/snapshots/fire/previous			None

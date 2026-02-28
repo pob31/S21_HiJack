@@ -1,0 +1,458 @@
+iPad: /Snapshots/Current_Snapshot/?
+iPad: /Console/Name/?
+
+S21: /Snapshots/Current_Snapshot 0
+S21: /Console/Name S21 S21-210385
+
+iPad: /Console/Name/?
+iPad: /Console/Session/Filename/?
+iPad: /Snapshots/Surface_Snapshot/?
+iPad: /Console/Channels/?
+iPad: /Console/Aux_Outputs/modes/?
+
+S21: /Snapshots/Surface_Snapshot 0
+
+iPad: /Console/Aux_Outputs/types/?
+iPad: /Console/Input_Channels/modes/?
+iPad: /Console/Session/Filename/?
+iPad: /Console/Group_Outputs/modes/?
+iPad: /Console/Multis/?
+
+S21: /Console/Control_Groups 10
+S21: /Meters/values 0 127 1 127 2 127 3 127 4 127 5 127 6 127 7 127 8 127 9 127
+S21: /Console/Input_Channels 48
+S21: /Console/Session/Filename
+S21: /Console/Graphic_EQ 16
+S21: /Console/Matrix_Outputs 8
+S21: /Console/Group_Outputs 17
+S21: /Console/Group_Outputs/modes 1 1 1 1 2 2 2 2 1 1 1 1 2 2 2 2 2
+S21: /Console/Matrix_Inputs 10
+S21: /Console/Input_Channels/modes 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+S21: /Console/Aux_Outputs/modes 1 1 1 1 2 2 2 2 1 1 1 1 2 2 2 2 2
+S21: /Console/Aux_Outputs/types 1 1 1 1 1 1 1 1 0 0 0 0 0 0 0 0 0
+S21: /Console/Multis 0
+S21: /Console/Talkback_Outputs 0
+S21: /Console/Aux_Outputs 17
+S21: /Console/Name S21 S21-210385
+
+iPad: /Layout/Layout/Banks/?
+
+S21: /Layout/Layout/Banks Left 1 L 0 0 Input_Channels 1 Input_Channels 2 Input_Channels 3 Input_Channels 4 Input_Channels 5 Input_Channels 6 Input_Channels 7 Input_Channels 8 Input_Channels 9 Input_Channels 10
+S21: /Layout/Layout/Banks Right 1 R 0 0 Input_Channels 11 Input_Channels 12 Input_Channels 13 Input_Channels 14 Input_Channels 15 Input_Channels 16 Input_Channels 17 Input_Channels 18 Input_Channels 19 Input_Channels 20 
+S21: /Layout/Layout/Banks Left 2 L 0 1 Input_Channels 21 Input_Channels 22 Input_Channels 23 Input_Channels 24 Input_Channels 25 Input_Channels 26 Input_Channels 27 Input_Channels 28 Input_Channels 29 Input_Channels 30
+S21: /Layout/Layout/Banks Right 2 R 0 1 Input_Channels 31 Input_Channels 32 Input_Channels 33 Input_Channels 34 Input_Channels 35 Input_Channels 36 Input_Channels 37 Input_Channels 38 Input_Channels 39 Input_Channels 40
+S21: /Layout/Layout/Banks Left 3 L 0 2 Input_Channels 41 Input_Channels 42 Input_Channels 43 Input_Channels 44 Input_Channels 45 Input_Channels 46 Input_Channels 47 Input_Channels 48 0 0
+S21: /Layout/Layout/Banks Right 3 R 0 2 Aux_Outputs 1 Aux_Outputs 2 Aux_Outputs 3 Aux_Outputs 4 Aux_Outputs 5 Aux_Outputs 6 Aux_Outputs 7 Aux_Outputs 8 0 0
+S21: /Layout/Layout/Banks Left 4 L 0 3 Group_Outputs 9 Group_Outputs 10 Group_Outputs 11 Group_Outputs 12 Group_Outputs 13 Group_Outputs 14 Group_Outputs 15 Group_Outputs 16 0 Group_Outputs 17
+S21: /Layout/Layout/Banks Right 4 R 0 3 Matrix_Outputs 1 Matrix_Outputs 2 Matrix_Outputs 3 Matrix_Outputs 4 Matrix_Outputs 5 Matrix_Outputs 6 Matrix_Outputs 7 Matrix_Outputs 8 Solo_Outputs 1 Solo_Outputs 2
+S21: /Layout/Layout/Banks Left 5 L 0 4 Control_Groups 0 Control_Groups 1 Control_Groups 2 Control_Groups 3 Control_Groups 4 Control_Groups 5 Control_Groups 6 Control_Groups 7 Control_Groups 8 Control_Groups 9
+S21: /Layout/Layout/Banks Right 5 R 0 4 0 0 0 0 0 0 0 0 0
+
+iPad: /Meters/clear
+
+iPad: /Input_Channels/1/fader/?
+iPad: /Input_Channels/2/fader/?
+iPad: /Input_Channels/3/fader/?
+iPad: /Input_Channels/4/fader/?
+iPad: /Input_Channels/5/fader/?
+iPad: /Input_Channels/6/fader/?
+iPad: /Input_Channels/7/fader/?
+iPad: /Input_Channels/8/fader/?
+iPad: /Input_Channels/9/fader/?
+iPad: /Input_Channels/10/fader/?
+iPad: /Input_Channels/11/fader/?
+iPad: /Input_Channels/12/fader/?
+iPad: /Input_Channels/13/fader/?
+iPad: /Input_Channels/14/fader/?
+iPad: /Input_Channels/15/fader/?
+iPad: /Input_Channels/16/fader/?
+iPad: /Input_Channels/17/fader/?
+iPad: /Input_Channels/18/fader/?
+iPad: /Input_Channels/19/fader/?
+iPad: /Input_Channels/20/fader/?
+iPad: /Input_Channels/21/fader/?
+iPad: /Input_Channels/22/fader/?
+iPad: /Input_Channels/23/fader/?
+iPad: /Input_Channels/24/fader/?
+iPad: /Input_Channels/25/fader/?
+iPad: /Input_Channels/26/fader/?
+iPad: /Input_Channels/27/fader/?
+iPad: /Input_Channels/28/fader/?
+iPad: /Input_Channels/29/fader/?
+iPad: /Input_Channels/30/fader/?
+iPad: /Input_Channels/31/fader/?
+iPad: /Input_Channels/32/fader/?
+iPad: /Input_Channels/33/fader/?
+iPad: /Input_Channels/34/fader/?
+iPad: /Input_Channels/35/fader/?
+iPad: /Input_Channels/36/fader/?
+iPad: /Input_Channels/37/fader/?
+iPad: /Input_Channels/38/fader/?
+iPad: /Input_Channels/39/fader/?
+iPad: /Input_Channels/40/fader/?
+iPad: /Input_Channels/41/fader/?
+iPad: /Input_Channels/42/fader/?
+iPad: /Input_Channels/43/fader/?
+iPad: /Input_Channels/44/fader/?
+iPad: /Input_Channels/45/fader/?
+iPad: /Input_Channels/46/fader/?
+iPad: /Input_Channels/47/fader/?
+iPad: /Input_Channels/48/fader/?
+iPad: /Aux_Outputs/1/fader/?
+iPad: /Aux_Outputs/2/fader/?
+iPad: /Aux_Outputs/3/fader/?
+iPad: /Aux_Outputs/4/fader/?
+iPad: /Aux_Outputs/5/fader/?
+iPad: /Aux_Outputs/6/fader/?
+iPad: /Aux_Outputs/7/fader/?
+iPad: /Aux_Outputs/8/fader/?
+iPad: /Group_Outputs/9/fader/?
+iPad: /Group_Outputs/10/fader/?
+iPad: /Group_Outputs/11/fader/?
+iPad: /Group_Outputs/12/fader/?
+iPad: /Group_Outputs/13/fader/?
+iPad: /Group_Outputs/14/fader/?
+iPad: /Group_Outputs/15/fader/?
+iPad: /Group_Outputs/16/fader/?
+iPad: /Group_Outputs/17/fader/?
+iPad: /Matrix_Outputs/1/fader/?
+iPad: /Matrix_Outputs/2/fader/?
+iPad: /Matrix_Outputs/3/fader/?
+iPad: /Matrix_Outputs/4/fader/?
+iPad: /Matrix_Outputs/5/fader/?
+iPad: /Matrix_Outputs/6/fader/?
+iPad: /Matrix_Outputs/7/fader/?
+iPad: /Matrix_Outputs/8/fader/?
+iPad: /Control_Groups/0/fader/?
+iPad: /Control_Groups/1/fader/?
+iPad: /Control_Groups/2/fader/?
+iPad: /Control_Groups/3/fader/?
+iPad: /Control_Groups/4/fader/?
+iPad: /Control_Groups/5/fader/?
+iPad: /Control_Groups/6/fader/?
+iPad: /Control_Groups/8/fader/?
+iPad: /Control_Groups/7/fader/?
+iPad: /Control_Groups/9/fader/?
+
+S21: /Input_Channels/10/fader -150
+S21: /Input_Channels/8/fader -150
+S21: /Input_Channels/23/fader -150
+S21: /Input_Channels/15/fader -150
+S21: /Input_Channels/4/fader -150
+S21: /Input_Channels/11/fader -150
+S21: /Input_Channels/9/fader -150
+S21: /Input_Channels/24/fader -150
+S21: /Input_Channels/16/fader -150
+S21: /Input_Channels/5/fader -150
+S21: /Input_Channels/20/fader -150
+S21: /Input_Channels/25/fader -150
+S21: /Input_Channels/17/fader -150
+S21: /Input_Channels/1/fader -150
+S21: /Input_Channels/6/fader -150
+S21: /Input_Channels/21/fader -150
+S21: /Input_Channels/13/fader -150
+S21: /Input_Channels/26/fader -150
+S21: /Input_Channels/18/fader -150
+S21: /Input_Channels/2/fader -150
+S21: /Input_Channels/7/fader -150
+S21: /Input_Channels/22/fader -150
+S21: /Input_Channels/14/fader -150
+S21: /Input_Channels/19/fader -150
+S21: /Input_Channels/3/fader -150
+S21: /Aux_Outputs/4/fader -150
+S21: /Input_Channels/10/fader -150
+S21: /Matrix_Outputs/2/fader -150
+S21: /Input_Channels/8/fader -150
+S21: /Input_Channels/31/fader -150
+S21: /Input_Channels/23/fader -150
+S21: /Input_Channels/15/fader -150
+S21: /Matrix_Outputs/7/fader -150
+S21: /Input_Channels/44/fader -150
+S21: /Input_Channels/36/fader -150
+S21: /Control_Groups/0/fader -150
+S21: /Input_Channels/28/fader -150
+S21: /Control_Groups/5/fader -150
+S21: /Group_Outputs/14/fader -150
+S21: /Input_Channels/4/fader -150
+S21: /Aux_Outputs/5/fader -150
+S21: /Input_Channels/11/fader -150
+S21: /Matrix_Outputs/3/fader -150
+S21: /Input_Channels/40/fader -150
+S21: /Input_Channels/9/fader -150
+S21: /Input_Channels/32/fader -150
+S21: /Input_Channels/24/fader -150
+S21: /Input_Channels/16/fader -150
+S21: /Matrix_Outputs/8/fader -150
+S21: /Input_Channels/45/fader -150
+S21: /Input_Channels/37/fader -150
+S21: /Group_Outputs/9/fader -150
+S21: /Control_Groups/1/fader -150
+S21: /Input_Channels/29/fader -150
+S21: /Control_Groups/6/fader -150
+S21: /Group_Outputs/10/fader -150
+S21: /Aux_Outputs/1/fader -150
+S21: /Group_Outputs/15/fader -150
+S21: /Input_Channels/5/fader -150
+S21: /Aux_Outputs/6/fader -150
+S21: /Input_Channels/20/fader -150
+S21: /Input_Channels/12/fader -150
+S21: /Matrix_Outputs/4/fader -150
+S21: /Input_Channels/41/fader -150
+S21: /Input_Channels/33/fader -150
+S21: /Input_Channels/25/fader -150
+S21: /Input_Channels/17/fader -150
+S21: /Input_Channels/46/fader -150
+S21: /Input_Channels/38/fader -150
+S21: /Control_Groups/2/fader -150
+S21: /Control_Groups/7/fader -150
+S21: /Group_Outputs/11/fader -150
+S21: /Input_Channels/1/fader -150
+S21: /Aux_Outputs/2/fader -150
+S21: /Group_Outputs/16/fader -150
+S21: /Input_Channels/6/fader -150
+S21: /Aux_Outputs/7/fader -150
+S21: /Input_Channels/21/fader -150
+S21: /Input_Channels/13/fader -150 
+S21: /Matrix_Outputs/5/fader -150
+S21: /Input_Channels/42/fader -150
+S21: /Input_Channels/34/fader -150
+S21: /Input_Channels/26/fader -150
+S21: /Input_Channels/18/fader -150
+S21: /Input_Channels/47/fader -150
+S21: /Input_Channels/39/fader -150
+S21: /Control_Groups/3/fader -150
+S21: /Control_Groups/8/fader -150
+S21: /Group_Outputs/12/fader -150
+S21: /Input_Channels/2/fader -150
+S21: /Aux_Outputs/3/fader -150
+S21: /Group_Outputs/17/fader -150
+S21: /Matrix_Outputs/1/fader -150
+S21: /Input_Channels/7/fader -150
+S21: /Aux_Outputs/8/fader -150
+S21: /Input_Channels/30/fader -150
+S21: /Input_Channels/22/fader -150
+S21: /Input_Channels/14/fader -150
+S21: /Matrix_Outputs/6/fader -150
+S21: /Input_Channels/43/fader -150
+S21: /Input_Channels/35/fader -150
+S21: /Input_Channels/27/fader -150
+S21: /Input_Channels/19/fader -150
+S21: /Input_Channels/48/fader -150
+S21: /Control_Groups/4/fader -150
+S21: /Control_Groups/9/fader -150
+S21: /Group_Outputs/13/fader -150
+S21: /Input_Channels/3/fader -150
+
+iPad: /Input_Channels/1/Channel_Input/name/?
+iPad: /Input_Channels/2/Channel_Input/name/?
+iPad: /Input_Channels/3/Channel_Input/name/?
+iPad: /Input_Channels/4/Channel_Input/name/?
+iPad: /Input_Channels/5/Channel_Input/name/?
+iPad: /Input_Channels/6/Channel_Input/name/?
+iPad: /Input_Channels/7/Channel_Input/name/?
+iPad: /Input_Channels/8/Channel_Input/name/?
+iPad: /Input_Channels/9/Channel_Input/name/?
+iPad: /Input_Channels/10/Channel_Input/name/?
+iPad: /Input_Channels/1/Channel_Input/main_alt_in/?
+iPad: /Input_Channels/1/Panner/pan/?
+iPad: /Input_Channels/1/mute/?
+iPad: /Input_Channels/1/solo/?
+iPad: /Input_Channels/1/fader/?
+iPad: /Input_Channels/1/CGs_level/?
+iPad: /Input_Channels/1/Channel_Input/stereo_mode/?
+iPad: /Input_Channels/1/CGs_mute/?
+iPad: /Input_Channels/2/Channel_Input/main_alt_in/?
+iPad: /Input_Channels/2/Panner/pan/?
+iPad: /Input_Channels/2/mute/?
+iPad: /Input_Channels/2/solo/?
+iPad: /Input_Channels/2/fader/?
+iPad: /Input_Channels/2/Channel_Input/stereo_mode/?
+iPad: /Input_Channels/2/CGs_level/?
+iPad: /Input_Channels/2/CGs_mute/?
+iPad: /Input_Channels/3/Channel_Input/main_alt_in/?
+iPad: /Input_Channels/3/Panner/pan/?
+iPad: /Input_Channels/3/mute/?
+iPad: /Input_Channels/3/solo/?
+iPad: /Input_Channels/3/Channel_Input/stereo_mode/?
+iPad: /Input_Channels/3/fader/?
+iPad: /Input_Channels/3/CGs_level/?
+iPad: /Input_Channels/3/CGs_mute/?
+iPad: /Input_Channels/4/Channel_Input/main_alt_in/?
+iPad: /Input_Channels/4/Panner/pan/?
+iPad: /Input_Channels/4/mute/?
+iPad: /Input_Channels/4/solo/?
+iPad: /Input_Channels/4/fader/?
+iPad: /Input_Channels/4/Channel_Input/stereo_mode/?
+iPad: /Input_Channels/4/CGs_level/?
+iPad: /Input_Channels/4/CGs_mute/?
+iPad: /Input_Channels/5/Channel_Input/main_alt_in/?
+iPad: /Input_Channels/5/Panner/pan/?
+iPad: /Input_Channels/5/mute/?
+iPad: /Input_Channels/5/solo/?
+iPad: /Input_Channels/5/fader/?
+iPad: /Input_Channels/5/Channel_Input/stereo_mode/?
+iPad: /Input_Channels/5/CGs_level/?
+iPad: /Input_Channels/5/CGs_mute/?
+iPad: /Input_Channels/6/Channel_Input/main_alt_in/?
+iPad: /Input_Channels/6/Panner/pan/?
+iPad: /Input_Channels/6/mute/?
+iPad: /Input_Channels/6/Channel_Input/stereo_mode/?
+iPad: /Input_Channels/6/solo/?
+iPad: /Input_Channels/6/fader/?
+iPad: /Input_Channels/6/CGs_level/?
+iPad: /Input_Channels/6/CGs_mute/?
+iPad: /Input_Channels/7/Channel_Input/main_alt_in/?
+iPad: /Input_Channels/7/Panner/pan/?
+iPad: /Input_Channels/7/mute/?
+iPad: /Input_Channels/7/solo/?
+iPad: /Input_Channels/7/fader/?
+iPad: /Input_Channels/7/Channel_Input/stereo_mode/?
+iPad: /Input_Channels/7/CGs_level/?
+iPad: /Input_Channels/7/CGs_mute/?
+iPad: /Input_Channels/8/Channel_Input/main_alt_in/?
+iPad: /Input_Channels/8/Panner/pan/?
+iPad: /Input_Channels/8/mute/?
+iPad: /Input_Channels/8/solo/?
+iPad: /Input_Channels/8/Channel_Input/stereo_mode/?
+iPad: /Input_Channels/8/fader/?
+iPad: /Input_Channels/8/CGs_level/?
+iPad: /Input_Channels/8/CGs_mute/?
+iPad: /Input_Channels/9/Channel_Input/main_alt_in/?
+iPad: /Input_Channels/9/Panner/pan/?
+iPad: /Input_Channels/9/mute/?
+iPad: /Input_Channels/9/solo/?
+iPad: /Input_Channels/9/fader/?
+iPad: /Input_Channels/9/Channel_Input/stereo_mode/?
+iPad: /Input_Channels/9/CGs_level/?
+iPad: /Input_Channels/9/CGs_mute/?
+iPad: /Input_Channels/10/Channel_Input/main_alt_in/?
+iPad: /Input_Channels/10/Panner/pan/?
+iPad: /Input_Channels/10/mute/?
+iPad: /Input_Channels/10/solo/?
+iPad: /Input_Channels/10/fader/?
+iPad: /Input_Channels/10/Channel_Input/stereo_mode/?
+iPad: /Input_Channels/10/CGs_level/?
+iPad: /Input_Channels/10/CGs_mute/?
+
+S21: /Input_Channels/6/Channel_Input/stereo_mode 1
+S21: /Input_Channels/3/Channel_Input/name Input 3
+S21: /Input_Channels/5/Panner/pan 0.5
+S21: /Input_Channels/10/fader -150
+S21: /Input_Channels/8/fader -150
+S21: /Input_Channels/6/Panner/pan 0.5
+S21: /Input_Channels/7/CGs_level 0
+S21: /Input_Channels/7/Channel_Input/main/alt_in 0
+S21: /Input_Channels/7/Panner/pan 0.5
+S21: /Input_Channels/2/Channel_Input/name Input 2
+S21: /Input_Channels/8/Panner/pan 0.5
+S21: /Input_Channels/2/Channel_Input/stereo_mode 1
+S21: /Input_Channels/10/Channel_Input/name Input 10
+S21: /Input_Channels/9/Panner/pan 0.5
+S21: /Input_Channels/2/CGs_level 0
+S21: /Input_Channels/3/Channel_Input/main/alt_in 0
+S21: /Input_Channels/1/Channel_Input/name Input 1
+S21: /Input_Channels/4/fader -150
+S21: /Input_Channels/9/CGs_level 0
+S21: /Input_Channels/7/Channel_Input/stereo_mode 1
+S21: /Input_Channels/9/fader -150
+S21: /Input_Channels/8/Channel_Input/main/alt_in 0
+S21: /Input_Channels/4/CGs_level 0
+S21: /Input_Channels/10/Channel_Input/main/alt_in 0
+S21: /Input_Channels/3/Channel_Input/stereo_mode 1
+S21: /Input_Channels/10/CGs_mute 0
+S21: /Input_Channels/4/Channel_Input/main/alt_in 0
+S21: /Input_Channels/5/fader -150
+S21: /Input_Channels/9/Channel_Input/name Input 9
+S21: /Input_Channels/8/Channel_Input/stereo_mode 1
+S21: /Input_Channels/6/CGs_level 0
+S21: /Input_Channels/1/mute 0
+S21: /Input_Channels/1/solo 0
+S21: /Input_Channels/2/mute 0
+S21: /Input_Channels/2/solo 0
+S21: /Input_Channels/3/mute 0
+S21: /Input_Channels/3/solo 0
+S21: /Input_Channels/10/Channel_Input/stereo_mode 1
+S21: /Input_Channels/4/mute 0
+S21: /Input_Channels/4/solo 0
+S21: /Input_Channels/9/CGs_mute 0
+S21: /Input_Channels/5/mute 0
+S21: /Input_Channels/5/solo 0
+S21: /Input_Channels/9/Channel_Input/main/alt_in 0
+S21: /Input_Channels/6/mute 0
+S21: /Input_Channels/6/solo 0
+S21: /Input_Channels/7/mute 0
+S21: /Input_Channels/7/solo 0
+S21: /Input_Channels/8/mute 0
+S21: /Input_Channels/8/solo 0
+S21: /Input_Channels/9/mute 0
+S21: /Input_Channels/9/solo 0
+S21: /Input_Channels/8/Channel_Input/name Input 8
+S21: /Input_Channels/8/CGs_mute 0
+S21: /Input_Channels/4/Channel_Input/stereo_mode 1
+S21: /Input_Channels/1/CGs_level 0
+S21: /Input_Channels/10/mute 0
+S21: /Input_Channels/10/solo 0
+S21: /Input_Channels/7/CGs_mute 0
+S21: /Input_Channels/1/fader -150
+S21: /Input_Channels/10/Panner/pan 0.5
+S21: /Input_Channels/5/Channel_Input/main/alt_in 0
+S21: /Input_Channels/6/fader -150 
+S21: /Input_Channels/6/CGs_mute 0
+S21: /Input_Channels/7/Channel_Input/name Input 7 
+S21: /Input_Channels/8/CGs_level 0
+S21: /Input_Channels/5/CGs_mute 0
+S21: /Input_Channels/9/Channel_Input/stereo_mode 1
+S21: /Input_Channels/1/Channel_Input/main/alt_in 0
+S21: /Input_Channels/4/CGs_mute 0
+S21: /Input_Channels/6/Channel_Input/name Input 6
+S21: /Input_Channels/3/CGs_level 0
+S21: /Input_Channels/3/CGs_mute 0
+S21: /Input_Channels/10/CGs_level 0
+S21: /Input_Channels/5/Channel_Input/stereo_mode 1
+S21: /Input_Channels/2/fader -150
+S21: /Input_Channels/2/CGs_mute 0
+S21: /Input_Channels/5/Channel_Input/name Input 5
+S21: /Input_Channels/7/fader -150
+S21: /Input_Channels/6/Channel_Input/main/alt_in 0
+S21: /Input_Channels/1/CGs_mute 0
+S21: /Input_Channels/1/Channel_Input/stereo_mode 1
+S21: /Input_Channels/5/CGs_level 0
+S21: /Input_Channels/1/Panner/pan 0.5
+S21: /Input_Channels/4/Channel_Input/name Input 4
+S21: /Input_Channels/2/Panner/pan 0.5
+S21: /Input_Channels/2/Channel_Input/main/alt_in 0
+S21: /Input_Channels/3/Panner/pan 0.5
+S21: /Input_Channels/4/Panner/pan 0.5
+S21: /Input_Channels/3/fader -150
+
+iPad: /Input_Channels/1/Channel_Input/post_meter 0 1
+iPad: /Input_Channels/2/Channel_Input/post_meter 1 1
+iPad: /Input_Channels/3/Channel_Input/post_meter 2 1
+iPad: /Input_Channels/4/Channel_Input/post_meter 3 1
+iPad: /Input_Channels/5/Channel_Input/post_meter 4 1
+iPad: /Input_Channels/6/Channel_Input/post_meter 5 1
+iPad: /Input_Channels/7/Channel_Input/post_meter 6 1
+iPad: /Input_Channels/8/Channel_Input/post_meter 7 1
+iPad: /Input_Channels/9/Channel_Input/post_meter 8 1
+iPad: /Input_Channels/10/Channel_Input/post_meter 10 1
+iPad: /Input_Channels/10/CGs_level/?
+iPad: /Input_Channels/8/CGs_level/?
+iPad: /Input_Channels/4/CGs_level/?
+iPad: /Input_Channels/9/CGs_level/?
+iPad: /Input_Channels/5/Cgs_level/?
+iPad: /Input_Channels/1/CGs_level/?
+iPad: /Input_Channels/6/CGs_level/?
+iPad: /Input_Channels/2/CGs_level/?
+iPad: /Input_Channels/7/CGs_level/?
+iPad: /Input_Channels/3/CGs_level/?
+
+S21: /Input_Channels/9/CGs_level 0
+S21: /Input_Channels/4/CGs_level 0
+S21: /Input_Channels/8/CGs_level 0
+S21: /Input_Channels/10/CGs_level 0
+S21: /Input_Channels/5/CGs_level 0
+S21: /Input_Channels/7/CGs_level 0
+S21: /Input_Channels/2/CGs_level 0
+S21: /Input_Channels/6/CGs_level 0
+S21: /Input_Channels/1/CGs_level 0
+S21: /Input_Channels/3/CGs_level 0

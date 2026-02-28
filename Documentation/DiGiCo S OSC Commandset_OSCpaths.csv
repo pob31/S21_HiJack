@@ -1,0 +1,57 @@
+Method	Value Type	Range	input	aux	grp	mtx	CG
+/channel/{channel}/name	String 		X	X	X	X	X
+/channel/{channel}/total/gain	float	-20. ~ +60.	X				
+/channel/{channel}/input/gain_tracking	Boolean	true/false	X				
+/channel/{channel}/input/trim	float	-40. ~ +40.	X	X	X	X	
+/channel/{channel}/input/balance	float	-1. ~ +1.	X				
+/channel/{channel}/input/width	float	-1. ~ +1.	X				
+/channel/{channel}/input/delay/enabled	Boolean	true/false	X	X	X	X	
+/channel/{channel}/input/delay/time	float	0. ~ 0.682	X	X	X	X	
+/channel/{channel}/input/digitube/enabled	Boolean	true/false	X	X	X	X	
+/channel/{channel}/input/digitube/drive	float	0.1 ~ 50.	X	X	X	X	
+/channel/{channel}/input/digitube/bias	INT 	0 ~ 6	X	X	X	X	
+/channel/{channel}/input/polarity	INT 	0/1/2/3	X	X	X	X	
+/channel/{channel}/eq/highpass/enabled	Boolean	true/false	X	X	X	X	
+/channel/{channel}/eq/highpass/frequency	float	20 ~ 20000	X	X	X	X	
+/channel/{channel}/eq/lowpass/enabled	Boolean	true/false	X	X	X	X	
+/channel/{channel}/eq/lowpass/frequency	float	20 ~ 20000	X	X	X	X	
+/channel/{channel}/eq/enabled	Boolean	true/false	X	X	X	X	
+/channel/{channel}/eq/{band}/frequency	float	20 ~ 20000	X	X	X	X	
+/channel/{channel}/eq/{band}/gain	float	-18. ~ +18.	X	X	X	X	
+/channel/{channel}/eq/{band}/q	float	0.1 ~ 20.	X	X	X	X	
+/channel/{channel}/eq/{band}/dyn/enabled	Boolean	true/false	X	X	X	X	
+/channel/{channel}/eq/{band}/dyn/threshold	float	-60. ~ 0.	X	X	X	X	
+/channel/{channel}/eq/{band}/dyn/ratio	float	1. ~ 10.	X	X	X	X	
+/channel/{channel}/eq/{band}/dyn/attack	float	0.0005 ~ 0.1	X	X	X	X	
+/channel/{channel}/eq/{band}/dyn/release	float	0.010 ~ 10.	X	X	X	X	
+/channel/{channel}/dyn1/mode	INT 	0/1	X	X	X	X	
+/channel/{channel}/dyn1/enabled	Boolean	true/false	X	X	X	X	
+/channel/{channel}/dyn1/{band}/threshold	float	-60. ~ 0.	X	X	X	X	
+/channel/{channel}/dyn1/{band}/knee	INT 	0/1/2	X	X	X	X	
+/channel/{channel}/dyn1/{band}/ratio	float	1. ~ 50.	X	X	X	X	
+/channel/{channel}/dyn1/{band}/attack	float	0.0005 ~ 0.1	X	X	X	X	
+/channel/{channel}/dyn1/{band}/release	float	0.005 ~ 5.	X	X	X	X	
+/channel/{channel}/dyn1/{band}/gain	float	0. ~ +40.	X	X	X	X	
+/channel/{channel}/dyn1/crossover_high	float	20 ~ 20000	X	X	X	X	
+/channel/{channel}/dyn1/crossover_low	float	20 ~ 20000	X	X	X	X	
+/channel/{channel}/dyn1/{band}/listen	Boolean	true/false	X	X	X	X	
+/channel/{channel}/dyn2/enabled	Boolean	true/false	X	X	X	X	
+/channel/{channel}/dyn2/mode	INT 	0/1/2	X	X	X	X	
+/channel/{channel}/dyn2/threshold	float	-60. ~ 0.	X	X	X	X	
+/channel/{channel}/dyn2/knee	INT	0/1/2	X	X	X	X	
+/channel/{channel}/dyn2/ratio	float	1. ~ 50.	X	X	X	X	
+/channel/{channel}/dyn2/range	float	-90. ~ 0.	X	X	X	X	
+/channel/{channel}/dyn2/attack	float	0.0005 ~ 0.1	X	X	X	X	
+/channel/{channel}/dyn2/hold	float	0.002 ~ 2.	X	X	X	X	
+/channel/{channel}/dyn2/release	float	0.005 ~ 5.	X	X	X	X	
+/channel/{channel}/dyn2/gain	float	0. ~ +40.	X	X	X	X	
+/channel/{channel}/dyn2/highpass	float	20 ~ 20000	X	X	X	X	
+/channel/{channel}/dyn2/lowpass	float	20 ~ 20000	X	X	X	X	
+/channel/{channel}/dyn2/listen	Boolean	true/false	X	X	X	X	
+/channel/{channel}/send/{send}/enabled	Boolean	true/false	X				
+/channel/{channel}/send/{send}/level	float	-150. ~ +10.	X				
+/channel/{channel}/send/{send}/pan	float	-1. ~ +1.	X				
+/channel/{channel}/pan	float	-1. ~ +1.	X				
+/channel/{channel}/mute	Boolean	true/false	X	X	X	X	X
+/channel/{channel}/solo	Boolean	true/false	X	X	X	X	X
+/channel/{channel}/fader	float	-150. ~ +10.	X	X	X	X	X
