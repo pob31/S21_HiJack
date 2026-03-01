@@ -22,9 +22,12 @@ use console::eq_palette_manager::EqPaletteManager;
 use console::ipad_connection;
 use console::macro_engine::MacroEngine;
 use console::macro_manager::MacroManager;
+use console::monitor_engine::MonitorEngine;
+use console::monitor_manager::MonitorManager;
 use console::snapshot_engine::SnapshotEngine;
 use model::operating_mode::OperatingMode;
 use model::snapshot::CueList;
+use osc::monitor_server::MonitorServer;
 use osc::trigger_listener::{TriggerEvent, TriggerListener};
 
 /// DiGiCo S21/S31 Snapshot Manager Daemon
@@ -67,6 +70,10 @@ struct Args {
     #[arg(long, default_value = "mode1")]
     mode: String,
 
+    /// Monitor server port (0 = disabled)
+    #[arg(long, default_value_t = 0)]
+    monitor_port: u16,
+
     /// Run in headless mode (no UI, daemon only)
     #[arg(long)]
     headless: bool,
@@ -98,10 +105,10 @@ fn main() {
     let mode = OperatingMode::from_cli(&args.mode).unwrap_or_default();
 
     info!(
-        "S21 HiJack starting — console {}:{}, local port {}, trigger port {}, mode={}, ipad_send={}, ipad_recv={}, ipad_ip={:?}, headless={}",
+        "S21 HiJack starting — console {}:{}, local port {}, trigger port {}, mode={}, ipad_send={}, ipad_recv={}, ipad_ip={:?}, monitor_port={}, headless={}",
         args.console_ip, args.console_port, args.local_port, args.trigger_port,
         mode, args.effective_ipad_send_port(), args.effective_ipad_receive_port(),
-        args.ipad_ip, args.headless
+        args.ipad_ip, args.monitor_port, args.headless
     );
 
     if args.headless {
@@ -125,8 +132,9 @@ async fn run_headless(args: Args) {
         .parse()
         .expect("Invalid local address");
 
-    // Set up macro system
+    // Set up macro and monitor systems
     let macro_manager = Arc::new(RwLock::new(MacroManager::new()));
+    let monitor_manager = Arc::new(RwLock::new(MonitorManager::new()));
 
     // Connect to console
     let manager = match ConnectionManager::connect(local_addr, console_addr, macro_manager.clone()).await {
@@ -152,6 +160,7 @@ async fn run_headless(args: Args) {
     // iPad protocol connection (Mode 2 or 3)
     let send_port = args.effective_ipad_send_port();
     let recv_port = args.effective_ipad_receive_port();
+    let mut ipad_sender_for_monitor = None;
 
     if mode.uses_ipad_protocol() && send_port > 0 {
         let console_ipad_addr: SocketAddr = format!("{}:{}", args.console_ip, send_port)
@@ -171,6 +180,7 @@ async fn run_headless(args: Args) {
                             name = %result.config.console_name,
                             "Mode 2: iPad protocol connected"
                         );
+                        ipad_sender_for_monitor = Some(ipad_sender.clone());
                         snapshot_engine.set_ipad_sender(Some(ipad_sender));
                     }
                     Err(e) => {
@@ -190,6 +200,7 @@ async fn run_headless(args: Args) {
                             ipad_ip = ?args.ipad_ip,
                             "Mode 3: iPad proxy started"
                         );
+                        ipad_sender_for_monitor = Some(ipad_sender.clone());
                         snapshot_engine.set_ipad_sender(Some(ipad_sender));
                     }
                     Err(e) => {
@@ -198,6 +209,44 @@ async fn run_headless(args: Args) {
                 }
             }
             OperatingMode::Mode1 => {}
+        }
+    }
+
+    // Start monitor server (if enabled)
+    if args.monitor_port > 0 {
+        let monitor_addr: SocketAddr = format!("0.0.0.0:{}", args.monitor_port)
+            .parse()
+            .expect("Invalid monitor address");
+        match MonitorServer::start(monitor_addr).await {
+            Ok((monitor_sender, mut monitor_rx)) => {
+                info!(port = args.monitor_port, "Monitor server started");
+                let mut monitor_engine = MonitorEngine::new(manager.state(), manager.sender());
+                monitor_engine.set_ipad_sender(ipad_sender_for_monitor);
+                let mon_mgr = monitor_manager.clone();
+                tokio::spawn(async move {
+                    let mut last_send_state = std::collections::HashMap::new();
+                    let mut poll_interval = tokio::time::interval(std::time::Duration::from_millis(500));
+                    loop {
+                        tokio::select! {
+                            Some(cmd) = monitor_rx.recv() => {
+                                let mut mgr = mon_mgr.write().await;
+                                monitor_engine.handle_command(cmd, &mut mgr, &monitor_sender, true).await;
+                            }
+                            _ = poll_interval.tick() => {
+                                let mgr = mon_mgr.read().await;
+                                monitor_engine.poll_and_push_state_changes(
+                                    &mut last_send_state,
+                                    &mgr,
+                                    &monitor_sender,
+                                ).await;
+                            }
+                        }
+                    }
+                });
+            }
+            Err(e) => {
+                error!("Failed to start monitor server: {e}");
+            }
         }
     }
 
@@ -336,6 +385,13 @@ async fn run_headless(args: Args) {
         "Final EQ palette system state"
     );
 
+    let mon_mgr = monitor_manager.read().await;
+    info!(
+        clients = mon_mgr.clients.len(),
+        connected = mon_mgr.connected_count(),
+        "Final monitor system state"
+    );
+
     info!("Daemon stopped.");
 }
 
@@ -354,6 +410,7 @@ fn run_ui(args: Args) {
         args.ipad_ip.as_deref(),
         args.effective_ipad_send_port(),
         args.effective_ipad_receive_port(),
+        args.monitor_port,
         runtime.handle().clone(),
     );
 

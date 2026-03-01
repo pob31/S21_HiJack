@@ -2,6 +2,7 @@ pub mod app;
 pub mod eq_palettes_ui;
 pub mod live_tab;
 pub mod macros_tab;
+pub mod monitor_tab;
 pub mod scope_editor;
 pub mod setup_tab;
 pub mod snapshots_tab;
@@ -14,6 +15,7 @@ pub enum Tab {
     Snapshots,
     Macros,
     Live,
+    Monitor,
 }
 
 /// Events sent from async tasks back to the UI thread.
@@ -58,4 +60,12 @@ pub enum UiEvent {
         progress: f32,
         done: bool,
     },
+    MonitorClientConnected {
+        name: String,
+    },
+    MonitorClientDisconnected {
+        name: String,
+    },
+    MonitorServerStarted,
+    MonitorServerFailed(String),
 }

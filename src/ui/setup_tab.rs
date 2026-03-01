@@ -12,11 +12,14 @@ use crate::console::eq_palette_manager::EqPaletteManager;
 use crate::console::ipad_connection;
 use crate::console::macro_engine::MacroEngine;
 use crate::console::macro_manager::MacroManager;
+use crate::console::monitor_engine::MonitorEngine;
+use crate::console::monitor_manager::MonitorManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::operating_mode::OperatingMode;
 use crate::model::snapshot::CueList;
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
+use crate::osc::monitor_server::MonitorServer;
 use crate::osc::trigger_listener::TriggerListener;
 use crate::persistence::show_file::ShowFile;
 use super::UiEvent;
@@ -34,6 +37,7 @@ pub struct SetupTabState {
     pub ipad_send_port: String,
     pub ipad_receive_port: String,
     pub ipad_connected: bool,
+    pub monitor_port: String,
 }
 
 impl SetupTabState {
@@ -46,6 +50,7 @@ impl SetupTabState {
         ipad_ip: Option<&str>,
         ipad_send_port: u16,
         ipad_receive_port: u16,
+        monitor_port: u16,
     ) -> Self {
         Self {
             console_ip: console_ip.to_string(),
@@ -67,6 +72,11 @@ impl SetupTabState {
                 "8001".to_string()
             },
             ipad_connected: false,
+            monitor_port: if monitor_port > 0 {
+                monitor_port.to_string()
+            } else {
+                String::new()
+            },
         }
     }
 }
@@ -78,6 +88,7 @@ pub fn draw_setup_tab(
     state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
+    monitor_manager: &Arc<RwLock<MonitorManager>>,
     eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
     sender: &mut Option<OscSender>,
@@ -117,8 +128,9 @@ pub fn draw_setup_tab(
         if !is_connected {
             if ui.button("Connect").clicked() {
                 start_connection(
-                    setup, state, cue_manager, macro_manager, eq_palette_manager,
-                    snapshot_engine, sender, connected, runtime, ui_tx, egui_ctx,
+                    setup, state, cue_manager, macro_manager, monitor_manager,
+                    eq_palette_manager, snapshot_engine, sender, connected,
+                    runtime, ui_tx, egui_ctx,
                 );
             }
         } else {
@@ -217,6 +229,22 @@ pub fn draw_setup_tab(
         });
     }
 
+    // Monitor server port
+    ui.add_space(4.0);
+    egui::Grid::new("monitor_fields")
+        .num_columns(2)
+        .spacing([10.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Monitor Port:");
+            ui.add_enabled(
+                !is_connected,
+                egui::TextEdit::singleline(&mut setup.monitor_port)
+                    .desired_width(80.0)
+                    .hint_text("disabled"),
+            );
+            ui.end_row();
+        });
+
     ui.add_space(8.0);
     ui.separator();
 
@@ -273,10 +301,10 @@ pub fn draw_setup_tab(
     ui.heading("Show File");
     ui.horizontal(|ui| {
         if ui.button("Load Show").clicked() {
-            load_show_file(setup, cue_manager, macro_manager, eq_palette_manager, runtime, ui_tx);
+            load_show_file(setup, cue_manager, macro_manager, monitor_manager, eq_palette_manager, runtime, ui_tx);
         }
         if ui.button("Save Show").clicked() {
-            save_show_file(setup, state, cue_manager, macro_manager, eq_palette_manager, runtime, ui_tx);
+            save_show_file(setup, state, cue_manager, macro_manager, monitor_manager, eq_palette_manager, runtime, ui_tx);
         }
         if ui.button("New Show").clicked() {
             let cue_mgr = cue_manager.clone();
@@ -309,6 +337,7 @@ fn start_connection(
     state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
+    monitor_manager: &Arc<RwLock<MonitorManager>>,
     eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     _snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
     _sender: &mut Option<OscSender>,
@@ -364,6 +393,8 @@ fn start_connection(
         0
     };
 
+    let monitor_port: u16 = setup.monitor_port.parse().unwrap_or(0);
+
     let console_addr_str = format!("{}:{}", setup.console_ip, console_port);
     let console_addr: SocketAddr = match console_addr_str.parse() {
         Ok(a) => a,
@@ -384,6 +415,7 @@ fn start_connection(
     let st = state.clone();
     let cue_mgr = cue_manager.clone();
     let macro_mgr = macro_manager.clone();
+    let mon_mgr = monitor_manager.clone();
     let eq_mgr = eq_palette_manager.clone();
     let conn_flag = connected.clone();
     let tx = ui_tx.clone();
@@ -533,6 +565,50 @@ fn start_connection(
                     }
                 }
 
+                // Start monitor server (if port configured)
+                if monitor_port > 0 {
+                    let monitor_addr: SocketAddr = format!("0.0.0.0:{}", monitor_port)
+                        .parse()
+                        .expect("Invalid monitor address");
+                    match MonitorServer::start(monitor_addr).await {
+                        Ok((monitor_sender, mut monitor_rx)) => {
+                            info!(port = monitor_port, "Monitor server started via UI");
+                            let monitor_engine = MonitorEngine::new(st.clone(), manager.sender());
+                            let mon_mgr_loop = mon_mgr.clone();
+                            let tx_monitor = tx.clone();
+                            let _ = tx_monitor.send(UiEvent::MonitorServerStarted);
+                            tokio::spawn(async move {
+                                let mut last_send_state = std::collections::HashMap::new();
+                                let mut poll_interval = tokio::time::interval(
+                                    std::time::Duration::from_millis(500),
+                                );
+                                loop {
+                                    tokio::select! {
+                                        Some(cmd) = monitor_rx.recv() => {
+                                            let mut mgr = mon_mgr_loop.write().await;
+                                            monitor_engine.handle_command(
+                                                cmd, &mut mgr, &monitor_sender, true,
+                                            ).await;
+                                        }
+                                        _ = poll_interval.tick() => {
+                                            let mgr = mon_mgr_loop.read().await;
+                                            monitor_engine.poll_and_push_state_changes(
+                                                &mut last_send_state,
+                                                &mgr,
+                                                &monitor_sender,
+                                            ).await;
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            error!("Failed to start monitor server: {e}");
+                            let _ = tx.send(UiEvent::MonitorServerFailed(e.to_string()));
+                        }
+                    }
+                }
+
                 let _ = tx.send(UiEvent::ConnectionEstablished);
                 if let Some(ctx) = ctx.get() {
                     ctx.request_repaint();
@@ -553,6 +629,7 @@ fn load_show_file(
     setup: &mut SetupTabState,
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
+    monitor_manager: &Arc<RwLock<MonitorManager>>,
     eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -565,6 +642,7 @@ fn load_show_file(
     let path = std::path::PathBuf::from(&setup.show_file_path);
     let cue_mgr = cue_manager.clone();
     let macro_mgr = macro_manager.clone();
+    let mon_mgr = monitor_manager.clone();
     let eq_mgr = eq_palette_manager.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
@@ -599,6 +677,14 @@ fn load_show_file(
                 for palette in show.eq_palettes {
                     pmgr.palettes.insert(palette.id, palette);
                 }
+                drop(pmgr);
+
+                // Restore monitor clients
+                let mut monmgr = mon_mgr.write().await;
+                monmgr.clients.clear();
+                for client in show.monitor_clients {
+                    monmgr.clients.insert(client.id, client);
+                }
 
                 info!("Show file loaded: {path_str}");
                 let _ = tx.send(UiEvent::ShowFileLoaded(path_str));
@@ -615,6 +701,7 @@ fn save_show_file(
     state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
+    monitor_manager: &Arc<RwLock<MonitorManager>>,
     eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -628,6 +715,7 @@ fn save_show_file(
     let st = state.clone();
     let cue_mgr = cue_manager.clone();
     let macro_mgr = macro_manager.clone();
+    let mon_mgr = monitor_manager.clone();
     let eq_mgr = eq_palette_manager.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
@@ -636,10 +724,11 @@ fn save_show_file(
         let state_guard = st.read().await;
         let mgr = cue_mgr.read().await;
         let mmgr = macro_mgr.read().await;
+        let monmgr = mon_mgr.read().await;
         let pmgr = eq_mgr.read().await;
 
         let show = ShowFile {
-            version: 3,
+            version: 4,
             console_config: state_guard.config.clone(),
             scope_templates: mgr.scope_templates.values().cloned().collect(),
             snapshots: mgr.snapshots.values().cloned().collect(),
@@ -647,11 +736,13 @@ fn save_show_file(
             macros: mmgr.macros.values().cloned().collect(),
             macro_quick_trigger_ids: mmgr.quick_trigger_ids.clone(),
             eq_palettes: pmgr.palettes.values().cloned().collect(),
+            monitor_clients: monmgr.clients.values().cloned().collect(),
         };
 
         drop(state_guard);
         drop(mgr);
         drop(mmgr);
+        drop(monmgr);
         drop(pmgr);
 
         match show.save(&path).await {

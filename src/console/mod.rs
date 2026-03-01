@@ -7,4 +7,6 @@ pub mod ipad_connection;
 pub mod ipad_handshake;
 pub mod macro_engine;
 pub mod macro_manager;
+pub mod monitor_engine;
+pub mod monitor_manager;
 pub mod snapshot_engine;

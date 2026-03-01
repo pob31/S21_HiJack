@@ -914,6 +914,22 @@ pub enum ParameterValue {
 }
 
 impl ParameterValue {
+    /// Extract the float value, if this is a Float variant.
+    pub fn as_float(&self) -> Option<f32> {
+        match self {
+            ParameterValue::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    /// Extract the bool value, if this is a Bool variant.
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            ParameterValue::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
     /// Linearly interpolate between self and target at position t (0.0..=1.0).
     /// Returns None if types don't match or interpolation is not meaningful.
     pub fn lerp(&self, target: &ParameterValue, t: f32) -> Option<ParameterValue> {

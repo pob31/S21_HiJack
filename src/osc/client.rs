@@ -71,6 +71,14 @@ pub struct OscSender {
 }
 
 impl OscSender {
+    /// Create a sender from an existing socket and target address.
+    pub fn new(socket: std::sync::Arc<UdpSocket>, console_addr: SocketAddr) -> Self {
+        Self {
+            socket,
+            console_addr,
+        }
+    }
+
     /// Send an OSC message to the console.
     pub async fn send(&self, path: &str, args: Vec<OscType>) -> std::io::Result<()> {
         let msg = OscMessage {

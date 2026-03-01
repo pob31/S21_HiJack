@@ -8,6 +8,7 @@ use crate::console::cue_manager::CueManager;
 use crate::console::eq_palette_manager::EqPaletteManager;
 use crate::console::macro_engine::MacroEngine;
 use crate::console::macro_manager::MacroManager;
+use crate::console::monitor_manager::MonitorManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::config::ConsoleConfig;
 use crate::model::snapshot::CueList;
@@ -20,6 +21,7 @@ use super::{Tab, UiEvent};
 use super::eq_palettes_ui::EqPalettesUiState;
 use super::live_tab::LiveTabState;
 use super::macros_tab::MacrosTabState;
+use super::monitor_tab::MonitorTabState;
 use super::setup_tab::SetupTabState;
 use super::snapshots_tab::SnapshotsTabState;
 
@@ -29,6 +31,7 @@ pub struct HiJackApp {
     pub state: Arc<RwLock<ConsoleState>>,
     pub cue_manager: Arc<RwLock<CueManager>>,
     pub macro_manager: Arc<RwLock<MacroManager>>,
+    pub monitor_manager: Arc<RwLock<MonitorManager>>,
     pub eq_palette_manager: Arc<RwLock<EqPaletteManager>>,
     pub snapshot_engine: Option<Arc<SnapshotEngine>>,
     pub macro_engine: Option<Arc<MacroEngine>>,
@@ -51,6 +54,7 @@ pub struct HiJackApp {
     pub macros: MacrosTabState,
     pub live: LiveTabState,
     pub eq_palettes_ui: EqPalettesUiState,
+    pub monitor: MonitorTabState,
 }
 
 impl HiJackApp {
@@ -63,6 +67,7 @@ impl HiJackApp {
         ipad_ip: Option<&str>,
         ipad_send_port: u16,
         ipad_receive_port: u16,
+        monitor_port: u16,
         runtime: tokio::runtime::Handle,
     ) -> Self {
         let (ui_tx, ui_rx) = std::sync::mpsc::channel();
@@ -71,6 +76,7 @@ impl HiJackApp {
             state: Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default()))),
             cue_manager: Arc::new(RwLock::new(CueManager::new(CueList::default()))),
             macro_manager: Arc::new(RwLock::new(MacroManager::new())),
+            monitor_manager: Arc::new(RwLock::new(MonitorManager::new())),
             eq_palette_manager: Arc::new(RwLock::new(EqPaletteManager::new())),
             snapshot_engine: None,
             macro_engine: None,
@@ -88,11 +94,13 @@ impl HiJackApp {
             setup: SetupTabState::new(
                 console_ip, console_port, local_port, trigger_port,
                 operating_mode, ipad_ip, ipad_send_port, ipad_receive_port,
+                monitor_port,
             ),
             snapshots: SnapshotsTabState::default(),
             macros: MacrosTabState::default(),
             live: LiveTabState::default(),
             eq_palettes_ui: EqPalettesUiState::default(),
+            monitor: MonitorTabState::default(),
         }
     }
 
@@ -170,6 +178,20 @@ impl HiJackApp {
                         self.live.fade_progress = Some((cue_number, progress));
                     }
                 }
+                UiEvent::MonitorClientConnected { name } => {
+                    self.monitor.status_message = Some(format!("Client '{name}' connected"));
+                }
+                UiEvent::MonitorClientDisconnected { name } => {
+                    self.monitor.status_message = Some(format!("Client '{name}' disconnected"));
+                }
+                UiEvent::MonitorServerStarted => {
+                    self.monitor.monitor_server_running = true;
+                    self.setup.status_message = Some("Monitor server started".into());
+                }
+                UiEvent::MonitorServerFailed(msg) => {
+                    self.monitor.monitor_server_running = false;
+                    self.setup.status_message = Some(format!("Monitor server failed: {msg}"));
+                }
             }
         }
     }
@@ -193,6 +215,7 @@ impl eframe::App for HiJackApp {
                 ui.selectable_value(&mut self.active_tab, Tab::Snapshots, "Snapshots");
                 ui.selectable_value(&mut self.active_tab, Tab::Macros, "Macros");
                 ui.selectable_value(&mut self.active_tab, Tab::Live, "Live");
+                ui.selectable_value(&mut self.active_tab, Tab::Monitor, "Monitor");
             });
         });
 
@@ -206,6 +229,7 @@ impl eframe::App for HiJackApp {
                         &self.state,
                         &self.cue_manager,
                         &self.macro_manager,
+                        &self.monitor_manager,
                         &self.eq_palette_manager,
                         &mut self.snapshot_engine,
                         &mut self.sender,
@@ -251,6 +275,15 @@ impl eframe::App for HiJackApp {
                         &self.connected,
                         &self.runtime,
                         &self.ui_tx,
+                    );
+                }
+                Tab::Monitor => {
+                    super::monitor_tab::draw_monitor_tab(
+                        ui,
+                        &mut self.monitor,
+                        &self.monitor_manager,
+                        &self.connected,
+                        &self.runtime,
                     );
                 }
             }
