@@ -47,9 +47,21 @@ struct Args {
     #[arg(long, default_value_t = 53001)]
     trigger_port: u16,
 
-    /// Console iPad remote port (for Mode 2/3)
+    /// Console iPad protocol port (send target). Overrides --ipad-port.
+    #[arg(long)]
+    ipad_send_port: Option<u16>,
+
+    /// Local iPad receive port (listen on). Overrides --ipad-port.
+    #[arg(long)]
+    ipad_receive_port: Option<u16>,
+
+    /// Legacy: single iPad port (used for both send/receive if split args not set)
     #[arg(long, default_value_t = 0)]
     ipad_port: u16,
+
+    /// iPad device IP address (for Mode 3 proxy; optional for Mode 2)
+    #[arg(long)]
+    ipad_ip: Option<String>,
 
     /// Operating mode: mode1, mode2, mode3
     #[arg(long, default_value = "mode1")]
@@ -58,6 +70,18 @@ struct Args {
     /// Run in headless mode (no UI, daemon only)
     #[arg(long)]
     headless: bool,
+}
+
+impl Args {
+    /// Resolve effective iPad send port (console's iPad listening port).
+    fn effective_ipad_send_port(&self) -> u16 {
+        self.ipad_send_port.unwrap_or(self.ipad_port)
+    }
+
+    /// Resolve effective iPad receive port (our local listen port).
+    fn effective_ipad_receive_port(&self) -> u16 {
+        self.ipad_receive_port.unwrap_or(self.ipad_port)
+    }
 }
 
 fn main() {
@@ -74,8 +98,10 @@ fn main() {
     let mode = OperatingMode::from_cli(&args.mode).unwrap_or_default();
 
     info!(
-        "S21 HiJack starting — console {}:{}, local port {}, trigger port {}, mode={}, ipad_port={}, headless={}",
-        args.console_ip, args.console_port, args.local_port, args.trigger_port, mode, args.ipad_port, args.headless
+        "S21 HiJack starting — console {}:{}, local port {}, trigger port {}, mode={}, ipad_send={}, ipad_recv={}, ipad_ip={:?}, headless={}",
+        args.console_ip, args.console_port, args.local_port, args.trigger_port,
+        mode, args.effective_ipad_send_port(), args.effective_ipad_receive_port(),
+        args.ipad_ip, args.headless
     );
 
     if args.headless {
@@ -124,15 +150,22 @@ async fn run_headless(args: Args) {
     let macro_engine = Arc::new(MacroEngine::new(manager.state(), manager.sender()));
 
     // iPad protocol connection (Mode 2 or 3)
-    if mode.uses_ipad_protocol() && args.ipad_port > 0 {
-        let ipad_addr: SocketAddr = format!("{}:{}", args.console_ip, args.ipad_port)
+    let send_port = args.effective_ipad_send_port();
+    let recv_port = args.effective_ipad_receive_port();
+
+    if mode.uses_ipad_protocol() && send_port > 0 {
+        let console_ipad_addr: SocketAddr = format!("{}:{}", args.console_ip, send_port)
             .parse()
-            .expect("Invalid iPad address");
+            .expect("Invalid console iPad address");
 
         match mode {
             OperatingMode::Mode2 => {
-                let ipad_local: SocketAddr = "0.0.0.0:0".parse().unwrap();
-                match ipad_connection::connect_mode2(ipad_addr, ipad_local, manager.state()).await {
+                let ipad_local: SocketAddr = if recv_port > 0 {
+                    format!("0.0.0.0:{}", recv_port).parse().unwrap()
+                } else {
+                    "0.0.0.0:0".parse().unwrap()
+                };
+                match ipad_connection::connect_mode2(console_ipad_addr, ipad_local, manager.state()).await {
                     Ok((ipad_sender, result, _handle)) => {
                         info!(
                             name = %result.config.console_name,
@@ -146,14 +179,15 @@ async fn run_headless(args: Args) {
                 }
             }
             OperatingMode::Mode3 => {
-                let listen_addr: SocketAddr = format!("0.0.0.0:{}", args.ipad_port)
+                let listen_addr: SocketAddr = format!("0.0.0.0:{}", recv_port)
                     .parse()
-                    .expect("Invalid iPad listen address");
+                    .expect("Invalid iPad listen address (--ipad-receive-port required for Mode 3)");
                 let outbound_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
-                match ipad_connection::connect_mode3(ipad_addr, listen_addr, outbound_addr, manager.state()).await {
+                match ipad_connection::connect_mode3(console_ipad_addr, listen_addr, outbound_addr, manager.state()).await {
                     Ok((ipad_sender, _forwarder, result, _handle)) => {
                         info!(
                             name = %result.config.console_name,
+                            ipad_ip = ?args.ipad_ip,
                             "Mode 3: iPad proxy started"
                         );
                         snapshot_engine.set_ipad_sender(Some(ipad_sender));
@@ -309,11 +343,17 @@ async fn run_headless(args: Args) {
 fn run_ui(args: Args) {
     let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
 
+    let mode = OperatingMode::from_cli(&args.mode).unwrap_or_default();
+
     let app = ui::app::HiJackApp::new(
         &args.console_ip,
         args.console_port,
         args.local_port,
         args.trigger_port,
+        mode,
+        args.ipad_ip.as_deref(),
+        args.effective_ipad_send_port(),
+        args.effective_ipad_receive_port(),
         runtime.handle().clone(),
     );
 

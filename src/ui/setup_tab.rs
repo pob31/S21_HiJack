@@ -9,6 +9,7 @@ use tracing::{info, error};
 use crate::console::connection::ConnectionManager;
 use crate::console::cue_manager::CueManager;
 use crate::console::eq_palette_manager::EqPaletteManager;
+use crate::console::ipad_connection;
 use crate::console::macro_engine::MacroEngine;
 use crate::console::macro_manager::MacroManager;
 use crate::console::snapshot_engine::SnapshotEngine;
@@ -29,12 +30,23 @@ pub struct SetupTabState {
     pub show_file_path: String,
     pub status_message: Option<String>,
     pub operating_mode: OperatingMode,
-    pub ipad_port: String,
+    pub ipad_ip: String,
+    pub ipad_send_port: String,
+    pub ipad_receive_port: String,
     pub ipad_connected: bool,
 }
 
 impl SetupTabState {
-    pub fn new(console_ip: &str, console_port: u16, local_port: u16, trigger_port: u16) -> Self {
+    pub fn new(
+        console_ip: &str,
+        console_port: u16,
+        local_port: u16,
+        trigger_port: u16,
+        operating_mode: OperatingMode,
+        ipad_ip: Option<&str>,
+        ipad_send_port: u16,
+        ipad_receive_port: u16,
+    ) -> Self {
         Self {
             console_ip: console_ip.to_string(),
             console_port: console_port.to_string(),
@@ -42,8 +54,18 @@ impl SetupTabState {
             trigger_port: trigger_port.to_string(),
             show_file_path: String::new(),
             status_message: None,
-            operating_mode: OperatingMode::Mode1,
-            ipad_port: "8001".to_string(),
+            operating_mode,
+            ipad_ip: ipad_ip.unwrap_or("").to_string(),
+            ipad_send_port: if ipad_send_port > 0 {
+                ipad_send_port.to_string()
+            } else {
+                "8001".to_string()
+            },
+            ipad_receive_port: if ipad_receive_port > 0 {
+                ipad_receive_port.to_string()
+            } else {
+                "8001".to_string()
+            },
             ipad_connected: false,
         }
     }
@@ -143,16 +165,43 @@ pub fn draw_setup_tab(
             });
     });
 
-    // iPad protocol port (visible when mode 2 or 3)
+    // iPad protocol settings (visible when mode 2 or 3)
     if setup.operating_mode.uses_ipad_protocol() {
-        ui.horizontal(|ui| {
-            ui.label("iPad Remote Port:");
-            ui.add_enabled(
-                !is_connected,
-                egui::TextEdit::singleline(&mut setup.ipad_port).desired_width(80.0),
-            );
+        ui.add_space(4.0);
 
-            // iPad connection status
+        egui::Grid::new("ipad_fields")
+            .num_columns(2)
+            .spacing([10.0, 6.0])
+            .show(ui, |ui| {
+                ui.label("Console iPad Port (send to):");
+                ui.add_enabled(
+                    !is_connected,
+                    egui::TextEdit::singleline(&mut setup.ipad_send_port).desired_width(80.0),
+                );
+                ui.end_row();
+
+                ui.label("Local Receive Port (listen on):");
+                ui.add_enabled(
+                    !is_connected,
+                    egui::TextEdit::singleline(&mut setup.ipad_receive_port).desired_width(80.0),
+                );
+                ui.end_row();
+
+                if setup.operating_mode == OperatingMode::Mode3 {
+                    ui.label("iPad IP:");
+                    ui.add_enabled(
+                        !is_connected,
+                        egui::TextEdit::singleline(&mut setup.ipad_ip)
+                            .desired_width(200.0)
+                            .hint_text("auto-detected from first packet"),
+                    );
+                    ui.end_row();
+                }
+            });
+
+        // iPad connection status
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
             let (color, text) = if setup.ipad_connected {
                 (super::theme::COLOR_CONNECTED, "iPad Connected")
             } else {
@@ -290,6 +339,31 @@ fn start_connection(
         }
     };
 
+    // Parse iPad fields
+    let operating_mode = setup.operating_mode;
+    let ipad_send_port: u16 = if operating_mode.uses_ipad_protocol() {
+        match setup.ipad_send_port.parse() {
+            Ok(p) if p > 0 => p,
+            _ => {
+                setup.status_message = Some("Invalid iPad send port".into());
+                return;
+            }
+        }
+    } else {
+        0
+    };
+    let ipad_receive_port: u16 = if operating_mode.uses_ipad_protocol() {
+        match setup.ipad_receive_port.parse() {
+            Ok(p) => p,
+            Err(_) => {
+                setup.status_message = Some("Invalid iPad receive port".into());
+                return;
+            }
+        }
+    } else {
+        0
+    };
+
     let console_addr_str = format!("{}:{}", setup.console_ip, console_port);
     let console_addr: SocketAddr = match console_addr_str.parse() {
         Ok(a) => a,
@@ -314,6 +388,7 @@ fn start_connection(
     let conn_flag = connected.clone();
     let tx = ui_tx.clone();
     let ctx = egui_ctx.clone();
+    let console_ip = setup.console_ip.clone();
 
     runtime.spawn(async move {
         match ConnectionManager::connect_with_state(local_addr, console_addr, st.clone(), macro_mgr).await {
@@ -321,10 +396,66 @@ fn start_connection(
                 info!("Connected to console via UI");
                 conn_flag.store(true, Ordering::Relaxed);
 
+                // Create SnapshotEngine (mut so we can set iPad sender before wrapping in Arc)
+                let mut engine = SnapshotEngine::new(st.clone(), manager.sender());
+
+                // iPad connection (Mode 2 or 3)
+                if operating_mode.uses_ipad_protocol() && ipad_send_port > 0 {
+                    let console_ipad_addr: SocketAddr = format!("{}:{}", console_ip, ipad_send_port)
+                        .parse()
+                        .expect("Invalid console iPad address");
+
+                    match operating_mode {
+                        OperatingMode::Mode2 => {
+                            let ipad_local: SocketAddr = if ipad_receive_port > 0 {
+                                format!("0.0.0.0:{}", ipad_receive_port).parse().unwrap()
+                            } else {
+                                "0.0.0.0:0".parse().unwrap()
+                            };
+                            match ipad_connection::connect_mode2(console_ipad_addr, ipad_local, st.clone()).await {
+                                Ok((ipad_sender, result, _handle)) => {
+                                    info!(
+                                        name = %result.config.console_name,
+                                        "UI Mode 2: iPad protocol connected"
+                                    );
+                                    engine.set_ipad_sender(Some(ipad_sender));
+                                    let _ = tx.send(UiEvent::IpadConnected);
+                                }
+                                Err(e) => {
+                                    error!("UI Mode 2: iPad connection failed: {e}");
+                                    let _ = tx.send(UiEvent::IpadConnectionFailed(e.to_string()));
+                                }
+                            }
+                        }
+                        OperatingMode::Mode3 => {
+                            let listen_addr: SocketAddr = format!("0.0.0.0:{}", ipad_receive_port)
+                                .parse()
+                                .expect("Invalid iPad listen address");
+                            let outbound_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
+                            match ipad_connection::connect_mode3(console_ipad_addr, listen_addr, outbound_addr, st.clone()).await {
+                                Ok((ipad_sender, _forwarder, result, _handle)) => {
+                                    info!(
+                                        name = %result.config.console_name,
+                                        "UI Mode 3: iPad proxy started"
+                                    );
+                                    engine.set_ipad_sender(Some(ipad_sender));
+                                    let _ = tx.send(UiEvent::IpadConnected);
+                                }
+                                Err(e) => {
+                                    error!("UI Mode 3: iPad proxy setup failed: {e}");
+                                    let _ = tx.send(UiEvent::IpadConnectionFailed(e.to_string()));
+                                }
+                            }
+                        }
+                        OperatingMode::Mode1 => {}
+                    }
+                }
+
+                let engine = Arc::new(engine);
+
                 // Start trigger listener
                 match TriggerListener::start(trigger_addr).await {
                     Ok(mut trigger_rx) => {
-                        let engine = Arc::new(SnapshotEngine::new(st.clone(), manager.sender()));
                         let macro_eng = Arc::new(MacroEngine::new(st.clone(), manager.sender()));
                         let trigger_cue_mgr = cue_mgr.clone();
                         let trigger_macro_mgr = manager.macro_manager();

@@ -180,6 +180,12 @@ impl IpadForwarder {
         Ok(true)
     }
 
+    /// Pre-configure the iPad's address (e.g., from --ipad-ip CLI arg).
+    /// Will be overwritten if a packet arrives from a different source.
+    pub async fn set_ipad_addr(&self, addr: SocketAddr) {
+        *self.ipad_addr.write().await = Some(addr);
+    }
+
     /// Check if an iPad has connected.
     pub async fn ipad_connected(&self) -> bool {
         self.ipad_addr.read().await.is_some()

@@ -11,6 +11,7 @@ use crate::console::macro_manager::MacroManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::config::ConsoleConfig;
 use crate::model::snapshot::CueList;
+use crate::model::operating_mode::OperatingMode;
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
 use crate::osc::ipad_client::IpadSender;
@@ -58,6 +59,10 @@ impl HiJackApp {
         console_port: u16,
         local_port: u16,
         trigger_port: u16,
+        operating_mode: OperatingMode,
+        ipad_ip: Option<&str>,
+        ipad_send_port: u16,
+        ipad_receive_port: u16,
         runtime: tokio::runtime::Handle,
     ) -> Self {
         let (ui_tx, ui_rx) = std::sync::mpsc::channel();
@@ -80,7 +85,10 @@ impl HiJackApp {
             ipad_sender: None,
 
             active_tab: Tab::Setup,
-            setup: SetupTabState::new(console_ip, console_port, local_port, trigger_port),
+            setup: SetupTabState::new(
+                console_ip, console_port, local_port, trigger_port,
+                operating_mode, ipad_ip, ipad_send_port, ipad_receive_port,
+            ),
             snapshots: SnapshotsTabState::default(),
             macros: MacrosTabState::default(),
             live: LiveTabState::default(),
