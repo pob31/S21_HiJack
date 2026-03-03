@@ -199,52 +199,81 @@ pub fn draw_macros_tab(
     // Two-column layout
     let available = ui.available_size();
     let left_width = (available.x * 0.4).min(350.0);
+    let panel_height = available.y;
 
     ui.horizontal(|ui| {
         // ═══ LEFT PANEL ═══
         ui.vertical(|ui| {
             ui.set_width(left_width);
+            ui.set_min_height(panel_height);
 
-            // Learn mode controls
-            draw_learn_section(ui, macros_state, macro_manager, runtime, ui_tx);
+            egui::ScrollArea::vertical()
+                .id_salt("macros_left_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    // Learn mode card
+                    theme::card_frame().show(ui, |ui| {
+                        draw_learn_section(ui, macros_state, macro_manager, runtime, ui_tx);
+                    });
 
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
+                    ui.add_space(8.0);
 
-            // Manual creation
-            draw_create_section(ui, macros_state, macro_manager, runtime);
+                    // Manual creation + macro list card
+                    theme::card_frame().show(ui, |ui| {
+                        theme::section_heading(ui, "Macros");
 
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
+                        // Create new macro
+                        ui.horizontal(|ui| {
+                            ui.label("Name:");
+                            ui.add(egui::TextEdit::singleline(&mut macros_state.new_macro_name).desired_width(150.0));
+                            let new_btn = theme::action_button("New", theme::ACCENT_GREEN, egui::Vec2::new(60.0, 28.0));
+                            if ui.add(new_btn).clicked() && !macros_state.new_macro_name.is_empty() {
+                                let name = macros_state.new_macro_name.clone();
+                                let mgr_clone = macro_manager.clone();
+                                runtime.spawn(async move {
+                                    let mut mgr = mgr_clone.write().await;
+                                    let macro_def = MacroDef::new(name, Vec::new());
+                                    mgr.add_macro(macro_def);
+                                });
+                                macros_state.new_macro_name.clear();
+                            }
+                        });
 
-            // Macro list
-            draw_macro_list(ui, macros_state, macro_manager);
+                        ui.add_space(8.0);
 
-            ui.add_space(8.0);
+                        // Macro list
+                        draw_macro_list(ui, macros_state, macro_manager);
 
-            // Action buttons
-            draw_action_buttons(
-                ui, macros_state, macro_manager, macro_engine,
-                is_connected, runtime, ui_tx,
-            );
+                        ui.add_space(8.0);
 
-            // Status messages
-            ui.add_space(4.0);
-            if let Some(info) = &macros_state.last_execution_info {
-                ui.label(egui::RichText::new(info).weak());
-            }
-            if let Some(msg) = &macros_state.status_message {
-                ui.colored_label(egui::Color32::YELLOW, msg);
-            }
+                        // Action buttons
+                        draw_action_buttons(
+                            ui, macros_state, macro_manager, macro_engine,
+                            is_connected, runtime, ui_tx,
+                        );
+                    });
+
+                    // Status messages
+                    if let Some(info) = &macros_state.last_execution_info {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(info).color(theme::TEXT_SECONDARY));
+                    }
+                    if let Some(msg) = &macros_state.status_message {
+                        ui.add_space(2.0);
+                        ui.colored_label(theme::TEXT_WARNING, msg);
+                    }
+                });
         });
 
-        ui.separator();
+        ui.add_space(4.0);
 
         // ═══ RIGHT PANEL: Step Editor ═══
         ui.vertical(|ui| {
-            draw_step_editor(ui, macros_state, macro_manager, runtime);
+            ui.set_min_height(panel_height);
+
+            theme::card_frame().show(ui, |ui| {
+                draw_step_editor(ui, macros_state, macro_manager, runtime);
+            });
         });
     });
 }
@@ -256,7 +285,7 @@ fn draw_learn_section(
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    ui.heading("Learn Mode");
+    theme::section_heading(ui, "Learn Mode");
 
     let is_recording = macro_manager
         .try_read()
@@ -264,58 +293,71 @@ fn draw_learn_section(
         .unwrap_or(false);
 
     if is_recording {
-        // Recording state
-        let (step_count, elapsed_ms) = macro_manager
-            .try_read()
-            .map(|mgr| (mgr.recording_step_count(), mgr.recording_elapsed_ms()))
-            .unwrap_or((0, 0));
+        // Recording state — red card
+        egui::Frame::new()
+            .fill(theme::COLOR_RECORDING_BG)
+            .stroke(egui::Stroke::new(1.0, theme::COLOR_RECORDING))
+            .corner_radius(6.0)
+            .inner_margin(egui::Margin::same(8))
+            .show(ui, |ui| {
+                let (step_count, elapsed_ms) = macro_manager
+                    .try_read()
+                    .map(|mgr| (mgr.recording_step_count(), mgr.recording_elapsed_ms()))
+                    .unwrap_or((0, 0));
 
-        ui.horizontal(|ui| {
-            ui.colored_label(theme::COLOR_RECORDING, "● REC");
-            ui.label(format!("{} steps  |  {:.1}s", step_count, elapsed_ms as f64 / 1000.0));
-        });
+                ui.horizontal(|ui| {
+                    ui.colored_label(theme::COLOR_RECORDING, "● REC");
+                    ui.label(
+                        egui::RichText::new(format!("{} steps  |  {:.1}s", step_count, elapsed_ms as f64 / 1000.0))
+                            .color(theme::TEXT_PRIMARY),
+                    );
+                });
 
-        ui.horizontal(|ui| {
-            ui.label("Name:");
-            ui.text_edit_singleline(&mut macros_state.learn_name);
-        });
+                ui.horizontal(|ui| {
+                    ui.label("Name:");
+                    ui.text_edit_singleline(&mut macros_state.learn_name);
+                });
 
-        ui.horizontal(|ui| {
-            if ui.button("Stop & Save").clicked() {
-                let name = if macros_state.learn_name.is_empty() {
-                    "Recorded Macro".to_string()
-                } else {
-                    macros_state.learn_name.clone()
-                };
+                ui.horizontal(|ui| {
+                    let stop_btn = theme::action_button("Stop & Save", theme::ACCENT_GREEN, egui::Vec2::new(100.0, 28.0));
+                    if ui.add(stop_btn).clicked() {
+                        let name = if macros_state.learn_name.is_empty() {
+                            "Recorded Macro".to_string()
+                        } else {
+                            macros_state.learn_name.clone()
+                        };
 
-                let mgr_clone = macro_manager.clone();
-                let tx = ui_tx.clone();
-                runtime.spawn(async move {
-                    let mut mgr = mgr_clone.write().await;
-                    if let Some(recording) = mgr.stop_recording() {
-                        let step_count = recording.steps.len();
-                        let macro_def = recording.to_macro_def(name);
-                        mgr.add_macro(macro_def);
-                        let _ = tx.send(UiEvent::MacroRecordingStopped { step_count });
+                        let mgr_clone = macro_manager.clone();
+                        let tx = ui_tx.clone();
+                        runtime.spawn(async move {
+                            let mut mgr = mgr_clone.write().await;
+                            if let Some(recording) = mgr.stop_recording() {
+                                let step_count = recording.steps.len();
+                                let macro_def = recording.to_macro_def(name);
+                                mgr.add_macro(macro_def);
+                                let _ = tx.send(UiEvent::MacroRecordingStopped { step_count });
+                            }
+                        });
+                        macros_state.learn_name.clear();
+                    }
+
+                    let discard_btn = theme::action_button("Discard", theme::ACCENT_RED, egui::Vec2::new(80.0, 28.0));
+                    if ui.add(discard_btn).clicked() {
+                        let mgr_clone = macro_manager.clone();
+                        runtime.spawn(async move {
+                            let mut mgr = mgr_clone.write().await;
+                            mgr.stop_recording();
+                        });
                     }
                 });
-                macros_state.learn_name.clear();
-            }
-
-            if ui.button("Discard").clicked() {
-                let mgr_clone = macro_manager.clone();
-                runtime.spawn(async move {
-                    let mut mgr = mgr_clone.write().await;
-                    mgr.stop_recording();
-                });
-            }
-        });
+            });
 
         // Request repaint while recording to update elapsed time
         ui.ctx().request_repaint();
     } else {
         // Not recording
-        if ui.button("Learn (Record)").clicked() {
+        let learn_btn = theme::action_button("Learn (Record)", theme::ACCENT_RED, egui::Vec2::new(130.0, 32.0));
+        if ui.add(learn_btn).clicked() {
             let mgr_clone = macro_manager.clone();
             runtime.spawn(async move {
                 let mut mgr = mgr_clone.write().await;
@@ -325,67 +367,68 @@ fn draw_learn_section(
     }
 }
 
-fn draw_create_section(
-    ui: &mut egui::Ui,
-    macros_state: &mut MacrosTabState,
-    macro_manager: &Arc<RwLock<MacroManager>>,
-    runtime: &tokio::runtime::Handle,
-) {
-    ui.horizontal(|ui| {
-        ui.label("Name:");
-        ui.add(egui::TextEdit::singleline(&mut macros_state.new_macro_name).desired_width(150.0));
-        if ui.button("New Macro").clicked() && !macros_state.new_macro_name.is_empty() {
-            let name = macros_state.new_macro_name.clone();
-            let mgr_clone = macro_manager.clone();
-            runtime.spawn(async move {
-                let mut mgr = mgr_clone.write().await;
-                let macro_def = MacroDef::new(name, Vec::new());
-                mgr.add_macro(macro_def);
-            });
-            macros_state.new_macro_name.clear();
-        }
-    });
-}
-
 fn draw_macro_list(
     ui: &mut egui::Ui,
     macros_state: &mut MacrosTabState,
     macro_manager: &Arc<RwLock<MacroManager>>,
 ) {
-    ui.label(egui::RichText::new("Macros").strong());
-
-    let macros_info: Vec<(Uuid, String, bool)> = macro_manager
+    let macros_info: Vec<(Uuid, String, bool, usize)> = macro_manager
         .try_read()
         .map(|mgr| {
             mgr.sorted_macros()
                 .into_iter()
-                .map(|m| (m.id, m.name.clone(), mgr.is_quick_trigger(&m.id)))
+                .map(|m| (m.id, m.name.clone(), mgr.is_quick_trigger(&m.id), m.steps.len()))
                 .collect()
         })
         .unwrap_or_default();
 
     if macros_info.is_empty() {
-        ui.weak("No macros defined");
+        ui.label(egui::RichText::new("No macros defined").color(theme::TEXT_SECONDARY));
         return;
     }
 
     egui::ScrollArea::vertical()
+        .id_salt("macro_list_scroll")
         .max_height(200.0)
         .show(ui, |ui| {
-            for (id, name, is_qt) in &macros_info {
-                let label = if *is_qt {
-                    format!("[QT] {name}")
-                } else {
-                    name.clone()
-                };
+            for (id, name, is_qt, step_count) in &macros_info {
                 let selected = macros_state.selected_macro_id == Some(*id);
-                if ui.selectable_label(selected, &label).clicked() {
-                    macros_state.selected_macro_id = Some(*id);
-                    // Reset step edit buffers when selection changes
-                    macros_state.step_mode_edits.clear();
-                    macros_state.step_value_edits.clear();
-                    macros_state.step_delay_edits.clear();
-                }
+                let bg = if selected { theme::BG_ELEVATED } else { theme::BG_PANEL };
+
+                egui::Frame::new()
+                    .fill(bg)
+                    .stroke(if selected {
+                        egui::Stroke::new(1.0, theme::ACCENT_BLUE)
+                    } else {
+                        egui::Stroke::NONE
+                    })
+                    .corner_radius(4.0)
+                    .inner_margin(egui::Margin::symmetric(8, 3))
+                    .show(ui, |ui| {
+                        let response = ui.horizontal(|ui| {
+                            if *is_qt {
+                                theme::colored_badge(ui, "QT", theme::COLOR_MACRO_BUTTON);
+                            }
+                            ui.label(
+                                egui::RichText::new(name)
+                                    .strong()
+                                    .color(theme::TEXT_PRIMARY),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("{} steps", step_count))
+                                    .color(theme::TEXT_SECONDARY)
+                                    .small(),
+                            );
+                        }).response;
+
+                        if response.interact(egui::Sense::click()).clicked() {
+                            macros_state.selected_macro_id = Some(*id);
+                            macros_state.step_mode_edits.clear();
+                            macros_state.step_value_edits.clear();
+                            macros_state.step_delay_edits.clear();
+                        }
+                    });
+                ui.add_space(1.0);
             }
         });
 }
@@ -403,14 +446,16 @@ fn draw_action_buttons(
 
     ui.horizontal(|ui| {
         // Run Macro
-        if ui.add_enabled(has_selection && is_connected, egui::Button::new("Run Macro")).clicked() {
+        let run_btn = theme::action_button("Run", theme::ACCENT_GREEN, egui::Vec2::new(70.0, 28.0));
+        if ui.add_enabled(has_selection && is_connected, run_btn).clicked() {
             if let Some(id) = macros_state.selected_macro_id {
                 fire_macro_by_id(id, macro_manager, macro_engine, runtime, ui_tx);
             }
         }
 
         // Toggle Quick Trigger
-        if ui.add_enabled(has_selection, egui::Button::new("Toggle Quick")).clicked() {
+        let qt_btn = theme::action_button("Toggle QT", theme::COLOR_MACRO_BUTTON, egui::Vec2::new(90.0, 28.0));
+        if ui.add_enabled(has_selection, qt_btn).clicked() {
             if let Some(id) = macros_state.selected_macro_id {
                 let mgr_clone = macro_manager.clone();
                 runtime.spawn(async move {
@@ -421,7 +466,8 @@ fn draw_action_buttons(
         }
 
         // Delete
-        if ui.add_enabled(has_selection, egui::Button::new("Delete")).clicked() {
+        let del_btn = theme::action_button("Delete", theme::ACCENT_RED, egui::Vec2::new(70.0, 28.0));
+        if ui.add_enabled(has_selection, del_btn).clicked() {
             if let Some(id) = macros_state.selected_macro_id {
                 let mgr_clone = macro_manager.clone();
                 runtime.spawn(async move {
@@ -444,8 +490,8 @@ fn draw_step_editor(
     runtime: &tokio::runtime::Handle,
 ) {
     let Some(selected_id) = macros_state.selected_macro_id else {
-        ui.heading("Step Editor");
-        ui.weak("Select a macro to edit its steps");
+        theme::section_heading(ui, "Step Editor");
+        ui.label(egui::RichText::new("Select a macro to edit its steps").color(theme::TEXT_SECONDARY));
         return;
     };
 
@@ -466,13 +512,12 @@ fn draw_step_editor(
         });
 
     let Some((macro_name, steps)) = macro_data else {
-        ui.weak("Macro not found");
+        ui.label(egui::RichText::new("Macro not found").color(theme::TEXT_SECONDARY));
         macros_state.selected_macro_id = None;
         return;
     };
 
-    ui.heading(format!("Steps: {macro_name}"));
-    ui.add_space(4.0);
+    theme::section_heading(ui, &format!("Steps: {macro_name}"));
 
     // Ensure edit buffers match step count
     let step_count = steps.len();
@@ -486,16 +531,20 @@ fn draw_step_editor(
     let mut action: Option<StepAction> = None;
 
     if steps.is_empty() {
-        ui.weak("No steps — add one below or use Learn mode");
+        ui.label(egui::RichText::new("No steps — add one below or use Learn mode").color(theme::TEXT_SECONDARY));
     } else {
         egui::ScrollArea::vertical()
-            .max_height(ui.available_height() - 120.0)
+            .id_salt("step_editor_scroll")
+            .max_height(ui.available_height() - 140.0)
             .show(ui, |ui| {
                 for (i, (addr, _mode, _delay)) in steps.iter().enumerate() {
-                    ui.group(|ui| {
+                    theme::elevated_frame().show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(format!("#{}", i + 1));
-                            ui.label(format!("{}", addr));
+                            theme::colored_badge(ui, &format!("#{}", i + 1), theme::BG_ELEVATED);
+                            ui.label(
+                                egui::RichText::new(format!("{}", addr))
+                                    .color(theme::TEXT_PRIMARY),
+                            );
 
                             ui.separator();
 
@@ -560,6 +609,7 @@ fn draw_step_editor(
                             }
                         });
                     });
+                    ui.add_space(2.0);
                 }
             });
     }
@@ -570,11 +620,11 @@ fn draw_step_editor(
     }
 
     ui.add_space(8.0);
-    ui.separator();
-    ui.add_space(4.0);
 
     // Add Step section
-    draw_add_step(ui, macros_state, selected_id, macro_manager, runtime);
+    theme::elevated_frame().show(ui, |ui| {
+        draw_add_step(ui, macros_state, selected_id, macro_manager, runtime);
+    });
 }
 
 /// Draw the "Add Step" controls.
@@ -585,7 +635,7 @@ fn draw_add_step(
     macro_manager: &Arc<RwLock<MacroManager>>,
     runtime: &tokio::runtime::Handle,
 ) {
-    ui.label(egui::RichText::new("Add Step").strong());
+    ui.label(egui::RichText::new("Add Step").strong().color(theme::TEXT_PRIMARY));
 
     ui.horizontal(|ui| {
         // Channel type
@@ -638,7 +688,8 @@ fn draw_add_step(
         ui.label("ms");
     });
 
-    if ui.button("Add Step").clicked() {
+    let add_btn = theme::action_button("Add Step", theme::ACCENT_GREEN, egui::Vec2::new(90.0, 28.0));
+    if ui.add(add_btn).clicked() {
         let ch_num: u8 = macros_state.add_step_channel_number.parse().unwrap_or(1);
         let channel = macros_state.add_step_channel_type.to_channel_id(ch_num);
         let parameter = macros_state.add_step_parameter.to_parameter_path();

@@ -25,6 +25,7 @@ use crate::osc::monitor_server::MonitorServer;
 use crate::osc::trigger_listener::TriggerListener;
 use crate::persistence::show_file::ShowFile;
 use super::UiEvent;
+use super::theme;
 
 /// State for the Setup tab.
 pub struct SetupTabState {
@@ -102,237 +103,271 @@ pub fn draw_setup_tab(
 ) {
     let is_connected = connected.load(Ordering::Relaxed);
 
-    ui.heading("Console Connection");
-    ui.separator();
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        // ── Connection card ──
+        theme::card_frame().show(ui, |ui| {
+            theme::section_heading(ui, "Connection");
 
-    egui::Grid::new("connection_fields")
-        .num_columns(2)
-        .spacing([10.0, 6.0])
-        .show(ui, |ui| {
-            ui.label("Console IP:");
-            ui.add_enabled(!is_connected, egui::TextEdit::singleline(&mut setup.console_ip).desired_width(200.0));
-            ui.end_row();
+            egui::Grid::new("connection_fields")
+                .num_columns(2)
+                .spacing([10.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label("Console IP:");
+                    ui.add_enabled(!is_connected, egui::TextEdit::singleline(&mut setup.console_ip).desired_width(200.0));
+                    ui.end_row();
 
-            ui.label("GP OSC Port:");
-            ui.add_enabled(!is_connected, egui::TextEdit::singleline(&mut setup.console_port).desired_width(80.0));
-            ui.end_row();
+                    ui.label("GP OSC Port:");
+                    ui.add_enabled(!is_connected, egui::TextEdit::singleline(&mut setup.console_port).desired_width(80.0));
+                    ui.end_row();
 
-            ui.label("Local Port:");
-            ui.add_enabled(!is_connected, egui::TextEdit::singleline(&mut setup.local_port).desired_width(80.0));
-            ui.end_row();
+                    ui.label("Local Port:");
+                    ui.add_enabled(!is_connected, egui::TextEdit::singleline(&mut setup.local_port).desired_width(80.0));
+                    ui.end_row();
 
-            ui.label("Trigger Port:");
-            ui.add_enabled(!is_connected, egui::TextEdit::singleline(&mut setup.trigger_port).desired_width(80.0));
-            ui.end_row();
-        });
+                    ui.label("Trigger Port:");
+                    ui.add_enabled(!is_connected, egui::TextEdit::singleline(&mut setup.trigger_port).desired_width(80.0));
+                    ui.end_row();
+                });
 
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        if !is_connected {
-            if ui.button("Connect").clicked() {
-                start_connection(
-                    setup, state, cue_manager, macro_manager, monitor_manager,
-                    eq_palette_manager, gang_manager, snapshot_engine, sender,
-                    connected, runtime, ui_tx, egui_ctx,
-                );
-            }
-        } else {
-            ui.add_enabled(false, egui::Button::new("Connected"));
-        }
-    });
+            ui.add_space(8.0);
 
-    // Connection status
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        let (color, text) = if is_connected {
-            (super::theme::COLOR_CONNECTED, "Connected")
-        } else {
-            (super::theme::COLOR_DISCONNECTED, "Disconnected")
-        };
-        let circle_size = 12.0;
-        let (rect, _) = ui.allocate_exact_size(
-            egui::Vec2::splat(circle_size),
-            egui::Sense::hover(),
-        );
-        ui.painter().circle_filled(rect.center(), circle_size / 2.0, color);
-        ui.label(text);
-    });
-
-    // Status message
-    if let Some(msg) = &setup.status_message {
-        ui.add_space(4.0);
-        ui.colored_label(egui::Color32::YELLOW, msg);
-    }
-
-    ui.add_space(8.0);
-    ui.separator();
-
-    // Operating mode
-    ui.horizontal(|ui| {
-        ui.label("Operating Mode:");
-        egui::ComboBox::from_id_salt("operating_mode")
-            .selected_text(setup.operating_mode.label())
-            .width(200.0)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut setup.operating_mode, OperatingMode::Mode1, OperatingMode::Mode1.label());
-                ui.selectable_value(&mut setup.operating_mode, OperatingMode::Mode2, OperatingMode::Mode2.label());
-                ui.selectable_value(&mut setup.operating_mode, OperatingMode::Mode3, OperatingMode::Mode3.label());
+            // Operating mode as toggle buttons
+            ui.horizontal(|ui| {
+                ui.label("Mode:");
+                for mode in [OperatingMode::Mode1, OperatingMode::Mode2, OperatingMode::Mode3] {
+                    let is_active = setup.operating_mode == mode;
+                    let fill = if is_active { theme::ACCENT_BLUE } else { theme::BG_ELEVATED };
+                    let text_color = if is_active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
+                    let btn = egui::Button::new(
+                        egui::RichText::new(mode.label()).color(text_color),
+                    )
+                    .fill(fill)
+                    .corner_radius(4.0);
+                    if ui.add_enabled(!is_connected, btn).clicked() {
+                        setup.operating_mode = mode;
+                    }
+                }
             });
-    });
 
-    // iPad protocol settings (visible when mode 2 or 3)
-    if setup.operating_mode.uses_ipad_protocol() {
-        ui.add_space(4.0);
-
-        egui::Grid::new("ipad_fields")
-            .num_columns(2)
-            .spacing([10.0, 6.0])
-            .show(ui, |ui| {
-                ui.label("Console iPad Port (send to):");
+            // Monitor port
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Monitor Port:");
                 ui.add_enabled(
                     !is_connected,
-                    egui::TextEdit::singleline(&mut setup.ipad_send_port).desired_width(80.0),
+                    egui::TextEdit::singleline(&mut setup.monitor_port)
+                        .desired_width(80.0)
+                        .hint_text("disabled"),
                 );
-                ui.end_row();
+            });
 
-                ui.label("Local Receive Port (listen on):");
-                ui.add_enabled(
-                    !is_connected,
-                    egui::TextEdit::singleline(&mut setup.ipad_receive_port).desired_width(80.0),
-                );
-                ui.end_row();
+            ui.add_space(8.0);
 
-                if setup.operating_mode == OperatingMode::Mode3 {
-                    ui.label("iPad IP:");
-                    ui.add_enabled(
-                        !is_connected,
-                        egui::TextEdit::singleline(&mut setup.ipad_ip)
-                            .desired_width(200.0)
-                            .hint_text("auto-detected from first packet"),
+            // Connect button + status
+            ui.horizontal(|ui| {
+                if !is_connected {
+                    let connect_btn = theme::action_button(
+                        "Connect",
+                        theme::ACCENT_GREEN,
+                        egui::Vec2::new(100.0, 36.0),
                     );
-                    ui.end_row();
+                    if ui.add(connect_btn).clicked() {
+                        start_connection(
+                            setup, state, cue_manager, macro_manager, monitor_manager,
+                            eq_palette_manager, gang_manager, snapshot_engine, sender,
+                            connected, runtime, ui_tx, egui_ctx,
+                        );
+                    }
+                } else {
+                    let connected_btn = theme::action_button(
+                        "Connected",
+                        theme::BG_ELEVATED,
+                        egui::Vec2::new(100.0, 36.0),
+                    );
+                    ui.add_enabled(false, connected_btn);
                 }
+
+                ui.add_space(12.0);
+                let (color, label) = if is_connected {
+                    (theme::COLOR_CONNECTED, "Connected")
+                } else {
+                    (theme::COLOR_DISCONNECTED, "Disconnected")
+                };
+                theme::status_dot(ui, color);
+                ui.colored_label(color, label);
             });
 
-        // iPad connection status
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            let (color, text) = if setup.ipad_connected {
-                (super::theme::COLOR_CONNECTED, "iPad Connected")
-            } else {
-                (super::theme::COLOR_DISCONNECTED, "iPad Not Connected")
-            };
-            let circle_size = 10.0;
-            let (rect, _) = ui.allocate_exact_size(
-                egui::Vec2::splat(circle_size),
-                egui::Sense::hover(),
-            );
-            ui.painter().circle_filled(rect.center(), circle_size / 2.0, color);
-            ui.label(text);
+            // Status message
+            if let Some(msg) = &setup.status_message {
+                ui.add_space(4.0);
+                ui.colored_label(theme::TEXT_WARNING, msg);
+            }
         });
-    }
-
-    // Monitor server port
-    ui.add_space(4.0);
-    egui::Grid::new("monitor_fields")
-        .num_columns(2)
-        .spacing([10.0, 6.0])
-        .show(ui, |ui| {
-            ui.label("Monitor Port:");
-            ui.add_enabled(
-                !is_connected,
-                egui::TextEdit::singleline(&mut setup.monitor_port)
-                    .desired_width(80.0)
-                    .hint_text("disabled"),
-            );
-            ui.end_row();
-        });
-
-    ui.add_space(8.0);
-    ui.separator();
-
-    // Console info (from state mirror)
-    ui.heading("Console Info");
-    if let Ok(st) = state.try_read() {
-        let cfg = &st.config;
-        egui::Grid::new("console_info")
-            .num_columns(2)
-            .spacing([10.0, 4.0])
-            .show(ui, |ui| {
-                if !cfg.console_name.is_empty() {
-                    ui.label("Console:");
-                    ui.label(&cfg.console_name);
-                    ui.end_row();
-                }
-                if !cfg.console_serial.is_empty() {
-                    ui.label("Serial:");
-                    ui.label(&cfg.console_serial);
-                    ui.end_row();
-                }
-                if let Some(ref session) = cfg.session_filename {
-                    ui.label("Session:");
-                    ui.label(session);
-                    ui.end_row();
-                }
-            });
 
         ui.add_space(8.0);
-        ui.heading("Channel Configuration");
-        egui::Grid::new("channel_counts")
-            .num_columns(4)
-            .spacing([20.0, 4.0])
-            .show(ui, |ui| {
-                ui.label(format!("Inputs: {}", cfg.input_channel_count));
-                ui.label(format!("Aux: {}", cfg.aux_output_count));
-                ui.label(format!("Groups: {}", cfg.group_output_count));
-                ui.label(format!("Matrix: {}", cfg.matrix_output_count));
-                ui.end_row();
-                ui.label(format!("CGs: {}", cfg.control_group_count));
-                ui.label(format!("GEQ: {}", cfg.graphic_eq_count));
-                ui.label(format!("Mtx In: {}", cfg.matrix_input_count));
-                ui.label(format!("Params: {}", st.parameter_count()));
-                ui.end_row();
-            });
-    } else {
-        ui.label("Loading state...");
-    }
 
-    ui.add_space(8.0);
-    ui.separator();
+        // ── iPad Protocol card (when mode 2 or 3) ──
+        if setup.operating_mode.uses_ipad_protocol() {
+            theme::card_frame().show(ui, |ui| {
+                theme::section_heading(ui, "iPad Protocol");
 
-    // Show file management
-    ui.heading("Show File");
-    ui.horizontal(|ui| {
-        if ui.button("Load Show").clicked() {
-            load_show_file(setup, cue_manager, macro_manager, monitor_manager, eq_palette_manager, gang_manager, runtime, ui_tx);
-        }
-        if ui.button("Save Show").clicked() {
-            save_show_file(setup, state, cue_manager, macro_manager, monitor_manager, eq_palette_manager, gang_manager, runtime, ui_tx);
-        }
-        if ui.button("New Show").clicked() {
-            let cue_mgr = cue_manager.clone();
-            let macro_mgr = macro_manager.clone();
-            let eq_mgr = eq_palette_manager.clone();
-            runtime.spawn(async move {
-                let mut mgr = cue_mgr.write().await;
-                mgr.cue_list = CueList::default();
-                mgr.snapshots.clear();
-                mgr.scope_templates.clear();
-                drop(mgr);
-                let mut mmgr = macro_mgr.write().await;
-                mmgr.macros.clear();
-                mmgr.quick_trigger_ids.clear();
-                drop(mmgr);
-                let mut pmgr = eq_mgr.write().await;
-                pmgr.palettes.clear();
+                egui::Grid::new("ipad_fields")
+                    .num_columns(2)
+                    .spacing([10.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label("Console iPad Port (send to):");
+                        ui.add_enabled(
+                            !is_connected,
+                            egui::TextEdit::singleline(&mut setup.ipad_send_port).desired_width(80.0),
+                        );
+                        ui.end_row();
+
+                        ui.label("Local Receive Port (listen on):");
+                        ui.add_enabled(
+                            !is_connected,
+                            egui::TextEdit::singleline(&mut setup.ipad_receive_port).desired_width(80.0),
+                        );
+                        ui.end_row();
+
+                        if setup.operating_mode == OperatingMode::Mode3 {
+                            ui.label("iPad IP:");
+                            ui.add_enabled(
+                                !is_connected,
+                                egui::TextEdit::singleline(&mut setup.ipad_ip)
+                                    .desired_width(200.0)
+                                    .hint_text("auto-detected from first packet"),
+                            );
+                            ui.end_row();
+                        }
+                    });
+
+                // iPad status
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let (color, text) = if setup.ipad_connected {
+                        (theme::COLOR_CONNECTED, "iPad Connected")
+                    } else {
+                        (theme::COLOR_DISCONNECTED, "iPad Not Connected")
+                    };
+                    theme::status_dot(ui, color);
+                    ui.colored_label(color, text);
+                });
             });
-            setup.show_file_path.clear();
-            setup.status_message = Some("New show created".into());
+
+            ui.add_space(8.0);
         }
+
+        // ── Console Info card ──
+        theme::card_frame().show(ui, |ui| {
+            theme::section_heading(ui, "Console");
+
+            if let Ok(st) = state.try_read() {
+                let cfg = &st.config;
+
+                if !cfg.console_name.is_empty() || !cfg.console_serial.is_empty() {
+                    egui::Grid::new("console_info")
+                        .num_columns(2)
+                        .spacing([10.0, 4.0])
+                        .show(ui, |ui| {
+                            if !cfg.console_name.is_empty() {
+                                ui.label("Console:");
+                                ui.label(egui::RichText::new(&cfg.console_name).strong());
+                                ui.end_row();
+                            }
+                            if !cfg.console_serial.is_empty() {
+                                ui.label("Serial:");
+                                ui.label(&cfg.console_serial);
+                                ui.end_row();
+                            }
+                            if let Some(ref session) = cfg.session_filename {
+                                ui.label("Session:");
+                                ui.label(session);
+                                ui.end_row();
+                            }
+                        });
+                    ui.add_space(8.0);
+                }
+
+                // Channel counts as colored badges
+                ui.label(egui::RichText::new("Channel Configuration").strong());
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    theme::colored_badge(ui, &format!("Inputs: {}", cfg.input_channel_count), theme::CH_INPUT);
+                    theme::colored_badge(ui, &format!("Aux: {}", cfg.aux_output_count), theme::CH_AUX);
+                    theme::colored_badge(ui, &format!("Groups: {}", cfg.group_output_count), theme::CH_GROUP);
+                    theme::colored_badge(ui, &format!("Matrix: {}", cfg.matrix_output_count), theme::CH_MATRIX);
+                    theme::colored_badge(ui, &format!("CGs: {}", cfg.control_group_count), theme::CH_CG);
+                });
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    theme::colored_badge(ui, &format!("GEQ: {}", cfg.graphic_eq_count), theme::CH_MATRIX);
+                    theme::colored_badge(ui, &format!("Mtx In: {}", cfg.matrix_input_count), theme::CH_MATRIX);
+                    theme::colored_badge(ui, &format!("Params: {}", st.parameter_count()), theme::ACCENT_BLUE);
+                });
+            } else {
+                ui.label("Loading state...");
+            }
+        });
+
+        ui.add_space(8.0);
+
+        // ── Show File card ──
+        theme::card_frame().show(ui, |ui| {
+            theme::section_heading(ui, "Show File");
+
+            ui.horizontal(|ui| {
+                ui.label("Path:");
+                ui.add(egui::TextEdit::singleline(&mut setup.show_file_path).desired_width(300.0));
+            });
+
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let load_btn = theme::action_button(
+                    "Load Show",
+                    theme::ACCENT_BLUE,
+                    egui::Vec2::new(100.0, 32.0),
+                );
+                if ui.add(load_btn).clicked() {
+                    load_show_file(setup, cue_manager, macro_manager, monitor_manager, eq_palette_manager, gang_manager, runtime, ui_tx);
+                }
+
+                let save_btn = theme::action_button(
+                    "Save Show",
+                    theme::ACCENT_GREEN,
+                    egui::Vec2::new(100.0, 32.0),
+                );
+                if ui.add(save_btn).clicked() {
+                    save_show_file(setup, state, cue_manager, macro_manager, monitor_manager, eq_palette_manager, gang_manager, runtime, ui_tx);
+                }
+
+                let new_btn = theme::action_button(
+                    "New Show",
+                    theme::ACCENT_ORANGE,
+                    egui::Vec2::new(100.0, 32.0),
+                );
+                if ui.add(new_btn).clicked() {
+                    let cue_mgr = cue_manager.clone();
+                    let macro_mgr = macro_manager.clone();
+                    let eq_mgr = eq_palette_manager.clone();
+                    runtime.spawn(async move {
+                        let mut mgr = cue_mgr.write().await;
+                        mgr.cue_list = CueList::default();
+                        mgr.snapshots.clear();
+                        mgr.scope_templates.clear();
+                        drop(mgr);
+                        let mut mmgr = macro_mgr.write().await;
+                        mmgr.macros.clear();
+                        mmgr.quick_trigger_ids.clear();
+                        drop(mmgr);
+                        let mut pmgr = eq_mgr.write().await;
+                        pmgr.palettes.clear();
+                    });
+                    setup.show_file_path.clear();
+                    setup.status_message = Some("New show created".into());
+                }
+            });
+        });
     });
-    if !setup.show_file_path.is_empty() {
-        ui.label(format!("File: {}", setup.show_file_path));
-    }
 }
 
 fn start_connection(

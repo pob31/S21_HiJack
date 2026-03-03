@@ -215,16 +215,65 @@ impl eframe::App for HiJackApp {
         self.drain_events();
 
         // Tab bar
-        egui::TopBottomPanel::top("tab_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.active_tab, Tab::Setup, "Setup");
-                ui.selectable_value(&mut self.active_tab, Tab::Snapshots, "Snapshots");
-                ui.selectable_value(&mut self.active_tab, Tab::Macros, "Macros");
-                ui.selectable_value(&mut self.active_tab, Tab::Live, "Live");
-                ui.selectable_value(&mut self.active_tab, Tab::Gangs, "Gangs");
-                ui.selectable_value(&mut self.active_tab, Tab::Monitor, "Monitor");
+        egui::TopBottomPanel::top("tab_bar")
+            .frame(egui::Frame::new()
+                .fill(super::theme::BG_DARK)
+                .inner_margin(egui::Margin::symmetric(8, 4)))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    // App title
+                    ui.label(
+                        egui::RichText::new("S21 HiJack")
+                            .strong()
+                            .size(super::theme::FONT_SIZE_SECTION)
+                            .color(super::theme::ACCENT_BLUE),
+                    );
+                    ui.add_space(16.0);
+
+                    // Tab buttons
+                    let tabs = [
+                        (Tab::Setup, "Setup"),
+                        (Tab::Snapshots, "Snapshots"),
+                        (Tab::Macros, "Macros"),
+                        (Tab::Live, "Live"),
+                        (Tab::Gangs, "Gangs"),
+                        (Tab::Monitor, "Monitor"),
+                    ];
+                    for (tab, label) in tabs {
+                        let is_active = self.active_tab == tab;
+                        let fill = if is_active {
+                            super::theme::ACCENT_BLUE
+                        } else {
+                            super::theme::BG_ELEVATED
+                        };
+                        let text_color = if is_active {
+                            super::theme::TEXT_PRIMARY
+                        } else {
+                            super::theme::TEXT_SECONDARY
+                        };
+                        let btn = egui::Button::new(
+                            egui::RichText::new(label).color(text_color).strong(),
+                        )
+                        .fill(fill)
+                        .corner_radius(4.0);
+                        if ui.add(btn).clicked() {
+                            self.active_tab = tab;
+                        }
+                    }
+
+                    // Connection status (right-aligned)
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let is_connected = self.connected.load(std::sync::atomic::Ordering::Relaxed);
+                        let (color, text) = if is_connected {
+                            (super::theme::COLOR_CONNECTED, "Connected")
+                        } else {
+                            (super::theme::COLOR_DISCONNECTED, "Disconnected")
+                        };
+                        ui.colored_label(color, text);
+                        super::theme::status_dot(ui, color);
+                    });
+                });
             });
-        });
 
         // Main content
         egui::CentralPanel::default().show(ctx, |ui| {

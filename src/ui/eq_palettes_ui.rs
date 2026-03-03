@@ -9,6 +9,7 @@ use crate::console::eq_palette_manager::EqPaletteManager;
 use crate::model::channel::ChannelId;
 use crate::model::eq_palette::EqPalette;
 use crate::model::state::ConsoleState;
+use super::theme;
 use super::UiEvent;
 
 /// Channel type selector reused from macros_tab pattern.
@@ -80,7 +81,7 @@ pub fn draw_eq_palettes_section(
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    ui.heading("EQ Palettes");
+    theme::section_heading(ui, "EQ Palettes");
 
     // ── Capture palette ─────────────────────────────────────────
     ui.horizontal(|ui| {
@@ -99,7 +100,8 @@ pub fn draw_eq_palettes_section(
         ui.add(egui::TextEdit::singleline(&mut state.new_palette_name).desired_width(120.0));
 
         let can_capture = is_connected && !state.new_palette_name.is_empty();
-        if ui.add_enabled(can_capture, egui::Button::new("Capture EQ")).clicked() {
+        let capture_btn = theme::action_button("Capture EQ", theme::ACCENT_GREEN, egui::Vec2::new(90.0, 28.0));
+        if ui.add_enabled(can_capture, capture_btn).clicked() {
             capture_palette(state, console_state, eq_palette_manager, runtime, ui_tx);
         }
     });
@@ -114,20 +116,45 @@ pub fn draw_eq_palettes_section(
             if let Ok(mgr) = eq_palette_manager.try_read() {
                 let palettes = mgr.sorted_palettes();
                 if palettes.is_empty() {
-                    ui.weak("No palettes yet. Capture one above.");
+                    ui.label(egui::RichText::new("No palettes yet. Capture one above.").color(theme::TEXT_SECONDARY));
                 }
                 for palette in palettes {
                     let selected = state.selected_palette_id == Some(palette.id);
-                    let label = format!(
-                        "{} — {} ({} params, {} refs)",
-                        palette.name,
-                        palette.channel,
-                        palette.parameter_count(),
-                        palette.referencing_snapshots.len(),
-                    );
-                    if ui.selectable_label(selected, &label).clicked() {
-                        state.selected_palette_id = Some(palette.id);
-                    }
+                    let bg = if selected { theme::BG_ELEVATED } else { theme::BG_PANEL };
+
+                    egui::Frame::new()
+                        .fill(bg)
+                        .stroke(if selected {
+                            egui::Stroke::new(1.0, theme::ACCENT_BLUE)
+                        } else {
+                            egui::Stroke::NONE
+                        })
+                        .corner_radius(4.0)
+                        .inner_margin(egui::Margin::symmetric(8, 3))
+                        .show(ui, |ui| {
+                            let response = ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(&palette.name)
+                                        .strong()
+                                        .color(theme::TEXT_PRIMARY),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} | {} params | {} refs",
+                                        palette.channel,
+                                        palette.parameter_count(),
+                                        palette.referencing_snapshots.len(),
+                                    ))
+                                    .color(theme::TEXT_SECONDARY)
+                                    .small(),
+                                );
+                            }).response;
+
+                            if response.interact(egui::Sense::click()).clicked() {
+                                state.selected_palette_id = Some(palette.id);
+                            }
+                        });
+                    ui.add_space(1.0);
                 }
             }
         });
@@ -136,12 +163,12 @@ pub fn draw_eq_palettes_section(
     if let Some(pid) = state.selected_palette_id {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            // Re-capture
-            if ui.add_enabled(is_connected, egui::Button::new("Re-capture")).clicked() {
+            let recapture_btn = theme::action_button("Re-capture", theme::ACCENT_BLUE, egui::Vec2::new(90.0, 28.0));
+            if ui.add_enabled(is_connected, recapture_btn).clicked() {
                 recapture_palette(pid, console_state, eq_palette_manager, runtime, ui_tx);
             }
-            // Delete
-            if ui.button("Delete Palette").clicked() {
+            let del_btn = theme::action_button("Delete Palette", theme::ACCENT_RED, egui::Vec2::new(100.0, 28.0));
+            if ui.add(del_btn).clicked() {
                 delete_palette(pid, cue_manager, eq_palette_manager, runtime);
                 state.selected_palette_id = None;
                 state.status_message = Some("Palette deleted".into());
@@ -151,33 +178,45 @@ pub fn draw_eq_palettes_section(
         // Detail: EQ values
         if let Ok(mgr) = eq_palette_manager.try_read() {
             if let Some(palette) = mgr.get_palette(&pid) {
-                egui::CollapsingHeader::new(format!("EQ Values ({})", palette.parameter_count()))
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        let mut entries: Vec<_> = palette.eq_values.iter().collect();
-                        entries.sort_by_key(|(path, _)| format!("{:?}", path));
-                        for (path, value) in entries {
-                            ui.horizontal(|ui| {
-                                ui.monospace(format!("{:?}", path));
-                                ui.weak(format!("= {}", value));
-                            });
-                        }
-                    });
+                egui::CollapsingHeader::new(
+                    egui::RichText::new(format!("EQ Values ({})", palette.parameter_count()))
+                        .color(theme::TEXT_SECONDARY),
+                )
+                .default_open(false)
+                .show(ui, |ui| {
+                    let mut entries: Vec<_> = palette.eq_values.iter().collect();
+                    entries.sort_by_key(|(path, _)| format!("{:?}", path));
+                    for (path, value) in entries {
+                        ui.horizontal(|ui| {
+                            ui.monospace(format!("{:?}", path));
+                            ui.label(
+                                egui::RichText::new(format!("= {}", value))
+                                    .color(theme::TEXT_SECONDARY),
+                            );
+                        });
+                    }
+                });
 
                 // Referencing snapshots
                 if !palette.referencing_snapshots.is_empty() {
-                    egui::CollapsingHeader::new(format!("Referencing Snapshots ({})", palette.referencing_snapshots.len()))
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            if let Ok(cue_mgr) = cue_manager.try_read() {
-                                for snap_id in &palette.referencing_snapshots {
-                                    let name = cue_mgr.snapshots.get(snap_id)
-                                        .map(|s| s.name.as_str())
-                                        .unwrap_or("(unknown)");
-                                    ui.label(format!("  {name}"));
-                                }
+                    egui::CollapsingHeader::new(
+                        egui::RichText::new(format!("Linked Snapshots ({})", palette.referencing_snapshots.len()))
+                            .color(theme::TEXT_SECONDARY),
+                    )
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        if let Ok(cue_mgr) = cue_manager.try_read() {
+                            for snap_id in &palette.referencing_snapshots {
+                                let name = cue_mgr.snapshots.get(snap_id)
+                                    .map(|s| s.name.as_str())
+                                    .unwrap_or("(unknown)");
+                                ui.label(
+                                    egui::RichText::new(format!("  {name}"))
+                                        .color(theme::TEXT_PRIMARY),
+                                );
                             }
-                        });
+                        }
+                    });
                 }
             }
         }
@@ -185,8 +224,7 @@ pub fn draw_eq_palettes_section(
 
     // ── Link / Unlink ───────────────────────────────────────────
     ui.add_space(4.0);
-    ui.separator();
-    ui.label(egui::RichText::new("Link Palette to Snapshot").strong());
+    ui.label(egui::RichText::new("Link Palette to Snapshot").strong().color(theme::TEXT_PRIMARY));
 
     ui.horizontal(|ui| {
         // Snapshot dropdown
@@ -231,11 +269,15 @@ pub fn draw_eq_palettes_section(
             .and_then(|id| eq_palette_manager.try_read().ok()
                 .and_then(|mgr| mgr.get_palette(&id).map(|p| p.name.clone())))
             .unwrap_or_else(|| "(select palette above)".into());
-        ui.label(format!("Palette: {selected_palette_name}"));
+        ui.label(
+            egui::RichText::new(format!("Palette: {selected_palette_name}"))
+                .color(theme::TEXT_SECONDARY),
+        );
 
         let can_link = state.selected_palette_id.is_some() && state.link_snapshot_id.is_some();
 
-        if ui.add_enabled(can_link, egui::Button::new("Link")).clicked() {
+        let link_btn = theme::action_button("Link", theme::ACCENT_GREEN, egui::Vec2::new(60.0, 28.0));
+        if ui.add_enabled(can_link, link_btn).clicked() {
             if let (Some(palette_id), Some(snap_id)) = (state.selected_palette_id, state.link_snapshot_id) {
                 if let Ok(ch_num) = state.link_channel_number.parse::<u8>() {
                     let channel = state.link_channel_type.to_channel_id(ch_num);
@@ -244,7 +286,8 @@ pub fn draw_eq_palettes_section(
             }
         }
 
-        if ui.add_enabled(can_link, egui::Button::new("Unlink")).clicked() {
+        let unlink_btn = theme::action_button("Unlink", theme::ACCENT_RED, egui::Vec2::new(60.0, 28.0));
+        if ui.add_enabled(can_link, unlink_btn).clicked() {
             if let (Some(palette_id), Some(snap_id)) = (state.selected_palette_id, state.link_snapshot_id) {
                 if let Ok(ch_num) = state.link_channel_number.parse::<u8>() {
                     let channel = state.link_channel_type.to_channel_id(ch_num);
@@ -257,7 +300,8 @@ pub fn draw_eq_palettes_section(
 
     // Status
     if let Some(msg) = &state.status_message {
-        ui.colored_label(egui::Color32::YELLOW, msg);
+        ui.add_space(2.0);
+        ui.colored_label(theme::TEXT_WARNING, msg);
     }
 }
 

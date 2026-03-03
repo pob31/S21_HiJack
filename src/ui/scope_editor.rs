@@ -5,6 +5,7 @@ use eframe::egui;
 use crate::model::channel::ChannelId;
 use crate::model::parameter::ParameterSection;
 use crate::model::snapshot::{ChannelScope, ScopeTemplate};
+use super::theme;
 
 /// Channel type group for the hierarchical scope editor.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -31,6 +32,19 @@ impl ChannelGroup {
         }
     }
 
+    /// Color for this channel group (DiGiCo style).
+    pub fn color(&self) -> egui::Color32 {
+        match self {
+            ChannelGroup::Inputs => theme::CH_INPUT,
+            ChannelGroup::Aux => theme::CH_AUX,
+            ChannelGroup::Groups => theme::CH_GROUP,
+            ChannelGroup::Matrix | ChannelGroup::GraphicEq | ChannelGroup::MatrixInputs => {
+                theme::CH_MATRIX
+            }
+            ChannelGroup::ControlGroups => theme::CH_CG,
+        }
+    }
+
     /// Generate all channel IDs for this group given console channel counts.
     pub fn channels(&self, input_count: u8, aux_count: u8, group_count: u8) -> Vec<ChannelId> {
         match self {
@@ -46,7 +60,6 @@ impl ChannelGroup {
 
     /// Applicable parameter sections for channels in this group.
     pub fn applicable_sections(&self) -> Vec<ParameterSection> {
-        // Use a representative channel from this group
         let representative = match self {
             ChannelGroup::Inputs => ChannelId::Input(1),
             ChannelGroup::Aux => ChannelId::Aux(1),
@@ -72,12 +85,110 @@ impl ChannelGroup {
     }
 }
 
+/// Signal-flow column definition for the block layout.
+struct FlowColumn {
+    heading: &'static str,
+    sections: Vec<(ParameterSection, &'static str)>,
+}
+
+/// Build the signal-flow columns for a given set of applicable sections.
+fn build_flow_columns(applicable: &[ParameterSection]) -> Vec<FlowColumn> {
+    let mut columns = Vec::new();
+
+    // Sources
+    let mut sources = Vec::new();
+    for s in applicable {
+        match s {
+            ParameterSection::Name => sources.push((s.clone(), "Channel\nName")),
+            ParameterSection::InputGain => sources.push((s.clone(), "Input Gain")),
+            _ => {}
+        }
+    }
+    if !sources.is_empty() {
+        columns.push(FlowColumn {
+            heading: "Sources",
+            sections: sources,
+        });
+    }
+
+    // Input Processing
+    let mut input_proc = Vec::new();
+    for s in applicable {
+        match s {
+            ParameterSection::Digitube => input_proc.push((s.clone(), "DiGiTube")),
+            ParameterSection::Delay => input_proc.push((s.clone(), "Delay")),
+            _ => {}
+        }
+    }
+    if !input_proc.is_empty() {
+        columns.push(FlowColumn {
+            heading: "Input\nProcessing",
+            sections: input_proc,
+        });
+    }
+
+    // Insert
+    let mut insert = Vec::new();
+    for s in applicable {
+        if matches!(s, ParameterSection::Inserts) {
+            insert.push((s.clone(), "Send &\nReturn"));
+        }
+    }
+    if !insert.is_empty() {
+        columns.push(FlowColumn {
+            heading: "Insert",
+            sections: insert,
+        });
+    }
+
+    // Channel Processing
+    let mut chan_proc = Vec::new();
+    for s in applicable {
+        match s {
+            ParameterSection::Eq => chan_proc.push((s.clone(), "Equaliser")),
+            ParameterSection::Dyn1 => chan_proc.push((s.clone(), "Dynamics 1")),
+            ParameterSection::Dyn2 => chan_proc.push((s.clone(), "Dynamics 2")),
+            ParameterSection::GraphicEq => chan_proc.push((s.clone(), "Graphic EQ")),
+            _ => {}
+        }
+    }
+    if !chan_proc.is_empty() {
+        columns.push(FlowColumn {
+            heading: "Channel\nProcessing",
+            sections: chan_proc,
+        });
+    }
+
+    // Outputs
+    let mut outputs = Vec::new();
+    for s in applicable {
+        match s {
+            ParameterSection::Sends => outputs.push((s.clone(), "Aux Sends")),
+            ParameterSection::GroupRouting => outputs.push((s.clone(), "Group\nAssigns")),
+            ParameterSection::MatrixSends => outputs.push((s.clone(), "Matrix\nSends")),
+            ParameterSection::FaderMutePan => outputs.push((s.clone(), "Fader /\nMute / Pan")),
+            ParameterSection::CgMembership => outputs.push((s.clone(), "CG\nMembers")),
+            _ => {}
+        }
+    }
+    if !outputs.is_empty() {
+        columns.push(FlowColumn {
+            heading: "Outputs",
+            sections: outputs,
+        });
+    }
+
+    columns
+}
+
 /// State for the scope editor widget.
 pub struct ScopeEditorState {
     /// Per-channel section selections.
     pub channel_selections: HashMap<ChannelId, HashSet<ParameterSection>>,
     /// Which channel groups are expanded in the UI.
     pub expanded_groups: HashSet<ChannelGroup>,
+    /// Currently active channel group in the signal-flow view.
+    pub active_group: Option<ChannelGroup>,
 }
 
 impl Default for ScopeEditorState {
@@ -85,6 +196,7 @@ impl Default for ScopeEditorState {
         Self {
             channel_selections: HashMap::new(),
             expanded_groups: HashSet::new(),
+            active_group: Some(ChannelGroup::Inputs),
         }
     }
 }
@@ -113,6 +225,7 @@ impl ScopeEditorState {
         ScopeEditorState {
             channel_selections: selections,
             expanded_groups: HashSet::new(),
+            active_group: Some(ChannelGroup::Inputs),
         }
     }
 
@@ -184,7 +297,7 @@ impl ScopeEditorState {
     }
 }
 
-/// Draw the scope editor widget.
+/// Draw the scope editor widget with DiGiCo-style signal-flow blocks.
 pub fn draw_scope_editor(
     ui: &mut egui::Ui,
     state: &mut ScopeEditorState,
@@ -192,83 +305,143 @@ pub fn draw_scope_editor(
     aux_count: u8,
     group_count: u8,
 ) {
-    ui.heading("Scope Editor");
-    ui.separator();
+    theme::section_heading(ui, "Scope Editor");
 
+    // Controls bar
     ui.horizontal(|ui| {
-        if ui.button("Clear All").clicked() {
+        let clear_btn = theme::action_button(
+            "Clear All",
+            theme::BG_ELEVATED,
+            egui::Vec2::new(80.0, 30.0),
+        );
+        if ui.add(clear_btn).clicked() {
             state.clear();
         }
-        ui.label(format!("{} selections", state.selection_count()));
+        ui.add_space(8.0);
+        theme::colored_badge(
+            ui,
+            &format!("{} selections", state.selection_count()),
+            theme::ACCENT_BLUE,
+        );
     });
 
-    ui.separator();
+    ui.add_space(8.0);
 
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for group in ChannelGroup::all() {
-                let channels = group.channels(input_count, aux_count, group_count);
-                if channels.is_empty() {
-                    continue;
-                }
-                let applicable = group.applicable_sections();
-                let count_label = format!("{} (1-{})", group.label(), channels.len());
+    // Channel group selector tabs (colored blocks)
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            egui::RichText::new("Channel Group:")
+                .color(theme::TEXT_SECONDARY)
+                .size(theme::FONT_SIZE_BADGE),
+        );
+        for group in ChannelGroup::all() {
+            let channels = group.channels(input_count, aux_count, group_count);
+            if channels.is_empty() {
+                continue;
+            }
+            let is_active = state.active_group.as_ref() == Some(group);
+            let base_color = group.color();
+            let fill = if is_active {
+                base_color
+            } else {
+                theme::BG_ELEVATED
+            };
+            let text_color = if is_active {
+                theme::TEXT_PRIMARY
+            } else {
+                theme::TEXT_SECONDARY
+            };
 
-                let expanded = state.expanded_groups.contains(group);
-                let header = egui::CollapsingHeader::new(&count_label)
-                    .default_open(expanded)
-                    .show(ui, |ui| {
-                        // Per-group section toggles
-                        ui.label("Sections (applies to all channels in group):");
-                        ui.horizontal_wrapped(|ui| {
-                            for section in &applicable {
-                                let all_selected = state.is_group_section_all_selected(
-                                    group,
+            let label = format!("{} ({})", group.label(), channels.len());
+            let btn = egui::Button::new(
+                egui::RichText::new(&label)
+                    .color(text_color)
+                    .size(theme::FONT_SIZE_BADGE),
+            )
+            .fill(fill)
+            .corner_radius(4.0);
+
+            if ui.add(btn).clicked() {
+                state.active_group = Some(group.clone());
+            }
+        }
+    });
+
+    ui.add_space(8.0);
+
+    // Signal-flow block grid for the active group
+    if let Some(active_group) = &state.active_group.clone() {
+        let applicable = active_group.applicable_sections();
+        let columns = build_flow_columns(&applicable);
+
+        egui::ScrollArea::horizontal()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (col_idx, column) in columns.iter().enumerate() {
+                        // Arrow separator between columns
+                        if col_idx > 0 {
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new("\u{25B6}")
+                                    .color(theme::TEXT_SECONDARY)
+                                    .size(theme::FONT_SIZE_BODY),
+                            );
+                            ui.add_space(4.0);
+                        }
+
+                        // Column
+                        ui.vertical(|ui| {
+                            ui.set_min_width(100.0);
+
+                            // Column heading
+                            ui.label(
+                                egui::RichText::new(column.heading)
+                                    .strong()
+                                    .color(theme::TEXT_PRIMARY)
+                                    .size(theme::FONT_SIZE_BADGE),
+                            );
+                            ui.add_space(4.0);
+
+                            // Section toggle blocks
+                            for (section, display_name) in &column.sections {
+                                let all_sel = state.is_group_section_all_selected(
+                                    active_group,
                                     section,
                                     input_count,
                                     aux_count,
                                     group_count,
                                 );
-                                let any_selected = state.is_group_section_any_selected(
-                                    group,
+                                let any_sel = state.is_group_section_any_selected(
+                                    active_group,
                                     section,
                                     input_count,
                                     aux_count,
                                     group_count,
                                 );
 
-                                // Use indeterminate style when partially selected
-                                let mut checked = all_selected;
-                                let label = format!("{section}");
-                                let response = ui.checkbox(&mut checked, &label);
+                                let response = theme::toggle_block_tristate(
+                                    ui,
+                                    display_name,
+                                    all_sel,
+                                    any_sel,
+                                );
 
-                                if response.changed() {
+                                if response.clicked() {
+                                    let enable = !all_sel;
                                     state.toggle_group_section(
-                                        group,
+                                        active_group,
                                         section,
-                                        checked,
+                                        enable,
                                         input_count,
                                         aux_count,
                                         group_count,
                                     );
-                                } else if !all_selected && any_selected {
-                                    // Visual hint: paint the checkbox label differently
-                                    // when partially selected (egui doesn't support
-                                    // tristate natively, but the label style helps)
                                 }
                             }
                         });
-                    });
-
-                // Track expansion state
-                if header.header_response.clicked() {
-                    if state.expanded_groups.contains(group) {
-                        state.expanded_groups.remove(group);
-                    } else {
-                        state.expanded_groups.insert(group.clone());
                     }
-                }
-            }
-        });
+                });
+            });
+    }
 }

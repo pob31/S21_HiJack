@@ -42,31 +42,10 @@ pub fn draw_live_tab(
 ) {
     let is_connected = connected.load(Ordering::Relaxed);
 
-    // Top bar: title + connection status
-    ui.horizontal(|ui| {
-        ui.heading("S21 HiJack — Live");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let (color, text) = if is_connected {
-                (theme::COLOR_CONNECTED, "Connected")
-            } else {
-                (theme::COLOR_DISCONNECTED, "Disconnected")
-            };
-            ui.colored_label(color, text);
-            let circle_size = 12.0;
-            let (rect, _) = ui.allocate_exact_size(
-                egui::Vec2::splat(circle_size),
-                egui::Sense::hover(),
-            );
-            ui.painter().circle_filled(rect.center(), circle_size / 2.0, color);
-        });
-    });
-
-    ui.add_space(20.0);
-
-    // Current cue
     ui.vertical_centered(|ui| {
-        ui.label(egui::RichText::new("CURRENT CUE").strong().size(theme::FONT_SIZE_CUE_NEXT));
+        ui.add_space(12.0);
 
+        // ── Current Cue card (DiGiCo dark maroon) ──
         let current_text = if let Ok(mgr) = cue_manager.try_read() {
             if let Some(cue) = mgr.current_cue() {
                 format!("{:.1}  —  {}", cue.cue_number, cue.name)
@@ -77,24 +56,32 @@ pub fn draw_live_tab(
             "...".to_string()
         };
 
+        ui.label(
+            egui::RichText::new("CURRENT CUE")
+                .strong()
+                .size(theme::FONT_SIZE_BODY)
+                .color(theme::TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+
         egui::Frame::new()
-            .fill(ui.style().visuals.extreme_bg_color)
-            .inner_margin(egui::Margin::symmetric(20, 16))
+            .fill(theme::CUE_CURRENT_BG)
+            .stroke(egui::Stroke::new(1.0, theme::CUE_CURRENT_BORDER))
+            .inner_margin(egui::Margin::symmetric(24, 20))
             .corner_radius(8.0)
             .show(ui, |ui| {
                 ui.label(
                     egui::RichText::new(&current_text)
                         .size(theme::FONT_SIZE_CUE_CURRENT)
                         .strong()
-                        .monospace(),
+                        .monospace()
+                        .color(theme::TEXT_PRIMARY),
                 );
             });
 
         ui.add_space(16.0);
 
-        // Next cue
-        ui.label(egui::RichText::new("NEXT CUE").size(theme::FONT_SIZE_BODY));
-
+        // ── Next Cue card ──
         let next_text = if let Ok(mgr) = cue_manager.try_read() {
             if let Some(cue) = mgr.next_cue() {
                 format!("{:.1}  —  {}", cue.cue_number, cue.name)
@@ -105,21 +92,30 @@ pub fn draw_live_tab(
             "...".to_string()
         };
 
+        ui.label(
+            egui::RichText::new("NEXT CUE")
+                .size(theme::FONT_SIZE_BADGE)
+                .color(theme::TEXT_SECONDARY),
+        );
+        ui.add_space(2.0);
+
         egui::Frame::new()
-            .fill(ui.style().visuals.faint_bg_color)
+            .fill(theme::BG_ELEVATED)
+            .stroke(egui::Stroke::new(1.0, theme::BORDER_SUBTLE))
             .inner_margin(egui::Margin::symmetric(20, 12))
             .corner_radius(8.0)
             .show(ui, |ui| {
                 ui.label(
                     egui::RichText::new(&next_text)
                         .size(theme::FONT_SIZE_CUE_NEXT)
-                        .monospace(),
+                        .monospace()
+                        .color(theme::TEXT_PRIMARY),
                 );
             });
 
         ui.add_space(24.0);
 
-        // GO and PREV buttons
+        // ── GO and PREV buttons ──
         let has_cues = cue_manager
             .try_read()
             .map(|mgr| !mgr.cue_list.cues.is_empty())
@@ -130,14 +126,16 @@ pub fn draw_live_tab(
             ui.add_space((ui.available_width() - theme::GO_BUTTON_SIZE.x - theme::PREV_BUTTON_SIZE.x - 20.0).max(0.0) / 2.0);
 
             // GO button
+            let go_color = if buttons_enabled { theme::COLOR_GO_BUTTON } else { theme::BG_ELEVATED };
             let go_button = egui::Button::new(
                 egui::RichText::new("GO")
                     .size(theme::FONT_SIZE_GO_BUTTON)
                     .strong()
-                    .color(egui::Color32::WHITE),
+                    .color(theme::TEXT_PRIMARY),
             )
-            .fill(if buttons_enabled { theme::COLOR_GO_BUTTON } else { egui::Color32::DARK_GRAY })
-            .min_size(theme::GO_BUTTON_SIZE);
+            .fill(go_color)
+            .min_size(theme::GO_BUTTON_SIZE)
+            .corner_radius(8.0);
 
             if ui.add_enabled(buttons_enabled, go_button).clicked() {
                 fire_go(cue_manager, eq_palette_manager, snapshot_engine, runtime, ui_tx);
@@ -146,80 +144,89 @@ pub fn draw_live_tab(
             ui.add_space(20.0);
 
             // PREV button
+            let prev_color = if buttons_enabled { theme::COLOR_PREV_BUTTON } else { theme::BG_ELEVATED };
             let prev_button = egui::Button::new(
                 egui::RichText::new("PREV")
                     .size(theme::FONT_SIZE_BODY)
                     .strong()
-                    .color(egui::Color32::WHITE),
+                    .color(theme::TEXT_PRIMARY),
             )
-            .fill(if buttons_enabled { theme::COLOR_PREV_BUTTON } else { egui::Color32::DARK_GRAY })
-            .min_size(theme::PREV_BUTTON_SIZE);
+            .fill(prev_color)
+            .min_size(theme::PREV_BUTTON_SIZE)
+            .corner_radius(8.0);
 
             if ui.add_enabled(buttons_enabled, prev_button).clicked() {
                 fire_prev(cue_manager, eq_palette_manager, snapshot_engine, runtime, ui_tx);
             }
         });
 
-        ui.add_space(16.0);
+        ui.add_space(12.0);
 
         // Last recall result
         if let Some(info) = &live.last_recall_info {
-            ui.label(egui::RichText::new(info).weak());
+            ui.label(egui::RichText::new(info).color(theme::TEXT_SECONDARY));
         }
 
         // Fade progress bar
         if let Some((cue_num, progress)) = &live.fade_progress {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(format!("Fade {cue_num:.1}:"));
+                ui.label(
+                    egui::RichText::new(format!("Fade {cue_num:.1}:"))
+                        .color(theme::TEXT_SECONDARY),
+                );
                 ui.add(
                     egui::ProgressBar::new(*progress)
-                        .text(format!("{:.0}%", progress * 100.0)),
+                        .text(format!("{:.0}%", progress * 100.0))
+                        .fill(theme::ACCENT_GREEN),
                 );
             });
         }
 
-        // Macro quick-trigger buttons
+        // ── Macro Quick-Trigger section ──
         if let Ok(mgr) = macro_manager.try_read() {
             if !mgr.quick_trigger_ids.is_empty() {
                 ui.add_space(16.0);
-                ui.separator();
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new("MACROS").strong().size(theme::FONT_SIZE_BODY));
-                ui.add_space(4.0);
 
-                // Collect quick-trigger macro info (id, name)
-                let qt_macros: Vec<_> = mgr.quick_trigger_ids.iter()
-                    .filter_map(|id| mgr.get_macro(id).map(|m| (m.id, m.name.clone())))
-                    .collect();
-                drop(mgr);
+                theme::card_frame().show(ui, |ui| {
+                    theme::section_heading(ui, "Quick Macros");
 
-                ui.horizontal_wrapped(|ui| {
-                    for (id, name) in &qt_macros {
-                        let button = egui::Button::new(
-                            egui::RichText::new(name)
-                                .color(egui::Color32::WHITE)
-                                .strong(),
-                        )
-                        .fill(if is_connected { theme::COLOR_MACRO_BUTTON } else { egui::Color32::DARK_GRAY })
-                        .min_size(theme::MACRO_BUTTON_SIZE);
+                    // Collect quick-trigger macro info (id, name)
+                    let qt_macros: Vec<_> = mgr.quick_trigger_ids.iter()
+                        .filter_map(|id| mgr.get_macro(id).map(|m| (m.id, m.name.clone())))
+                        .collect();
+                    drop(mgr);
 
-                        if ui.add_enabled(is_connected, button).clicked() {
-                            super::macros_tab::fire_macro_by_id(
-                                *id, macro_manager, macro_engine, runtime, ui_tx,
-                            );
+                    ui.horizontal_wrapped(|ui| {
+                        for (id, name) in &qt_macros {
+                            let btn_color = if is_connected { theme::COLOR_MACRO_BUTTON } else { theme::BG_ELEVATED };
+                            let button = egui::Button::new(
+                                egui::RichText::new(name)
+                                    .color(theme::TEXT_PRIMARY)
+                                    .strong(),
+                            )
+                            .fill(btn_color)
+                            .min_size(theme::MACRO_BUTTON_SIZE)
+                            .corner_radius(6.0);
+
+                            if ui.add_enabled(is_connected, button).clicked() {
+                                super::macros_tab::fire_macro_by_id(
+                                    *id, macro_manager, macro_engine, runtime, ui_tx,
+                                );
+                            }
                         }
-                    }
+                    });
                 });
             }
         }
 
+        // Status hints
         if !is_connected {
             ui.add_space(8.0);
             ui.colored_label(theme::COLOR_DISCONNECTED, "No console connected");
         } else if !has_cues {
             ui.add_space(8.0);
-            ui.weak("No cues loaded");
+            ui.label(egui::RichText::new("No cues loaded").color(theme::TEXT_SECONDARY));
         }
     });
 }
