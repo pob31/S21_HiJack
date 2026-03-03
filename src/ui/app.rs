@@ -6,6 +6,7 @@ use tokio::sync::RwLock;
 
 use crate::console::cue_manager::CueManager;
 use crate::console::eq_palette_manager::EqPaletteManager;
+use crate::console::gang_manager::GangManager;
 use crate::console::macro_engine::MacroEngine;
 use crate::console::macro_manager::MacroManager;
 use crate::console::monitor_manager::MonitorManager;
@@ -19,6 +20,7 @@ use crate::osc::ipad_client::IpadSender;
 
 use super::{Tab, UiEvent};
 use super::eq_palettes_ui::EqPalettesUiState;
+use super::gangs_tab::GangsTabState;
 use super::live_tab::LiveTabState;
 use super::macros_tab::MacrosTabState;
 use super::monitor_tab::MonitorTabState;
@@ -33,6 +35,7 @@ pub struct HiJackApp {
     pub macro_manager: Arc<RwLock<MacroManager>>,
     pub monitor_manager: Arc<RwLock<MonitorManager>>,
     pub eq_palette_manager: Arc<RwLock<EqPaletteManager>>,
+    pub gang_manager: Arc<RwLock<GangManager>>,
     pub snapshot_engine: Option<Arc<SnapshotEngine>>,
     pub macro_engine: Option<Arc<MacroEngine>>,
 
@@ -54,6 +57,7 @@ pub struct HiJackApp {
     pub macros: MacrosTabState,
     pub live: LiveTabState,
     pub eq_palettes_ui: EqPalettesUiState,
+    pub gangs: GangsTabState,
     pub monitor: MonitorTabState,
 }
 
@@ -78,6 +82,7 @@ impl HiJackApp {
             macro_manager: Arc::new(RwLock::new(MacroManager::new())),
             monitor_manager: Arc::new(RwLock::new(MonitorManager::new())),
             eq_palette_manager: Arc::new(RwLock::new(EqPaletteManager::new())),
+            gang_manager: Arc::new(RwLock::new(GangManager::new())),
             snapshot_engine: None,
             macro_engine: None,
 
@@ -100,6 +105,7 @@ impl HiJackApp {
             macros: MacrosTabState::default(),
             live: LiveTabState::default(),
             eq_palettes_ui: EqPalettesUiState::default(),
+            gangs: GangsTabState::default(),
             monitor: MonitorTabState::default(),
         }
     }
@@ -215,6 +221,7 @@ impl eframe::App for HiJackApp {
                 ui.selectable_value(&mut self.active_tab, Tab::Snapshots, "Snapshots");
                 ui.selectable_value(&mut self.active_tab, Tab::Macros, "Macros");
                 ui.selectable_value(&mut self.active_tab, Tab::Live, "Live");
+                ui.selectable_value(&mut self.active_tab, Tab::Gangs, "Gangs");
                 ui.selectable_value(&mut self.active_tab, Tab::Monitor, "Monitor");
             });
         });
@@ -231,6 +238,7 @@ impl eframe::App for HiJackApp {
                         &self.macro_manager,
                         &self.monitor_manager,
                         &self.eq_palette_manager,
+                        &self.gang_manager,
                         &mut self.snapshot_engine,
                         &mut self.sender,
                         &self.connected,
@@ -275,6 +283,15 @@ impl eframe::App for HiJackApp {
                         &self.connected,
                         &self.runtime,
                         &self.ui_tx,
+                    );
+                }
+                Tab::Gangs => {
+                    super::gangs_tab::draw_gangs_tab(
+                        ui,
+                        &mut self.gangs,
+                        &self.gang_manager,
+                        &self.connected,
+                        &self.runtime,
                     );
                 }
                 Tab::Monitor => {

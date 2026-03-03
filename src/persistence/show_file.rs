@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::config::ConsoleConfig;
 use crate::model::eq_palette::EqPalette;
 use crate::model::macro_def::MacroDef;
+use crate::model::gang::GangGroup;
 use crate::model::monitor::MonitorClient;
 use crate::model::snapshot::{CueList, ScopeTemplate, Snapshot};
 
@@ -36,12 +37,15 @@ pub struct ShowFile {
     /// Monitor client profiles (Phase 7).
     #[serde(default)]
     pub monitor_clients: Vec<MonitorClient>,
+    /// Gang groups for smart ganging.
+    #[serde(default)]
+    pub gang_groups: Vec<GangGroup>,
 }
 
 impl ShowFile {
     pub fn new(config: ConsoleConfig) -> Self {
         Self {
-            version: 4,
+            version: 5,
             console_config: config,
             scope_templates: Vec::new(),
             snapshots: Vec::new(),
@@ -50,6 +54,7 @@ impl ShowFile {
             macro_quick_trigger_ids: Vec::new(),
             eq_palettes: Vec::new(),
             monitor_clients: Vec::new(),
+            gang_groups: Vec::new(),
         }
     }
 
@@ -86,7 +91,7 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 4);
+        assert_eq!(loaded.version, 5);
         assert_eq!(loaded.console_config.input_channel_count, 48);
         assert_eq!(loaded.console_config.control_group_count, 10);
         assert!(loaded.scope_templates.is_empty());
@@ -220,6 +225,52 @@ mod tests {
         assert!(loaded.eq_palettes.is_empty());
         // New Phase 7 field should default to empty
         assert!(loaded.monitor_clients.is_empty());
+        assert!(loaded.gang_groups.is_empty());
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn v4_file_loads_with_gang_defaults() {
+        // A v4 file has no gang_groups field
+        let v4_json = r#"{
+            "version": 4,
+            "console_config": {
+                "console_name": "",
+                "console_serial": "",
+                "session_filename": null,
+                "input_channel_count": 48,
+                "aux_output_count": 8,
+                "group_output_count": 16,
+                "matrix_output_count": 8,
+                "matrix_input_count": 10,
+                "control_group_count": 10,
+                "graphic_eq_count": 16,
+                "talkback_output_count": 0,
+                "mix_output_types": [],
+                "mix_output_modes": [],
+                "input_modes": [],
+                "group_modes": []
+            },
+            "scope_templates": [],
+            "snapshots": [],
+            "cue_list": { "id": "00000000-0000-0000-0000-000000000000", "name": "Main", "cues": [] },
+            "macros": [],
+            "macro_quick_trigger_ids": [],
+            "eq_palettes": [],
+            "monitor_clients": []
+        }"#;
+
+        let dir = std::env::temp_dir().join("s21_hijack_test");
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let path = dir.join("test_v4_gang_compat.json");
+        tokio::fs::write(&path, v4_json).await.unwrap();
+
+        let loaded = ShowFile::load(&path).await.unwrap();
+        assert_eq!(loaded.version, 4);
+        assert!(loaded.monitor_clients.is_empty());
+        // New gang_groups field should default to empty
+        assert!(loaded.gang_groups.is_empty());
 
         let _ = tokio::fs::remove_file(&path).await;
     }

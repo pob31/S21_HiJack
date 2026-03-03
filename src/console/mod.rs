@@ -1,6 +1,8 @@
 pub mod connection;
 pub mod cue_manager;
 pub mod discovery;
+pub mod gang_engine;
+pub mod gang_manager;
 pub mod eq_palette_manager;
 pub mod fade_engine;
 pub mod ipad_connection;

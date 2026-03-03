@@ -25,9 +25,10 @@ impl ConsoleState {
     }
 
     /// Apply a parameter change (from incoming OSC).
-    pub fn update(&mut self, addr: ParameterAddress, value: ParameterValue) {
+    /// Returns the previous value if one existed.
+    pub fn update(&mut self, addr: ParameterAddress, value: ParameterValue) -> Option<ParameterValue> {
         self.last_updated.insert(addr.clone(), Utc::now());
-        self.parameters.insert(addr, value);
+        self.parameters.insert(addr, value)
     }
 
     /// Get current value of a parameter.
@@ -197,5 +198,26 @@ mod tests {
             channel: ChannelId::Input(2),
             parameter: ParameterPath::Fader,
         }));
+    }
+
+    #[test]
+    fn update_returns_old_value() {
+        let mut state = ConsoleState::new(ConsoleConfig::default());
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+
+        // First insert — no previous value
+        let old = state.update(addr.clone(), ParameterValue::Float(-10.0));
+        assert!(old.is_none());
+
+        // Second insert — returns previous value
+        let old = state.update(addr.clone(), ParameterValue::Float(-5.0));
+        assert_eq!(old, Some(ParameterValue::Float(-10.0)));
+
+        // Third insert — returns the value we just set
+        let old = state.update(addr.clone(), ParameterValue::Float(0.0));
+        assert_eq!(old, Some(ParameterValue::Float(-5.0)));
     }
 }

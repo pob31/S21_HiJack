@@ -19,6 +19,8 @@ use tracing_subscriber::EnvFilter;
 use console::connection::ConnectionManager;
 use console::cue_manager::CueManager;
 use console::eq_palette_manager::EqPaletteManager;
+use console::gang_engine::GangEngine;
+use console::gang_manager::GangManager;
 use console::ipad_connection;
 use console::macro_engine::MacroEngine;
 use console::macro_manager::MacroManager;
@@ -132,21 +134,32 @@ async fn run_headless(args: Args) {
         .parse()
         .expect("Invalid local address");
 
-    // Set up macro and monitor systems
+    // Set up macro, monitor, and gang systems
     let macro_manager = Arc::new(RwLock::new(MacroManager::new()));
     let monitor_manager = Arc::new(RwLock::new(MonitorManager::new()));
+    let gang_manager = Arc::new(RwLock::new(GangManager::new()));
 
-    // Connect to console
-    let manager = match ConnectionManager::connect(local_addr, console_addr, macro_manager.clone()).await {
-        Ok(m) => {
-            info!("Connected successfully");
-            m
-        }
+    // Create state + OscClient so we can build GangEngine before spawning the loop
+    let state = {
+        let config = model::config::ConsoleConfig::default();
+        Arc::new(RwLock::new(model::state::ConsoleState::new(config)))
+    };
+    let client = match osc::client::OscClient::new(local_addr, console_addr).await {
+        Ok(c) => c,
         Err(e) => {
-            error!("Failed to connect: {e}");
+            error!("Failed to create OSC client: {e}");
             std::process::exit(1);
         }
     };
+    let (sender, rx) = client.into_parts();
+
+    let gang_engine = Arc::new(RwLock::new(GangEngine::new(state.clone(), sender.clone())));
+
+    let manager = ConnectionManager::connect_from_parts(
+        sender.clone(), rx, state, macro_manager.clone(),
+        gang_engine.clone(), gang_manager.clone(),
+    );
+    info!("Connected successfully");
 
     // Parse operating mode
     let mode = OperatingMode::from_cli(&args.mode).unwrap_or_default();
@@ -210,6 +223,11 @@ async fn run_headless(args: Args) {
             }
             OperatingMode::Mode1 => {}
         }
+    }
+
+    // Wire iPad sender into gang engine (for iPad-only parameters)
+    if let Some(ref ipad) = ipad_sender_for_monitor {
+        gang_engine.write().await.set_ipad_sender(Some(ipad.clone()));
     }
 
     // Start monitor server (if enabled)
@@ -390,6 +408,12 @@ async fn run_headless(args: Args) {
         clients = mon_mgr.clients.len(),
         connected = mon_mgr.connected_count(),
         "Final monitor system state"
+    );
+
+    let gmgr = gang_manager.read().await;
+    info!(
+        gangs = gmgr.groups.len(),
+        "Final gang system state"
     );
 
     info!("Daemon stopped.");

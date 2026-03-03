@@ -9,6 +9,8 @@ use tracing::{info, error};
 use crate::console::connection::ConnectionManager;
 use crate::console::cue_manager::CueManager;
 use crate::console::eq_palette_manager::EqPaletteManager;
+use crate::console::gang_engine::GangEngine;
+use crate::console::gang_manager::GangManager;
 use crate::console::ipad_connection;
 use crate::console::macro_engine::MacroEngine;
 use crate::console::macro_manager::MacroManager;
@@ -18,7 +20,7 @@ use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::operating_mode::OperatingMode;
 use crate::model::snapshot::CueList;
 use crate::model::state::ConsoleState;
-use crate::osc::client::OscSender;
+use crate::osc::client::{OscClient, OscSender};
 use crate::osc::monitor_server::MonitorServer;
 use crate::osc::trigger_listener::TriggerListener;
 use crate::persistence::show_file::ShowFile;
@@ -90,6 +92,7 @@ pub fn draw_setup_tab(
     macro_manager: &Arc<RwLock<MacroManager>>,
     monitor_manager: &Arc<RwLock<MonitorManager>>,
     eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
+    gang_manager: &Arc<RwLock<GangManager>>,
     snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
     sender: &mut Option<OscSender>,
     connected: &Arc<AtomicBool>,
@@ -129,8 +132,8 @@ pub fn draw_setup_tab(
             if ui.button("Connect").clicked() {
                 start_connection(
                     setup, state, cue_manager, macro_manager, monitor_manager,
-                    eq_palette_manager, snapshot_engine, sender, connected,
-                    runtime, ui_tx, egui_ctx,
+                    eq_palette_manager, gang_manager, snapshot_engine, sender,
+                    connected, runtime, ui_tx, egui_ctx,
                 );
             }
         } else {
@@ -301,10 +304,10 @@ pub fn draw_setup_tab(
     ui.heading("Show File");
     ui.horizontal(|ui| {
         if ui.button("Load Show").clicked() {
-            load_show_file(setup, cue_manager, macro_manager, monitor_manager, eq_palette_manager, runtime, ui_tx);
+            load_show_file(setup, cue_manager, macro_manager, monitor_manager, eq_palette_manager, gang_manager, runtime, ui_tx);
         }
         if ui.button("Save Show").clicked() {
-            save_show_file(setup, state, cue_manager, macro_manager, monitor_manager, eq_palette_manager, runtime, ui_tx);
+            save_show_file(setup, state, cue_manager, macro_manager, monitor_manager, eq_palette_manager, gang_manager, runtime, ui_tx);
         }
         if ui.button("New Show").clicked() {
             let cue_mgr = cue_manager.clone();
@@ -339,6 +342,7 @@ fn start_connection(
     macro_manager: &Arc<RwLock<MacroManager>>,
     monitor_manager: &Arc<RwLock<MonitorManager>>,
     eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
+    gang_manager: &Arc<RwLock<GangManager>>,
     _snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
     _sender: &mut Option<OscSender>,
     connected: &Arc<AtomicBool>,
@@ -417,210 +421,225 @@ fn start_connection(
     let macro_mgr = macro_manager.clone();
     let mon_mgr = monitor_manager.clone();
     let eq_mgr = eq_palette_manager.clone();
+    let gang_mgr = gang_manager.clone();
     let conn_flag = connected.clone();
     let tx = ui_tx.clone();
     let ctx = egui_ctx.clone();
     let console_ip = setup.console_ip.clone();
 
     runtime.spawn(async move {
-        match ConnectionManager::connect_with_state(local_addr, console_addr, st.clone(), macro_mgr).await {
-            Ok(manager) => {
-                info!("Connected to console via UI");
-                conn_flag.store(true, Ordering::Relaxed);
-
-                // Create SnapshotEngine (mut so we can set iPad sender before wrapping in Arc)
-                let mut engine = SnapshotEngine::new(st.clone(), manager.sender());
-
-                // iPad connection (Mode 2 or 3)
-                if operating_mode.uses_ipad_protocol() && ipad_send_port > 0 {
-                    let console_ipad_addr: SocketAddr = format!("{}:{}", console_ip, ipad_send_port)
-                        .parse()
-                        .expect("Invalid console iPad address");
-
-                    match operating_mode {
-                        OperatingMode::Mode2 => {
-                            let ipad_local: SocketAddr = if ipad_receive_port > 0 {
-                                format!("0.0.0.0:{}", ipad_receive_port).parse().unwrap()
-                            } else {
-                                "0.0.0.0:0".parse().unwrap()
-                            };
-                            match ipad_connection::connect_mode2(console_ipad_addr, ipad_local, st.clone()).await {
-                                Ok((ipad_sender, result, _handle)) => {
-                                    info!(
-                                        name = %result.config.console_name,
-                                        "UI Mode 2: iPad protocol connected"
-                                    );
-                                    engine.set_ipad_sender(Some(ipad_sender));
-                                    let _ = tx.send(UiEvent::IpadConnected);
-                                }
-                                Err(e) => {
-                                    error!("UI Mode 2: iPad connection failed: {e}");
-                                    let _ = tx.send(UiEvent::IpadConnectionFailed(e.to_string()));
-                                }
-                            }
-                        }
-                        OperatingMode::Mode3 => {
-                            let listen_addr: SocketAddr = format!("0.0.0.0:{}", ipad_receive_port)
-                                .parse()
-                                .expect("Invalid iPad listen address");
-                            let outbound_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
-                            match ipad_connection::connect_mode3(console_ipad_addr, listen_addr, outbound_addr, st.clone()).await {
-                                Ok((ipad_sender, _forwarder, result, _handle)) => {
-                                    info!(
-                                        name = %result.config.console_name,
-                                        "UI Mode 3: iPad proxy started"
-                                    );
-                                    engine.set_ipad_sender(Some(ipad_sender));
-                                    let _ = tx.send(UiEvent::IpadConnected);
-                                }
-                                Err(e) => {
-                                    error!("UI Mode 3: iPad proxy setup failed: {e}");
-                                    let _ = tx.send(UiEvent::IpadConnectionFailed(e.to_string()));
-                                }
-                            }
-                        }
-                        OperatingMode::Mode1 => {}
-                    }
-                }
-
-                let engine = Arc::new(engine);
-
-                // Start trigger listener
-                match TriggerListener::start(trigger_addr).await {
-                    Ok(mut trigger_rx) => {
-                        let macro_eng = Arc::new(MacroEngine::new(st.clone(), manager.sender()));
-                        let trigger_cue_mgr = cue_mgr.clone();
-                        let trigger_macro_mgr = manager.macro_manager();
-                        let trigger_eq_mgr = eq_mgr.clone();
-                        let trigger_engine = engine.clone();
-                        let trigger_macro_eng = macro_eng.clone();
-
-                        // Spawn trigger processing
-                        tokio::spawn(async move {
-                            use crate::osc::trigger_listener::TriggerEvent;
-                            while let Some(event) = trigger_rx.recv().await {
-                                match event {
-                                    TriggerEvent::GoNext => {
-                                        let mut mgr = trigger_cue_mgr.write().await;
-                                        if let Some(cue) = mgr.go_next() {
-                                            let cue = cue.clone();
-                                            if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
-                                                drop(mgr);
-                                                let pmgr = trigger_eq_mgr.read().await;
-                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
-                                                info!(sent = result.parameters_sent, "Trigger GO recall complete");
-                                            }
-                                        }
-                                    }
-                                    TriggerEvent::GoPrevious => {
-                                        let mut mgr = trigger_cue_mgr.write().await;
-                                        if let Some(cue) = mgr.go_previous() {
-                                            let cue = cue.clone();
-                                            if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
-                                                drop(mgr);
-                                                let pmgr = trigger_eq_mgr.read().await;
-                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
-                                                info!(sent = result.parameters_sent, "Trigger PREV recall complete");
-                                            }
-                                        }
-                                    }
-                                    TriggerEvent::FireCue(number) => {
-                                        let mut mgr = trigger_cue_mgr.write().await;
-                                        if let Some(cue) = mgr.fire_cue_number(number) {
-                                            let cue = cue.clone();
-                                            if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
-                                                drop(mgr);
-                                                let pmgr = trigger_eq_mgr.read().await;
-                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
-                                                info!(number, sent = result.parameters_sent, "Trigger FIRE recall complete");
-                                            }
-                                        }
-                                    }
-                                    TriggerEvent::QueryCurrent { reply_addr } => {
-                                        let mgr = trigger_cue_mgr.read().await;
-                                        let current = mgr.current_cue_number().unwrap_or(-1.0);
-                                        info!(current, %reply_addr, "Trigger /cue/current query");
-                                    }
-                                    TriggerEvent::MacroFire(name) => {
-                                        let mgr = trigger_macro_mgr.read().await;
-                                        if let Some(macro_def) = mgr.find_by_name_or_id(&name).cloned() {
-                                            drop(mgr);
-                                            let result = trigger_macro_eng.execute(&macro_def).await;
-                                            info!(
-                                                name = %result.macro_name,
-                                                executed = result.steps_executed,
-                                                skipped = result.steps_skipped,
-                                                "Trigger MacroFire complete"
-                                            );
-                                        } else {
-                                            tracing::warn!(name, "MacroFire: macro not found");
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        error!("Failed to start trigger listener: {e}");
-                    }
-                }
-
-                // Start monitor server (if port configured)
-                if monitor_port > 0 {
-                    let monitor_addr: SocketAddr = format!("0.0.0.0:{}", monitor_port)
-                        .parse()
-                        .expect("Invalid monitor address");
-                    match MonitorServer::start(monitor_addr).await {
-                        Ok((monitor_sender, mut monitor_rx)) => {
-                            info!(port = monitor_port, "Monitor server started via UI");
-                            let monitor_engine = MonitorEngine::new(st.clone(), manager.sender());
-                            let mon_mgr_loop = mon_mgr.clone();
-                            let tx_monitor = tx.clone();
-                            let _ = tx_monitor.send(UiEvent::MonitorServerStarted);
-                            tokio::spawn(async move {
-                                let mut last_send_state = std::collections::HashMap::new();
-                                let mut poll_interval = tokio::time::interval(
-                                    std::time::Duration::from_millis(500),
-                                );
-                                loop {
-                                    tokio::select! {
-                                        Some(cmd) = monitor_rx.recv() => {
-                                            let mut mgr = mon_mgr_loop.write().await;
-                                            monitor_engine.handle_command(
-                                                cmd, &mut mgr, &monitor_sender, true,
-                                            ).await;
-                                        }
-                                        _ = poll_interval.tick() => {
-                                            let mgr = mon_mgr_loop.read().await;
-                                            monitor_engine.poll_and_push_state_changes(
-                                                &mut last_send_state,
-                                                &mgr,
-                                                &monitor_sender,
-                                            ).await;
-                                        }
-                                    }
-                                }
-                            });
-                        }
-                        Err(e) => {
-                            error!("Failed to start monitor server: {e}");
-                            let _ = tx.send(UiEvent::MonitorServerFailed(e.to_string()));
-                        }
-                    }
-                }
-
-                let _ = tx.send(UiEvent::ConnectionEstablished);
-                if let Some(ctx) = ctx.get() {
-                    ctx.request_repaint();
-                }
-            }
+        // Create OscClient manually so we can build GangEngine with the sender
+        let client = match OscClient::new(local_addr, console_addr).await {
+            Ok(c) => c,
             Err(e) => {
                 error!("Connection failed: {e}");
                 let _ = tx.send(UiEvent::ConnectionFailed(e.to_string()));
                 if let Some(ctx) = ctx.get() {
                     ctx.request_repaint();
                 }
+                return;
             }
+        };
+        let (osc_sender, rx) = client.into_parts();
+
+        // Create GangEngine with the sender
+        let gang_engine = Arc::new(RwLock::new(
+            GangEngine::new(st.clone(), osc_sender.clone()),
+        ));
+
+        let manager = ConnectionManager::connect_from_parts(
+            osc_sender, rx, st.clone(), macro_mgr, gang_engine.clone(), gang_mgr,
+        );
+
+        info!("Connected to console via UI");
+        conn_flag.store(true, Ordering::Relaxed);
+
+        // Create SnapshotEngine (mut so we can set iPad sender before wrapping in Arc)
+        let mut snapshot_engine = SnapshotEngine::new(st.clone(), manager.sender());
+
+        // iPad connection (Mode 2 or 3)
+        if operating_mode.uses_ipad_protocol() && ipad_send_port > 0 {
+            let console_ipad_addr: SocketAddr = format!("{}:{}", console_ip, ipad_send_port)
+                .parse()
+                .expect("Invalid console iPad address");
+
+            match operating_mode {
+                OperatingMode::Mode2 => {
+                    let ipad_local: SocketAddr = if ipad_receive_port > 0 {
+                        format!("0.0.0.0:{}", ipad_receive_port).parse().unwrap()
+                    } else {
+                        "0.0.0.0:0".parse().unwrap()
+                    };
+                    match ipad_connection::connect_mode2(console_ipad_addr, ipad_local, st.clone()).await {
+                        Ok((ipad_sender, result, _handle)) => {
+                            info!(
+                                name = %result.config.console_name,
+                                "UI Mode 2: iPad protocol connected"
+                            );
+                            snapshot_engine.set_ipad_sender(Some(ipad_sender.clone()));
+                            gang_engine.write().await.set_ipad_sender(Some(ipad_sender));
+                            let _ = tx.send(UiEvent::IpadConnected);
+                        }
+                        Err(e) => {
+                            error!("UI Mode 2: iPad connection failed: {e}");
+                            let _ = tx.send(UiEvent::IpadConnectionFailed(e.to_string()));
+                        }
+                    }
+                }
+                OperatingMode::Mode3 => {
+                    let listen_addr: SocketAddr = format!("0.0.0.0:{}", ipad_receive_port)
+                        .parse()
+                        .expect("Invalid iPad listen address");
+                    let outbound_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
+                    match ipad_connection::connect_mode3(console_ipad_addr, listen_addr, outbound_addr, st.clone()).await {
+                        Ok((ipad_sender, _forwarder, result, _handle)) => {
+                            info!(
+                                name = %result.config.console_name,
+                                "UI Mode 3: iPad proxy started"
+                            );
+                            snapshot_engine.set_ipad_sender(Some(ipad_sender.clone()));
+                            gang_engine.write().await.set_ipad_sender(Some(ipad_sender));
+                            let _ = tx.send(UiEvent::IpadConnected);
+                        }
+                        Err(e) => {
+                            error!("UI Mode 3: iPad proxy setup failed: {e}");
+                            let _ = tx.send(UiEvent::IpadConnectionFailed(e.to_string()));
+                        }
+                    }
+                }
+                OperatingMode::Mode1 => {}
+            }
+        }
+
+        let engine = Arc::new(snapshot_engine);
+
+        // Start trigger listener
+        match TriggerListener::start(trigger_addr).await {
+            Ok(mut trigger_rx) => {
+                let macro_eng = Arc::new(MacroEngine::new(st.clone(), manager.sender()));
+                let trigger_cue_mgr = cue_mgr.clone();
+                let trigger_macro_mgr = manager.macro_manager();
+                let trigger_eq_mgr = eq_mgr.clone();
+                let trigger_engine = engine.clone();
+                let trigger_macro_eng = macro_eng.clone();
+
+                // Spawn trigger processing
+                tokio::spawn(async move {
+                    use crate::osc::trigger_listener::TriggerEvent;
+                    while let Some(event) = trigger_rx.recv().await {
+                        match event {
+                            TriggerEvent::GoNext => {
+                                let mut mgr = trigger_cue_mgr.write().await;
+                                if let Some(cue) = mgr.go_next() {
+                                    let cue = cue.clone();
+                                    if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
+                                        drop(mgr);
+                                        let pmgr = trigger_eq_mgr.read().await;
+                                        let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
+                                        info!(sent = result.parameters_sent, "Trigger GO recall complete");
+                                    }
+                                }
+                            }
+                            TriggerEvent::GoPrevious => {
+                                let mut mgr = trigger_cue_mgr.write().await;
+                                if let Some(cue) = mgr.go_previous() {
+                                    let cue = cue.clone();
+                                    if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
+                                        drop(mgr);
+                                        let pmgr = trigger_eq_mgr.read().await;
+                                        let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
+                                        info!(sent = result.parameters_sent, "Trigger PREV recall complete");
+                                    }
+                                }
+                            }
+                            TriggerEvent::FireCue(number) => {
+                                let mut mgr = trigger_cue_mgr.write().await;
+                                if let Some(cue) = mgr.fire_cue_number(number) {
+                                    let cue = cue.clone();
+                                    if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
+                                        drop(mgr);
+                                        let pmgr = trigger_eq_mgr.read().await;
+                                        let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
+                                        info!(number, sent = result.parameters_sent, "Trigger FIRE recall complete");
+                                    }
+                                }
+                            }
+                            TriggerEvent::QueryCurrent { reply_addr } => {
+                                let mgr = trigger_cue_mgr.read().await;
+                                let current = mgr.current_cue_number().unwrap_or(-1.0);
+                                info!(current, %reply_addr, "Trigger /cue/current query");
+                            }
+                            TriggerEvent::MacroFire(name) => {
+                                let mgr = trigger_macro_mgr.read().await;
+                                if let Some(macro_def) = mgr.find_by_name_or_id(&name).cloned() {
+                                    drop(mgr);
+                                    let result = trigger_macro_eng.execute(&macro_def).await;
+                                    info!(
+                                        name = %result.macro_name,
+                                        executed = result.steps_executed,
+                                        skipped = result.steps_skipped,
+                                        "Trigger MacroFire complete"
+                                    );
+                                } else {
+                                    tracing::warn!(name, "MacroFire: macro not found");
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+            Err(e) => {
+                error!("Failed to start trigger listener: {e}");
+            }
+        }
+
+        // Start monitor server (if port configured)
+        if monitor_port > 0 {
+            let monitor_addr: SocketAddr = format!("0.0.0.0:{}", monitor_port)
+                .parse()
+                .expect("Invalid monitor address");
+            match MonitorServer::start(monitor_addr).await {
+                Ok((monitor_sender, mut monitor_rx)) => {
+                    info!(port = monitor_port, "Monitor server started via UI");
+                    let monitor_engine = MonitorEngine::new(st.clone(), manager.sender());
+                    let mon_mgr_loop = mon_mgr.clone();
+                    let tx_monitor = tx.clone();
+                    let _ = tx_monitor.send(UiEvent::MonitorServerStarted);
+                    tokio::spawn(async move {
+                        let mut last_send_state = std::collections::HashMap::new();
+                        let mut poll_interval = tokio::time::interval(
+                            std::time::Duration::from_millis(500),
+                        );
+                        loop {
+                            tokio::select! {
+                                Some(cmd) = monitor_rx.recv() => {
+                                    let mut mgr = mon_mgr_loop.write().await;
+                                    monitor_engine.handle_command(
+                                        cmd, &mut mgr, &monitor_sender, true,
+                                    ).await;
+                                }
+                                _ = poll_interval.tick() => {
+                                    let mgr = mon_mgr_loop.read().await;
+                                    monitor_engine.poll_and_push_state_changes(
+                                        &mut last_send_state,
+                                        &mgr,
+                                        &monitor_sender,
+                                    ).await;
+                                }
+                            }
+                        }
+                    });
+                }
+                Err(e) => {
+                    error!("Failed to start monitor server: {e}");
+                    let _ = tx.send(UiEvent::MonitorServerFailed(e.to_string()));
+                }
+            }
+        }
+
+        let _ = tx.send(UiEvent::ConnectionEstablished);
+        if let Some(ctx) = ctx.get() {
+            ctx.request_repaint();
         }
     });
 }
@@ -631,6 +650,7 @@ fn load_show_file(
     macro_manager: &Arc<RwLock<MacroManager>>,
     monitor_manager: &Arc<RwLock<MonitorManager>>,
     eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
+    gang_manager: &Arc<RwLock<GangManager>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
@@ -644,6 +664,7 @@ fn load_show_file(
     let macro_mgr = macro_manager.clone();
     let mon_mgr = monitor_manager.clone();
     let eq_mgr = eq_palette_manager.clone();
+    let gang_mgr = gang_manager.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
 
@@ -685,6 +706,14 @@ fn load_show_file(
                 for client in show.monitor_clients {
                     monmgr.clients.insert(client.id, client);
                 }
+                drop(monmgr);
+
+                // Restore gang groups
+                let mut gmgr = gang_mgr.write().await;
+                gmgr.groups.clear();
+                for group in show.gang_groups {
+                    gmgr.groups.insert(group.id, group);
+                }
 
                 info!("Show file loaded: {path_str}");
                 let _ = tx.send(UiEvent::ShowFileLoaded(path_str));
@@ -703,6 +732,7 @@ fn save_show_file(
     macro_manager: &Arc<RwLock<MacroManager>>,
     monitor_manager: &Arc<RwLock<MonitorManager>>,
     eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
+    gang_manager: &Arc<RwLock<GangManager>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
@@ -717,6 +747,7 @@ fn save_show_file(
     let macro_mgr = macro_manager.clone();
     let mon_mgr = monitor_manager.clone();
     let eq_mgr = eq_palette_manager.clone();
+    let gang_mgr = gang_manager.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
 
@@ -726,9 +757,10 @@ fn save_show_file(
         let mmgr = macro_mgr.read().await;
         let monmgr = mon_mgr.read().await;
         let pmgr = eq_mgr.read().await;
+        let gmgr = gang_mgr.read().await;
 
         let show = ShowFile {
-            version: 4,
+            version: 5,
             console_config: state_guard.config.clone(),
             scope_templates: mgr.scope_templates.values().cloned().collect(),
             snapshots: mgr.snapshots.values().cloned().collect(),
@@ -737,6 +769,7 @@ fn save_show_file(
             macro_quick_trigger_ids: mmgr.quick_trigger_ids.clone(),
             eq_palettes: pmgr.palettes.values().cloned().collect(),
             monitor_clients: monmgr.clients.values().cloned().collect(),
+            gang_groups: gmgr.groups.values().cloned().collect(),
         };
 
         drop(state_guard);
@@ -744,6 +777,7 @@ fn save_show_file(
         drop(mmgr);
         drop(monmgr);
         drop(pmgr);
+        drop(gmgr);
 
         match show.save(&path).await {
             Ok(()) => {

@@ -1,5 +1,6 @@
 pub mod app;
 pub mod eq_palettes_ui;
+pub mod gangs_tab;
 pub mod live_tab;
 pub mod macros_tab;
 pub mod monitor_tab;
@@ -15,6 +16,7 @@ pub enum Tab {
     Snapshots,
     Macros,
     Live,
+    Gangs,
     Monitor,
 }
 

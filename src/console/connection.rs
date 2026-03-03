@@ -7,6 +7,8 @@ use tokio::time;
 use tracing::{info, warn, debug, error};
 
 use crate::console::discovery;
+use crate::console::gang_engine::GangEngine;
+use crate::console::gang_manager::GangManager;
 use crate::console::macro_manager::MacroManager;
 use crate::model::config::ConsoleConfig;
 use crate::model::state::ConsoleState;
@@ -25,6 +27,8 @@ pub struct ConnectionManager {
     state: Arc<RwLock<ConsoleState>>,
     sender: OscSender,
     macro_manager: Arc<RwLock<MacroManager>>,
+    gang_engine: Arc<RwLock<GangEngine>>,
+    gang_manager: Arc<RwLock<GangManager>>,
 }
 
 impl ConnectionManager {
@@ -33,10 +37,12 @@ impl ConnectionManager {
         local_addr: SocketAddr,
         console_addr: SocketAddr,
         macro_manager: Arc<RwLock<MacroManager>>,
+        gang_engine: Arc<RwLock<GangEngine>>,
+        gang_manager: Arc<RwLock<GangManager>>,
     ) -> std::io::Result<Self> {
         let config = ConsoleConfig::default();
         let state = Arc::new(RwLock::new(ConsoleState::new(config)));
-        Self::connect_with_state(local_addr, console_addr, state, macro_manager).await
+        Self::connect_with_state(local_addr, console_addr, state, macro_manager, gang_engine, gang_manager).await
     }
 
     /// Connect using a pre-existing shared state (for UI mode where state is created before connection).
@@ -45,6 +51,8 @@ impl ConnectionManager {
         console_addr: SocketAddr,
         state: Arc<RwLock<ConsoleState>>,
         macro_manager: Arc<RwLock<MacroManager>>,
+        gang_engine: Arc<RwLock<GangEngine>>,
+        gang_manager: Arc<RwLock<GangManager>>,
     ) -> std::io::Result<Self> {
         info!(
             "Connecting to console at {console_addr}, local port {}",
@@ -58,10 +66,12 @@ impl ConnectionManager {
             state: state.clone(),
             sender: sender.clone(),
             macro_manager: macro_manager.clone(),
+            gang_engine: gang_engine.clone(),
+            gang_manager: gang_manager.clone(),
         };
 
         // Spawn the main processing loop
-        tokio::spawn(run_loop(sender, rx, state, macro_manager));
+        tokio::spawn(run_loop(sender, rx, state, macro_manager, gang_engine, gang_manager));
 
         Ok(manager)
     }
@@ -80,6 +90,42 @@ impl ConnectionManager {
     pub fn macro_manager(&self) -> Arc<RwLock<MacroManager>> {
         self.macro_manager.clone()
     }
+
+    /// Build a ConnectionManager from pre-created parts (when OscClient was created externally).
+    /// Spawns the discovery + state mirror loop.
+    pub fn connect_from_parts(
+        sender: OscSender,
+        rx: tokio::sync::mpsc::Receiver<ReceivedOscMessage>,
+        state: Arc<RwLock<ConsoleState>>,
+        macro_manager: Arc<RwLock<MacroManager>>,
+        gang_engine: Arc<RwLock<GangEngine>>,
+        gang_manager: Arc<RwLock<GangManager>>,
+    ) -> Self {
+        info!("ConnectionManager created from parts");
+
+        tokio::spawn(run_loop(
+            sender.clone(), rx, state.clone(), macro_manager.clone(),
+            gang_engine.clone(), gang_manager.clone(),
+        ));
+
+        Self {
+            state,
+            sender,
+            macro_manager,
+            gang_engine,
+            gang_manager,
+        }
+    }
+
+    /// Get a reference to the gang engine.
+    pub fn gang_engine(&self) -> Arc<RwLock<GangEngine>> {
+        self.gang_engine.clone()
+    }
+
+    /// Get a reference to the gang manager.
+    pub fn gang_manager(&self) -> Arc<RwLock<GangManager>> {
+        self.gang_manager.clone()
+    }
 }
 
 /// Main processing loop: discovery, then state mirror + keepalive.
@@ -88,6 +134,8 @@ async fn run_loop(
     mut rx: tokio::sync::mpsc::Receiver<ReceivedOscMessage>,
     state: Arc<RwLock<ConsoleState>>,
     macro_manager: Arc<RwLock<MacroManager>>,
+    gang_engine: Arc<RwLock<GangEngine>>,
+    gang_manager: Arc<RwLock<GangManager>>,
 ) {
     // Phase 1: Discovery — send request and collect responses
     info!("Starting console discovery...");
@@ -121,7 +169,7 @@ async fn run_loop(
                     }
                     // During discovery, still process other messages
                     _ => {
-                        process_message_inner(&parsed, &state, &sender, &macro_manager).await;
+                        process_message_inner(&parsed, &state, &sender, &macro_manager, &gang_engine, &gang_manager).await;
                     }
                 }
             }
@@ -165,7 +213,7 @@ async fn run_loop(
             // Process incoming OSC messages
             Some(msg) = rx.recv() => {
                 let parsed = parse::parse_gp_osc(&msg.path, &msg.args);
-                process_message_inner(&parsed, &state, &sender, &macro_manager).await;
+                process_message_inner(&parsed, &state, &sender, &macro_manager, &gang_engine, &gang_manager).await;
             }
 
             // Send keepalive ping
@@ -198,11 +246,23 @@ async fn process_message_inner(
     state: &Arc<RwLock<ConsoleState>>,
     sender: &OscSender,
     macro_manager: &Arc<RwLock<MacroManager>>,
+    gang_engine: &Arc<RwLock<GangEngine>>,
+    gang_manager: &Arc<RwLock<GangManager>>,
 ) {
     match parsed {
         ParsedOscMessage::ParameterUpdate(addr, value) => {
             debug!(%addr, %value, "Parameter update");
-            state.write().await.update(addr.clone(), value.clone());
+            let old_value = state.write().await.update(addr.clone(), value.clone());
+
+            // Gang propagation — before macro recording so the engineer's
+            // original change is what gets recorded, not ganged echoes.
+            {
+                let mut engine = gang_engine.write().await;
+                let manager = gang_manager.read().await;
+                engine
+                    .process_gang_update(addr, value, old_value.as_ref(), &manager)
+                    .await;
+            }
 
             // Feed into macro learn mode if recording
             let mut mgr = macro_manager.write().await;
