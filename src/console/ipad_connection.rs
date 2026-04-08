@@ -8,7 +8,7 @@ use tracing::{info, warn, debug};
 
 use crate::model::state::ConsoleState;
 use crate::osc::client::ReceivedOscMessage;
-use crate::osc::ipad_client::{IpadClient, IpadForwarder, IpadListener, IpadSender};
+use crate::osc::ipad_client::{IpadClient, IpadSender};
 use crate::osc::ipad_parse::{self, ParsedIpadMessage};
 
 use super::ipad_handshake::{self, HandshakeResult};
@@ -55,10 +55,11 @@ pub async fn connect_mode2(
     console_ipad_addr: SocketAddr,
     local_addr: SocketAddr,
     state: Arc<RwLock<ConsoleState>>,
+    interface_name: Option<&str>,
 ) -> Result<(IpadSender, HandshakeResult, JoinHandle<()>), IpadConnectionError> {
     info!(%console_ipad_addr, "Mode 2: connecting to console iPad port...");
 
-    let client = IpadClient::new(local_addr, console_ipad_addr).await?;
+    let client = IpadClient::new(local_addr, console_ipad_addr, interface_name).await?;
     let (sender, mut rx) = client.into_parts();
 
     // Perform handshake
@@ -83,61 +84,66 @@ pub async fn connect_mode2(
     Ok((sender, handshake_result, handle))
 }
 
-/// Mode 3: iPad proxy connection.
+/// Mode 3: Two-socket iPad proxy.
 ///
-/// 1. Connects to the console's iPad remote port (daemon→console).
-/// 2. Listens for the real iPad to connect (iPad→daemon).
-/// 3. Forwards traffic bidirectionally while capturing state.
-pub async fn connect_mode3(
+/// Console-side socket: bound to `local_console_addr`, sends to `console_ipad_addr`
+/// iPad-side socket: bound to `ipad_listen_addr`, sends to `ipad_target` (or auto-detected)
+///
+/// Starts forwarding immediately without blocking on a handshake.
+/// All traffic is logged and captured into the state mirror.
+pub async fn connect_mode3_proxy(
     console_ipad_addr: SocketAddr,
-    local_listen_addr: SocketAddr,
-    local_outbound_addr: SocketAddr,
+    local_console_addr: SocketAddr,
+    ipad_listen_addr: SocketAddr,
+    ipad_target: Option<SocketAddr>,
+    ipad_reply_port: u16,
     state: Arc<RwLock<ConsoleState>>,
-) -> Result<(IpadSender, IpadForwarder, HandshakeResult, JoinHandle<()>), IpadConnectionError> {
+    cancel: tokio_util::sync::CancellationToken,
+    interface_name: Option<String>,
+) -> Result<IpadSender, IpadConnectionError> {
     info!(
         %console_ipad_addr,
-        %local_listen_addr,
-        "Mode 3: setting up iPad proxy..."
+        %local_console_addr,
+        %ipad_listen_addr,
+        ?ipad_target,
+        "Mode 3: setting up two-socket iPad proxy..."
     );
 
-    // 1. Connect to console's iPad port
-    let client = IpadClient::new(local_outbound_addr, console_ipad_addr).await?;
-    let (console_sender, mut console_rx) = client.into_parts();
-
-    // 2. Perform handshake with console
-    let handshake_result = ipad_handshake::perform_handshake(
-        &console_sender,
-        &mut console_rx,
-        HANDSHAKE_TIMEOUT,
+    // Socket 1: Console-side (daemon ↔ console) — raw UDP, interface-bound
+    let console_socket = crate::ui::net_interfaces::create_bound_udp_socket(
+        local_console_addr, interface_name.as_deref(),
     ).await?;
+    let actual_console = console_socket.local_addr()?;
+    info!(%actual_console, %console_ipad_addr, "Mode 3: console-side socket bound");
+    let console_socket = std::sync::Arc::new(console_socket);
 
-    info!(
-        name = %handshake_result.config.console_name,
-        "Mode 3: console handshake complete"
-    );
+    // Also create an IpadSender for snapshot engine use (sends via same socket)
+    let ipad_sender = IpadSender::from_socket(console_socket.clone(), console_ipad_addr);
 
-    // 3. Listen for real iPad connections
-    let listener = IpadListener::new(local_listen_addr).await?;
-    let (ipad_forwarder, ipad_rx) = listener.into_parts();
+    // Socket 2: iPad-side (daemon ↔ iPad) — raw UDP, interface-bound
+    let ipad_socket = crate::ui::net_interfaces::create_bound_udp_socket(
+        ipad_listen_addr, interface_name.as_deref(),
+    ).await?;
+    let actual_listen = ipad_socket.local_addr()?;
+    info!(%actual_listen, "Mode 3: iPad-side socket listening");
+    let ipad_socket = std::sync::Arc::new(ipad_socket);
 
-    info!(%local_listen_addr, "Mode 3: listening for iPad connections");
-
-    // 4. Start bidirectional forwarding loop
+    // Start the bidirectional proxy loop immediately (no handshake)
     let state_clone = state.clone();
-    let console_sender_clone = console_sender.clone();
-    let ipad_forwarder_clone = ipad_forwarder.clone();
 
-    let handle = tokio::spawn(async move {
-        proxy_loop(
-            console_rx,
-            ipad_rx,
-            console_sender_clone,
-            ipad_forwarder_clone,
+    tokio::spawn(async move {
+        raw_proxy_loop(
+            console_socket,
+            console_ipad_addr,
+            ipad_socket,
+            ipad_target,
+            ipad_reply_port,
             state_clone,
+            cancel,
         ).await;
     });
 
-    Ok((console_sender, ipad_forwarder, handshake_result, handle))
+    Ok(ipad_sender)
 }
 
 /// Background loop for Mode 2: mirrors iPad protocol messages into ConsoleState.
@@ -165,63 +171,169 @@ async fn ipad_state_mirror_loop(
     info!("iPad state mirror loop ended");
 }
 
-/// Bidirectional proxy loop for Mode 3.
+/// Pure raw bidirectional proxy loop for Mode 3.
 ///
-/// - Console→daemon: parse, capture state, forward to iPad
-/// - iPad→daemon: parse, capture state, forward to console
-async fn proxy_loop(
-    mut console_rx: tokio::sync::mpsc::Receiver<ReceivedOscMessage>,
-    mut ipad_rx: tokio::sync::mpsc::Receiver<(ReceivedOscMessage, SocketAddr)>,
-    console_sender: IpadSender,
-    ipad_forwarder: IpadForwarder,
+/// Two raw UDP sockets, no parsing, no wrappers. Just forwards bytes.
+/// Parsing is best-effort for logging only.
+async fn raw_proxy_loop(
+    console_socket: std::sync::Arc<tokio::net::UdpSocket>,
+    console_addr: SocketAddr,
+    ipad_socket: std::sync::Arc<tokio::net::UdpSocket>,
+    ipad_target: Option<SocketAddr>,
+    ipad_reply_port: u16,
     state: Arc<RwLock<ConsoleState>>,
+    cancel: tokio_util::sync::CancellationToken,
 ) {
-    info!("Mode 3 proxy loop started");
+    info!("Mode 3 raw proxy started");
+
+    let mut ipad_addr: Option<SocketAddr> = ipad_target;
+    let mut console_buf = vec![0u8; 65536];
+    let mut ipad_buf = vec![0u8; 65536];
+    let mut c2i: u64 = 0;
+    let mut i2c: u64 = 0;
+
     loop {
         tokio::select! {
-            // Console → daemon → iPad
-            Some(msg) = console_rx.recv() => {
-                let parsed = ipad_parse::parse_ipad_message(&msg.path, &msg.args);
-                if let ParsedIpadMessage::ParameterUpdate(addr, value) = &parsed {
-                    debug!(%addr, "Proxy: console→iPad parameter");
-                    state.write().await.update(addr.clone(), value.clone());
-                }
+            _ = cancel.cancelled() => {
+                info!(c2i, i2c, "Mode 3 proxy cancelled");
+                break;
+            }
 
-                // Forward raw to iPad
-                // Re-encode the message for forwarding
-                let osc_msg = rosc::OscMessage {
-                    addr: msg.path.clone(),
-                    args: msg.args.clone(),
-                };
-                let packet = rosc::OscPacket::Message(osc_msg);
-                if let Ok(buf) = rosc::encoder::encode(&packet) {
-                    if let Err(e) = ipad_forwarder.forward_raw(&buf).await {
-                        warn!("Proxy: failed to forward to iPad: {e}");
+            // Console → daemon → iPad
+            result = console_socket.recv_from(&mut console_buf) => {
+                match result {
+                    Ok((size, _src)) => {
+                        log_and_capture_packet(&console_buf[..size], "C→I", &state).await;
+
+                        if let Some(dest) = ipad_addr {
+                            match ipad_socket.send_to(&console_buf[..size], dest).await {
+                                Ok(sent) => {
+                                    c2i += 1;
+                                    if c2i <= 5 {
+                                        debug!(c2i, sent, %dest, "Proxy C→I: forwarded {sent} bytes to {dest}");
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(%dest, "Proxy C→I: send failed: {e}");
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Proxy console recv error: {e}");
+                        break;
                     }
                 }
             }
 
             // iPad → daemon → console
-            Some((msg, _src)) = ipad_rx.recv() => {
-                let parsed = ipad_parse::parse_ipad_message(&msg.path, &msg.args);
-                if let ParsedIpadMessage::ParameterUpdate(addr, value) = &parsed {
-                    debug!(%addr, "Proxy: iPad→console parameter");
-                    state.write().await.update(addr.clone(), value.clone());
-                }
+            result = ipad_socket.recv_from(&mut ipad_buf) => {
+                match result {
+                    Ok((size, src)) => {
+                        // Use the iPad's IP from the first packet, but reply to the
+                        // configured receive port (not the ephemeral send port).
+                        // The iPad listens on its configured "Receive Port" for responses.
+                        if ipad_addr.is_none() {
+                            let detected = SocketAddr::new(src.ip(), ipad_reply_port);
+                            info!(%src, %detected, "Proxy: iPad detected (src={src}), replies → {detected}");
+                            ipad_addr = Some(detected);
+                        }
 
-                // Forward to console
-                if let Err(e) = console_sender.send(&msg.path, msg.args.clone()).await {
-                    warn!("Proxy: failed to forward to console: {e}");
-                }
-            }
+                        log_and_capture_packet(&ipad_buf[..size], "I→C", &state).await;
 
-            else => {
-                info!("Proxy loop: both channels closed");
-                break;
+                        match console_socket.send_to(&ipad_buf[..size], console_addr).await {
+                            Ok(sent) => {
+                                i2c += 1;
+                                if i2c <= 5 {
+                                    debug!(i2c, sent, %console_addr, "Proxy I→C: forwarded {sent} bytes to {console_addr}");
+                                }
+                            }
+                            Err(e) => {
+                                warn!(%console_addr, "Proxy I→C: send failed: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Proxy iPad recv error: {e}");
+                        break;
+                    }
+                }
             }
         }
     }
-    info!("Mode 3 proxy loop ended");
+    drop(console_socket);
+    drop(ipad_socket);
+    info!("Mode 3 proxy ended");
+}
+
+/// Best-effort parse and log a raw packet. Captures parameter updates into state.
+async fn log_and_capture_packet(
+    data: &[u8],
+    direction: &str,
+    state: &Arc<RwLock<ConsoleState>>,
+) {
+    // Try standard OSC first
+    if let Ok((_, packet)) = rosc::decoder::decode_udp(data) {
+        let messages = flatten_packet(packet);
+        for msg in messages {
+            let parsed = ipad_parse::parse_ipad_message(&msg.path, &msg.args);
+            match &parsed {
+                ParsedIpadMessage::ParameterUpdate(addr, value) => {
+                    debug!(%addr, %value, "Proxy {direction}: param");
+                    state.write().await.update(addr.clone(), value.clone());
+                }
+                ParsedIpadMessage::ConfigResponse(cfg) => {
+                    info!(?cfg, "Proxy {direction}: config");
+                }
+                _ => {
+                    debug!(path = msg.path, "Proxy {direction}: {}", msg.path);
+                }
+            }
+        }
+    } else if let Some(msg) = parse_bare_path(data) {
+        // DiGiCo bare-path query
+        debug!(path = msg.path, "Proxy {direction}: bare query");
+    } else {
+        let hex: String = data[..data.len().min(32)].iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        debug!(size = data.len(), %hex, "Proxy {direction}: raw ({} bytes)", data.len());
+    }
+}
+
+/// Try to parse a bare path packet (DiGiCo non-standard: just path + null, no type tag).
+fn parse_bare_path(data: &[u8]) -> Option<ReceivedOscMessage> {
+    // Must start with '/'
+    if data.first() != Some(&b'/') {
+        return None;
+    }
+    // Find null terminator
+    let null_pos = data.iter().position(|&b| b == 0)?;
+    let path = std::str::from_utf8(&data[..null_pos]).ok()?;
+    Some(ReceivedOscMessage {
+        path: path.to_string(),
+        args: vec![],
+    })
+}
+
+/// Flatten an OSC packet (message or bundle) into a Vec of messages.
+fn flatten_packet(packet: rosc::OscPacket) -> Vec<ReceivedOscMessage> {
+    let mut out = Vec::new();
+    match packet {
+        rosc::OscPacket::Message(msg) => {
+            out.push(ReceivedOscMessage {
+                path: msg.addr,
+                args: msg.args,
+            });
+        }
+        rosc::OscPacket::Bundle(bundle) => {
+            for p in bundle.content {
+                out.extend(flatten_packet(p));
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

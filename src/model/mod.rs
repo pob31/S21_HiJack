@@ -5,6 +5,7 @@ pub mod eq_palette;
 pub mod macro_def;
 pub mod monitor;
 pub mod operating_mode;
+pub mod osc_log;
 pub mod parameter;
 pub mod snapshot;
 pub mod state;

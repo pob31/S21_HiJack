@@ -144,7 +144,7 @@ async fn run_headless(args: Args) {
         let config = model::config::ConsoleConfig::default();
         Arc::new(RwLock::new(model::state::ConsoleState::new(config)))
     };
-    let client = match osc::client::OscClient::new(local_addr, console_addr).await {
+    let client = match osc::client::OscClient::new(local_addr, console_addr, None).await {
         Ok(c) => c,
         Err(e) => {
             error!("Failed to create OSC client: {e}");
@@ -155,9 +155,10 @@ async fn run_headless(args: Args) {
 
     let gang_engine = Arc::new(RwLock::new(GangEngine::new(state.clone(), sender.clone())));
 
+    let cancel_token = tokio_util::sync::CancellationToken::new();
     let manager = ConnectionManager::connect_from_parts(
         sender.clone(), rx, state, macro_manager.clone(),
-        gang_engine.clone(), gang_manager.clone(),
+        gang_engine.clone(), gang_manager.clone(), cancel_token.clone(),
     );
     info!("Connected successfully");
 
@@ -187,7 +188,7 @@ async fn run_headless(args: Args) {
                 } else {
                     "0.0.0.0:0".parse().unwrap()
                 };
-                match ipad_connection::connect_mode2(console_ipad_addr, ipad_local, manager.state()).await {
+                match ipad_connection::connect_mode2(console_ipad_addr, ipad_local, manager.state(), None).await {
                     Ok((ipad_sender, result, _handle)) => {
                         info!(
                             name = %result.config.console_name,
@@ -202,14 +203,27 @@ async fn run_headless(args: Args) {
                 }
             }
             OperatingMode::Mode3 => {
-                let listen_addr: SocketAddr = format!("0.0.0.0:{}", recv_port)
+                let local_console_addr: SocketAddr = format!("0.0.0.0:{}", recv_port)
                     .parse()
-                    .expect("Invalid iPad listen address (--ipad-receive-port required for Mode 3)");
-                let outbound_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
-                match ipad_connection::connect_mode3(console_ipad_addr, listen_addr, outbound_addr, manager.state()).await {
-                    Ok((ipad_sender, _forwarder, result, _handle)) => {
+                    .expect("Invalid iPad local port (--ipad-receive-port required for Mode 3)");
+                // In headless mode, use recv_port+1000 for iPad listener by default
+                let ipad_listen_port = recv_port + 1000;
+                let ipad_reply_port = recv_port + 1000 - 1;
+                let ipad_listen_addr: SocketAddr = format!("0.0.0.0:{}", ipad_listen_port)
+                    .parse()
+                    .expect("Invalid iPad listen address");
+                let ipad_target = args.ipad_ip.as_ref().map(|ip| {
+                    let addr: SocketAddr = format!("{ip}:{ipad_reply_port}").parse()
+                        .expect("Invalid iPad IP");
+                    addr
+                });
+                match ipad_connection::connect_mode3_proxy(
+                    console_ipad_addr, local_console_addr, ipad_listen_addr,
+                    ipad_target, ipad_reply_port,
+                    manager.state(), cancel_token.clone(), None,
+                ).await {
+                    Ok(ipad_sender) => {
                         info!(
-                            name = %result.config.console_name,
                             ipad_ip = ?args.ipad_ip,
                             "Mode 3: iPad proxy started"
                         );

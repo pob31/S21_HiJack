@@ -245,6 +245,7 @@ mod tests {
         let client = crate::osc::ipad_client::IpadClient::new(
             "127.0.0.1:0".parse().unwrap(),
             console_addr,
+            None,
         ).await.unwrap();
         let (sender, rx) = client.into_parts();
 

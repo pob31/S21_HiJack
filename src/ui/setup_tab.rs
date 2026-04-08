@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, error};
 
 use crate::console::connection::ConnectionManager;
@@ -17,18 +18,25 @@ use crate::console::macro_manager::MacroManager;
 use crate::console::monitor_engine::MonitorEngine;
 use crate::console::monitor_manager::MonitorManager;
 use crate::console::snapshot_engine::SnapshotEngine;
+use crate::model::config::ChannelOption;
 use crate::model::operating_mode::OperatingMode;
+use crate::model::osc_log::OscLog;
 use crate::model::snapshot::CueList;
 use crate::model::state::ConsoleState;
 use crate::osc::client::{OscClient, OscSender};
 use crate::osc::monitor_server::MonitorServer;
 use crate::osc::trigger_listener::TriggerListener;
-use crate::persistence::show_file::ShowFile;
+use crate::persistence::show_file::{ConnectionSettings, ShowFile};
 use super::UiEvent;
+use super::net_interfaces;
 use super::theme;
 
 /// State for the Setup tab.
 pub struct SetupTabState {
+    /// Local IP to bind to (specific interface). Empty or "0.0.0.0" = all interfaces.
+    pub local_ip: String,
+    /// Interface name (e.g., "en0") for IP_BOUND_IF. Derived from local_ip selection.
+    pub interface_name: Option<String>,
     pub console_ip: String,
     pub console_port: String,
     pub local_port: String,
@@ -36,11 +44,20 @@ pub struct SetupTabState {
     pub show_file_path: String,
     pub status_message: Option<String>,
     pub operating_mode: OperatingMode,
+    /// iPad IP (for Mode 3: real iPad's IP for forwarding responses)
     pub ipad_ip: String,
-    pub ipad_send_port: String,
-    pub ipad_receive_port: String,
+    /// Console's iPad receive port (daemon sends TO this port on the console)
+    pub ipad_console_port: String,
+    /// Daemon's iPad receive port (console sends TO this port on the daemon)
+    pub ipad_local_port: String,
+    /// iPad-side: port the daemon listens on for iPad traffic (Mode 3 only)
+    pub ipad_listen_port: String,
+    /// iPad-side: port the iPad listens on for daemon responses (Mode 3 only)
+    pub ipad_reply_port: String,
     pub ipad_connected: bool,
     pub monitor_port: String,
+    pub channel_option: ChannelOption,
+    pub aux_count: String,
 }
 
 impl SetupTabState {
@@ -56,6 +73,8 @@ impl SetupTabState {
         monitor_port: u16,
     ) -> Self {
         Self {
+            local_ip: String::new(),
+            interface_name: None,
             console_ip: console_ip.to_string(),
             console_port: console_port.to_string(),
             local_port: local_port.to_string(),
@@ -64,27 +83,32 @@ impl SetupTabState {
             status_message: None,
             operating_mode,
             ipad_ip: ipad_ip.unwrap_or("").to_string(),
-            ipad_send_port: if ipad_send_port > 0 {
+            ipad_console_port: if ipad_send_port > 0 {
                 ipad_send_port.to_string()
             } else {
-                "8001".to_string()
+                "8022".to_string()
             },
-            ipad_receive_port: if ipad_receive_port > 0 {
+            ipad_local_port: if ipad_receive_port > 0 {
                 ipad_receive_port.to_string()
             } else {
-                "8001".to_string()
+                "8021".to_string()
             },
+            ipad_listen_port: "9022".to_string(),
+            ipad_reply_port: "9021".to_string(),
             ipad_connected: false,
             monitor_port: if monitor_port > 0 {
                 monitor_port.to_string()
             } else {
                 String::new()
             },
+            channel_option: ChannelOption::Base,
+            aux_count: "8".to_string(),
         }
     }
 }
 
 /// Draw the Setup tab.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_setup_tab(
     ui: &mut egui::Ui,
     setup: &mut SetupTabState,
@@ -97,6 +121,8 @@ pub fn draw_setup_tab(
     snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
     sender: &mut Option<OscSender>,
     connected: &Arc<AtomicBool>,
+    cancel_token: &mut Option<CancellationToken>,
+    osc_log: &OscLog,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
     egui_ctx: &Arc<std::sync::OnceLock<egui::Context>>,
@@ -112,19 +138,51 @@ pub fn draw_setup_tab(
                 .num_columns(2)
                 .spacing([10.0, 6.0])
                 .show(ui, |ui| {
+                    ui.label("Network Interface:");
+                    ui.add_enabled_ui(!is_connected, |ui| {
+                        let interfaces = net_interfaces::list_interfaces();
+                        let current_label = if setup.local_ip.is_empty() {
+                            "All interfaces (0.0.0.0)".to_string()
+                        } else {
+                            // Find matching interface for label
+                            interfaces.iter()
+                                .find(|i| i.ip.to_string() == setup.local_ip)
+                                .map(|i| i.label())
+                                .unwrap_or_else(|| setup.local_ip.clone())
+                        };
+                        egui::ComboBox::from_id_salt("nic_select")
+                            .selected_text(&current_label)
+                            .width(250.0)
+                            .show_ui(ui, |ui| {
+                                if ui.selectable_label(setup.local_ip.is_empty(), "All interfaces (0.0.0.0)").clicked() {
+                                    setup.local_ip.clear();
+                                    setup.interface_name = None;
+                                }
+                                for iface in &interfaces {
+                                    let label = iface.label();
+                                    let selected = setup.local_ip == iface.ip.to_string();
+                                    if ui.selectable_label(selected, &label).clicked() {
+                                        setup.local_ip = iface.ip.to_string();
+                                        setup.interface_name = Some(iface.name.clone());
+                                    }
+                                }
+                            });
+                    });
+                    ui.end_row();
+
                     ui.label("Console IP:");
                     ui.add_enabled(!is_connected, egui::TextEdit::singleline(&mut setup.console_ip).desired_width(200.0));
                     ui.end_row();
 
-                    ui.label("GP OSC Port:");
+                    ui.label("Console GP Port (send to):");
                     ui.add_enabled(!is_connected, egui::TextEdit::singleline(&mut setup.console_port).desired_width(80.0));
                     ui.end_row();
 
-                    ui.label("Local Port:");
+                    ui.label("Local GP Port (listen on):");
                     ui.add_enabled(!is_connected, egui::TextEdit::singleline(&mut setup.local_port).desired_width(80.0));
                     ui.end_row();
 
-                    ui.label("Trigger Port:");
+                    ui.label("Trigger Port (QLab):");
                     ui.add_enabled(!is_connected, egui::TextEdit::singleline(&mut setup.trigger_port).desired_width(80.0));
                     ui.end_row();
                 });
@@ -161,9 +219,52 @@ pub fn draw_setup_tab(
                 );
             });
 
+            // Channel option toggle (base vs expanded "+")
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Channels:");
+                for opt in [ChannelOption::Base, ChannelOption::Expanded] {
+                    let is_active = setup.channel_option == opt;
+                    let fill = if is_active { theme::ACCENT_BLUE } else { theme::BG_ELEVATED };
+                    let text_color = if is_active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
+                    let btn = egui::Button::new(
+                        egui::RichText::new(opt.label()).color(text_color),
+                    )
+                    .fill(fill)
+                    .corner_radius(4.0);
+                    if ui.add_enabled(!is_connected, btn).clicked() {
+                        setup.channel_option = opt;
+                        // Update default aux count based on option
+                        let total_mix = opt.mix_output_count();
+                        let aux: u8 = setup.aux_count.parse().unwrap_or(8);
+                        if aux > total_mix {
+                            setup.aux_count = "8".to_string();
+                        }
+                    }
+                }
+                ui.add_space(8.0);
+                ui.label("Aux count:");
+                ui.add_enabled(
+                    !is_connected,
+                    egui::TextEdit::singleline(&mut setup.aux_count)
+                        .desired_width(40.0),
+                );
+                let aux_n: u8 = setup.aux_count.parse().unwrap_or(8);
+                let total_mix = setup.channel_option.mix_output_count();
+                let group_n = total_mix.saturating_sub(aux_n);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "({} in / {} aux / {} grp)",
+                        setup.channel_option.input_count(), aux_n, group_n
+                    ))
+                    .color(theme::TEXT_SECONDARY)
+                    .small(),
+                );
+            });
+
             ui.add_space(8.0);
 
-            // Connect button + status
+            // Connect / Disconnect buttons + status
             ui.horizontal(|ui| {
                 if !is_connected {
                     let connect_btn = theme::action_button(
@@ -175,16 +276,19 @@ pub fn draw_setup_tab(
                         start_connection(
                             setup, state, cue_manager, macro_manager, monitor_manager,
                             eq_palette_manager, gang_manager, snapshot_engine, sender,
-                            connected, runtime, ui_tx, egui_ctx,
+                            connected, cancel_token, osc_log,
+                            runtime, ui_tx, egui_ctx,
                         );
                     }
                 } else {
-                    let connected_btn = theme::action_button(
-                        "Connected",
-                        theme::BG_ELEVATED,
-                        egui::Vec2::new(100.0, 36.0),
+                    let disconnect_btn = theme::action_button(
+                        "Disconnect",
+                        theme::ACCENT_RED,
+                        egui::Vec2::new(120.0, 36.0),
                     );
-                    ui.add_enabled(false, connected_btn);
+                    if ui.add(disconnect_btn).clicked() {
+                        do_disconnect(connected, cancel_token, ui_tx);
+                    }
                 }
 
                 ui.add_space(12.0);
@@ -209,37 +313,108 @@ pub fn draw_setup_tab(
         // ── iPad Protocol card (when mode 2 or 3) ──
         if setup.operating_mode.uses_ipad_protocol() {
             theme::card_frame().show(ui, |ui| {
-                theme::section_heading(ui, "iPad Protocol");
+                let is_proxy = setup.operating_mode == OperatingMode::Mode3;
+                let heading = if is_proxy {
+                    "iPad Protocol — Proxy (S21 <> Computer <> iPad)"
+                } else {
+                    "iPad Protocol — Direct (S21 <> Computer)"
+                };
+                theme::section_heading(ui, heading);
 
-                egui::Grid::new("ipad_fields")
-                    .num_columns(2)
-                    .spacing([10.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label("Console iPad Port (send to):");
-                        ui.add_enabled(
-                            !is_connected,
-                            egui::TextEdit::singleline(&mut setup.ipad_send_port).desired_width(80.0),
-                        );
-                        ui.end_row();
+                if is_proxy {
+                    // Three-column layout: S21 | Computer | iPad
+                    egui::Grid::new("ipad_proxy_grid")
+                        .num_columns(5)
+                        .spacing([6.0, 6.0])
+                        .show(ui, |ui| {
+                            // Header row
+                            ui.label(egui::RichText::new("S21").strong().color(theme::ACCENT_BLUE));
+                            ui.label("");
+                            ui.label(egui::RichText::new("Computer").strong().color(theme::ACCENT_GREEN));
+                            ui.label("");
+                            ui.label(egui::RichText::new("iPad").strong().color(theme::ACCENT_ORANGE));
+                            ui.end_row();
 
-                        ui.label("Local Receive Port (listen on):");
-                        ui.add_enabled(
-                            !is_connected,
-                            egui::TextEdit::singleline(&mut setup.ipad_receive_port).desired_width(80.0),
-                        );
-                        ui.end_row();
-
-                        if setup.operating_mode == OperatingMode::Mode3 {
-                            ui.label("iPad IP:");
-                            ui.add_enabled(
-                                !is_connected,
+                            // IP row
+                            ui.label(egui::RichText::new(&setup.console_ip).color(theme::TEXT_SECONDARY));
+                            ui.label("");
+                            ui.label(egui::RichText::new("(this machine)").color(theme::TEXT_SECONDARY));
+                            ui.label("");
+                            ui.add_enabled(!is_connected,
                                 egui::TextEdit::singleline(&mut setup.ipad_ip)
-                                    .desired_width(200.0)
-                                    .hint_text("auto-detected from first packet"),
+                                    .desired_width(120.0)
+                                    .hint_text("auto-detect"),
                             );
                             ui.end_row();
-                        }
-                    });
+
+                            // S21 Rx < Computer Tx
+                            ui.add_enabled(!is_connected,
+                                egui::TextEdit::singleline(&mut setup.ipad_console_port).desired_width(60.0),
+                            );
+                            ui.label(egui::RichText::new("<").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
+                            ui.label("");
+                            ui.label("");
+                            ui.end_row();
+
+                            // S21 Tx > Computer Rx
+                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new(">").color(theme::TEXT_SECONDARY));
+                            ui.add_enabled(!is_connected,
+                                egui::TextEdit::singleline(&mut setup.ipad_local_port).desired_width(60.0),
+                            );
+                            ui.label("");
+                            ui.label("");
+                            ui.end_row();
+
+                            // Computer Tx > iPad Rx
+                            ui.label("");
+                            ui.label("");
+                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new(">").color(theme::TEXT_SECONDARY));
+                            ui.add_enabled(!is_connected,
+                                egui::TextEdit::singleline(&mut setup.ipad_reply_port).desired_width(60.0),
+                            );
+                            ui.end_row();
+
+                            // Computer Rx < iPad Tx
+                            ui.label("");
+                            ui.label("");
+                            ui.add_enabled(!is_connected,
+                                egui::TextEdit::singleline(&mut setup.ipad_listen_port).desired_width(60.0),
+                            );
+                            ui.label(egui::RichText::new("<").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
+                            ui.end_row();
+                        });
+                } else {
+                    // Mode 2: two-column layout S21 <> Computer
+                    egui::Grid::new("ipad_direct_grid")
+                        .num_columns(3)
+                        .spacing([6.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("S21").strong().color(theme::ACCENT_BLUE));
+                            ui.label("");
+                            ui.label(egui::RichText::new("Computer").strong().color(theme::ACCENT_GREEN));
+                            ui.end_row();
+
+                            // S21 Rx < Computer Tx
+                            ui.add_enabled(!is_connected,
+                                egui::TextEdit::singleline(&mut setup.ipad_console_port).desired_width(60.0),
+                            );
+                            ui.label(egui::RichText::new("<").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
+                            ui.end_row();
+
+                            // S21 Tx > Computer Rx
+                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new(">").color(theme::TEXT_SECONDARY));
+                            ui.add_enabled(!is_connected,
+                                egui::TextEdit::singleline(&mut setup.ipad_local_port).desired_width(60.0),
+                            );
+                            ui.end_row();
+                        });
+                }
 
                 // iPad status
                 ui.add_space(4.0);
@@ -318,6 +493,17 @@ pub fn draw_setup_tab(
             ui.horizontal(|ui| {
                 ui.label("Path:");
                 ui.add(egui::TextEdit::singleline(&mut setup.show_file_path).desired_width(300.0));
+
+                // Browse button using native file dialog
+                if ui.add(theme::action_button("Browse...", theme::BG_ELEVATED, egui::Vec2::new(80.0, 28.0))).clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Show Files", &["json"])
+                        .add_filter("All Files", &["*"])
+                        .pick_file()
+                    {
+                        setup.show_file_path = path.display().to_string();
+                    }
+                }
             });
 
             ui.add_space(6.0);
@@ -337,7 +523,19 @@ pub fn draw_setup_tab(
                     egui::Vec2::new(100.0, 32.0),
                 );
                 if ui.add(save_btn).clicked() {
-                    save_show_file(setup, state, cue_manager, macro_manager, monitor_manager, eq_palette_manager, gang_manager, runtime, ui_tx);
+                    // If no path set, open a save dialog
+                    if setup.show_file_path.is_empty() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Show Files", &["json"])
+                            .set_file_name("show.json")
+                            .save_file()
+                        {
+                            setup.show_file_path = path.display().to_string();
+                        }
+                    }
+                    if !setup.show_file_path.is_empty() {
+                        save_show_file(setup, state, cue_manager, macro_manager, monitor_manager, eq_palette_manager, gang_manager, runtime, ui_tx);
+                    }
                 }
 
                 let new_btn = theme::action_button(
@@ -370,6 +568,21 @@ pub fn draw_setup_tab(
     });
 }
 
+/// Disconnect from the console: cancel all tasks and reset state.
+fn do_disconnect(
+    connected: &Arc<AtomicBool>,
+    cancel_token: &mut Option<CancellationToken>,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+) {
+    info!("Disconnecting from console");
+    if let Some(token) = cancel_token.take() {
+        token.cancel();
+    }
+    connected.store(false, Ordering::Relaxed);
+    let _ = ui_tx.send(UiEvent::Disconnected);
+}
+
+#[allow(clippy::too_many_arguments)]
 fn start_connection(
     setup: &mut SetupTabState,
     state: &Arc<RwLock<ConsoleState>>,
@@ -381,6 +594,8 @@ fn start_connection(
     _snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
     _sender: &mut Option<OscSender>,
     connected: &Arc<AtomicBool>,
+    cancel_token: &mut Option<CancellationToken>,
+    osc_log: &OscLog,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
     egui_ctx: &Arc<std::sync::OnceLock<egui::Context>>,
@@ -409,28 +624,56 @@ fn start_connection(
 
     // Parse iPad fields
     let operating_mode = setup.operating_mode;
-    let ipad_send_port: u16 = if operating_mode.uses_ipad_protocol() {
-        match setup.ipad_send_port.parse() {
+    let ipad_console_port: u16 = if operating_mode.uses_ipad_protocol() {
+        match setup.ipad_console_port.parse() {
             Ok(p) if p > 0 => p,
             _ => {
-                setup.status_message = Some("Invalid iPad send port".into());
+                setup.status_message = Some("Invalid console iPad port".into());
                 return;
             }
         }
     } else {
         0
     };
-    let ipad_receive_port: u16 = if operating_mode.uses_ipad_protocol() {
-        match setup.ipad_receive_port.parse() {
+    let ipad_local_port: u16 = if operating_mode.uses_ipad_protocol() {
+        match setup.ipad_local_port.parse() {
             Ok(p) => p,
             Err(_) => {
-                setup.status_message = Some("Invalid iPad receive port".into());
+                setup.status_message = Some("Invalid local iPad port".into());
                 return;
             }
         }
     } else {
         0
     };
+    let ipad_listen_port: u16 = if operating_mode == OperatingMode::Mode3 {
+        setup.ipad_listen_port.parse().unwrap_or(9022)
+    } else {
+        0
+    };
+    let ipad_reply_port: u16 = if operating_mode == OperatingMode::Mode3 {
+        setup.ipad_reply_port.parse().unwrap_or(9021)
+    } else {
+        0
+    };
+    let ipad_ip_str = setup.ipad_ip.clone();
+    let bind_ip_str = if setup.local_ip.is_empty() {
+        "0.0.0.0".to_string()
+    } else {
+        setup.local_ip.clone()
+    };
+    // Derive interface name from local_ip if not explicitly set (e.g., after loading a show file)
+    let iface_name = setup.interface_name.clone().or_else(|| {
+        if !setup.local_ip.is_empty() {
+            net_interfaces::interface_for_ip(&setup.local_ip)
+        } else {
+            None
+        }
+    });
+    // Update the stored interface_name so subsequent connects don't need to re-derive
+    if setup.interface_name.is_none() && iface_name.is_some() {
+        setup.interface_name = iface_name.clone();
+    }
 
     let monitor_port: u16 = setup.monitor_port.parse().unwrap_or(0);
 
@@ -442,14 +685,19 @@ fn start_connection(
             return;
         }
     };
-    let local_addr: SocketAddr = format!("0.0.0.0:{}", local_port)
+    let bind_ip = bind_ip_str.as_str();
+    let local_addr: SocketAddr = format!("{bind_ip}:{local_port}")
         .parse()
         .expect("Invalid local address");
-    let trigger_addr: SocketAddr = format!("0.0.0.0:{}", trigger_port)
+    let trigger_addr: SocketAddr = format!("{bind_ip}:{trigger_port}")
         .parse()
         .expect("Invalid trigger address");
 
     setup.status_message = Some("Connecting...".into());
+
+    // Create a cancellation token for all tasks in this connection
+    let token = CancellationToken::new();
+    *cancel_token = Some(token.clone());
 
     let st = state.clone();
     let cue_mgr = cue_manager.clone();
@@ -461,10 +709,23 @@ fn start_connection(
     let tx = ui_tx.clone();
     let ctx = egui_ctx.clone();
     let console_ip = setup.console_ip.clone();
+    let log = osc_log.clone();
+    let channel_option = setup.channel_option;
+    let aux_count: u8 = setup.aux_count.parse().unwrap_or(8);
 
     runtime.spawn(async move {
+        // Apply manual channel config before discovery (discovery may override if it works)
+        {
+            let mut st_guard = st.write().await;
+            st_guard.config.apply_channel_option(channel_option);
+            // Override aux/group split from user setting
+            let total_mix = channel_option.mix_output_count();
+            st_guard.config.aux_output_count = aux_count.min(total_mix);
+            st_guard.config.group_output_count = total_mix.saturating_sub(aux_count);
+        }
+
         // Create OscClient manually so we can build GangEngine with the sender
-        let client = match OscClient::new(local_addr, console_addr).await {
+        let client = match OscClient::new(local_addr, console_addr, iface_name.as_deref()).await {
             Ok(c) => c,
             Err(e) => {
                 error!("Connection failed: {e}");
@@ -475,7 +736,7 @@ fn start_connection(
                 return;
             }
         };
-        let (osc_sender, rx) = client.into_parts();
+        let (osc_sender, rx) = client.into_parts_with_log(Some(log), token.clone());
 
         // Create GangEngine with the sender
         let gang_engine = Arc::new(RwLock::new(
@@ -483,7 +744,7 @@ fn start_connection(
         ));
 
         let manager = ConnectionManager::connect_from_parts(
-            osc_sender, rx, st.clone(), macro_mgr, gang_engine.clone(), gang_mgr,
+            osc_sender, rx, st.clone(), macro_mgr, gang_engine.clone(), gang_mgr, token.clone(),
         );
 
         info!("Connected to console via UI");
@@ -493,19 +754,17 @@ fn start_connection(
         let mut snapshot_engine = SnapshotEngine::new(st.clone(), manager.sender());
 
         // iPad connection (Mode 2 or 3)
-        if operating_mode.uses_ipad_protocol() && ipad_send_port > 0 {
-            let console_ipad_addr: SocketAddr = format!("{}:{}", console_ip, ipad_send_port)
+        if operating_mode.uses_ipad_protocol() && ipad_console_port > 0 {
+            let console_ipad_addr: SocketAddr = format!("{}:{}", console_ip, ipad_console_port)
                 .parse()
                 .expect("Invalid console iPad address");
+            let local_ipad_addr: SocketAddr = format!("{bind_ip_str}:{ipad_local_port}")
+                .parse()
+                .expect("Invalid local iPad address");
 
             match operating_mode {
                 OperatingMode::Mode2 => {
-                    let ipad_local: SocketAddr = if ipad_receive_port > 0 {
-                        format!("0.0.0.0:{}", ipad_receive_port).parse().unwrap()
-                    } else {
-                        "0.0.0.0:0".parse().unwrap()
-                    };
-                    match ipad_connection::connect_mode2(console_ipad_addr, ipad_local, st.clone()).await {
+                    match ipad_connection::connect_mode2(console_ipad_addr, local_ipad_addr, st.clone(), iface_name.as_deref()).await {
                         Ok((ipad_sender, result, _handle)) => {
                             info!(
                                 name = %result.config.console_name,
@@ -522,16 +781,33 @@ fn start_connection(
                     }
                 }
                 OperatingMode::Mode3 => {
-                    let listen_addr: SocketAddr = format!("0.0.0.0:{}", ipad_receive_port)
+                    // Two-socket proxy:
+                    // Socket 1 (console-side): bind to ipad_local_port, send to console:ipad_console_port
+                    // Socket 2 (iPad-side): bind to ipad_listen_port, send to iPad:ipad_reply_port
+                    let ipad_listener_addr: SocketAddr = format!("{bind_ip_str}:{ipad_listen_port}")
                         .parse()
                         .expect("Invalid iPad listen address");
-                    let outbound_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
-                    match ipad_connection::connect_mode3(console_ipad_addr, listen_addr, outbound_addr, st.clone()).await {
-                        Ok((ipad_sender, _forwarder, result, _handle)) => {
-                            info!(
-                                name = %result.config.console_name,
-                                "UI Mode 3: iPad proxy started"
-                            );
+                    let ipad_target = if !ipad_ip_str.is_empty() {
+                        let addr: SocketAddr = format!("{}:{}", ipad_ip_str, ipad_reply_port)
+                            .parse()
+                            .expect("Invalid iPad target address");
+                        Some(addr)
+                    } else {
+                        None // Will auto-detect from first iPad packet
+                    };
+
+                    match ipad_connection::connect_mode3_proxy(
+                        console_ipad_addr,
+                        local_ipad_addr,
+                        ipad_listener_addr,
+                        ipad_target,
+                        ipad_reply_port,
+                        st.clone(),
+                        token.clone(),
+                        iface_name.clone(),
+                    ).await {
+                        Ok(ipad_sender) => {
+                            info!("UI Mode 3: iPad proxy started");
                             snapshot_engine.set_ipad_sender(Some(ipad_sender.clone()));
                             gang_engine.write().await.set_ipad_sender(Some(ipad_sender));
                             let _ = tx.send(UiEvent::IpadConnected);
@@ -548,8 +824,8 @@ fn start_connection(
 
         let engine = Arc::new(snapshot_engine);
 
-        // Start trigger listener
-        match TriggerListener::start(trigger_addr).await {
+        // Start trigger listener (with cancellation so port is freed on disconnect)
+        match TriggerListener::start_with_cancel(trigger_addr, token.clone(), iface_name.as_deref()).await {
             Ok(mut trigger_rx) => {
                 let macro_eng = Arc::new(MacroEngine::new(st.clone(), manager.sender()));
                 let trigger_cue_mgr = cue_mgr.clone();
@@ -557,68 +833,78 @@ fn start_connection(
                 let trigger_eq_mgr = eq_mgr.clone();
                 let trigger_engine = engine.clone();
                 let trigger_macro_eng = macro_eng.clone();
+                let trigger_token = token.clone();
 
                 // Spawn trigger processing
                 tokio::spawn(async move {
                     use crate::osc::trigger_listener::TriggerEvent;
-                    while let Some(event) = trigger_rx.recv().await {
-                        match event {
-                            TriggerEvent::GoNext => {
-                                let mut mgr = trigger_cue_mgr.write().await;
-                                if let Some(cue) = mgr.go_next() {
-                                    let cue = cue.clone();
-                                    if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
-                                        drop(mgr);
-                                        let pmgr = trigger_eq_mgr.read().await;
-                                        let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
-                                        info!(sent = result.parameters_sent, "Trigger GO recall complete");
+                    loop {
+                        tokio::select! {
+                            _ = trigger_token.cancelled() => {
+                                info!("Trigger listener shutting down");
+                                break;
+                            }
+                            Some(event) = trigger_rx.recv() => {
+                                match event {
+                                    TriggerEvent::GoNext => {
+                                        let mut mgr = trigger_cue_mgr.write().await;
+                                        if let Some(cue) = mgr.go_next() {
+                                            let cue = cue.clone();
+                                            if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
+                                                drop(mgr);
+                                                let pmgr = trigger_eq_mgr.read().await;
+                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
+                                                info!(sent = result.parameters_sent, "Trigger GO recall complete");
+                                            }
+                                        }
+                                    }
+                                    TriggerEvent::GoPrevious => {
+                                        let mut mgr = trigger_cue_mgr.write().await;
+                                        if let Some(cue) = mgr.go_previous() {
+                                            let cue = cue.clone();
+                                            if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
+                                                drop(mgr);
+                                                let pmgr = trigger_eq_mgr.read().await;
+                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
+                                                info!(sent = result.parameters_sent, "Trigger PREV recall complete");
+                                            }
+                                        }
+                                    }
+                                    TriggerEvent::FireCue(number) => {
+                                        let mut mgr = trigger_cue_mgr.write().await;
+                                        if let Some(cue) = mgr.fire_cue_number(number) {
+                                            let cue = cue.clone();
+                                            if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
+                                                drop(mgr);
+                                                let pmgr = trigger_eq_mgr.read().await;
+                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
+                                                info!(number, sent = result.parameters_sent, "Trigger FIRE recall complete");
+                                            }
+                                        }
+                                    }
+                                    TriggerEvent::QueryCurrent { reply_addr } => {
+                                        let mgr = trigger_cue_mgr.read().await;
+                                        let current = mgr.current_cue_number().unwrap_or(-1.0);
+                                        info!(current, %reply_addr, "Trigger /cue/current query");
+                                    }
+                                    TriggerEvent::MacroFire(name) => {
+                                        let mgr = trigger_macro_mgr.read().await;
+                                        if let Some(macro_def) = mgr.find_by_name_or_id(&name).cloned() {
+                                            drop(mgr);
+                                            let result = trigger_macro_eng.execute(&macro_def).await;
+                                            info!(
+                                                name = %result.macro_name,
+                                                executed = result.steps_executed,
+                                                skipped = result.steps_skipped,
+                                                "Trigger MacroFire complete"
+                                            );
+                                        } else {
+                                            tracing::warn!(name, "MacroFire: macro not found");
+                                        }
                                     }
                                 }
                             }
-                            TriggerEvent::GoPrevious => {
-                                let mut mgr = trigger_cue_mgr.write().await;
-                                if let Some(cue) = mgr.go_previous() {
-                                    let cue = cue.clone();
-                                    if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
-                                        drop(mgr);
-                                        let pmgr = trigger_eq_mgr.read().await;
-                                        let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
-                                        info!(sent = result.parameters_sent, "Trigger PREV recall complete");
-                                    }
-                                }
-                            }
-                            TriggerEvent::FireCue(number) => {
-                                let mut mgr = trigger_cue_mgr.write().await;
-                                if let Some(cue) = mgr.fire_cue_number(number) {
-                                    let cue = cue.clone();
-                                    if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
-                                        drop(mgr);
-                                        let pmgr = trigger_eq_mgr.read().await;
-                                        let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
-                                        info!(number, sent = result.parameters_sent, "Trigger FIRE recall complete");
-                                    }
-                                }
-                            }
-                            TriggerEvent::QueryCurrent { reply_addr } => {
-                                let mgr = trigger_cue_mgr.read().await;
-                                let current = mgr.current_cue_number().unwrap_or(-1.0);
-                                info!(current, %reply_addr, "Trigger /cue/current query");
-                            }
-                            TriggerEvent::MacroFire(name) => {
-                                let mgr = trigger_macro_mgr.read().await;
-                                if let Some(macro_def) = mgr.find_by_name_or_id(&name).cloned() {
-                                    drop(mgr);
-                                    let result = trigger_macro_eng.execute(&macro_def).await;
-                                    info!(
-                                        name = %result.macro_name,
-                                        executed = result.steps_executed,
-                                        skipped = result.steps_skipped,
-                                        "Trigger MacroFire complete"
-                                    );
-                                } else {
-                                    tracing::warn!(name, "MacroFire: macro not found");
-                                }
-                            }
+                            else => break,
                         }
                     }
                 });
@@ -633,12 +919,13 @@ fn start_connection(
             let monitor_addr: SocketAddr = format!("0.0.0.0:{}", monitor_port)
                 .parse()
                 .expect("Invalid monitor address");
-            match MonitorServer::start(monitor_addr).await {
+            match MonitorServer::start_with_cancel(monitor_addr, token.clone(), iface_name.as_deref()).await {
                 Ok((monitor_sender, mut monitor_rx)) => {
                     info!(port = monitor_port, "Monitor server started via UI");
                     let monitor_engine = MonitorEngine::new(st.clone(), manager.sender());
                     let mon_mgr_loop = mon_mgr.clone();
                     let tx_monitor = tx.clone();
+                    let monitor_token = token.clone();
                     let _ = tx_monitor.send(UiEvent::MonitorServerStarted);
                     tokio::spawn(async move {
                         let mut last_send_state = std::collections::HashMap::new();
@@ -647,6 +934,10 @@ fn start_connection(
                         );
                         loop {
                             tokio::select! {
+                                _ = monitor_token.cancelled() => {
+                                    info!("Monitor server shutting down");
+                                    break;
+                                }
                                 Some(cmd) = monitor_rx.recv() => {
                                     let mut mgr = mon_mgr_loop.write().await;
                                     monitor_engine.handle_command(
@@ -689,9 +980,17 @@ fn load_show_file(
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
+    // If no path, open a file dialog
     if setup.show_file_path.is_empty() {
-        setup.status_message = Some("Enter a file path first".into());
-        return;
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Show Files", &["json"])
+            .add_filter("All Files", &["*"])
+            .pick_file()
+        {
+            setup.show_file_path = path.display().to_string();
+        } else {
+            return;
+        }
     }
 
     let path = std::path::PathBuf::from(&setup.show_file_path);
@@ -751,7 +1050,8 @@ fn load_show_file(
                 }
 
                 info!("Show file loaded: {path_str}");
-                let _ = tx.send(UiEvent::ShowFileLoaded(path_str));
+                let conn = show.connection;
+                let _ = tx.send(UiEvent::ShowFileLoaded(path_str, Some(conn)));
             }
             Err(e) => {
                 let _ = tx.send(UiEvent::ShowFileError(format!("Load failed: {e}")));
@@ -786,6 +1086,24 @@ fn save_show_file(
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
 
+    // Capture connection settings from current UI state
+    let conn_settings = ConnectionSettings {
+        local_ip: setup.local_ip.clone(),
+        console_ip: setup.console_ip.clone(),
+        console_gp_port: setup.console_port.parse().unwrap_or(8024),
+        local_gp_port: setup.local_port.parse().unwrap_or(8023),
+        trigger_port: setup.trigger_port.parse().unwrap_or(53001),
+        operating_mode: setup.operating_mode,
+        channel_option: setup.channel_option,
+        aux_count: setup.aux_count.parse().unwrap_or(8),
+        ipad_ip: setup.ipad_ip.clone(),
+        ipad_send_port: setup.ipad_console_port.parse().unwrap_or(0),
+        ipad_receive_port: setup.ipad_local_port.parse().unwrap_or(0),
+        ipad_listen_port: setup.ipad_listen_port.parse().unwrap_or(0),
+        ipad_reply_port: setup.ipad_reply_port.parse().unwrap_or(0),
+        monitor_port: setup.monitor_port.parse().unwrap_or(0),
+    };
+
     runtime.spawn(async move {
         let state_guard = st.read().await;
         let mgr = cue_mgr.read().await;
@@ -795,8 +1113,9 @@ fn save_show_file(
         let gmgr = gang_mgr.read().await;
 
         let show = ShowFile {
-            version: 5,
+            version: 6,
             console_config: state_guard.config.clone(),
+            connection: conn_settings,
             scope_templates: mgr.scope_templates.values().cloned().collect(),
             snapshots: mgr.snapshots.values().cloned().collect(),
             cue_list: mgr.cue_list.clone(),

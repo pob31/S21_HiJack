@@ -2,12 +2,72 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::config::ConsoleConfig;
+use crate::model::config::{ChannelOption, ConsoleConfig};
 use crate::model::eq_palette::EqPalette;
 use crate::model::macro_def::MacroDef;
 use crate::model::gang::GangGroup;
 use crate::model::monitor::MonitorClient;
+use crate::model::operating_mode::OperatingMode;
 use crate::model::snapshot::{CueList, ScopeTemplate, Snapshot};
+
+/// Connection settings persisted in the show file.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ConnectionSettings {
+    #[serde(default)]
+    pub local_ip: String,
+    #[serde(default)]
+    pub console_ip: String,
+    #[serde(default = "default_gp_port")]
+    pub console_gp_port: u16,
+    #[serde(default = "default_local_port")]
+    pub local_gp_port: u16,
+    #[serde(default = "default_trigger_port")]
+    pub trigger_port: u16,
+    #[serde(default)]
+    pub operating_mode: OperatingMode,
+    #[serde(default)]
+    pub channel_option: ChannelOption,
+    #[serde(default = "default_aux_count")]
+    pub aux_count: u8,
+    #[serde(default)]
+    pub ipad_ip: String,
+    #[serde(default)]
+    pub ipad_send_port: u16,
+    #[serde(default)]
+    pub ipad_receive_port: u16,
+    #[serde(default)]
+    pub ipad_listen_port: u16,
+    #[serde(default)]
+    pub ipad_reply_port: u16,
+    #[serde(default)]
+    pub monitor_port: u16,
+}
+
+fn default_gp_port() -> u16 { 8024 }
+fn default_local_port() -> u16 { 8023 }
+fn default_trigger_port() -> u16 { 53001 }
+fn default_aux_count() -> u8 { 8 }
+
+impl Default for ConnectionSettings {
+    fn default() -> Self {
+        Self {
+            local_ip: String::new(),
+            console_ip: String::new(),
+            console_gp_port: default_gp_port(),
+            local_gp_port: default_local_port(),
+            trigger_port: default_trigger_port(),
+            operating_mode: OperatingMode::default(),
+            channel_option: ChannelOption::default(),
+            aux_count: default_aux_count(),
+            ipad_ip: String::new(),
+            ipad_send_port: 0,
+            ipad_receive_port: 0,
+            ipad_listen_port: 0,
+            ipad_reply_port: 0,
+            monitor_port: 0,
+        }
+    }
+}
 
 /// Top-level show file — the persistent state of the daemon.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -16,6 +76,9 @@ pub struct ShowFile {
     pub version: u32,
     /// Console configuration from discovery.
     pub console_config: ConsoleConfig,
+    /// Connection settings (IP, ports, mode).
+    #[serde(default)]
+    pub connection: ConnectionSettings,
     /// Saved scope templates.
     #[serde(default)]
     pub scope_templates: Vec<ScopeTemplate>,
@@ -45,8 +108,9 @@ pub struct ShowFile {
 impl ShowFile {
     pub fn new(config: ConsoleConfig) -> Self {
         Self {
-            version: 5,
+            version: 6,
             console_config: config,
+            connection: ConnectionSettings::default(),
             scope_templates: Vec::new(),
             snapshots: Vec::new(),
             cue_list: CueList::default(),
@@ -91,7 +155,7 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 5);
+        assert_eq!(loaded.version, 6);
         assert_eq!(loaded.console_config.input_channel_count, 48);
         assert_eq!(loaded.console_config.control_group_count, 10);
         assert!(loaded.scope_templates.is_empty());

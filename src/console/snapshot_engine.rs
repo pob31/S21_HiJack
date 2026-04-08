@@ -383,7 +383,7 @@ mod tests {
     async fn setup_test() -> (SnapshotEngine, Arc<RwLock<ConsoleState>>) {
         let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let remote: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let client = OscClient::new(local, remote).await.unwrap();
+        let client = OscClient::new(local, remote, None).await.unwrap();
         let (sender, _rx) = client.into_parts();
 
         let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
@@ -583,6 +583,7 @@ mod tests {
         let ipad_client = crate::osc::ipad_client::IpadClient::new(
             "127.0.0.1:0".parse().unwrap(),
             "127.0.0.1:0".parse().unwrap(),
+            None,
         ).await.unwrap();
         let (ipad_sender, _ipad_rx) = ipad_client.into_parts();
         engine.set_ipad_sender(Some(ipad_sender));

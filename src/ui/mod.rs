@@ -1,9 +1,12 @@
 pub mod app;
 pub mod eq_palettes_ui;
 pub mod gangs_tab;
+pub mod inspector_tab;
 pub mod live_tab;
 pub mod macros_tab;
 pub mod monitor_tab;
+pub mod net_interfaces;
+pub mod osc_log_tab;
 pub mod scope_editor;
 pub mod setup_tab;
 pub mod snapshots_tab;
@@ -18,6 +21,8 @@ pub enum Tab {
     Live,
     Gangs,
     Monitor,
+    OscLog,
+    Inspector,
 }
 
 /// Events sent from async tasks back to the UI thread.
@@ -25,6 +30,7 @@ pub enum Tab {
 pub enum UiEvent {
     ConnectionEstablished,
     ConnectionFailed(String),
+    Disconnected,
     SnapshotCaptured {
         name: String,
         param_count: usize,
@@ -52,7 +58,7 @@ pub enum UiEvent {
         name: String,
         affected_count: usize,
     },
-    ShowFileLoaded(String),
+    ShowFileLoaded(String, Option<crate::persistence::show_file::ConnectionSettings>),
     ShowFileSaved(String),
     ShowFileError(String),
     IpadConnected,

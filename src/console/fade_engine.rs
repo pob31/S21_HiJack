@@ -171,7 +171,7 @@ mod tests {
     async fn test_sender() -> OscSender {
         let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let remote: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let client = OscClient::new(local, remote).await.unwrap();
+        let client = OscClient::new(local, remote, None).await.unwrap();
         let (sender, _rx) = client.into_parts();
         sender
     }
@@ -237,7 +237,7 @@ mod tests {
         let sender2 = {
             let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
             let remote: SocketAddr = "127.0.0.1:0".parse().unwrap();
-            let client = OscClient::new(local, remote).await.unwrap();
+            let client = OscClient::new(local, remote, None).await.unwrap();
             let (s, _rx) = client.into_parts();
             s
         };

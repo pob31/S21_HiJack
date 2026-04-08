@@ -2,12 +2,12 @@ use rosc::OscType;
 
 use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
 
-/// System commands that can be sent to the console.
+/// GP OSC commands that can be sent to the console.
+///
+/// Note: Discovery (`/console/channel/counts`), state dump (`/console/resend`),
+/// and keepalive (`/console/ping`/`pong`) are NOT part of GP OSC — they belong
+/// to the iPad protocol.
 pub enum SystemCommand {
-    ChannelCounts,
-    Resend,
-    Ping,
-    Pong,
     SnapshotFire(i32),
     SnapshotNext,
     SnapshotPrevious,
@@ -17,10 +17,6 @@ impl SystemCommand {
     /// Get the OSC path for this system command.
     pub fn path(&self) -> &str {
         match self {
-            SystemCommand::ChannelCounts => "/console/channel/counts",
-            SystemCommand::Resend => "/console/resend",
-            SystemCommand::Ping => "/console/ping",
-            SystemCommand::Pong => "/console/pong",
             SystemCommand::SnapshotFire(_) => "/digico/snapshots/fire",
             SystemCommand::SnapshotNext => "/digico/snapshots/fire/next",
             SystemCommand::SnapshotPrevious => "/digico/snapshots/fire/previous",
@@ -97,11 +93,17 @@ mod tests {
 
     #[test]
     fn system_command_paths() {
-        assert_eq!(SystemCommand::Ping.path(), "/console/ping");
-        assert_eq!(SystemCommand::Resend.path(), "/console/resend");
         assert_eq!(
-            SystemCommand::ChannelCounts.path(),
-            "/console/channel/counts"
+            SystemCommand::SnapshotFire(1).path(),
+            "/digico/snapshots/fire"
+        );
+        assert_eq!(
+            SystemCommand::SnapshotNext.path(),
+            "/digico/snapshots/fire/next"
+        );
+        assert_eq!(
+            SystemCommand::SnapshotPrevious.path(),
+            "/digico/snapshots/fire/previous"
         );
     }
 }

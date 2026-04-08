@@ -284,7 +284,7 @@ mod tests {
     async fn setup_test() -> (MacroEngine, Arc<RwLock<ConsoleState>>) {
         let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let remote: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let client = OscClient::new(local, remote).await.unwrap();
+        let client = OscClient::new(local, remote, None).await.unwrap();
         let (sender, _rx) = client.into_parts();
 
         let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));

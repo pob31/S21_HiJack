@@ -4,6 +4,7 @@ use std::sync::Arc;
 use rosc::{OscMessage, OscPacket, OscType};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 /// Commands parsed from incoming monitoring client OSC messages.
@@ -58,7 +59,18 @@ impl MonitorServer {
     pub async fn start(
         listen_addr: SocketAddr,
     ) -> std::io::Result<(MonitorSender, mpsc::Receiver<MonitorCommand>)> {
-        let socket = Arc::new(UdpSocket::bind(listen_addr).await?);
+        Self::start_with_cancel(listen_addr, CancellationToken::new(), None).await
+    }
+
+    /// Start the monitor server with a CancellationToken for clean shutdown.
+    pub async fn start_with_cancel(
+        listen_addr: SocketAddr,
+        cancel: CancellationToken,
+        interface_name: Option<&str>,
+    ) -> std::io::Result<(MonitorSender, mpsc::Receiver<MonitorCommand>)> {
+        let socket = Arc::new(
+            crate::ui::net_interfaces::create_bound_udp_socket(listen_addr, interface_name).await?
+        );
         let (tx, rx) = mpsc::channel(256);
 
         info!(%listen_addr, "Monitor server started");
@@ -67,7 +79,7 @@ impl MonitorServer {
             socket: socket.clone(),
         };
 
-        tokio::spawn(listen_loop(socket, tx));
+        tokio::spawn(listen_loop(socket, tx, cancel));
 
         Ok((sender, rx))
     }
@@ -126,24 +138,33 @@ impl MonitorSender {
 }
 
 /// Background receive loop.
-async fn listen_loop(socket: Arc<UdpSocket>, tx: mpsc::Sender<MonitorCommand>) {
+async fn listen_loop(socket: Arc<UdpSocket>, tx: mpsc::Sender<MonitorCommand>, cancel: CancellationToken) {
     let mut buf = vec![0u8; 4096];
     loop {
-        match socket.recv_from(&mut buf).await {
-            Ok((size, src)) => match rosc::decoder::decode_udp(&buf[..size]) {
-                Ok((_, packet)) => {
-                    process_packet(packet, src, &tx).await;
-                }
-                Err(e) => {
-                    warn!("Monitor server: failed to decode OSC from {src}: {e}");
-                }
-            },
-            Err(e) => {
-                error!("Monitor server: UDP receive error: {e}");
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                info!("Monitor server cancelled — releasing port");
                 break;
+            }
+            result = socket.recv_from(&mut buf) => {
+                match result {
+                    Ok((size, src)) => match rosc::decoder::decode_udp(&buf[..size]) {
+                        Ok((_, packet)) => {
+                            process_packet(packet, src, &tx).await;
+                        }
+                        Err(e) => {
+                            warn!("Monitor server: failed to decode OSC from {src}: {e}");
+                        }
+                    },
+                    Err(e) => {
+                        error!("Monitor server: UDP receive error: {e}");
+                        break;
+                    }
+                }
             }
         }
     }
+    drop(socket);
 }
 
 async fn process_packet(

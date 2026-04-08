@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 use crate::console::cue_manager::CueManager;
 use crate::console::eq_palette_manager::EqPaletteManager;
@@ -12,6 +13,7 @@ use crate::console::macro_manager::MacroManager;
 use crate::console::monitor_manager::MonitorManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::config::ConsoleConfig;
+use crate::model::osc_log::OscLog;
 use crate::model::snapshot::CueList;
 use crate::model::operating_mode::OperatingMode;
 use crate::model::state::ConsoleState;
@@ -21,9 +23,11 @@ use crate::osc::ipad_client::IpadSender;
 use super::{Tab, UiEvent};
 use super::eq_palettes_ui::EqPalettesUiState;
 use super::gangs_tab::GangsTabState;
+use super::inspector_tab::InspectorTabState;
 use super::live_tab::LiveTabState;
 use super::macros_tab::MacrosTabState;
 use super::monitor_tab::MonitorTabState;
+use super::osc_log_tab::OscLogTabState;
 use super::setup_tab::SetupTabState;
 use super::snapshots_tab::SnapshotsTabState;
 
@@ -39,6 +43,9 @@ pub struct HiJackApp {
     pub snapshot_engine: Option<Arc<SnapshotEngine>>,
     pub macro_engine: Option<Arc<MacroEngine>>,
 
+    // OSC log (shared with network tasks)
+    pub osc_log: OscLog,
+
     // Async bridge
     pub runtime: tokio::runtime::Handle,
     pub egui_ctx: Arc<std::sync::OnceLock<egui::Context>>,
@@ -49,6 +56,8 @@ pub struct HiJackApp {
     pub connected: Arc<AtomicBool>,
     pub sender: Option<OscSender>,
     pub ipad_sender: Option<IpadSender>,
+    /// Cancellation token for all connection-related tasks.
+    pub cancel_token: Option<CancellationToken>,
 
     // Tab state
     pub active_tab: Tab,
@@ -59,6 +68,8 @@ pub struct HiJackApp {
     pub eq_palettes_ui: EqPalettesUiState,
     pub gangs: GangsTabState,
     pub monitor: MonitorTabState,
+    pub osc_log_tab: OscLogTabState,
+    pub inspector: InspectorTabState,
 }
 
 impl HiJackApp {
@@ -86,6 +97,8 @@ impl HiJackApp {
             snapshot_engine: None,
             macro_engine: None,
 
+            osc_log: OscLog::new(),
+
             runtime,
             egui_ctx: Arc::new(std::sync::OnceLock::new()),
             ui_rx,
@@ -94,6 +107,7 @@ impl HiJackApp {
             connected: Arc::new(AtomicBool::new(false)),
             sender: None,
             ipad_sender: None,
+            cancel_token: None,
 
             active_tab: Tab::Setup,
             setup: SetupTabState::new(
@@ -107,6 +121,8 @@ impl HiJackApp {
             eq_palettes_ui: EqPalettesUiState::default(),
             gangs: GangsTabState::default(),
             monitor: MonitorTabState::default(),
+            osc_log_tab: OscLogTabState::default(),
+            inspector: InspectorTabState::default(),
         }
     }
 
@@ -121,6 +137,17 @@ impl HiJackApp {
                 UiEvent::ConnectionFailed(msg) => {
                     self.connected.store(false, Ordering::Relaxed);
                     self.setup.status_message = Some(format!("Connection failed: {msg}"));
+                }
+                UiEvent::Disconnected => {
+                    self.connected.store(false, Ordering::Relaxed);
+                    self.sender = None;
+                    self.ipad_sender = None;
+                    self.snapshot_engine = None;
+                    self.macro_engine = None;
+                    self.cancel_token = None;
+                    self.setup.ipad_connected = false;
+                    self.setup.status_message = Some("Disconnected".into());
+                    self.monitor.monitor_server_running = false;
                 }
                 UiEvent::SnapshotCaptured { name, param_count } => {
                     self.snapshots.status_message = Some(
@@ -160,8 +187,46 @@ impl HiJackApp {
                         format!("Updated '{name}' — {affected_count} snapshots affected"),
                     );
                 }
-                UiEvent::ShowFileLoaded(path) => {
+                UiEvent::ShowFileLoaded(path, conn) => {
                     self.setup.status_message = Some(format!("Loaded: {path}"));
+                    if let Some(conn) = conn {
+                        if !conn.local_ip.is_empty() {
+                            self.setup.local_ip = conn.local_ip;
+                        }
+                        if !conn.console_ip.is_empty() {
+                            self.setup.console_ip = conn.console_ip;
+                        }
+                        if conn.console_gp_port > 0 {
+                            self.setup.console_port = conn.console_gp_port.to_string();
+                        }
+                        if conn.local_gp_port > 0 {
+                            self.setup.local_port = conn.local_gp_port.to_string();
+                        }
+                        if conn.trigger_port > 0 {
+                            self.setup.trigger_port = conn.trigger_port.to_string();
+                        }
+                        self.setup.operating_mode = conn.operating_mode;
+                        self.setup.channel_option = conn.channel_option;
+                        self.setup.aux_count = conn.aux_count.to_string();
+                        if !conn.ipad_ip.is_empty() {
+                            self.setup.ipad_ip = conn.ipad_ip;
+                        }
+                        if conn.ipad_send_port > 0 {
+                            self.setup.ipad_console_port = conn.ipad_send_port.to_string();
+                        }
+                        if conn.ipad_receive_port > 0 {
+                            self.setup.ipad_local_port = conn.ipad_receive_port.to_string();
+                        }
+                        if conn.ipad_listen_port > 0 {
+                            self.setup.ipad_listen_port = conn.ipad_listen_port.to_string();
+                        }
+                        if conn.ipad_reply_port > 0 {
+                            self.setup.ipad_reply_port = conn.ipad_reply_port.to_string();
+                        }
+                        if conn.monitor_port > 0 {
+                            self.setup.monitor_port = conn.monitor_port.to_string();
+                        }
+                    }
                 }
                 UiEvent::ShowFileSaved(path) => {
                     self.setup.status_message = Some(format!("Saved: {path}"));
@@ -238,6 +303,8 @@ impl eframe::App for HiJackApp {
                         (Tab::Live, "Live"),
                         (Tab::Gangs, "Gangs"),
                         (Tab::Monitor, "Monitor"),
+                        (Tab::OscLog, "OSC Log"),
+                        (Tab::Inspector, "Inspector"),
                     ];
                     for (tab, label) in tabs {
                         let is_active = self.active_tab == tab;
@@ -291,6 +358,8 @@ impl eframe::App for HiJackApp {
                         &mut self.snapshot_engine,
                         &mut self.sender,
                         &self.connected,
+                        &mut self.cancel_token,
+                        &self.osc_log,
                         &self.runtime,
                         &self.ui_tx,
                         &self.egui_ctx,
@@ -350,6 +419,20 @@ impl eframe::App for HiJackApp {
                         &self.monitor_manager,
                         &self.connected,
                         &self.runtime,
+                    );
+                }
+                Tab::OscLog => {
+                    super::osc_log_tab::draw_osc_log_tab(
+                        ui,
+                        &mut self.osc_log_tab,
+                        &self.osc_log,
+                    );
+                }
+                Tab::Inspector => {
+                    super::inspector_tab::draw_inspector_tab(
+                        ui,
+                        &mut self.inspector,
+                        &self.state,
                     );
                 }
             }
