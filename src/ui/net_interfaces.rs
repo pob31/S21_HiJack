@@ -1,4 +1,5 @@
 use std::net::{Ipv4Addr, SocketAddr};
+#[cfg(target_os = "macos")]
 use std::os::fd::AsRawFd;
 
 use tracing::info;
@@ -18,6 +19,7 @@ impl NetInterface {
 
 /// Enumerate all active IPv4 network interfaces.
 /// Filters out loopback (127.x.x.x) and link-local (169.254.x.x).
+#[cfg(unix)]
 pub fn list_interfaces() -> Vec<NetInterface> {
     let mut result = Vec::new();
 
@@ -52,6 +54,35 @@ pub fn list_interfaces() -> Vec<NetInterface> {
 
     // Sort by interface name
     result.sort_by(|a, b| a.name.cmp(&b.name));
+    result
+}
+
+/// Windows fallback: discover the primary outbound IPv4 by opening a UDP
+/// socket and "connecting" it to a public address (no packets are sent).
+/// This is a simplified implementation — it returns a single entry rather
+/// than enumerating every adapter the way `getifaddrs` does on Unix, but it
+/// is enough to keep the dev build running. If finer control is needed on
+/// Windows, swap in `GetAdaptersAddresses` via `windows-sys`.
+#[cfg(windows)]
+pub fn list_interfaces() -> Vec<NetInterface> {
+    let mut result = Vec::new();
+
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        // 8.8.8.8 is just a routing hint — no traffic is sent.
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(local) = socket.local_addr() {
+                if let std::net::IpAddr::V4(ip) = local.ip() {
+                    if !ip.is_loopback() && !ip.is_link_local() {
+                        result.push(NetInterface {
+                            name: "primary".to_string(),
+                            ip,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     result
 }
 
