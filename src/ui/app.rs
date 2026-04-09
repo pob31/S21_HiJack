@@ -443,5 +443,20 @@ impl eframe::App for HiJackApp {
                 }
             }
         });
+
+        // ── Scope editor window (floats above any tab) ──
+        // Drawn outside the CentralPanel so it can overlay anything. Borrows
+        // ConsoleState for one frame to compute availability + channel names.
+        // try_read() so we don't deadlock if a write is in flight; the next
+        // frame will redraw.
+        if self.snapshots.scope_editor.window_open {
+            if let Ok(state_guard) = self.state.try_read() {
+                let _ = super::scope_editor::draw_scope_window(
+                    ctx,
+                    &mut self.snapshots.scope_editor,
+                    &state_guard,
+                );
+            }
+        }
     }
 }

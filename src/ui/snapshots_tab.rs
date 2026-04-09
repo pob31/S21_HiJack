@@ -10,7 +10,7 @@ use crate::console::eq_palette_manager::EqPaletteManager;
 use crate::model::snapshot::{Cue, Snapshot};
 use crate::model::state::ConsoleState;
 use super::eq_palettes_ui::{EqPalettesUiState, draw_eq_palettes_section};
-use super::scope_editor::{ScopeEditorState, draw_scope_editor};
+use super::scope_editor::ScopeEditorState;
 use super::theme;
 use super::UiEvent;
 
@@ -78,15 +78,15 @@ pub fn draw_snapshots_tab(
 ) {
     let is_connected = connected.load(Ordering::Relaxed);
 
-    // Read channel counts for scope editor
-    let (input_count, aux_count, group_count) = if let Ok(st) = console_state.try_read() {
+    // Read channel counts for scope template loading + migration.
+    let (aux_count, group_count, matrix_count) = if let Ok(st) = console_state.try_read() {
         (
-            st.config.input_channel_count,
             st.config.aux_output_count,
             st.config.group_output_count,
+            st.config.matrix_input_count,
         )
     } else {
-        (48, 8, 16) // defaults
+        (8, 8, 10) // defaults
     };
 
     // Read current cue ID for highlighting
@@ -124,7 +124,12 @@ pub fn draw_snapshots_tab(
                                 ));
                                 if response.clicked() {
                                     snap_state.selected_scope_template_id = Some(tmpl.id);
-                                    snap_state.scope_editor = ScopeEditorState::from_scope_template(tmpl);
+                                    snap_state.scope_editor.load_template(
+                                        tmpl,
+                                        aux_count,
+                                        group_count,
+                                        matrix_count,
+                                    );
                                 }
                             }
                         }
@@ -149,16 +154,50 @@ pub fn draw_snapshots_tab(
 
                     ui.add_space(8.0);
 
-                    // Scope editor widget
+                    // Recall scope summary + Edit Scope button.
+                    // The full editor lives in a dedicated window (rendered at App level)
+                    // so the matrix has room for 48 channels and the two-level
+                    // collapsing without competing with the snapshots tab layout.
                     theme::card_frame().show(ui, |ui| {
                         theme::section_heading(ui, "Recall Scope");
-                        draw_scope_editor(
-                            ui,
-                            &mut snap_state.scope_editor,
-                            input_count,
-                            aux_count,
-                            group_count,
+                        let count = snap_state.scope_editor.selection_count();
+                        let channel_count = snap_state.scope_editor.channel_paths.len();
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{count} parameter{} selected across {channel_count} channel{}",
+                                if count == 1 { "" } else { "s" },
+                                if channel_count == 1 { "" } else { "s" },
+                            ))
+                            .color(theme::TEXT_SECONDARY),
                         );
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            let edit_btn = theme::action_button(
+                                "Edit Scope…",
+                                theme::ACCENT_BLUE,
+                                egui::Vec2::new(120.0, 30.0),
+                            );
+                            if ui.add(edit_btn).clicked() {
+                                let template = snap_state
+                                    .scope_editor
+                                    .to_scope_template("Editing".into());
+                                snap_state.scope_editor.open(
+                                    &template,
+                                    aux_count,
+                                    group_count,
+                                    matrix_count,
+                                );
+                            }
+                            ui.add_space(8.0);
+                            let clear_btn = theme::action_button(
+                                "Clear",
+                                theme::BG_ELEVATED,
+                                egui::Vec2::new(70.0, 30.0),
+                            );
+                            if ui.add(clear_btn).clicked() {
+                                snap_state.scope_editor.clear();
+                            }
+                        });
                     });
                 });
         });

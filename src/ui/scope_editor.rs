@@ -1,14 +1,39 @@
+//! Phase A: dedicated scope editor window with two-level collapsing.
+//!
+//! The editor presents one matrix per channel-type group (Inputs, Aux, Groups,
+//! Matrix, Control Groups, Graphic EQ, Matrix Inputs). Each group is a
+//! collapsible top-level section. Inside an expanded group, parameter sections
+//! are themselves collapsible. Rows = individual `ParameterPath` variants
+//! (maximum granularity), columns = channels in that group.
+//!
+//! Every header (corner / channel header / section header label / path row
+//! label) is a one-click bulk toggle. Cells with no live data on the console
+//! render greyed and ignore clicks. Channel column tooltips show the live
+//! channel name from the console.
+//!
+//! Window state lives in `ScopeEditorState`. Open/Cancel/OK semantics: opening
+//! takes a backup of the current selections; Cancel restores the backup, OK
+//! commits the changes.
+//!
+//! See [Documentation/DiGiCo S OSC Commandset_OSCpaths.csv] for the source of
+//! truth that drives `ParameterPath::available_for_channel`.
+
 use std::collections::{HashMap, HashSet};
 
 use eframe::egui;
 
 use crate::model::channel::ChannelId;
-use crate::model::parameter::ParameterSection;
+use crate::model::config::ConsoleConfig;
+use crate::model::parameter::{ParameterPath, ParameterSection};
 use crate::model::snapshot::{ChannelScope, ScopeTemplate};
+use crate::model::state::ConsoleState;
 use super::theme;
 
-/// Channel type group for the hierarchical scope editor.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+// ── Channel-type group enum ─────────────────────────────────────────
+
+/// Top-level channel-type grouping for the scope editor matrix layout.
+/// Each group has its own matrix in the scope window with its own column count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ChannelGroup {
     Inputs,
     Aux,
@@ -20,7 +45,7 @@ pub enum ChannelGroup {
 }
 
 impl ChannelGroup {
-    pub fn label(&self) -> &str {
+    pub fn label(&self) -> &'static str {
         match self {
             ChannelGroup::Inputs => "Inputs",
             ChannelGroup::Aux => "Aux",
@@ -32,7 +57,8 @@ impl ChannelGroup {
         }
     }
 
-    /// Color for this channel group (DiGiCo style).
+    /// Color for this channel group (DiGiCo style). Used by older callers
+    /// outside the scope editor; the matrix UI uses the universal scope colors.
     pub fn color(&self) -> egui::Color32 {
         match self {
             ChannelGroup::Inputs => theme::CH_INPUT,
@@ -45,33 +71,7 @@ impl ChannelGroup {
         }
     }
 
-    /// Generate all channel IDs for this group given console channel counts.
-    pub fn channels(&self, input_count: u8, aux_count: u8, group_count: u8) -> Vec<ChannelId> {
-        match self {
-            ChannelGroup::Inputs => (1..=input_count).map(ChannelId::Input).collect(),
-            ChannelGroup::Aux => (1..=aux_count).map(ChannelId::Aux).collect(),
-            ChannelGroup::Groups => (1..=group_count).map(ChannelId::Group).collect(),
-            ChannelGroup::Matrix => (1..=8).map(ChannelId::Matrix).collect(),
-            ChannelGroup::ControlGroups => (1..=10).map(ChannelId::ControlGroup).collect(),
-            ChannelGroup::GraphicEq => (1..=16).map(ChannelId::GraphicEq).collect(),
-            ChannelGroup::MatrixInputs => (1..=10).map(ChannelId::MatrixInput).collect(),
-        }
-    }
-
-    /// Applicable parameter sections for channels in this group.
-    pub fn applicable_sections(&self) -> Vec<ParameterSection> {
-        let representative = match self {
-            ChannelGroup::Inputs => ChannelId::Input(1),
-            ChannelGroup::Aux => ChannelId::Aux(1),
-            ChannelGroup::Groups => ChannelId::Group(1),
-            ChannelGroup::Matrix => ChannelId::Matrix(1),
-            ChannelGroup::ControlGroups => ChannelId::ControlGroup(1),
-            ChannelGroup::GraphicEq => ChannelId::GraphicEq(1),
-            ChannelGroup::MatrixInputs => ChannelId::MatrixInput(1),
-        };
-        ParameterSection::applicable_to(&representative)
-    }
-
+    /// All channel groups in display order.
     pub fn all() -> &'static [ChannelGroup] {
         &[
             ChannelGroup::Inputs,
@@ -83,550 +83,1119 @@ impl ChannelGroup {
             ChannelGroup::MatrixInputs,
         ]
     }
+
+    /// Generate every channel ID in this group given the live console config.
+    pub fn channels_from(&self, config: &ConsoleConfig) -> Vec<ChannelId> {
+        match self {
+            ChannelGroup::Inputs => {
+                (1..=config.input_channel_count).map(ChannelId::Input).collect()
+            }
+            ChannelGroup::Aux => (1..=config.aux_output_count).map(ChannelId::Aux).collect(),
+            ChannelGroup::Groups => (1..=config.group_output_count).map(ChannelId::Group).collect(),
+            ChannelGroup::Matrix => {
+                (1..=config.matrix_output_count).map(ChannelId::Matrix).collect()
+            }
+            ChannelGroup::ControlGroups => {
+                (1..=config.control_group_count).map(ChannelId::ControlGroup).collect()
+            }
+            ChannelGroup::GraphicEq => {
+                (1..=config.graphic_eq_count).map(ChannelId::GraphicEq).collect()
+            }
+            ChannelGroup::MatrixInputs => {
+                (1..=config.matrix_input_count).map(ChannelId::MatrixInput).collect()
+            }
+        }
+    }
+
+    /// Representative channel for the group, used by `ParameterPath::applicable_to`
+    /// to derive the row catalogue. The actual row count is the same for any
+    /// channel within the group.
+    pub fn representative_channel(&self) -> ChannelId {
+        match self {
+            ChannelGroup::Inputs => ChannelId::Input(1),
+            ChannelGroup::Aux => ChannelId::Aux(1),
+            ChannelGroup::Groups => ChannelId::Group(1),
+            ChannelGroup::Matrix => ChannelId::Matrix(1),
+            ChannelGroup::ControlGroups => ChannelId::ControlGroup(1),
+            ChannelGroup::GraphicEq => ChannelId::GraphicEq(1),
+            ChannelGroup::MatrixInputs => ChannelId::MatrixInput(1),
+        }
+    }
 }
 
-/// Signal-flow column definition for the block layout.
-struct FlowColumn {
-    heading: &'static str,
-    sections: Vec<(ParameterSection, &'static str)>,
-}
+// ── ScopeEditorState ────────────────────────────────────────────────
 
-/// Build the signal-flow columns for a given set of applicable sections.
-fn build_flow_columns(applicable: &[ParameterSection]) -> Vec<FlowColumn> {
-    let mut columns = Vec::new();
-
-    // Sources
-    let mut sources = Vec::new();
-    for s in applicable {
-        match s {
-            ParameterSection::Name => sources.push((s.clone(), "Channel\nName")),
-            ParameterSection::InputGain => sources.push((s.clone(), "Input Gain")),
-            _ => {}
-        }
-    }
-    if !sources.is_empty() {
-        columns.push(FlowColumn {
-            heading: "Sources",
-            sections: sources,
-        });
-    }
-
-    // Input Processing
-    let mut input_proc = Vec::new();
-    for s in applicable {
-        match s {
-            ParameterSection::Digitube => input_proc.push((s.clone(), "DiGiTube")),
-            ParameterSection::Delay => input_proc.push((s.clone(), "Delay")),
-            _ => {}
-        }
-    }
-    if !input_proc.is_empty() {
-        columns.push(FlowColumn {
-            heading: "Input\nProcessing",
-            sections: input_proc,
-        });
-    }
-
-    // Insert
-    let mut insert = Vec::new();
-    for s in applicable {
-        if matches!(s, ParameterSection::Inserts) {
-            insert.push((s.clone(), "Send &\nReturn"));
-        }
-    }
-    if !insert.is_empty() {
-        columns.push(FlowColumn {
-            heading: "Insert",
-            sections: insert,
-        });
-    }
-
-    // Channel Processing
-    let mut chan_proc = Vec::new();
-    for s in applicable {
-        match s {
-            ParameterSection::Eq => chan_proc.push((s.clone(), "Equaliser")),
-            ParameterSection::Dyn1 => chan_proc.push((s.clone(), "Dynamics 1")),
-            ParameterSection::Dyn2 => chan_proc.push((s.clone(), "Dynamics 2")),
-            ParameterSection::GraphicEq => chan_proc.push((s.clone(), "Graphic EQ")),
-            _ => {}
-        }
-    }
-    if !chan_proc.is_empty() {
-        columns.push(FlowColumn {
-            heading: "Channel\nProcessing",
-            sections: chan_proc,
-        });
-    }
-
-    // Outputs
-    let mut outputs = Vec::new();
-    for s in applicable {
-        match s {
-            ParameterSection::Sends => outputs.push((s.clone(), "Aux Sends")),
-            ParameterSection::GroupRouting => outputs.push((s.clone(), "Group\nAssigns")),
-            ParameterSection::MatrixSends => outputs.push((s.clone(), "Matrix\nSends")),
-            ParameterSection::FaderMutePan => outputs.push((s.clone(), "Fader /\nMute / Pan")),
-            ParameterSection::CgMembership => outputs.push((s.clone(), "CG\nMembers")),
-            _ => {}
-        }
-    }
-    if !outputs.is_empty() {
-        columns.push(FlowColumn {
-            heading: "Outputs",
-            sections: outputs,
-        });
-    }
-
-    columns
-}
-
-/// State for the scope editor widget.
+/// Per-frame snapshot of the scope being edited, plus window state.
 pub struct ScopeEditorState {
-    /// Per-channel section selections.
-    pub channel_selections: HashMap<ChannelId, HashSet<ParameterSection>>,
-    /// Which channel groups are expanded in the UI.
+    /// Per-channel selected paths. The source of truth for the editor.
+    pub channel_paths: HashMap<ChannelId, HashSet<ParameterPath>>,
+    /// Which channel-type groups are expanded in the window.
+    /// Default: all collapsed.
     pub expanded_groups: HashSet<ChannelGroup>,
-    /// Currently active channel group in the signal-flow view.
-    pub active_group: Option<ChannelGroup>,
+    /// Which (group, parameter-section) pairs are expanded inside an open group.
+    /// Default: empty (all collapsed).
+    pub expanded_sections: HashSet<(ChannelGroup, ParameterSection)>,
+    /// Window open state, controlled by snapshots tab.
+    pub window_open: bool,
+    /// Snapshot of `channel_paths` taken at window-open time. Used by Cancel
+    /// to roll back. None when the window is closed.
+    backup: Option<HashMap<ChannelId, HashSet<ParameterPath>>>,
 }
 
 impl Default for ScopeEditorState {
     fn default() -> Self {
         Self {
-            channel_selections: HashMap::new(),
+            channel_paths: HashMap::new(),
             expanded_groups: HashSet::new(),
-            active_group: Some(ChannelGroup::Inputs),
+            expanded_sections: HashSet::new(),
+            window_open: false,
+            backup: None,
         }
     }
 }
 
 impl ScopeEditorState {
-    /// Build a ScopeTemplate from current selections.
+    /// Open the window. Caller passes the current scope template; the editor
+    /// loads it (running the v7→v8 migration if necessary), takes a backup
+    /// for Cancel, and sets `window_open = true`. Aux/group/matrix counts are
+    /// needed by the migration to enumerate the right paths.
+    pub fn open(
+        &mut self,
+        template: &ScopeTemplate,
+        aux_count: u8,
+        group_count: u8,
+        matrix_count: u8,
+    ) {
+        // Load selections from the template (with migration).
+        let mut channel_paths: HashMap<ChannelId, HashSet<ParameterPath>> = HashMap::new();
+        for cs in &template.channel_scopes {
+            // Clone so we can run the migration without mutating the source.
+            let mut migrated = cs.clone();
+            migrated.migrate_sections_to_paths(aux_count, group_count, matrix_count);
+            if !migrated.paths.is_empty() {
+                channel_paths.insert(migrated.channel.clone(), migrated.paths);
+            }
+        }
+
+        self.backup = Some(channel_paths.clone());
+        self.channel_paths = channel_paths;
+        self.window_open = true;
+    }
+
+    /// Cancel: restore the backup and close the window.
+    pub fn cancel(&mut self) {
+        if let Some(backup) = self.backup.take() {
+            self.channel_paths = backup;
+        }
+        self.window_open = false;
+    }
+
+    /// Commit: drop the backup and close the window. Caller reads
+    /// `to_scope_template()` afterward.
+    pub fn commit(&mut self) {
+        self.backup = None;
+        self.window_open = false;
+    }
+
+    /// Build a new path-granularity ScopeTemplate from the current selections.
     pub fn to_scope_template(&self, name: String) -> ScopeTemplate {
         let channel_scopes: Vec<ChannelScope> = self
-            .channel_selections
+            .channel_paths
             .iter()
-            .filter(|(_, sections)| !sections.is_empty())
-            .map(|(ch, sections)| ChannelScope::from_sections(ch.clone(), sections.clone()))
+            .filter(|(_, paths)| !paths.is_empty())
+            .map(|(ch, paths)| ChannelScope::new(ch.clone(), paths.clone()))
             .collect();
         ScopeTemplate::new(name, channel_scopes)
     }
 
-    /// Load from an existing ScopeTemplate.
-    pub fn from_scope_template(template: &ScopeTemplate) -> Self {
-        let mut selections = HashMap::new();
+    /// Load directly from a template, without opening the window. Used by
+    /// snapshots tab when the user clicks a saved scope template — refreshes
+    /// the editor's selections so that opening the window picks them up.
+    pub fn load_template(
+        &mut self,
+        template: &ScopeTemplate,
+        aux_count: u8,
+        group_count: u8,
+        matrix_count: u8,
+    ) {
+        let mut channel_paths: HashMap<ChannelId, HashSet<ParameterPath>> = HashMap::new();
         for cs in &template.channel_scopes {
-            selections.insert(cs.channel.clone(), cs.sections.clone());
+            let mut migrated = cs.clone();
+            migrated.migrate_sections_to_paths(aux_count, group_count, matrix_count);
+            if !migrated.paths.is_empty() {
+                channel_paths.insert(migrated.channel.clone(), migrated.paths);
+            }
         }
-        ScopeEditorState {
-            channel_selections: selections,
-            expanded_groups: HashSet::new(),
-            active_group: Some(ChannelGroup::Inputs),
-        }
+        self.channel_paths = channel_paths;
     }
 
     /// Clear all selections.
     pub fn clear(&mut self) {
-        self.channel_selections.clear();
+        self.channel_paths.clear();
     }
 
-    /// Count total selected channel-section pairs.
+    /// Total number of selected (channel, path) pairs.
     pub fn selection_count(&self) -> usize {
-        self.channel_selections.values().map(|s| s.len()).sum()
+        self.channel_paths.values().map(|s| s.len()).sum()
     }
 
-    /// Toggle all channels in a group for a specific section.
-    fn toggle_group_section(
-        &mut self,
-        group: &ChannelGroup,
-        section: &ParameterSection,
-        enable: bool,
-        input_count: u8,
-        aux_count: u8,
-        group_count: u8,
-    ) {
-        for ch in group.channels(input_count, aux_count, group_count) {
-            let entry = self.channel_selections.entry(ch).or_default();
-            if enable {
-                entry.insert(section.clone());
-            } else {
-                entry.remove(section);
-            }
-        }
-    }
+    // ─── Cell-level toggles ──────────────────────────────────────────
 
-    /// Check if all channels in a group have a specific section selected.
-    fn is_group_section_all_selected(
-        &self,
-        group: &ChannelGroup,
-        section: &ParameterSection,
-        input_count: u8,
-        aux_count: u8,
-        group_count: u8,
-    ) -> bool {
-        let channels = group.channels(input_count, aux_count, group_count);
-        if channels.is_empty() {
-            return false;
-        }
-        channels.iter().all(|ch| {
-            self.channel_selections
-                .get(ch)
-                .is_some_and(|s| s.contains(section))
-        })
-    }
-
-    /// Toggle a single (channel, section) cell.
-    pub fn toggle_channel_section(&mut self, channel: &ChannelId, section: &ParameterSection) {
-        let entry = self.channel_selections.entry(channel.clone()).or_default();
-        if entry.contains(section) {
-            entry.remove(section);
+    /// Toggle a single (channel, path) cell. Cleans up empty entries.
+    pub fn toggle_cell(&mut self, ch: &ChannelId, path: &ParameterPath) {
+        let entry = self.channel_paths.entry(ch.clone()).or_default();
+        if entry.contains(path) {
+            entry.remove(path);
             if entry.is_empty() {
-                self.channel_selections.remove(channel);
+                self.channel_paths.remove(ch);
             }
         } else {
-            entry.insert(section.clone());
+            entry.insert(path.clone());
         }
     }
 
-    /// Check whether a single (channel, section) cell is selected.
-    pub fn is_channel_section_selected(
-        &self,
-        channel: &ChannelId,
-        section: &ParameterSection,
-    ) -> bool {
-        self.channel_selections
-            .get(channel)
-            .is_some_and(|s| s.contains(section))
+    pub fn is_cell_selected(&self, ch: &ChannelId, path: &ParameterPath) -> bool {
+        self.channel_paths
+            .get(ch)
+            .is_some_and(|s| s.contains(path))
     }
 
-    /// Toggle every section for one channel: turn them all off if any are on,
-    /// otherwise enable every applicable section.
-    pub fn toggle_channel_all(&mut self, channel: &ChannelId, applicable: &[ParameterSection]) {
-        let any_on = self
-            .channel_selections
-            .get(channel)
-            .is_some_and(|s| !s.is_empty());
-        if any_on {
-            self.channel_selections.remove(channel);
-        } else {
-            let set: HashSet<ParameterSection> = applicable.iter().cloned().collect();
-            self.channel_selections.insert(channel.clone(), set);
+    // ─── Row toggles (one path across many channels) ────────────────
+
+    /// Toggle a row: select that one path across every channel where it is
+    /// available. If every available cell is already selected, clears them
+    /// instead. Unavailable cells are skipped.
+    pub fn toggle_row(
+        &mut self,
+        path: &ParameterPath,
+        channels: &[ChannelId],
+        available: &HashMap<ChannelId, HashSet<ParameterPath>>,
+    ) {
+        let all_on = self.is_row_all_selected(path, channels, available);
+        for ch in channels {
+            if !cell_available(available, ch, path) {
+                continue;
+            }
+            let entry = self.channel_paths.entry(ch.clone()).or_default();
+            if all_on {
+                entry.remove(path);
+                if entry.is_empty() {
+                    self.channel_paths.remove(ch);
+                }
+            } else {
+                entry.insert(path.clone());
+            }
         }
     }
 
-    /// Check if any channels in a group have a specific section selected.
-    fn is_group_section_any_selected(
+    pub fn is_row_all_selected(
         &self,
-        group: &ChannelGroup,
-        section: &ParameterSection,
-        input_count: u8,
-        aux_count: u8,
-        group_count: u8,
+        path: &ParameterPath,
+        channels: &[ChannelId],
+        available: &HashMap<ChannelId, HashSet<ParameterPath>>,
     ) -> bool {
-        let channels = group.channels(input_count, aux_count, group_count);
+        let mut any_available = false;
+        for ch in channels {
+            if !cell_available(available, ch, path) {
+                continue;
+            }
+            any_available = true;
+            if !self.is_cell_selected(ch, path) {
+                return false;
+            }
+        }
+        any_available
+    }
+
+    pub fn is_row_any_selected(
+        &self,
+        path: &ParameterPath,
+        channels: &[ChannelId],
+        available: &HashMap<ChannelId, HashSet<ParameterPath>>,
+    ) -> bool {
         channels.iter().any(|ch| {
-            self.channel_selections
-                .get(ch)
-                .is_some_and(|s| s.contains(section))
+            cell_available(available, ch, path) && self.is_cell_selected(ch, path)
         })
+    }
+
+    // ─── Column toggles (one channel across many paths) ─────────────
+
+    /// Toggle a column: select every applicable path for one channel. If
+    /// every available cell is already selected, clears them instead.
+    pub fn toggle_column(
+        &mut self,
+        ch: &ChannelId,
+        paths: &[ParameterPath],
+        available: &HashMap<ChannelId, HashSet<ParameterPath>>,
+    ) {
+        let all_on = self.is_column_all_selected(ch, paths, available);
+        for path in paths {
+            if !cell_available(available, ch, path) {
+                continue;
+            }
+            let entry = self.channel_paths.entry(ch.clone()).or_default();
+            if all_on {
+                entry.remove(path);
+            } else {
+                entry.insert(path.clone());
+            }
+        }
+        if let Some(entry) = self.channel_paths.get(ch) {
+            if entry.is_empty() {
+                self.channel_paths.remove(ch);
+            }
+        }
+    }
+
+    pub fn is_column_all_selected(
+        &self,
+        ch: &ChannelId,
+        paths: &[ParameterPath],
+        available: &HashMap<ChannelId, HashSet<ParameterPath>>,
+    ) -> bool {
+        let mut any_available = false;
+        for path in paths {
+            if !cell_available(available, ch, path) {
+                continue;
+            }
+            any_available = true;
+            if !self.is_cell_selected(ch, path) {
+                return false;
+            }
+        }
+        any_available
+    }
+
+    pub fn is_column_any_selected(
+        &self,
+        ch: &ChannelId,
+        paths: &[ParameterPath],
+        available: &HashMap<ChannelId, HashSet<ParameterPath>>,
+    ) -> bool {
+        paths.iter().any(|path| {
+            cell_available(available, ch, path) && self.is_cell_selected(ch, path)
+        })
+    }
+
+    // ─── Section row toggles (every path in a section, every channel) ─
+
+    /// Toggle every (channel, path) cell where the path is in
+    /// `section_paths`. The headline interaction: click "EQ" → all of EQ
+    /// across every channel in the group flips on or off in one click.
+    pub fn toggle_section_row(
+        &mut self,
+        section_paths: &[ParameterPath],
+        channels: &[ChannelId],
+        available: &HashMap<ChannelId, HashSet<ParameterPath>>,
+    ) {
+        let all_on = self.is_section_all_selected(section_paths, channels, available);
+        for ch in channels {
+            for path in section_paths {
+                if !cell_available(available, ch, path) {
+                    continue;
+                }
+                let entry = self.channel_paths.entry(ch.clone()).or_default();
+                if all_on {
+                    entry.remove(path);
+                } else {
+                    entry.insert(path.clone());
+                }
+            }
+        }
+        // Clean up emptied channel entries.
+        self.channel_paths.retain(|_, v| !v.is_empty());
+    }
+
+    pub fn is_section_all_selected(
+        &self,
+        section_paths: &[ParameterPath],
+        channels: &[ChannelId],
+        available: &HashMap<ChannelId, HashSet<ParameterPath>>,
+    ) -> bool {
+        let mut any_available = false;
+        for ch in channels {
+            for path in section_paths {
+                if !cell_available(available, ch, path) {
+                    continue;
+                }
+                any_available = true;
+                if !self.is_cell_selected(ch, path) {
+                    return false;
+                }
+            }
+        }
+        any_available
+    }
+
+    pub fn is_section_any_selected(
+        &self,
+        section_paths: &[ParameterPath],
+        channels: &[ChannelId],
+        available: &HashMap<ChannelId, HashSet<ParameterPath>>,
+    ) -> bool {
+        for ch in channels {
+            for path in section_paths {
+                if cell_available(available, ch, path) && self.is_cell_selected(ch, path) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Toggle the cells of one section row for ONE channel — the section
+    /// header's per-channel cell. Selects every applicable path in
+    /// `section_paths` for `ch`, or clears them if all already selected.
+    pub fn toggle_section_column(
+        &mut self,
+        section_paths: &[ParameterPath],
+        ch: &ChannelId,
+        available: &HashMap<ChannelId, HashSet<ParameterPath>>,
+    ) {
+        let all_on = section_paths.iter().all(|path| {
+            !cell_available(available, ch, path) || self.is_cell_selected(ch, path)
+        }) && section_paths
+            .iter()
+            .any(|path| cell_available(available, ch, path));
+        for path in section_paths {
+            if !cell_available(available, ch, path) {
+                continue;
+            }
+            let entry = self.channel_paths.entry(ch.clone()).or_default();
+            if all_on {
+                entry.remove(path);
+            } else {
+                entry.insert(path.clone());
+            }
+        }
+        if let Some(entry) = self.channel_paths.get(ch) {
+            if entry.is_empty() {
+                self.channel_paths.remove(ch);
+            }
+        }
+    }
+
+    // ─── Whole-group toggle (corner [All] button) ────────────────────
+
+    /// Toggle every (channel, path) cell in the group. Skips unavailable cells.
+    pub fn toggle_all(
+        &mut self,
+        channels: &[ChannelId],
+        paths: &[ParameterPath],
+        available: &HashMap<ChannelId, HashSet<ParameterPath>>,
+    ) {
+        let all_on = self.is_all_selected(channels, paths, available);
+        for ch in channels {
+            for path in paths {
+                if !cell_available(available, ch, path) {
+                    continue;
+                }
+                let entry = self.channel_paths.entry(ch.clone()).or_default();
+                if all_on {
+                    entry.remove(path);
+                } else {
+                    entry.insert(path.clone());
+                }
+            }
+        }
+        self.channel_paths.retain(|_, v| !v.is_empty());
+    }
+
+    pub fn is_all_selected(
+        &self,
+        channels: &[ChannelId],
+        paths: &[ParameterPath],
+        available: &HashMap<ChannelId, HashSet<ParameterPath>>,
+    ) -> bool {
+        let mut any_available = false;
+        for ch in channels {
+            for path in paths {
+                if !cell_available(available, ch, path) {
+                    continue;
+                }
+                any_available = true;
+                if !self.is_cell_selected(ch, path) {
+                    return false;
+                }
+            }
+        }
+        any_available
+    }
+
+    pub fn is_any_selected(
+        &self,
+        channels: &[ChannelId],
+        paths: &[ParameterPath],
+        available: &HashMap<ChannelId, HashSet<ParameterPath>>,
+    ) -> bool {
+        for ch in channels {
+            for path in paths {
+                if cell_available(available, ch, path) && self.is_cell_selected(ch, path) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
 
-/// Draw the scope editor widget with DiGiCo-style signal-flow blocks.
-pub fn draw_scope_editor(
-    ui: &mut egui::Ui,
+/// True if the (channel, path) cell has live data on the console (i.e. the
+/// availability map has the path under the channel). Centralised so the bulk
+/// toggles all share one definition.
+fn cell_available(
+    available: &HashMap<ChannelId, HashSet<ParameterPath>>,
+    ch: &ChannelId,
+    path: &ParameterPath,
+) -> bool {
+    available
+        .get(ch)
+        .is_some_and(|s| s.contains(path))
+}
+
+// ── Window-rendering entrypoint ─────────────────────────────────────
+
+/// Result of a single `draw_scope_window` frame.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ScopeWindowResult {
+    /// Window is still open and waiting for user input.
+    StillOpen,
+    /// User clicked OK; caller should read `to_scope_template`.
+    Committed,
+    /// User clicked Cancel or closed the window; selections were rolled back.
+    Cancelled,
+}
+
+/// Render the scope editor window. Early-returns `StillOpen` (without drawing)
+/// when `state.window_open` is false. The caller should invoke this from the
+/// App-level `update()` so the window floats above the central panel.
+pub fn draw_scope_window(
+    ctx: &egui::Context,
     state: &mut ScopeEditorState,
-    input_count: u8,
-    aux_count: u8,
-    group_count: u8,
-) {
-    theme::section_heading(ui, "Scope Editor");
+    console_state: &ConsoleState,
+) -> ScopeWindowResult {
+    if !state.window_open {
+        return ScopeWindowResult::StillOpen;
+    }
 
-    // Controls bar
-    ui.horizontal(|ui| {
-        let clear_btn = theme::action_button(
-            "Clear All",
-            theme::BG_ELEVATED,
-            egui::Vec2::new(80.0, 30.0),
-        );
-        if ui.add(clear_btn).clicked() {
-            state.clear();
-        }
-        ui.add_space(8.0);
-        theme::colored_badge(
-            ui,
-            &format!("{} selections", state.selection_count()),
-            theme::ACCENT_BLUE,
-        );
-    });
+    // Snapshot config + availability + channel names once per frame, BEFORE
+    // entering the egui::Window closure that holds an exclusive borrow of state.
+    let config = console_state.config.clone();
+    let aux_count = config.aux_output_count;
+    let group_count = config.group_output_count;
+    let matrix_count = config.matrix_input_count;
 
-    ui.add_space(8.0);
-
-    // Channel group selector tabs (colored blocks)
-    ui.horizontal_wrapped(|ui| {
-        ui.label(
-            egui::RichText::new("Channel Group:")
-                .color(theme::TEXT_SECONDARY)
-                .size(theme::FONT_SIZE_BADGE),
-        );
-        for group in ChannelGroup::all() {
-            let channels = group.channels(input_count, aux_count, group_count);
-            if channels.is_empty() {
-                continue;
+    // Build per-group data: channels, applicable paths, availability map,
+    // channel-name lookup. Done up front so the inner closures don't need
+    // ConsoleState anymore.
+    let groups_data: Vec<GroupRenderData> = ChannelGroup::all()
+        .iter()
+        .map(|g| {
+            let channels = g.channels_from(&config);
+            let paths = ParameterPath::applicable_to(
+                &g.representative_channel(),
+                aux_count,
+                group_count,
+                matrix_count,
+            );
+            let available = console_state.available_paths_for(&channels);
+            let channel_names = console_state.channel_names_for(&channels);
+            GroupRenderData {
+                group: *g,
+                channels,
+                paths,
+                available,
+                channel_names,
             }
-            let is_active = state.active_group.as_ref() == Some(group);
-            let base_color = group.color();
-            let fill = if is_active {
-                base_color
-            } else {
-                theme::BG_ELEVATED
-            };
-            let text_color = if is_active {
-                theme::TEXT_PRIMARY
-            } else {
-                theme::TEXT_SECONDARY
-            };
+        })
+        .collect();
 
-            let label = format!("{} ({})", group.label(), channels.len());
-            let btn = egui::Button::new(
-                egui::RichText::new(&label)
-                    .color(text_color)
-                    .size(theme::FONT_SIZE_BADGE),
-            )
-            .fill(fill)
-            .corner_radius(4.0);
+    let mut result = ScopeWindowResult::StillOpen;
+    let mut still_open = state.window_open;
 
-            if ui.add(btn).clicked() {
-                state.active_group = Some(group.clone());
-            }
-        }
-    });
+    egui::Window::new("Snapshot Scope")
+        .collapsible(false)
+        .resizable(true)
+        .default_size([1100.0, 700.0])
+        .open(&mut still_open)
+        .show(ctx, |ui| {
+            // ─ Toolbar ─
+            ui.horizontal(|ui| {
+                let clear_btn = theme::action_button(
+                    "Clear All",
+                    theme::BG_ELEVATED,
+                    egui::Vec2::new(80.0, 28.0),
+                );
+                if ui.add(clear_btn).clicked() {
+                    state.clear();
+                }
+                ui.add_space(8.0);
+                theme::colored_badge(
+                    ui,
+                    &format!("{} selections", state.selection_count()),
+                    theme::ACCENT_BLUE,
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("Click any header to bulk toggle.")
+                        .color(theme::TEXT_SECONDARY)
+                        .size(theme::FONT_SIZE_BADGE),
+                );
+            });
+            ui.add_space(6.0);
+            ui.separator();
 
-    ui.add_space(8.0);
-
-    // Signal-flow block grid for the active group
-    if let Some(active_group) = &state.active_group.clone() {
-        let applicable = active_group.applicable_sections();
-        let columns = build_flow_columns(&applicable);
-
-        egui::ScrollArea::horizontal()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for (col_idx, column) in columns.iter().enumerate() {
-                        // Arrow separator between columns
-                        if col_idx > 0 {
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new("\u{25B6}")
-                                    .color(theme::TEXT_SECONDARY)
-                                    .size(theme::FONT_SIZE_BODY),
-                            );
-                            ui.add_space(4.0);
+            // ─ Per-group matrices ─
+            egui::ScrollArea::both()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    for data in &groups_data {
+                        if data.channels.is_empty() {
+                            continue;
                         }
+                        draw_channel_group_block(ui, state, data);
+                        ui.add_space(8.0);
+                    }
+                });
 
-                        // Column
-                        ui.vertical(|ui| {
-                            ui.set_min_width(100.0);
-
-                            // Column heading
-                            ui.label(
-                                egui::RichText::new(column.heading)
-                                    .strong()
-                                    .color(theme::TEXT_PRIMARY)
-                                    .size(theme::FONT_SIZE_BADGE),
-                            );
-                            ui.add_space(4.0);
-
-                            // Section toggle blocks
-                            for (section, display_name) in &column.sections {
-                                let all_sel = state.is_group_section_all_selected(
-                                    active_group,
-                                    section,
-                                    input_count,
-                                    aux_count,
-                                    group_count,
-                                );
-                                let any_sel = state.is_group_section_any_selected(
-                                    active_group,
-                                    section,
-                                    input_count,
-                                    aux_count,
-                                    group_count,
-                                );
-
-                                let response = theme::toggle_block_tristate(
-                                    ui,
-                                    display_name,
-                                    all_sel,
-                                    any_sel,
-                                );
-
-                                if response.clicked() {
-                                    let enable = !all_sel;
-                                    state.toggle_group_section(
-                                        active_group,
-                                        section,
-                                        enable,
-                                        input_count,
-                                        aux_count,
-                                        group_count,
-                                    );
-                                }
-                            }
-                        });
+            // ─ Footer (OK / Cancel) ─
+            ui.separator();
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let ok_btn = theme::action_button(
+                        "OK",
+                        theme::ACCENT_GREEN,
+                        egui::Vec2::new(90.0, 30.0),
+                    );
+                    if ui.add(ok_btn).clicked() {
+                        state.commit();
+                        result = ScopeWindowResult::Committed;
+                    }
+                    ui.add_space(8.0);
+                    let cancel_btn = theme::action_button(
+                        "Cancel",
+                        theme::BG_ELEVATED,
+                        egui::Vec2::new(90.0, 30.0),
+                    );
+                    if ui.add(cancel_btn).clicked() {
+                        state.cancel();
+                        result = ScopeWindowResult::Cancelled;
                     }
                 });
             });
+        });
 
-        ui.add_space(12.0);
-        draw_per_channel_matrix(
-            ui,
-            state,
-            active_group,
-            &applicable,
-            input_count,
-            aux_count,
-            group_count,
-        );
+    // Honour the X close button (which flips `still_open` to false). Treat
+    // closing-via-X as Cancel — discard pending changes.
+    if !still_open && state.window_open && result == ScopeWindowResult::StillOpen {
+        state.cancel();
+        result = ScopeWindowResult::Cancelled;
+    }
+
+    result
+}
+
+/// Per-group data assembled once per frame, before drawing.
+struct GroupRenderData {
+    group: ChannelGroup,
+    channels: Vec<ChannelId>,
+    paths: Vec<ParameterPath>,
+    available: HashMap<ChannelId, HashSet<ParameterPath>>,
+    channel_names: HashMap<ChannelId, String>,
+}
+
+/// Draw one channel-type group: collapsible header + (when expanded) matrix.
+fn draw_channel_group_block(
+    ui: &mut egui::Ui,
+    state: &mut ScopeEditorState,
+    data: &GroupRenderData,
+) {
+    // Group header row: triangle + label + tristate cell + count.
+    let group_expanded = state.expanded_groups.contains(&data.group);
+    let group_all = state.is_all_selected(&data.channels, &data.paths, &data.available);
+    let group_any = state.is_any_selected(&data.channels, &data.paths, &data.available);
+
+    egui::Frame::new()
+        .fill(theme::BG_ELEVATED)
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                // Triangle: expand/collapse the group.
+                let triangle = if group_expanded { "▼" } else { "▶" };
+                let tri_resp = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(triangle)
+                            .color(theme::TEXT_PRIMARY)
+                            .size(theme::FONT_SIZE_BODY),
+                    )
+                    .sense(egui::Sense::click()),
+                );
+                if tri_resp.clicked() {
+                    if group_expanded {
+                        state.expanded_groups.remove(&data.group);
+                    } else {
+                        state.expanded_groups.insert(data.group);
+                    }
+                }
+                ui.add_space(4.0);
+
+                // Group label: clicking it bulk-toggles every cell in the group.
+                let label_resp = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!(
+                            "{} ({})",
+                            data.group.label(),
+                            data.channels.len()
+                        ))
+                        .strong()
+                        .color(theme::TEXT_PRIMARY)
+                        .size(theme::FONT_SIZE_SECTION),
+                    )
+                    .sense(egui::Sense::click()),
+                );
+                if label_resp.clicked() {
+                    state.toggle_all(&data.channels, &data.paths, &data.available);
+                }
+
+                ui.add_space(8.0);
+
+                // Group tristate cell.
+                let tri_cell =
+                    matrix_cell(ui, egui::Vec2::new(28.0, 20.0), group_all, group_any, true, "");
+                if tri_cell.clicked() {
+                    state.toggle_all(&data.channels, &data.paths, &data.available);
+                }
+            });
+        });
+
+    // Body: matrix only if expanded.
+    if group_expanded {
+        egui::Frame::new()
+            .fill(theme::BG_PANEL)
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin::symmetric(6, 6))
+            .show(ui, |ui| {
+                draw_group_matrix(ui, state, data);
+            });
     }
 }
 
-/// Per-channel matrix: one row per channel in the active group, one cell per
-/// applicable section. Allows enabling/disabling individual channel-section pairs.
-fn draw_per_channel_matrix(
+const CELL_SIZE: egui::Vec2 = egui::Vec2 { x: 22.0, y: 18.0 };
+const CELL_SPACING: f32 = 3.0;
+const ROW_LABEL_WIDTH: f32 = 170.0;
+
+/// Draw the matrix for one expanded channel-type group.
+fn draw_group_matrix(
     ui: &mut egui::Ui,
     state: &mut ScopeEditorState,
-    active_group: &ChannelGroup,
-    applicable: &[ParameterSection],
-    input_count: u8,
-    aux_count: u8,
-    group_count: u8,
+    data: &GroupRenderData,
 ) {
-    let channels = active_group.channels(input_count, aux_count, group_count);
-    if channels.is_empty() || applicable.is_empty() {
+    if data.paths.is_empty() {
+        ui.label(
+            egui::RichText::new("(no parameters)")
+                .color(theme::TEXT_SECONDARY)
+                .small(),
+        );
         return;
     }
 
-    ui.label(
-        egui::RichText::new("Per-Channel")
-            .strong()
-            .color(theme::TEXT_PRIMARY)
-            .size(theme::FONT_SIZE_BADGE),
-    );
-    ui.add_space(4.0);
+    // Group paths by section, in section enum order. Rely on
+    // ParameterPath::applicable_to returning paths in signal-flow order;
+    // walking it once and grouping consecutive same-section paths gives a
+    // stable ordering.
+    let paths_by_section = group_paths_by_section(&data.paths);
 
-    // Sort applicable sections so the column order is stable across frames.
-    // ParameterSection derives Ord via its enum order, which is good enough.
-    let mut sections: Vec<ParameterSection> = applicable.to_vec();
-    sections.sort();
-
-    let cell_size = egui::Vec2::new(28.0, 18.0);
-    let cell_spacing = 3.0;
-    let label_width = 70.0;
-
-    egui::ScrollArea::both()
-        .id_salt("scope_per_channel_matrix")
-        .max_height(280.0)
+    egui::ScrollArea::horizontal()
+        .id_salt(("scope_group_hscroll", data.group))
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            // Header row: short section names above their column.
+            // ── Header row: corner [All] + per-channel header cells ──
             ui.horizontal(|ui| {
-                // Spacer matching channel label + "All" cell width.
-                ui.allocate_exact_size(
-                    egui::Vec2::new(label_width + cell_size.x + cell_spacing * 2.0, cell_size.y),
-                    egui::Sense::hover(),
+                // Corner [All] cell — width = row label + spacing.
+                let corner_all =
+                    state.is_all_selected(&data.channels, &data.paths, &data.available);
+                let corner_any =
+                    state.is_any_selected(&data.channels, &data.paths, &data.available);
+                let corner_resp = matrix_cell(
+                    ui,
+                    egui::Vec2::new(ROW_LABEL_WIDTH, CELL_SIZE.y),
+                    corner_all,
+                    corner_any,
+                    true,
+                    "All",
                 );
-                for section in &sections {
-                    let (rect, _) = ui.allocate_exact_size(cell_size, egui::Sense::hover());
-                    let galley = ui.painter().layout_no_wrap(
-                        section_short_label(section).to_string(),
-                        egui::FontId::proportional(10.0),
-                        theme::TEXT_SECONDARY,
-                    );
-                    let pos = rect.center() - galley.size() / 2.0;
-                    ui.painter().galley(pos, galley, theme::TEXT_SECONDARY);
-                    ui.add_space(cell_spacing);
+                if corner_resp.clicked() {
+                    state.toggle_all(&data.channels, &data.paths, &data.available);
+                }
+                ui.add_space(CELL_SPACING);
+
+                // Per-channel column headers.
+                for ch in &data.channels {
+                    let col_all =
+                        state.is_column_all_selected(ch, &data.paths, &data.available);
+                    let col_any =
+                        state.is_column_any_selected(ch, &data.paths, &data.available);
+                    let label = channel_short_label(ch);
+                    let resp =
+                        matrix_cell(ui, CELL_SIZE, col_all, col_any, true, &label);
+                    if resp.clicked() {
+                        state.toggle_column(ch, &data.paths, &data.available);
+                    }
+                    let tooltip = match data.channel_names.get(ch) {
+                        Some(n) => format!("{ch} — {n}"),
+                        None => format!("{ch}"),
+                    };
+                    let _ = resp.on_hover_text(tooltip);
+                    ui.add_space(CELL_SPACING);
                 }
             });
 
-            // One row per channel.
-            for ch in &channels {
+            // ── Section blocks ──
+            for (section, section_paths) in &paths_by_section {
+                let key = (data.group, section.clone());
+                let expanded = state.expanded_sections.contains(&key);
+
+                let sec_all = state.is_section_all_selected(
+                    section_paths,
+                    &data.channels,
+                    &data.available,
+                );
+                let sec_any = state.is_section_any_selected(
+                    section_paths,
+                    &data.channels,
+                    &data.available,
+                );
+
+                // Section header row: triangle + label + per-channel section cells.
                 ui.horizontal(|ui| {
-                    // Channel label.
-                    let (label_rect, _) = ui.allocate_exact_size(
-                        egui::Vec2::new(label_width, cell_size.y),
-                        egui::Sense::hover(),
+                    let row = section_header_row(
+                        ui,
+                        if expanded { "▼" } else { "▶" },
+                        &section_display_name(section),
+                        sec_all,
+                        sec_any,
                     );
-                    let label_text = format!("{ch}");
-                    let label_galley = ui.painter().layout_no_wrap(
-                        label_text,
-                        egui::FontId::proportional(11.0),
-                        theme::TEXT_PRIMARY,
-                    );
-                    let lp = egui::pos2(
-                        label_rect.left() + 4.0,
-                        label_rect.center().y - label_galley.size().y / 2.0,
-                    );
-                    ui.painter().galley(lp, label_galley, theme::TEXT_PRIMARY);
-                    ui.add_space(cell_spacing);
-
-                    // "All" toggle for this channel.
-                    let any_on = state
-                        .channel_selections
-                        .get(ch)
-                        .is_some_and(|s| !s.is_empty());
-                    let all_on = state
-                        .channel_selections
-                        .get(ch)
-                        .is_some_and(|s| sections.iter().all(|sec| s.contains(sec)));
-                    let all_resp = matrix_cell(ui, cell_size, all_on, any_on, "All");
-                    if all_resp.clicked() {
-                        state.toggle_channel_all(ch, &sections);
-                    }
-                    ui.add_space(cell_spacing);
-
-                    // One cell per section.
-                    for section in &sections {
-                        let selected = state.is_channel_section_selected(ch, section);
-                        let resp = matrix_cell(ui, cell_size, selected, selected, "");
-                        if resp.clicked() {
-                            state.toggle_channel_section(ch, section);
+                    match row {
+                        SectionHeaderClick::Triangle => {
+                            if expanded {
+                                state.expanded_sections.remove(&key);
+                            } else {
+                                state.expanded_sections.insert(key.clone());
+                            }
                         }
-                        let _ = resp.on_hover_text(format!("{ch} — {}", section_short_label(section)));
-                        ui.add_space(cell_spacing);
+                        SectionHeaderClick::Label => {
+                            state.toggle_section_row(
+                                section_paths,
+                                &data.channels,
+                                &data.available,
+                            );
+                        }
+                        SectionHeaderClick::None => {}
+                    }
+                    ui.add_space(CELL_SPACING);
+
+                    // Per-channel cells for the section header row.
+                    for ch in &data.channels {
+                        // Tristate based on whether every section path is
+                        // selected for THIS channel.
+                        let mut any_available = false;
+                        let mut all_on = true;
+                        let mut any_on = false;
+                        for path in section_paths {
+                            if !cell_available(&data.available, ch, path) {
+                                continue;
+                            }
+                            any_available = true;
+                            if state.is_cell_selected(ch, path) {
+                                any_on = true;
+                            } else {
+                                all_on = false;
+                            }
+                        }
+                        let cell_all = any_available && all_on;
+                        let cell_any = any_on;
+                        let resp = matrix_cell(
+                            ui,
+                            CELL_SIZE,
+                            cell_all,
+                            cell_any,
+                            any_available,
+                            "",
+                        );
+                        if resp.clicked() && any_available {
+                            state.toggle_section_column(
+                                section_paths,
+                                ch,
+                                &data.available,
+                            );
+                        }
+                        ui.add_space(CELL_SPACING);
                     }
                 });
+
+                // Path rows (only if expanded).
+                if expanded {
+                    for path in section_paths {
+                        ui.horizontal(|ui| {
+                            // Row label (clickable: bulk-toggle this path
+                            // across the whole group).
+                            let row_all = state
+                                .is_row_all_selected(path, &data.channels, &data.available);
+                            let row_any = state
+                                .is_row_any_selected(path, &data.channels, &data.available);
+                            let row_resp = path_row_label(ui, &path.label(), row_all, row_any);
+                            if row_resp.clicked() {
+                                state.toggle_row(path, &data.channels, &data.available);
+                            }
+                            ui.add_space(CELL_SPACING);
+
+                            // Per-channel cells.
+                            for ch in &data.channels {
+                                let avail = cell_available(&data.available, ch, path);
+                                let sel = state.is_cell_selected(ch, path);
+                                let resp =
+                                    matrix_cell(ui, CELL_SIZE, sel, sel, avail, "");
+                                if resp.clicked() && avail {
+                                    state.toggle_cell(ch, path);
+                                }
+                                if !avail {
+                                    let _ = resp.on_hover_text("no live parameter");
+                                }
+                                ui.add_space(CELL_SPACING);
+                            }
+                        });
+                    }
+                }
             }
         });
 }
 
-/// Render a single matrix cell. Green if `all_selected`, partial green if
-/// `any_selected`, dark grey otherwise. Optional centred label text.
+/// Group an `applicable_to` slice into per-section runs while preserving the
+/// signal-flow order. Returns a Vec of (section, paths-in-that-section).
+fn group_paths_by_section(
+    paths: &[ParameterPath],
+) -> Vec<(ParameterSection, Vec<ParameterPath>)> {
+    let mut out: Vec<(ParameterSection, Vec<ParameterPath>)> = Vec::new();
+    for path in paths {
+        let s = path.section();
+        if let Some((cur_section, cur_paths)) = out.last_mut() {
+            if *cur_section == s {
+                cur_paths.push(path.clone());
+                continue;
+            }
+        }
+        out.push((s, vec![path.clone()]));
+    }
+    out
+}
+
+/// Friendly section name shown in the section header row.
+fn section_display_name(s: &ParameterSection) -> String {
+    match s {
+        ParameterSection::Name => "Identity".into(),
+        ParameterSection::FaderMutePan => "Fader / Mute / Pan".into(),
+        ParameterSection::InputGain => "Input".into(),
+        ParameterSection::Delay => "Delay".into(),
+        ParameterSection::Digitube => "DiGiTube".into(),
+        ParameterSection::Eq => "EQ".into(),
+        ParameterSection::Dyn1 => "Dynamics 1 (Compressor)".into(),
+        ParameterSection::Dyn2 => "Dynamics 2 (Gate)".into(),
+        ParameterSection::Sends => "Aux Sends".into(),
+        ParameterSection::GroupRouting => "Group Routing".into(),
+        ParameterSection::Inserts => "Inserts".into(),
+        ParameterSection::CgMembership => "CG Membership".into(),
+        ParameterSection::GraphicEq => "Graphic EQ".into(),
+        ParameterSection::MatrixSends => "Matrix Sends".into(),
+    }
+}
+
+/// Compact channel column-header text. Shows just the index ("1", "2"…).
+fn channel_short_label(ch: &ChannelId) -> String {
+    match ch {
+        ChannelId::Input(n)
+        | ChannelId::Aux(n)
+        | ChannelId::Group(n)
+        | ChannelId::Matrix(n)
+        | ChannelId::ControlGroup(n)
+        | ChannelId::GraphicEq(n)
+        | ChannelId::MatrixInput(n) => n.to_string(),
+    }
+}
+
+// ── Cell rendering primitives ──────────────────────────────────────
+
+#[derive(Debug, PartialEq, Eq)]
+enum SectionHeaderClick {
+    None,
+    Triangle,
+    Label,
+}
+
+/// Render a section header row's leading triangle + label as one combined
+/// horizontal item. Returns which sub-area was clicked, if any.
+fn section_header_row(
+    ui: &mut egui::Ui,
+    triangle: &str,
+    label: &str,
+    all_selected: bool,
+    any_selected: bool,
+) -> SectionHeaderClick {
+    let mut click = SectionHeaderClick::None;
+
+    let total_width = ROW_LABEL_WIDTH;
+    let triangle_width: f32 = 16.0;
+    let label_width = total_width - triangle_width;
+
+    // Triangle area
+    let (tri_rect, tri_resp) = ui.allocate_exact_size(
+        egui::Vec2::new(triangle_width, CELL_SIZE.y),
+        egui::Sense::click(),
+    );
+    let tri_galley = ui.painter().layout_no_wrap(
+        triangle.to_string(),
+        egui::FontId::proportional(theme::FONT_SIZE_BODY),
+        theme::TEXT_PRIMARY,
+    );
+    let tri_pos = egui::pos2(
+        tri_rect.left() + 2.0,
+        tri_rect.center().y - tri_galley.size().y / 2.0,
+    );
+    ui.painter().galley(tri_pos, tri_galley, theme::TEXT_PRIMARY);
+    if tri_resp.clicked() {
+        click = SectionHeaderClick::Triangle;
+    }
+
+    // Label area (clickable bulk-toggle target).
+    let (label_rect, label_resp) =
+        ui.allocate_exact_size(egui::Vec2::new(label_width, CELL_SIZE.y), egui::Sense::click());
+
+    // Background tint based on tristate selection.
+    let bg = if all_selected {
+        theme::SCOPE_ACTIVE
+    } else if any_selected {
+        theme::SCOPE_PARTIAL
+    } else {
+        theme::BG_ELEVATED
+    };
+    let bg = if label_resp.hovered() {
+        theme::lighten(bg, 25)
+    } else {
+        bg
+    };
+    ui.painter().rect_filled(label_rect, 3.0, bg);
+
+    let text_color = if all_selected || any_selected {
+        theme::TEXT_PRIMARY
+    } else {
+        theme::TEXT_SECONDARY
+    };
+    let label_galley = ui.painter().layout_no_wrap(
+        label.to_string(),
+        egui::FontId::proportional(theme::FONT_SIZE_BADGE),
+        text_color,
+    );
+    let label_pos = egui::pos2(
+        label_rect.left() + 6.0,
+        label_rect.center().y - label_galley.size().y / 2.0,
+    );
+    ui.painter().galley(label_pos, label_galley, text_color);
+
+    if label_resp.clicked() {
+        click = SectionHeaderClick::Label;
+    }
+
+    click
+}
+
+/// Render a single ParameterPath row label as a clickable bulk-toggle target.
+fn path_row_label(
+    ui: &mut egui::Ui,
+    label: &str,
+    all_selected: bool,
+    any_selected: bool,
+) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::Vec2::new(ROW_LABEL_WIDTH, CELL_SIZE.y), egui::Sense::click());
+    let bg = if all_selected {
+        theme::SCOPE_ACTIVE
+    } else if any_selected {
+        theme::SCOPE_PARTIAL
+    } else {
+        theme::BG_PANEL
+    };
+    let bg = if response.hovered() {
+        theme::lighten(bg, 25)
+    } else {
+        bg
+    };
+    ui.painter().rect_filled(rect, 3.0, bg);
+
+    let text_color = if all_selected || any_selected {
+        theme::TEXT_PRIMARY
+    } else {
+        theme::TEXT_SECONDARY
+    };
+    let galley = ui.painter().layout_no_wrap(
+        label.to_string(),
+        egui::FontId::proportional(11.0),
+        text_color,
+    );
+    let pos = egui::pos2(
+        rect.left() + 16.0,
+        rect.center().y - galley.size().y / 2.0,
+    );
+    ui.painter().galley(pos, galley, text_color);
+    response
+}
+
+/// Render a single matrix cell. Available cells respond to clicks; unavailable
+/// cells render dim and ignore interaction.
 fn matrix_cell(
     ui: &mut egui::Ui,
     size: egui::Vec2,
     all_selected: bool,
     any_selected: bool,
+    available: bool,
     label: &str,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    let base = if all_selected {
+    let sense = if available {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+
+    let base = if !available {
+        theme::SCOPE_UNAVAILABLE
+    } else if all_selected {
         theme::SCOPE_ACTIVE
     } else if any_selected {
         theme::SCOPE_PARTIAL
     } else {
         theme::SCOPE_INACTIVE
     };
-    let fill = if response.hovered() {
+    let fill = if available && response.hovered() {
         theme::lighten(base, 25)
     } else {
         base
     };
     ui.painter().rect_filled(rect, 3.0, fill);
+
+    if !available {
+        // Outline-only treatment for unavailable cells.
+        ui.painter().rect_stroke(
+            rect,
+            3.0,
+            egui::Stroke::new(1.0, theme::TEXT_DISABLED),
+            egui::StrokeKind::Inside,
+        );
+    }
+
     if !label.is_empty() {
-        let color = if all_selected || any_selected {
+        let color = if !available {
+            theme::TEXT_DISABLED
+        } else if all_selected || any_selected {
             theme::TEXT_PRIMARY
         } else {
             theme::TEXT_SECONDARY
@@ -639,25 +1208,267 @@ fn matrix_cell(
         let pos = rect.center() - galley.size() / 2.0;
         ui.painter().galley(pos, galley, color);
     }
+
     response
 }
 
-/// Short label used as a column header in the per-channel matrix.
-fn section_short_label(section: &ParameterSection) -> &'static str {
-    match section {
-        ParameterSection::Name => "Name",
-        ParameterSection::InputGain => "Gain",
-        ParameterSection::Digitube => "Tube",
-        ParameterSection::Delay => "Dly",
-        ParameterSection::Inserts => "Ins",
-        ParameterSection::Eq => "EQ",
-        ParameterSection::Dyn1 => "Dy1",
-        ParameterSection::Dyn2 => "Dy2",
-        ParameterSection::GraphicEq => "GEQ",
-        ParameterSection::Sends => "Snd",
-        ParameterSection::GroupRouting => "Grp",
-        ParameterSection::MatrixSends => "Mtx",
-        ParameterSection::FaderMutePan => "Fdr",
-        ParameterSection::CgMembership => "CG",
+// ── Tests ───────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_available(
+        channels: &[ChannelId],
+        paths: &[ParameterPath],
+    ) -> HashMap<ChannelId, HashSet<ParameterPath>> {
+        let mut map: HashMap<ChannelId, HashSet<ParameterPath>> = HashMap::new();
+        for ch in channels {
+            map.insert(ch.clone(), paths.iter().cloned().collect());
+        }
+        map
+    }
+
+    #[test]
+    fn default_state_has_all_groups_collapsed() {
+        let s = ScopeEditorState::default();
+        assert!(s.expanded_groups.is_empty());
+        assert!(s.expanded_sections.is_empty());
+        assert!(!s.window_open);
+    }
+
+    #[test]
+    fn toggle_cell_adds_then_removes_and_cleans_up() {
+        let mut s = ScopeEditorState::default();
+        let ch = ChannelId::Input(1);
+        let p = ParameterPath::Fader;
+        s.toggle_cell(&ch, &p);
+        assert!(s.is_cell_selected(&ch, &p));
+        s.toggle_cell(&ch, &p);
+        assert!(!s.is_cell_selected(&ch, &p));
+        // Empty set cleaned up.
+        assert!(!s.channel_paths.contains_key(&ch));
+    }
+
+    #[test]
+    fn toggle_row_skips_unavailable_cells() {
+        let mut s = ScopeEditorState::default();
+        let channels = vec![ChannelId::Input(1), ChannelId::Input(2)];
+        // Only Input(1) has the path.
+        let mut available = HashMap::new();
+        available.insert(
+            ChannelId::Input(1),
+            HashSet::from([ParameterPath::Fader]),
+        );
+        available.insert(ChannelId::Input(2), HashSet::new());
+
+        s.toggle_row(&ParameterPath::Fader, &channels, &available);
+        assert!(s.is_cell_selected(&ChannelId::Input(1), &ParameterPath::Fader));
+        assert!(!s.is_cell_selected(&ChannelId::Input(2), &ParameterPath::Fader));
+    }
+
+    #[test]
+    fn toggle_column_skips_unavailable_cells() {
+        let mut s = ScopeEditorState::default();
+        let ch = ChannelId::Input(1);
+        let paths = vec![ParameterPath::Fader, ParameterPath::Mute];
+        // Only Fader is available.
+        let mut available = HashMap::new();
+        available.insert(ch.clone(), HashSet::from([ParameterPath::Fader]));
+
+        s.toggle_column(&ch, &paths, &available);
+        assert!(s.is_cell_selected(&ch, &ParameterPath::Fader));
+        assert!(!s.is_cell_selected(&ch, &ParameterPath::Mute));
+    }
+
+    #[test]
+    fn toggle_section_row_selects_every_path_in_section_for_every_channel() {
+        let mut s = ScopeEditorState::default();
+        let channels = vec![ChannelId::Input(1), ChannelId::Input(2), ChannelId::Input(3)];
+        let section_paths = vec![
+            ParameterPath::EqEnabled,
+            ParameterPath::EqBandFrequency(1),
+            ParameterPath::EqBandGain(1),
+        ];
+        let available = make_available(&channels, &section_paths);
+
+        s.toggle_section_row(&section_paths, &channels, &available);
+
+        for ch in &channels {
+            for path in &section_paths {
+                assert!(
+                    s.is_cell_selected(ch, path),
+                    "{ch} — {path:?} should be selected",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn toggle_section_row_clears_when_already_full() {
+        let mut s = ScopeEditorState::default();
+        let channels = vec![ChannelId::Input(1), ChannelId::Input(2)];
+        let section_paths = vec![ParameterPath::EqEnabled, ParameterPath::EqBandFrequency(1)];
+        let available = make_available(&channels, &section_paths);
+
+        // Fill.
+        s.toggle_section_row(&section_paths, &channels, &available);
+        assert!(s.is_section_all_selected(&section_paths, &channels, &available));
+
+        // Clear.
+        s.toggle_section_row(&section_paths, &channels, &available);
+        assert!(!s.is_section_any_selected(&section_paths, &channels, &available));
+        assert_eq!(s.selection_count(), 0);
+    }
+
+    #[test]
+    fn toggle_all_respects_availability() {
+        let mut s = ScopeEditorState::default();
+        let channels = vec![ChannelId::Input(1), ChannelId::Input(2)];
+        let paths = vec![ParameterPath::Fader, ParameterPath::Mute];
+        let mut available = HashMap::new();
+        // Input(1) has both, Input(2) has only Fader.
+        available.insert(
+            ChannelId::Input(1),
+            HashSet::from([ParameterPath::Fader, ParameterPath::Mute]),
+        );
+        available.insert(ChannelId::Input(2), HashSet::from([ParameterPath::Fader]));
+
+        s.toggle_all(&channels, &paths, &available);
+        assert!(s.is_cell_selected(&ChannelId::Input(1), &ParameterPath::Fader));
+        assert!(s.is_cell_selected(&ChannelId::Input(1), &ParameterPath::Mute));
+        assert!(s.is_cell_selected(&ChannelId::Input(2), &ParameterPath::Fader));
+        // Unavailable cell stays off.
+        assert!(!s.is_cell_selected(&ChannelId::Input(2), &ParameterPath::Mute));
+    }
+
+    #[test]
+    fn is_row_all_selected_ignores_unavailable_cells() {
+        let mut s = ScopeEditorState::default();
+        let channels = vec![ChannelId::Input(1), ChannelId::Input(2)];
+        // Only Input(1) has the path.
+        let mut available = HashMap::new();
+        available.insert(
+            ChannelId::Input(1),
+            HashSet::from([ParameterPath::Fader]),
+        );
+        available.insert(ChannelId::Input(2), HashSet::new());
+
+        s.toggle_cell(&ChannelId::Input(1), &ParameterPath::Fader);
+        // Even though Input(2) doesn't have it, the row is "all selected"
+        // because every AVAILABLE cell is selected.
+        assert!(s.is_row_all_selected(&ParameterPath::Fader, &channels, &available));
+    }
+
+    #[test]
+    fn cancel_restores_backup() {
+        let mut s = ScopeEditorState::default();
+        // Pre-populate with {Input(1) → {Fader}}.
+        s.channel_paths.insert(
+            ChannelId::Input(1),
+            HashSet::from([ParameterPath::Fader]),
+        );
+        // Open with the current selections.
+        let template = s.to_scope_template("test".into());
+        s.open(&template, 8, 8, 10);
+        assert!(s.window_open);
+
+        // Modify: add Mute.
+        s.toggle_cell(&ChannelId::Input(1), &ParameterPath::Mute);
+        assert!(s.is_cell_selected(&ChannelId::Input(1), &ParameterPath::Mute));
+
+        // Cancel: should drop the Mute change.
+        s.cancel();
+        assert!(!s.window_open);
+        assert!(s.is_cell_selected(&ChannelId::Input(1), &ParameterPath::Fader));
+        assert!(!s.is_cell_selected(&ChannelId::Input(1), &ParameterPath::Mute));
+    }
+
+    #[test]
+    fn commit_clears_backup_and_keeps_changes() {
+        let mut s = ScopeEditorState::default();
+        let template = ScopeTemplate::new("empty".into(), vec![]);
+        s.open(&template, 8, 8, 10);
+        s.toggle_cell(&ChannelId::Input(1), &ParameterPath::Fader);
+        s.commit();
+        assert!(!s.window_open);
+        assert!(s.is_cell_selected(&ChannelId::Input(1), &ParameterPath::Fader));
+    }
+
+    #[test]
+    fn open_migrates_legacy_section_scope_into_paths() {
+        use crate::model::parameter::ParameterSection;
+        let mut s = ScopeEditorState::default();
+        // v7-style legacy template: only sections, no paths.
+        let template = ScopeTemplate::new(
+            "Legacy".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+        s.open(&template, 8, 8, 10);
+
+        // After open, the Input(1) entry should contain every applicable
+        // FaderMutePan-section path (Fader, Mute, Solo, Pan).
+        let entry = s
+            .channel_paths
+            .get(&ChannelId::Input(1))
+            .expect("Input(1) should have selections after migration");
+        assert!(entry.contains(&ParameterPath::Fader));
+        assert!(entry.contains(&ParameterPath::Mute));
+        assert!(entry.contains(&ParameterPath::Solo));
+        assert!(entry.contains(&ParameterPath::Pan));
+    }
+
+    #[test]
+    fn to_scope_template_writes_paths_only() {
+        let mut s = ScopeEditorState::default();
+        s.toggle_cell(&ChannelId::Input(1), &ParameterPath::Fader);
+        let template = s.to_scope_template("Test".into());
+        assert_eq!(template.channel_scopes.len(), 1);
+        let cs = &template.channel_scopes[0];
+        assert_eq!(cs.channel, ChannelId::Input(1));
+        assert!(cs.sections.is_empty());
+        assert_eq!(cs.paths.len(), 1);
+        assert!(cs.paths.contains(&ParameterPath::Fader));
+    }
+
+    #[test]
+    fn group_paths_by_section_preserves_order_and_groups_runs() {
+        let paths = vec![
+            ParameterPath::Name,
+            ParameterPath::Fader,
+            ParameterPath::Mute,
+            ParameterPath::Pan,
+            ParameterPath::EqEnabled,
+            ParameterPath::EqBandFrequency(1),
+        ];
+        let grouped = group_paths_by_section(&paths);
+        // Three sections expected: Name, FaderMutePan, Eq.
+        assert_eq!(grouped.len(), 3);
+        assert_eq!(grouped[0].0, ParameterSection::Name);
+        assert_eq!(grouped[0].1.len(), 1);
+        assert_eq!(grouped[1].0, ParameterSection::FaderMutePan);
+        assert_eq!(grouped[1].1.len(), 3);
+        assert_eq!(grouped[2].0, ParameterSection::Eq);
+        assert_eq!(grouped[2].1.len(), 2);
+    }
+
+    #[test]
+    fn channel_groups_from_config_match_counts() {
+        let config = ConsoleConfig::default();
+        assert_eq!(
+            ChannelGroup::Inputs.channels_from(&config).len(),
+            config.input_channel_count as usize,
+        );
+        assert_eq!(
+            ChannelGroup::Aux.channels_from(&config).len(),
+            config.aux_output_count as usize,
+        );
+        assert_eq!(
+            ChannelGroup::ControlGroups.channels_from(&config).len(),
+            config.control_group_count as usize,
+        );
     }
 }

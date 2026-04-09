@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::channel::ChannelId;
 use super::config::ConsoleConfig;
@@ -95,6 +95,59 @@ impl ConsoleState {
             })
             .map(|(addr, value)| (addr.parameter.clone(), value.clone()))
             .collect()
+    }
+
+    // ─── Phase A: scope-editor availability lookups ─────────────────────
+
+    /// True if a tracked parameter exists at the exact `(channel, path)`.
+    /// Used by the scope editor to grey out cells that have no live data.
+    pub fn has_path_for_channel(&self, channel: &ChannelId, path: &ParameterPath) -> bool {
+        self.parameters.contains_key(&ParameterAddress {
+            channel: channel.clone(),
+            parameter: path.clone(),
+        })
+    }
+
+    /// Build the per-channel availability map for a list of channels.
+    /// Computed once per scope-editor frame; the inner `HashSet<ParameterPath>`
+    /// is the set of paths that have a live value for that channel.
+    /// Channels not in the input slice are absent from the result.
+    pub fn available_paths_for(
+        &self,
+        channels: &[ChannelId],
+    ) -> HashMap<ChannelId, HashSet<ParameterPath>> {
+        let wanted: HashSet<&ChannelId> = channels.iter().collect();
+        let mut map: HashMap<ChannelId, HashSet<ParameterPath>> = HashMap::new();
+        for ch in channels {
+            map.insert(ch.clone(), HashSet::new());
+        }
+        for addr in self.parameters.keys() {
+            if wanted.contains(&addr.channel) {
+                if let Some(set) = map.get_mut(&addr.channel) {
+                    set.insert(addr.parameter.clone());
+                }
+            }
+        }
+        map
+    }
+
+    /// Look up the live channel name (the `Name` parameter value) for each
+    /// channel in the input slice. Channels with no recorded name are absent.
+    /// Used by the scope editor to display channel names in column tooltips.
+    pub fn channel_names_for(&self, channels: &[ChannelId]) -> HashMap<ChannelId, String> {
+        let mut out = HashMap::new();
+        for ch in channels {
+            let addr = ParameterAddress {
+                channel: ch.clone(),
+                parameter: ParameterPath::Name,
+            };
+            if let Some(ParameterValue::String(name)) = self.parameters.get(&addr) {
+                if !name.is_empty() {
+                    out.insert(ch.clone(), name.clone());
+                }
+            }
+        }
+        out
     }
 }
 

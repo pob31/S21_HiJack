@@ -64,6 +64,12 @@ pub const CUE_CURRENT_BORDER: egui::Color32 = egui::Color32::from_rgb(0x6A, 0x2A
 pub const SCOPE_ACTIVE: egui::Color32 = ACCENT_GREEN;
 pub const SCOPE_INACTIVE: egui::Color32 = egui::Color32::from_rgb(0x3A, 0x3A, 0x3E);
 pub const SCOPE_PARTIAL: egui::Color32 = egui::Color32::from_rgb(0x00, 0x5A, 0x00);
+/// Cell color for (channel, parameter) pairs that have no live data on the
+/// console — they cannot be captured, so the editor renders them as
+/// non-interactive grey outlines.
+pub const SCOPE_UNAVAILABLE: egui::Color32 = egui::Color32::from_rgb(0x22, 0x22, 0x24);
+/// Earmark color used by Phase C's dirty tracker (golden triangle in cell corner).
+pub const SCOPE_DIRTY: egui::Color32 = egui::Color32::from_rgb(0xE6, 0xB8, 0x00);
 
 // ─── Text colors ──────────────────────────────────────────────────────
 
