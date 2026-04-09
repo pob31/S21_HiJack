@@ -9,7 +9,7 @@ use tracing::{info, error};
 
 use crate::console::connection::ConnectionManager;
 use crate::console::cue_manager::CueManager;
-use crate::console::eq_palette_manager::EqPaletteManager;
+use crate::console::palette_manager::PaletteManager;
 use crate::console::gang_engine::GangEngine;
 use crate::console::gang_manager::GangManager;
 use crate::console::ipad_connection;
@@ -125,7 +125,7 @@ pub fn draw_setup_tab(
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
     monitor_manager: &Arc<RwLock<MonitorManager>>,
-    eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
@@ -343,7 +343,7 @@ pub fn draw_setup_tab(
                     if ui.add(connect_btn).clicked() {
                         start_connection(
                             setup, state, cue_manager, macro_manager, monitor_manager,
-                            eq_palette_manager, gang_manager, dirty_tracker,
+                            palette_manager, gang_manager, dirty_tracker,
                             snapshot_engine, sender,
                             connected, cancel_token, osc_log,
                             runtime, ui_tx, egui_ctx,
@@ -583,7 +583,7 @@ pub fn draw_setup_tab(
                     egui::Vec2::new(100.0, 32.0),
                 );
                 if ui.add(load_btn).clicked() {
-                    load_show_file(setup, cue_manager, macro_manager, monitor_manager, eq_palette_manager, gang_manager, runtime, ui_tx);
+                    load_show_file(setup, cue_manager, macro_manager, monitor_manager, palette_manager, gang_manager, runtime, ui_tx);
                 }
 
                 let save_btn = theme::action_button(
@@ -603,7 +603,7 @@ pub fn draw_setup_tab(
                         }
                     }
                     if !setup.show_file_path.is_empty() {
-                        save_show_file(setup, state, cue_manager, macro_manager, monitor_manager, eq_palette_manager, gang_manager, runtime, ui_tx);
+                        save_show_file(setup, state, cue_manager, macro_manager, monitor_manager, palette_manager, gang_manager, runtime, ui_tx);
                     }
                 }
 
@@ -615,7 +615,7 @@ pub fn draw_setup_tab(
                 if ui.add(new_btn).clicked() {
                     let cue_mgr = cue_manager.clone();
                     let macro_mgr = macro_manager.clone();
-                    let eq_mgr = eq_palette_manager.clone();
+                    let pmgr_arc = palette_manager.clone();
                     runtime.spawn(async move {
                         let mut mgr = cue_mgr.write().await;
                         mgr.cue_list = CueList::default();
@@ -626,7 +626,7 @@ pub fn draw_setup_tab(
                         mmgr.macros.clear();
                         mmgr.quick_trigger_ids.clear();
                         drop(mmgr);
-                        let mut pmgr = eq_mgr.write().await;
+                        let mut pmgr = pmgr_arc.write().await;
                         pmgr.palettes.clear();
                     });
                     setup.show_file_path.clear();
@@ -658,7 +658,7 @@ fn start_connection(
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
     monitor_manager: &Arc<RwLock<MonitorManager>>,
-    eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     _snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
@@ -773,7 +773,7 @@ fn start_connection(
     let cue_mgr = cue_manager.clone();
     let macro_mgr = macro_manager.clone();
     let mon_mgr = monitor_manager.clone();
-    let eq_mgr = eq_palette_manager.clone();
+    let pmgr_arc = palette_manager.clone();
     let gang_mgr = gang_manager.clone();
     let dirty = dirty_tracker.clone();
     let conn_flag = connected.clone();
@@ -904,7 +904,7 @@ fn start_connection(
                 let macro_eng = Arc::new(MacroEngine::new(st.clone(), manager.sender()));
                 let trigger_cue_mgr = cue_mgr.clone();
                 let trigger_macro_mgr = manager.macro_manager();
-                let trigger_eq_mgr = eq_mgr.clone();
+                let trigger_palette_mgr = pmgr_arc.clone();
                 let trigger_engine = engine.clone();
                 let trigger_macro_eng = macro_eng.clone();
                 let trigger_token = token.clone();
@@ -926,7 +926,7 @@ fn start_connection(
                                             let cue = cue.clone();
                                             if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                                                 drop(mgr);
-                                                let pmgr = trigger_eq_mgr.read().await;
+                                                let pmgr = trigger_palette_mgr.read().await;
                                                 let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
                                                 info!(sent = result.parameters_sent, "Trigger GO recall complete");
                                             }
@@ -938,7 +938,7 @@ fn start_connection(
                                             let cue = cue.clone();
                                             if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                                                 drop(mgr);
-                                                let pmgr = trigger_eq_mgr.read().await;
+                                                let pmgr = trigger_palette_mgr.read().await;
                                                 let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
                                                 info!(sent = result.parameters_sent, "Trigger PREV recall complete");
                                             }
@@ -950,7 +950,7 @@ fn start_connection(
                                             let cue = cue.clone();
                                             if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                                                 drop(mgr);
-                                                let pmgr = trigger_eq_mgr.read().await;
+                                                let pmgr = trigger_palette_mgr.read().await;
                                                 let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
                                                 info!(number, sent = result.parameters_sent, "Trigger FIRE recall complete");
                                             }
@@ -980,7 +980,7 @@ fn start_connection(
                                         let mgr = trigger_cue_mgr.read().await;
                                         if let Some(snapshot) = mgr.resolve_snapshot(&identifier).cloned() {
                                             drop(mgr);
-                                            let pmgr = trigger_eq_mgr.read().await;
+                                            let pmgr = trigger_palette_mgr.read().await;
                                             let scope = snapshot.scope.clone();
                                             let result = trigger_engine
                                                 .recall(&snapshot, &scope, &pmgr.palettes, ignore_scope)
@@ -1068,7 +1068,7 @@ fn load_show_file(
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
     monitor_manager: &Arc<RwLock<MonitorManager>>,
-    eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -1090,7 +1090,7 @@ fn load_show_file(
     let cue_mgr = cue_manager.clone();
     let macro_mgr = macro_manager.clone();
     let mon_mgr = monitor_manager.clone();
-    let eq_mgr = eq_palette_manager.clone();
+    let pmgr_arc = palette_manager.clone();
     let gang_mgr = gang_manager.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
@@ -1119,10 +1119,10 @@ fn load_show_file(
                 mmgr.quick_trigger_ids = show.macro_quick_trigger_ids;
                 drop(mmgr);
 
-                // Restore EQ palettes
-                let mut pmgr = eq_mgr.write().await;
+                // Restore palettes (EQ, Compressor, Gate)
+                let mut pmgr = pmgr_arc.write().await;
                 pmgr.palettes.clear();
-                for palette in show.eq_palettes {
+                for palette in show.palettes {
                     pmgr.palettes.insert(palette.id, palette);
                 }
                 drop(pmgr);
@@ -1159,7 +1159,7 @@ fn save_show_file(
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
     monitor_manager: &Arc<RwLock<MonitorManager>>,
-    eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -1174,7 +1174,7 @@ fn save_show_file(
     let cue_mgr = cue_manager.clone();
     let macro_mgr = macro_manager.clone();
     let mon_mgr = monitor_manager.clone();
-    let eq_mgr = eq_palette_manager.clone();
+    let pmgr_arc = palette_manager.clone();
     let gang_mgr = gang_manager.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
@@ -1204,11 +1204,11 @@ fn save_show_file(
         let mgr = cue_mgr.read().await;
         let mmgr = macro_mgr.read().await;
         let monmgr = mon_mgr.read().await;
-        let pmgr = eq_mgr.read().await;
+        let pmgr = pmgr_arc.read().await;
         let gmgr = gang_mgr.read().await;
 
         let show = ShowFile {
-            version: 8,
+            version: 9,
             console_config: state_guard.config.clone(),
             connection: conn_settings,
             scope_templates: mgr.scope_templates.values().cloned().collect(),
@@ -1216,7 +1216,7 @@ fn save_show_file(
             cue_list: mgr.cue_list.clone(),
             macros: mmgr.macros.values().cloned().collect(),
             macro_quick_trigger_ids: mmgr.quick_trigger_ids.clone(),
-            eq_palettes: pmgr.palettes.values().cloned().collect(),
+            palettes: pmgr.palettes.values().cloned().collect(),
             monitor_clients: monmgr.clients.values().cloned().collect(),
             gang_groups: gmgr.groups.values().cloned().collect(),
         };

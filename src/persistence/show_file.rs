@@ -3,11 +3,11 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::model::config::{ChannelOption, ConsoleConfig};
-use crate::model::eq_palette::EqPalette;
 use crate::model::macro_def::MacroDef;
 use crate::model::gang::GangGroup;
 use crate::model::monitor::MonitorClient;
 use crate::model::operating_mode::OperatingMode;
+use crate::model::palette::ChannelPalette;
 use crate::model::snapshot::{CueList, ScopeTemplate, Snapshot};
 
 /// Connection settings persisted in the show file.
@@ -104,9 +104,11 @@ pub struct ShowFile {
     /// UUIDs of macros pinned to the Live tab quick-trigger bar.
     #[serde(default)]
     pub macro_quick_trigger_ids: Vec<uuid::Uuid>,
-    /// EQ palettes (Phase 5).
-    #[serde(default)]
-    pub eq_palettes: Vec<EqPalette>,
+    /// Channel palettes (EQ / Compressor / Gate). New in v9; the
+    /// `eq_palettes` alias lets v8 show files load — every legacy palette
+    /// deserializes as a `ChannelPalette { kind: PaletteKind::Eq, .. }`.
+    #[serde(default, alias = "eq_palettes")]
+    pub palettes: Vec<ChannelPalette>,
     /// Monitor client profiles (Phase 7).
     #[serde(default)]
     pub monitor_clients: Vec<MonitorClient>,
@@ -118,7 +120,7 @@ pub struct ShowFile {
 impl ShowFile {
     pub fn new(config: ConsoleConfig) -> Self {
         Self {
-            version: 8,
+            version: 9,
             console_config: config,
             connection: ConnectionSettings::default(),
             scope_templates: Vec::new(),
@@ -126,7 +128,7 @@ impl ShowFile {
             cue_list: CueList::default(),
             macros: Vec::new(),
             macro_quick_trigger_ids: Vec::new(),
-            eq_palettes: Vec::new(),
+            palettes: Vec::new(),
             monitor_clients: Vec::new(),
             gang_groups: Vec::new(),
         }
@@ -165,7 +167,7 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 8);
+        assert_eq!(loaded.version, 9);
         assert_eq!(loaded.console_config.input_channel_count, 48);
         assert_eq!(loaded.console_config.control_group_count, 10);
         assert!(loaded.scope_templates.is_empty());
@@ -252,7 +254,7 @@ mod tests {
         assert_eq!(loaded.version, 2);
         assert!(loaded.macros.is_empty());
         assert!(loaded.macro_quick_trigger_ids.is_empty());
-        assert!(loaded.eq_palettes.is_empty());
+        assert!(loaded.palettes.is_empty());
         assert!(loaded.monitor_clients.is_empty());
 
         let _ = tokio::fs::remove_file(&path).await;
@@ -296,7 +298,7 @@ mod tests {
         let loaded = ShowFile::load(&path).await.unwrap();
         assert_eq!(loaded.version, 3);
         assert!(loaded.macros.is_empty());
-        assert!(loaded.eq_palettes.is_empty());
+        assert!(loaded.palettes.is_empty());
         // New Phase 7 field should default to empty
         assert!(loaded.monitor_clients.is_empty());
         assert!(loaded.gang_groups.is_empty());
@@ -418,6 +420,95 @@ mod tests {
             parameter: ParameterPath::EqBandFrequency(2),
         };
         assert!(scope.contains(&addr));
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn v8_file_loads_with_legacy_palettes_and_palette_refs() {
+        // V8 had `eq_palettes: Vec<EqPalette>` (now aliased to `palettes`)
+        // and per-snapshot `eq_palette_refs: HashMap<ChannelId, Uuid>` (now
+        // migrated into `palette_refs` keyed by `(channel, PaletteKind::Eq)`).
+        // This test verifies both legacy fields load correctly.
+        let v8_json = r#"{
+            "version": 8,
+            "console_config": {
+                "console_name": "",
+                "console_serial": "",
+                "session_filename": null,
+                "input_channel_count": 48,
+                "aux_output_count": 8,
+                "group_output_count": 16,
+                "matrix_output_count": 8,
+                "matrix_input_count": 10,
+                "control_group_count": 10,
+                "graphic_eq_count": 16,
+                "talkback_output_count": 0,
+                "mix_output_types": [],
+                "mix_output_modes": [],
+                "input_modes": [],
+                "group_modes": []
+            },
+            "scope_templates": [],
+            "snapshots": [
+                {
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "name": "Verse 1",
+                    "scope": {"id": "00000000-0000-0000-0000-000000000001", "name": "S", "channel_scopes": []},
+                    "data": {"values": []},
+                    "eq_palette_refs": [
+                        {"channel": {"Input": 1}, "palette_id": "22222222-2222-2222-2222-222222222222"}
+                    ],
+                    "created_at": "2025-01-01T00:00:00Z",
+                    "modified_at": "2025-01-01T00:00:00Z"
+                }
+            ],
+            "cue_list": { "id": "00000000-0000-0000-0000-000000000000", "name": "Main", "cues": [] },
+            "macros": [],
+            "macro_quick_trigger_ids": [],
+            "eq_palettes": [
+                {
+                    "id": "22222222-2222-2222-2222-222222222222",
+                    "name": "Legacy Vocal EQ",
+                    "channel": {"Input": 1},
+                    "eq_values": [
+                        {"path": "EqEnabled", "value": {"Bool": true}},
+                        {"path": {"EqBandFrequency": 1}, "value": {"Float": 1200.0}}
+                    ],
+                    "referencing_snapshots": ["11111111-1111-1111-1111-111111111111"],
+                    "created_at": "2025-01-01T00:00:00Z",
+                    "modified_at": "2025-01-01T00:00:00Z"
+                }
+            ],
+            "monitor_clients": [],
+            "gang_groups": []
+        }"#;
+
+        let dir = std::env::temp_dir().join("s21_hijack_test");
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let path = dir.join("test_v8_legacy_palettes_compat.json");
+        tokio::fs::write(&path, v8_json).await.unwrap();
+
+        let loaded = ShowFile::load(&path).await.unwrap();
+        assert_eq!(loaded.version, 8);
+
+        // Legacy `eq_palettes` field should have loaded into `palettes`
+        // via the serde alias. The palette's `kind` should default to Eq.
+        use crate::model::parameter::PaletteKind;
+        assert_eq!(loaded.palettes.len(), 1);
+        let palette = &loaded.palettes[0];
+        assert_eq!(palette.name, "Legacy Vocal EQ");
+        assert_eq!(palette.kind, PaletteKind::Eq);
+        assert_eq!(palette.parameter_count(), 2);
+
+        // The snapshot's legacy `eq_palette_refs` should have migrated into
+        // the unified `palette_refs` map keyed by (channel, Eq).
+        use crate::model::channel::ChannelId;
+        let snap = &loaded.snapshots[0];
+        assert_eq!(snap.palette_refs.len(), 1);
+        assert!(snap
+            .palette_refs
+            .contains_key(&(ChannelId::Input(1), PaletteKind::Eq)));
 
         let _ = tokio::fs::remove_file(&path).await;
     }

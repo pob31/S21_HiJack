@@ -18,7 +18,7 @@ use tracing_subscriber::EnvFilter;
 
 use console::connection::ConnectionManager;
 use console::cue_manager::CueManager;
-use console::eq_palette_manager::EqPaletteManager;
+use console::palette_manager::PaletteManager;
 use console::gang_engine::GangEngine;
 use console::gang_manager::GangManager;
 use console::ipad_connection;
@@ -170,7 +170,7 @@ async fn run_headless(args: Args) {
 
     // Set up snapshot, macro, and palette systems
     let cue_manager = Arc::new(RwLock::new(CueManager::new(CueList::default())));
-    let eq_palette_manager = Arc::new(RwLock::new(EqPaletteManager::new()));
+    let palette_manager = Arc::new(RwLock::new(PaletteManager::new()));
     let mut snapshot_engine = SnapshotEngine::new(manager.state(), manager.sender());
     snapshot_engine.set_dirty_tracker(dirty_tracker.clone());
     let macro_engine = Arc::new(MacroEngine::new(manager.state(), manager.sender()));
@@ -302,7 +302,7 @@ async fn run_headless(args: Args) {
     // Spawn trigger processing task
     let trigger_cue_mgr = cue_manager.clone();
     let trigger_macro_mgr = macro_manager.clone();
-    let trigger_eq_mgr = eq_palette_manager.clone();
+    let trigger_palette_mgr = palette_manager.clone();
     let trigger_macro_eng = macro_engine.clone();
     let trigger_engine = Arc::new(snapshot_engine);
     let reply_socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok();
@@ -316,7 +316,7 @@ async fn run_headless(args: Args) {
                         let cue = cue.clone();
                         if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                             drop(mgr);
-                            let pmgr = trigger_eq_mgr.read().await;
+                            let pmgr = trigger_palette_mgr.read().await;
                             let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
                             info!(sent = result.parameters_sent, "Cue GO recall complete");
                         } else {
@@ -330,7 +330,7 @@ async fn run_headless(args: Args) {
                         let cue = cue.clone();
                         if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                             drop(mgr);
-                            let pmgr = trigger_eq_mgr.read().await;
+                            let pmgr = trigger_palette_mgr.read().await;
                             let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
                             info!(sent = result.parameters_sent, "Cue PREVIOUS recall complete");
                         } else {
@@ -344,7 +344,7 @@ async fn run_headless(args: Args) {
                         let cue = cue.clone();
                         if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                             drop(mgr);
-                            let pmgr = trigger_eq_mgr.read().await;
+                            let pmgr = trigger_palette_mgr.read().await;
                             let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
                             info!(number, sent = result.parameters_sent, "Cue FIRE recall complete");
                         } else {
@@ -384,7 +384,7 @@ async fn run_headless(args: Args) {
                     let mgr = trigger_cue_mgr.read().await;
                     if let Some(snapshot) = mgr.resolve_snapshot(&identifier).cloned() {
                         drop(mgr);
-                        let pmgr = trigger_eq_mgr.read().await;
+                        let pmgr = trigger_palette_mgr.read().await;
                         let scope = snapshot.scope.clone();
                         let result = trigger_engine
                             .recall(&snapshot, &scope, &pmgr.palettes, ignore_scope)
@@ -434,7 +434,7 @@ async fn run_headless(args: Args) {
         "Final macro system state"
     );
 
-    let pmgr = eq_palette_manager.read().await;
+    let pmgr = palette_manager.read().await;
     info!(
         palettes = pmgr.palettes.len(),
         "Final EQ palette system state"

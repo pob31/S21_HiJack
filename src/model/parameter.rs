@@ -1123,6 +1123,67 @@ impl ParameterPath {
     }
 }
 
+// ── Palette kinds ────────────────────────────────────────────────────
+
+/// Which group of parameters a palette stores.
+///
+/// Mirrors a subset of `ParameterSection` — the sections that are
+/// "templatable" across channels in a way that makes operator sense.
+/// Each kind maps to exactly one `ParameterSection`; the mapping lives
+/// on `PaletteKind::section()` and `ParameterSection::palette_kind()`.
+///
+/// Adding a new kind (e.g. for Sends, Inserts, Graphic EQ) is a one-line
+/// addition here plus a one-line addition to `palette_kind()` and a label
+/// branch on `PaletteKind::label()`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum PaletteKind {
+    #[default]
+    Eq,
+    Dyn1,
+    Dyn2,
+}
+
+impl PaletteKind {
+    /// Which `ParameterSection` this palette stores values for.
+    pub fn section(&self) -> ParameterSection {
+        match self {
+            PaletteKind::Eq => ParameterSection::Eq,
+            PaletteKind::Dyn1 => ParameterSection::Dyn1,
+            PaletteKind::Dyn2 => ParameterSection::Dyn2,
+        }
+    }
+
+    /// Operator-facing label for the kind picker.
+    pub fn label(&self) -> &'static str {
+        match self {
+            PaletteKind::Eq => "EQ",
+            PaletteKind::Dyn1 => "Compressor",
+            PaletteKind::Dyn2 => "Gate",
+        }
+    }
+
+    /// Every kind, in display order.
+    pub fn all() -> &'static [PaletteKind] {
+        &[PaletteKind::Eq, PaletteKind::Dyn1, PaletteKind::Dyn2]
+    }
+}
+
+impl ParameterSection {
+    /// Returns Some if this section has a palette kind. Returns None for
+    /// sections that don't (yet) participate in the palette system —
+    /// FaderMutePan, InputGain, Sends, GroupRouting, Inserts, CgMembership,
+    /// GraphicEq, MatrixSends, Name, Delay, Digitube. Adding a new
+    /// palette kind requires extending this match arm.
+    pub fn palette_kind(&self) -> Option<PaletteKind> {
+        match self {
+            ParameterSection::Eq => Some(PaletteKind::Eq),
+            ParameterSection::Dyn1 => Some(PaletteKind::Dyn1),
+            ParameterSection::Dyn2 => Some(PaletteKind::Dyn2),
+            _ => None,
+        }
+    }
+}
+
 // ── Protocol-coverage table (for the setup-tab help card) ────────────
 
 /// One row of the protocol-coverage matrix shown in the setup-tab help card.

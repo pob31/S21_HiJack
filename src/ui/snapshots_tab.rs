@@ -6,14 +6,14 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::console::cue_manager::CueManager;
-use crate::console::eq_palette_manager::EqPaletteManager;
+use crate::console::palette_manager::PaletteManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::snapshot::{Cue, Snapshot, SnapshotKind};
 use crate::model::state::ConsoleState;
 use crate::osc::qlab_client::QLabClient;
 use crate::osc::qlab_cue_builder::{build_snapshot_cues, build_snapshot_load_cue};
-use super::eq_palettes_ui::{EqPalettesUiState, draw_eq_palettes_section};
+use super::palettes_ui::{PalettesUiState, draw_palettes_section};
 use super::scope_editor::ScopeEditorState;
 use super::theme;
 use super::UiEvent;
@@ -77,10 +77,10 @@ impl Default for SnapshotsTabState {
 pub fn draw_snapshots_tab(
     ui: &mut egui::Ui,
     snap_state: &mut SnapshotsTabState,
-    eq_palettes_ui: &mut EqPalettesUiState,
+    palettes_ui: &mut PalettesUiState,
     console_state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
-    eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
     snapshot_engine: &Option<Arc<SnapshotEngine>>,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     qlab_ip: &str,
@@ -623,7 +623,7 @@ pub fn draw_snapshots_tab(
                                 recall_selected_snapshot(
                                     snap_state,
                                     cue_manager,
-                                    eq_palette_manager,
+                                    palette_manager,
                                     snapshot_engine,
                                     runtime,
                                     ui_tx,
@@ -652,7 +652,7 @@ pub fn draw_snapshots_tab(
                                 recall_selected_snapshot(
                                     snap_state,
                                     cue_manager,
-                                    eq_palette_manager,
+                                    palette_manager,
                                     snapshot_engine,
                                     runtime,
                                     ui_tx,
@@ -668,7 +668,7 @@ pub fn draw_snapshots_tab(
                             if ui.add_enabled(has_selection, del_btn).clicked() {
                                 if let Some(id) = snap_state.selected_snapshot_id {
                                     let cue_mgr = cue_manager.clone();
-                                    let eq_mgr = eq_palette_manager.clone();
+                                    let pmgr = palette_manager.clone();
                                     runtime.spawn(async move {
                                         cue_mgr.write().await.remove_snapshot(id);
                                         // Drop back-references from every palette so the
@@ -676,7 +676,7 @@ pub fn draw_snapshots_tab(
                                         // doesn't depend on this list (the forward direction
                                         // is on the snapshot itself, which is now gone), but
                                         // the palette detail pane reads it for display.
-                                        eq_mgr.write().await.unlink_all_from_snapshot(id);
+                                        pmgr.write().await.unlink_all_from_snapshot(id);
                                     });
                                     snap_state.selected_snapshot_id = None;
                                     snap_state.status_message = Some("Snapshot deleted".into());
@@ -751,14 +751,14 @@ pub fn draw_snapshots_tab(
 
                     ui.add_space(8.0);
 
-                    // ── EQ Palettes section ──
+                    // ── Palettes section (EQ / Compressor / Gate) ──
                     theme::card_frame().show(ui, |ui| {
-                        draw_eq_palettes_section(
+                        draw_palettes_section(
                             ui,
-                            eq_palettes_ui,
+                            palettes_ui,
                             console_state,
                             cue_manager,
-                            eq_palette_manager,
+                            palette_manager,
                             is_connected,
                             runtime,
                             ui_tx,
@@ -872,7 +872,7 @@ fn recapture_snapshot(
 fn recall_selected_snapshot(
     snap_state: &mut SnapshotsTabState,
     cue_manager: &Arc<RwLock<CueManager>>,
-    eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
     snapshot_engine: &Option<Arc<SnapshotEngine>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -881,7 +881,7 @@ fn recall_selected_snapshot(
     let Some(snap_id) = snap_state.selected_snapshot_id else { return };
     let Some(engine) = snapshot_engine.clone() else { return };
     let cue_mgr = cue_manager.clone();
-    let eq_mgr = eq_palette_manager.clone();
+    let pmgr = palette_manager.clone();
     let tx = ui_tx.clone();
 
     runtime.spawn(async move {
@@ -892,12 +892,12 @@ fn recall_selected_snapshot(
         let name = snapshot.name.clone();
         drop(mgr);
 
-        // Read palettes under the eq-palette-manager lock.
-        let pmgr = eq_mgr.read().await;
+        // Read palettes under the palette-manager lock.
+        let palettes_guard = pmgr.read().await;
         let result = engine
-            .recall(&snapshot, &scope, &pmgr.palettes, ignore_scope)
+            .recall(&snapshot, &scope, &palettes_guard.palettes, ignore_scope)
             .await;
-        drop(pmgr);
+        drop(palettes_guard);
 
         let label = if ignore_scope {
             format!("Recalled '{name}' without scope ({} params sent)", result.parameters_sent)

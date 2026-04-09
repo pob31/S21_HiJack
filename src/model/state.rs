@@ -96,17 +96,31 @@ impl ConsoleState {
         self.parameters.iter()
     }
 
-    /// Capture only EQ-section parameters for a specific channel.
-    /// Returns a map of ParameterPath → ParameterValue (channel stored separately in palette).
-    pub fn capture_eq(&self, channel: &ChannelId) -> HashMap<ParameterPath, ParameterValue> {
+    /// Capture every parameter in `section` for `channel` from the live mirror.
+    /// Returns a map of `ParameterPath → ParameterValue` suitable for
+    /// passing to `ChannelPalette::new`.
+    ///
+    /// Generalizes the original `capture_eq` so palettes can be built for
+    /// any section (EQ, Dyn1, Dyn2, …). The old `capture_eq` is kept as a
+    /// thin wrapper for back-compat with any unmigrated callers.
+    pub fn capture_section(
+        &self,
+        channel: &ChannelId,
+        section: ParameterSection,
+    ) -> HashMap<ParameterPath, ParameterValue> {
         self.parameters
             .iter()
             .filter(|(addr, _)| {
-                &addr.channel == channel
-                    && addr.parameter.section() == ParameterSection::Eq
+                &addr.channel == channel && addr.parameter.section() == section
             })
             .map(|(addr, value)| (addr.parameter.clone(), value.clone()))
             .collect()
+    }
+
+    /// Back-compat shim: capture only EQ-section parameters for a channel.
+    /// Equivalent to `capture_section(channel, ParameterSection::Eq)`.
+    pub fn capture_eq(&self, channel: &ChannelId) -> HashMap<ParameterPath, ParameterValue> {
+        self.capture_section(channel, ParameterSection::Eq)
     }
 
     // ─── Live-data lookups (currently used by Phase C dirty tracker plans) ──
@@ -235,6 +249,66 @@ mod tests {
         let state = ConsoleState::new(ConsoleConfig::default());
         let eq = state.capture_eq(&ChannelId::Input(99));
         assert!(eq.is_empty());
+    }
+
+    #[test]
+    fn capture_section_dyn1_filters_to_dyn1_only() {
+        let mut state = ConsoleState::new(ConsoleConfig::default());
+        // Mix of EQ, Dyn1, Dyn2, Fader on Input 1.
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqEnabled },
+            ParameterValue::Bool(true),
+        );
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Dyn1Enabled },
+            ParameterValue::Bool(true),
+        );
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Dyn1Threshold(1) },
+            ParameterValue::Float(-12.0),
+        );
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Dyn2Threshold },
+            ParameterValue::Float(-30.0),
+        );
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
+            ParameterValue::Float(-10.0),
+        );
+
+        let dyn1 = state.capture_section(&ChannelId::Input(1), ParameterSection::Dyn1);
+        assert_eq!(dyn1.len(), 2);
+        assert!(dyn1.contains_key(&ParameterPath::Dyn1Enabled));
+        assert!(dyn1.contains_key(&ParameterPath::Dyn1Threshold(1)));
+        assert!(!dyn1.contains_key(&ParameterPath::Dyn2Threshold));
+        assert!(!dyn1.contains_key(&ParameterPath::EqEnabled));
+        assert!(!dyn1.contains_key(&ParameterPath::Fader));
+    }
+
+    #[test]
+    fn capture_section_dyn2_filters_to_dyn2_only() {
+        let mut state = ConsoleState::new(ConsoleConfig::default());
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Dyn1Enabled },
+            ParameterValue::Bool(true),
+        );
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Dyn2Enabled },
+            ParameterValue::Bool(true),
+        );
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Dyn2Threshold },
+            ParameterValue::Float(-30.0),
+        );
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Dyn2Range },
+            ParameterValue::Float(-40.0),
+        );
+
+        let dyn2 = state.capture_section(&ChannelId::Input(1), ParameterSection::Dyn2);
+        assert_eq!(dyn2.len(), 3);
+        assert!(dyn2.contains_key(&ParameterPath::Dyn2Enabled));
+        assert!(!dyn2.contains_key(&ParameterPath::Dyn1Enabled));
     }
 
     #[test]

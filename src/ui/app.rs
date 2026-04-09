@@ -6,11 +6,11 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::console::cue_manager::CueManager;
-use crate::console::eq_palette_manager::EqPaletteManager;
 use crate::console::gang_manager::GangManager;
 use crate::console::macro_engine::MacroEngine;
 use crate::console::macro_manager::MacroManager;
 use crate::console::monitor_manager::MonitorManager;
+use crate::console::palette_manager::PaletteManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::config::ConsoleConfig;
 use crate::model::dirty_tracker::DirtyTracker;
@@ -22,7 +22,7 @@ use crate::osc::client::OscSender;
 use crate::osc::ipad_client::IpadSender;
 
 use super::{Tab, UiEvent};
-use super::eq_palettes_ui::EqPalettesUiState;
+use super::palettes_ui::PalettesUiState;
 use super::gangs_tab::GangsTabState;
 use super::inspector_tab::InspectorTabState;
 use super::live_tab::LiveTabState;
@@ -39,7 +39,7 @@ pub struct HiJackApp {
     pub cue_manager: Arc<RwLock<CueManager>>,
     pub macro_manager: Arc<RwLock<MacroManager>>,
     pub monitor_manager: Arc<RwLock<MonitorManager>>,
-    pub eq_palette_manager: Arc<RwLock<EqPaletteManager>>,
+    pub palette_manager: Arc<RwLock<PaletteManager>>,
     pub gang_manager: Arc<RwLock<GangManager>>,
     pub snapshot_engine: Option<Arc<SnapshotEngine>>,
     pub macro_engine: Option<Arc<MacroEngine>>,
@@ -70,7 +70,7 @@ pub struct HiJackApp {
     pub snapshots: SnapshotsTabState,
     pub macros: MacrosTabState,
     pub live: LiveTabState,
-    pub eq_palettes_ui: EqPalettesUiState,
+    pub palettes_ui: PalettesUiState,
     pub gangs: GangsTabState,
     pub monitor: MonitorTabState,
     pub osc_log_tab: OscLogTabState,
@@ -97,7 +97,7 @@ impl HiJackApp {
             cue_manager: Arc::new(RwLock::new(CueManager::new(CueList::default()))),
             macro_manager: Arc::new(RwLock::new(MacroManager::new())),
             monitor_manager: Arc::new(RwLock::new(MonitorManager::new())),
-            eq_palette_manager: Arc::new(RwLock::new(EqPaletteManager::new())),
+            palette_manager: Arc::new(RwLock::new(PaletteManager::new())),
             gang_manager: Arc::new(RwLock::new(GangManager::new())),
             snapshot_engine: None,
             macro_engine: None,
@@ -124,7 +124,7 @@ impl HiJackApp {
             snapshots: SnapshotsTabState::default(),
             macros: MacrosTabState::default(),
             live: LiveTabState::default(),
-            eq_palettes_ui: EqPalettesUiState::default(),
+            palettes_ui: PalettesUiState::default(),
             gangs: GangsTabState::default(),
             monitor: MonitorTabState::default(),
             osc_log_tab: OscLogTabState::default(),
@@ -179,17 +179,17 @@ impl HiJackApp {
                     );
                 }
                 UiEvent::PaletteCaptured { name, param_count } => {
-                    self.eq_palettes_ui.status_message = Some(
+                    self.palettes_ui.status_message = Some(
                         format!("Captured palette '{name}' ({param_count} EQ params)"),
                     );
                 }
                 UiEvent::PaletteLinked { palette_name, snapshot_name } => {
-                    self.eq_palettes_ui.status_message = Some(
+                    self.palettes_ui.status_message = Some(
                         format!("Linked '{palette_name}' to '{snapshot_name}'"),
                     );
                 }
                 UiEvent::PaletteUpdated { name, affected_count } => {
-                    self.eq_palettes_ui.status_message = Some(
+                    self.palettes_ui.status_message = Some(
                         format!("Updated '{name}' — {affected_count} snapshots affected"),
                     );
                 }
@@ -365,7 +365,7 @@ impl eframe::App for HiJackApp {
                         &self.cue_manager,
                         &self.macro_manager,
                         &self.monitor_manager,
-                        &self.eq_palette_manager,
+                        &self.palette_manager,
                         &self.gang_manager,
                         &self.dirty_tracker,
                         &mut self.snapshot_engine,
@@ -389,10 +389,10 @@ impl eframe::App for HiJackApp {
                     super::snapshots_tab::draw_snapshots_tab(
                         ui,
                         &mut self.snapshots,
-                        &mut self.eq_palettes_ui,
+                        &mut self.palettes_ui,
                         &self.state,
                         &self.cue_manager,
-                        &self.eq_palette_manager,
+                        &self.palette_manager,
                         &self.snapshot_engine,
                         &self.dirty_tracker,
                         qlab_ip,
@@ -419,7 +419,7 @@ impl eframe::App for HiJackApp {
                         &mut self.live,
                         &self.cue_manager,
                         &self.macro_manager,
-                        &self.eq_palette_manager,
+                        &self.palette_manager,
                         &self.snapshot_engine,
                         &self.macro_engine,
                         &self.connected,

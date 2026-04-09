@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 use crate::console::fade_engine::{FadeController, FadeTarget};
 use crate::model::dirty_tracker::DirtyTracker;
-use crate::model::eq_palette::EqPalette;
-use crate::model::parameter::{ParameterAddress, ParameterSection, ParameterValue};
+use crate::model::palette::ChannelPalette;
+use crate::model::parameter::{ParameterAddress, ParameterValue};
 use crate::model::snapshot::{Cue, ScopeTemplate, Snapshot};
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
@@ -84,13 +84,16 @@ impl SnapshotEngine {
     /// Recall a snapshot using the given scope.
     ///
     /// For each parameter in the snapshot data that's within the effective scope:
-    /// 1. If EQ-section and channel has a palette ref, use palette value instead
+    /// 1. If the parameter's section has a `PaletteKind` AND the snapshot
+    ///    has a palette ref for `(channel, kind)`, use the palette's value
     /// 2. Compare against the live state mirror
     /// 3. If different (or not present in live state), send via GP OSC
     /// 4. If GP OSC encoding returns None, fall back to iPad protocol (if sender available)
     ///
     /// After processing snapshot data, also sends palette-only values (params in
-    /// palette but not in snapshot) for linked channels within scope.
+    /// palettes but not in snapshot data) for every linked palette within scope.
+    /// Generalized in Phase 5/6: works for EQ, Compressor (Dyn1), and Gate (Dyn2)
+    /// palettes uniformly via the `(ChannelId, PaletteKind)` ref map.
     ///
     /// When `ignore_scope == true`, the scope filter is bypassed entirely and
     /// every parameter in the snapshot data (and every linked palette value)
@@ -106,7 +109,7 @@ impl SnapshotEngine {
         &self,
         snapshot: &Snapshot,
         scope: &ScopeTemplate,
-        palettes: &HashMap<Uuid, EqPalette>,
+        palettes: &HashMap<Uuid, ChannelPalette>,
         ignore_scope: bool,
     ) -> RecallResult {
         self.with_dirty_suppression(self.recall_inner(snapshot, scope, palettes, ignore_scope))
@@ -120,15 +123,16 @@ impl SnapshotEngine {
         &self,
         snapshot: &Snapshot,
         scope: &ScopeTemplate,
-        palettes: &HashMap<Uuid, EqPalette>,
+        palettes: &HashMap<Uuid, ChannelPalette>,
         ignore_scope: bool,
     ) -> RecallResult {
         let state = self.state.read().await;
         let mut sent = 0usize;
         let mut skipped = 0usize;
 
-        // Track which palette params were already handled via snapshot data
-        let mut palette_params_seen: HashMap<(uuid::Uuid, _), bool> = HashMap::new();
+        // Track which palette params were already handled via snapshot data,
+        // so the palette-only loop below doesn't double-send them.
+        let mut palette_params_seen: HashMap<(Uuid, ParameterAddress), bool> = HashMap::new();
 
         for (addr, snap_value) in &snapshot.data.values {
             // Only recall parameters within the effective scope (unless
@@ -138,19 +142,17 @@ impl SnapshotEngine {
                 continue;
             }
 
-            // Determine the effective value: check for palette override on EQ params
-            let effective_value = if addr.parameter.section() == ParameterSection::Eq {
-                if let Some(palette_id) = snapshot.eq_palette_refs.get(&addr.channel) {
-                    if let Some(palette) = palettes.get(palette_id) {
-                        // Mark this palette param as seen
-                        palette_params_seen.insert((*palette_id, addr.parameter.clone()), true);
-                        // Use palette value if present, else fall back to snapshot
-                        palette.eq_values.get(&addr.parameter).unwrap_or(snap_value)
-                    } else {
-                        warn!(%addr, %palette_id, "Palette not found, using snapshot value");
-                        snap_value
-                    }
+            // Determine the effective value: check for a palette override
+            // for the parameter's section. Generalized in Phase 5/6 — used
+            // to be EQ-only, now works for any section that has a palette
+            // kind (EQ, Dyn1, Dyn2).
+            let effective_value = if let Some(palette_id) = snapshot.palette_ref_for(addr) {
+                if let Some(palette) = palettes.get(&palette_id) {
+                    palette_params_seen.insert((palette_id, addr.clone()), true);
+                    // Use palette value if present, else fall back to snapshot.
+                    palette.values.get(&addr.parameter).unwrap_or(snap_value)
                 } else {
+                    warn!(%addr, %palette_id, "Palette not found, using snapshot value");
                     snap_value
                 }
             } else {
@@ -160,23 +162,33 @@ impl SnapshotEngine {
             self.send_if_changed(&state, addr, effective_value, &mut sent, &mut skipped).await;
         }
 
-        // Send palette-only values: params in palette but not in snapshot data
-        for (channel, palette_id) in &snapshot.eq_palette_refs {
-            if let Some(palette) = palettes.get(palette_id) {
-                for (param_path, value) in &palette.eq_values {
-                    if palette_params_seen.contains_key(&(*palette_id, param_path.clone())) {
-                        continue; // Already handled above
-                    }
-                    let addr = ParameterAddress {
-                        channel: channel.clone(),
-                        parameter: param_path.clone(),
-                    };
-                    if !ignore_scope && !scope.contains(&addr) {
-                        skipped += 1;
-                        continue;
-                    }
-                    self.send_if_changed(&state, &addr, value, &mut sent, &mut skipped).await;
+        // Send palette-only values: params in palettes but not in snapshot data.
+        // Generalized to walk the new `(channel, kind) -> uuid` map.
+        for ((channel, kind), palette_id) in &snapshot.palette_refs {
+            let Some(palette) = palettes.get(palette_id) else {
+                continue;
+            };
+            // Defensive: skip if the palette's stored kind doesn't match the
+            // ref map's kind. Shouldn't happen because ChannelPalette::new
+            // filters values by kind, but if a hand-edited file has a
+            // mismatch we'd rather drop the orphan than send to the wrong
+            // section.
+            if palette.kind != *kind {
+                continue;
+            }
+            for (param_path, value) in &palette.values {
+                let addr = ParameterAddress {
+                    channel: channel.clone(),
+                    parameter: param_path.clone(),
+                };
+                if palette_params_seen.contains_key(&(*palette_id, addr.clone())) {
+                    continue;
                 }
+                if !ignore_scope && !scope.contains(&addr) {
+                    skipped += 1;
+                    continue;
+                }
+                self.send_if_changed(&state, &addr, value, &mut sent, &mut skipped).await;
             }
         }
 
@@ -253,7 +265,7 @@ impl SnapshotEngine {
         &self,
         cue: &Cue,
         snapshot: &Snapshot,
-        palettes: &HashMap<Uuid, EqPalette>,
+        palettes: &HashMap<Uuid, ChannelPalette>,
         ignore_scope: bool,
     ) -> RecallResult {
         // Phase C: bracket the whole cue recall in dirty suppression so
@@ -268,7 +280,7 @@ impl SnapshotEngine {
         &self,
         cue: &Cue,
         snapshot: &Snapshot,
-        palettes: &HashMap<Uuid, EqPalette>,
+        palettes: &HashMap<Uuid, ChannelPalette>,
         ignore_scope: bool,
     ) -> RecallResult {
         let effective_scope = cue.scope_override.as_ref().unwrap_or(&snapshot.scope);
@@ -297,7 +309,7 @@ impl SnapshotEngine {
         let mut fade_targets: Vec<FadeTarget> = Vec::new();
 
         // Track palette params handled via snapshot data
-        let mut palette_params_seen: HashMap<(Uuid, _), bool> = HashMap::new();
+        let mut palette_params_seen: HashMap<(Uuid, ParameterAddress), bool> = HashMap::new();
 
         for (addr, snap_value) in &snapshot.data.values {
             if !ignore_scope && !effective_scope.contains(addr) {
@@ -305,15 +317,12 @@ impl SnapshotEngine {
                 continue;
             }
 
-            // Resolve palette override for EQ params
-            let effective_value = if addr.parameter.section() == ParameterSection::Eq {
-                if let Some(palette_id) = snapshot.eq_palette_refs.get(&addr.channel) {
-                    if let Some(palette) = palettes.get(palette_id) {
-                        palette_params_seen.insert((*palette_id, addr.parameter.clone()), true);
-                        palette.eq_values.get(&addr.parameter).unwrap_or(snap_value)
-                    } else {
-                        snap_value
-                    }
+            // Resolve palette override for any palette-eligible section
+            // (EQ, Dyn1, Dyn2). Generalized in Phase 5/6.
+            let effective_value = if let Some(palette_id) = snapshot.palette_ref_for(addr) {
+                if let Some(palette) = palettes.get(&palette_id) {
+                    palette_params_seen.insert((palette_id, addr.clone()), true);
+                    palette.values.get(&addr.parameter).unwrap_or(snap_value)
                 } else {
                     snap_value
                 }
@@ -342,39 +351,46 @@ impl SnapshotEngine {
             }
         }
 
-        // Palette-only params
-        for (channel, palette_id) in &snapshot.eq_palette_refs {
-            if let Some(palette) = palettes.get(palette_id) {
-                for (param_path, value) in &palette.eq_values {
-                    if palette_params_seen.contains_key(&(*palette_id, param_path.clone())) {
-                        continue;
-                    }
-                    let addr = ParameterAddress {
-                        channel: channel.clone(),
-                        parameter: param_path.clone(),
-                    };
-                    if !ignore_scope && !effective_scope.contains(&addr) {
-                        skipped += 1;
-                        continue;
-                    }
-                    let live_value = state.get(&addr);
-                    if live_value == Some(value) {
-                        skipped += 1;
-                        continue;
-                    }
-                    if addr.parameter.is_continuous() && live_value.is_some() {
-                        fade_targets.push(FadeTarget {
-                            address: addr,
-                            start_value: live_value.unwrap().clone(),
-                            end_value: value.clone(),
-                        });
-                    } else {
-                        fade_targets.push(FadeTarget {
-                            address: addr,
-                            start_value: value.clone(),
-                            end_value: value.clone(),
-                        });
-                    }
+        // Palette-only params: walk the unified palette_refs map and send
+        // any values that weren't already handled via snapshot data above.
+        for ((channel, kind), palette_id) in &snapshot.palette_refs {
+            let Some(palette) = palettes.get(palette_id) else {
+                continue;
+            };
+            // Defensive: skip if palette kind doesn't match the ref's kind
+            // (shouldn't happen, but better to drop than send to wrong section).
+            if palette.kind != *kind {
+                continue;
+            }
+            for (param_path, value) in &palette.values {
+                let addr = ParameterAddress {
+                    channel: channel.clone(),
+                    parameter: param_path.clone(),
+                };
+                if palette_params_seen.contains_key(&(*palette_id, addr.clone())) {
+                    continue;
+                }
+                if !ignore_scope && !effective_scope.contains(&addr) {
+                    skipped += 1;
+                    continue;
+                }
+                let live_value = state.get(&addr);
+                if live_value == Some(value) {
+                    skipped += 1;
+                    continue;
+                }
+                if addr.parameter.is_continuous() && live_value.is_some() {
+                    fade_targets.push(FadeTarget {
+                        address: addr,
+                        start_value: live_value.unwrap().clone(),
+                        end_value: value.clone(),
+                    });
+                } else {
+                    fade_targets.push(FadeTarget {
+                        address: addr,
+                        start_value: value.clone(),
+                        end_value: value.clone(),
+                    });
                 }
             }
         }
@@ -464,7 +480,7 @@ mod tests {
     use std::collections::{HashSet};
     use crate::model::channel::ChannelId;
     use crate::model::config::ConsoleConfig;
-    use crate::model::parameter::{ParameterPath, ParameterSection};
+    use crate::model::parameter::{ParameterPath, ParameterSection, PaletteKind};
     use crate::model::snapshot::{ChannelScope, ScopeTemplate, Snapshot, SnapshotData, SnapshotKind};
     use crate::osc::client::OscClient;
     use std::net::SocketAddr;
@@ -499,7 +515,7 @@ mod tests {
         (engine, state, dirty)
     }
 
-    fn no_palettes() -> HashMap<Uuid, EqPalette> {
+    fn no_palettes() -> HashMap<Uuid, ChannelPalette> {
         HashMap::new()
     }
 
@@ -614,11 +630,11 @@ mod tests {
         // Palette has EQ gain = 5.0 (should override snapshot's 2.0)
         let mut eq_vals = HashMap::new();
         eq_vals.insert(ParameterPath::EqBandGain(1), ParameterValue::Float(5.0));
-        let palette = EqPalette::new("Vocal EQ".into(), ChannelId::Input(1), eq_vals);
+        let palette = ChannelPalette::new("Vocal EQ".into(), PaletteKind::Eq, ChannelId::Input(1), eq_vals);
         let palette_id = palette.id;
 
         // Link palette to snapshot
-        snapshot.eq_palette_refs.insert(ChannelId::Input(1), palette_id);
+        snapshot.palette_refs.insert((ChannelId::Input(1), PaletteKind::Eq), palette_id);
 
         let mut palettes = HashMap::new();
         palettes.insert(palette_id, palette);
@@ -649,7 +665,7 @@ mod tests {
         let mut snapshot = Snapshot::new("Snap".into(), scope.clone(), SnapshotData { values }, SnapshotKind::ApplyOnSave);
 
         // Reference a palette that doesn't exist
-        snapshot.eq_palette_refs.insert(ChannelId::Input(1), Uuid::new_v4());
+        snapshot.palette_refs.insert((ChannelId::Input(1), PaletteKind::Eq), Uuid::new_v4());
 
         let result = engine.recall(&snapshot, &scope, &no_palettes(), false).await;
         // Falls back to snapshot value (3.0), live is None → sent
@@ -678,8 +694,8 @@ mod tests {
 
         // Link a palette — should not affect the fader
         let eq_vals = HashMap::new();
-        let palette = EqPalette::new("Empty".into(), ChannelId::Input(1), eq_vals);
-        snapshot.eq_palette_refs.insert(ChannelId::Input(1), palette.id);
+        let palette = ChannelPalette::new("Empty".into(), PaletteKind::Eq, ChannelId::Input(1), eq_vals);
+        snapshot.palette_refs.insert((ChannelId::Input(1), PaletteKind::Eq), palette.id);
 
         let mut palettes = HashMap::new();
         palettes.insert(palette.id, palette);
@@ -752,10 +768,10 @@ mod tests {
         let mut eq_vals = HashMap::new();
         eq_vals.insert(ParameterPath::EqBandFrequency(1), ParameterValue::Float(800.0));
         eq_vals.insert(ParameterPath::EqBandGain(1), ParameterValue::Float(4.0));
-        let palette = EqPalette::new("Test".into(), ChannelId::Input(1), eq_vals);
+        let palette = ChannelPalette::new("Test".into(), PaletteKind::Eq, ChannelId::Input(1), eq_vals);
         let pid = palette.id;
 
-        snapshot.eq_palette_refs.insert(ChannelId::Input(1), pid);
+        snapshot.palette_refs.insert((ChannelId::Input(1), PaletteKind::Eq), pid);
 
         let mut palettes = HashMap::new();
         palettes.insert(pid, palette);

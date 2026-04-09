@@ -1,5 +1,4 @@
 pub mod app;
-pub mod eq_palettes_ui;
 pub mod gangs_tab;
 pub mod inspector_tab;
 pub mod live_tab;
@@ -7,6 +6,7 @@ pub mod macros_tab;
 pub mod monitor_tab;
 pub mod net_interfaces;
 pub mod osc_log_tab;
+pub mod palettes_ui;
 pub mod scope_editor;
 pub mod setup_tab;
 pub mod snapshots_tab;

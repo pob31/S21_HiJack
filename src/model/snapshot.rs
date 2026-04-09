@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::channel::ChannelId;
-use super::parameter::{ParameterAddress, ParameterPath, ParameterSection, ParameterValue};
+use super::parameter::{
+    ParameterAddress, ParameterPath, ParameterSection, ParameterValue, PaletteKind,
+};
 
 /// Reusable scope template — defines which channels and sections to capture/recall.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -128,7 +130,14 @@ pub enum SnapshotKind {
 }
 
 /// A captured snapshot of console parameters.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+///
+/// `Deserialize` is implemented manually so v8 show files (which have a
+/// `eq_palette_refs: HashMap<ChannelId, Uuid>` field) load into the new
+/// `palette_refs: HashMap<(ChannelId, PaletteKind), Uuid>` map by remapping
+/// each entry to `(channel, PaletteKind::Eq) → uuid`. New v9 files only
+/// write the `palette_refs` field; legacy `eq_palette_refs` is ignored on
+/// the way out.
+#[derive(Clone, Debug, Serialize)]
 pub struct Snapshot {
     pub id: Uuid,
     pub name: String,
@@ -137,14 +146,16 @@ pub struct Snapshot {
     /// How the scope interacts with capture and recall. New in v8 — old v7
     /// snapshots load with the default `ApplyOnSave`, which preserves their
     /// captured-data semantics exactly.
-    #[serde(default)]
     pub kind: SnapshotKind,
     /// The stored parameter values.
     pub data: SnapshotData,
-    /// EQ palette links: channel → palette ID. When set, recall uses palette EQ
-    /// values instead of the snapshot's stored values for that channel.
-    #[serde(default, with = "palette_refs_serde")]
-    pub eq_palette_refs: HashMap<ChannelId, Uuid>,
+    /// Per-section palette references: `(channel, kind) → palette UUID`.
+    /// When set, recall uses palette values instead of the snapshot's stored
+    /// values for that section on that channel. New in v9 — replaces the v8
+    /// `eq_palette_refs` field. Lookup is done at recall time so changes to
+    /// a palette ripple to every linked snapshot automatically.
+    #[serde(with = "palette_refs_serde")]
+    pub palette_refs: HashMap<(ChannelId, PaletteKind), Uuid>,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
 }
@@ -164,10 +175,71 @@ impl Snapshot {
             scope,
             kind,
             data,
-            eq_palette_refs: HashMap::new(),
+            palette_refs: HashMap::new(),
             created_at: now,
             modified_at: now,
         }
+    }
+
+    /// Look up the palette UUID (if any) for the parameter at `addr`.
+    /// Returns None when the parameter's section has no `PaletteKind`, or
+    /// when no palette is linked for that `(channel, kind)`. Used by the
+    /// snapshot engine to substitute palette values during recall.
+    pub fn palette_ref_for(&self, addr: &ParameterAddress) -> Option<Uuid> {
+        let kind = addr.parameter.section().palette_kind()?;
+        self.palette_refs.get(&(addr.channel.clone(), kind)).copied()
+    }
+}
+
+// Manual Deserialize impl: accepts both v8 (`eq_palette_refs: HashMap<ChannelId, Uuid>`)
+// and v9 (`palette_refs: HashMap<(ChannelId, PaletteKind), Uuid>`) shapes, and merges
+// any legacy entries into the new map keyed by `(channel, PaletteKind::Eq)`.
+impl<'de> serde::Deserialize<'de> for Snapshot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct LegacyEqRefEntry {
+            channel: ChannelId,
+            palette_id: Uuid,
+        }
+
+        #[derive(Deserialize)]
+        struct ShadowSnapshot {
+            id: Uuid,
+            name: String,
+            scope: ScopeTemplate,
+            #[serde(default)]
+            kind: SnapshotKind,
+            data: SnapshotData,
+            /// v9 field — new shape.
+            #[serde(default, with = "palette_refs_serde")]
+            palette_refs: HashMap<(ChannelId, PaletteKind), Uuid>,
+            /// v8 legacy field — present on older show files.
+            #[serde(default)]
+            eq_palette_refs: Vec<LegacyEqRefEntry>,
+            created_at: DateTime<Utc>,
+            modified_at: DateTime<Utc>,
+        }
+
+        let mut shadow = ShadowSnapshot::deserialize(deserializer)?;
+        // Merge legacy v8 entries into the new map keyed by Eq kind.
+        for entry in shadow.eq_palette_refs.drain(..) {
+            shadow
+                .palette_refs
+                .insert((entry.channel, PaletteKind::Eq), entry.palette_id);
+        }
+        Ok(Snapshot {
+            id: shadow.id,
+            name: shadow.name,
+            scope: shadow.scope,
+            kind: shadow.kind,
+            data: shadow.data,
+            palette_refs: shadow.palette_refs,
+            created_at: shadow.created_at,
+            modified_at: shadow.modified_at,
+        })
     }
 }
 
@@ -215,8 +287,11 @@ mod parameter_map {
     }
 }
 
-/// Custom serde for HashMap<ChannelId, Uuid> — serializes as Vec of entries
-/// since ChannelId (a tagged enum) cannot be a JSON map key.
+/// Custom serde for `HashMap<(ChannelId, PaletteKind), Uuid>` — serialized as
+/// a Vec of entries since neither `ChannelId` (tagged enum) nor a tuple key
+/// is a valid JSON map key. New in v9; v8 used a simpler `(ChannelId, Uuid)`
+/// shape under the field name `eq_palette_refs` — handled by `Snapshot`'s
+/// custom `Deserialize` impl above.
 mod palette_refs_serde {
     use super::*;
     use serde::{Deserializer, Serializer};
@@ -224,11 +299,12 @@ mod palette_refs_serde {
     #[derive(Serialize, Deserialize)]
     struct Entry {
         channel: ChannelId,
+        kind: PaletteKind,
         palette_id: Uuid,
     }
 
     pub fn serialize<S>(
-        map: &HashMap<ChannelId, Uuid>,
+        map: &HashMap<(ChannelId, PaletteKind), Uuid>,
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
@@ -236,19 +312,26 @@ mod palette_refs_serde {
     {
         let entries: Vec<Entry> = map
             .iter()
-            .map(|(k, v)| Entry { channel: k.clone(), palette_id: *v })
+            .map(|((ch, kind), v)| Entry {
+                channel: ch.clone(),
+                kind: *kind,
+                palette_id: *v,
+            })
             .collect();
         entries.serialize(serializer)
     }
 
     pub fn deserialize<'de, D>(
         deserializer: D,
-    ) -> Result<HashMap<ChannelId, Uuid>, D::Error>
+    ) -> Result<HashMap<(ChannelId, PaletteKind), Uuid>, D::Error>
     where
         D: Deserializer<'de>,
     {
         let entries: Vec<Entry> = Vec::deserialize(deserializer)?;
-        Ok(entries.into_iter().map(|e| (e.channel, e.palette_id)).collect())
+        Ok(entries
+            .into_iter()
+            .map(|e| ((e.channel, e.kind), e.palette_id))
+            .collect())
     }
 }
 
@@ -424,21 +507,34 @@ mod tests {
             SnapshotKind::ApplyOnSave,
         );
 
-        let palette_id = Uuid::new_v4();
-        snapshot.eq_palette_refs.insert(ChannelId::Input(1), palette_id);
-        snapshot.eq_palette_refs.insert(ChannelId::Aux(3), Uuid::new_v4());
+        let eq_palette_id = Uuid::new_v4();
+        let dyn1_palette_id = Uuid::new_v4();
+        let dyn2_palette_id = Uuid::new_v4();
+        snapshot.palette_refs.insert((ChannelId::Input(1), PaletteKind::Eq), eq_palette_id);
+        snapshot.palette_refs.insert((ChannelId::Input(1), PaletteKind::Dyn1), dyn1_palette_id);
+        snapshot.palette_refs.insert((ChannelId::Aux(3), PaletteKind::Dyn2), dyn2_palette_id);
 
         let json = serde_json::to_string(&snapshot).unwrap();
         let loaded: Snapshot = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(loaded.eq_palette_refs.len(), 2);
-        assert_eq!(loaded.eq_palette_refs.get(&ChannelId::Input(1)), Some(&palette_id));
-        assert!(loaded.eq_palette_refs.contains_key(&ChannelId::Aux(3)));
+        assert_eq!(loaded.palette_refs.len(), 3);
+        assert_eq!(
+            loaded.palette_refs.get(&(ChannelId::Input(1), PaletteKind::Eq)),
+            Some(&eq_palette_id),
+        );
+        assert_eq!(
+            loaded.palette_refs.get(&(ChannelId::Input(1), PaletteKind::Dyn1)),
+            Some(&dyn1_palette_id),
+        );
+        assert_eq!(
+            loaded.palette_refs.get(&(ChannelId::Aux(3), PaletteKind::Dyn2)),
+            Some(&dyn2_palette_id),
+        );
     }
 
     #[test]
     fn snapshot_backward_compat_no_palette_refs() {
-        // Simulate a v2 snapshot JSON without the eq_palette_refs field
+        // Simulate an early-version snapshot JSON without any palette refs field.
         let json = r#"{
             "id": "00000000-0000-0000-0000-000000000001",
             "name": "Old Snap",
@@ -449,7 +545,114 @@ mod tests {
         }"#;
 
         let loaded: Snapshot = serde_json::from_str(json).unwrap();
-        assert!(loaded.eq_palette_refs.is_empty());
+        assert!(loaded.palette_refs.is_empty());
+    }
+
+    #[test]
+    fn v8_snapshot_eq_palette_refs_loads_into_palette_refs() {
+        // V8 shape: snapshots had `eq_palette_refs: HashMap<ChannelId, Uuid>`
+        // serialized as a Vec of {channel, palette_id}. The new `Snapshot`
+        // Deserialize impl should remap legacy entries to the new
+        // `(channel, PaletteKind::Eq) -> uuid` shape.
+        let json = r#"{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Legacy Snap",
+            "scope": {"id": "00000000-0000-0000-0000-000000000002", "name": "S", "channel_scopes": []},
+            "kind": "ApplyOnSave",
+            "data": {"values": []},
+            "eq_palette_refs": [
+                {"channel": {"Input": 1}, "palette_id": "11111111-1111-1111-1111-111111111111"},
+                {"channel": {"Aux": 2}, "palette_id": "22222222-2222-2222-2222-222222222222"}
+            ],
+            "created_at": "2025-01-01T00:00:00Z",
+            "modified_at": "2025-01-01T00:00:00Z"
+        }"#;
+
+        let loaded: Snapshot = serde_json::from_str(json).unwrap();
+        // Both legacy entries should be in palette_refs keyed by Eq.
+        assert_eq!(loaded.palette_refs.len(), 2);
+        let input1 = loaded.palette_refs.get(&(ChannelId::Input(1), PaletteKind::Eq)).copied();
+        let aux2 = loaded.palette_refs.get(&(ChannelId::Aux(2), PaletteKind::Eq)).copied();
+        assert_eq!(
+            input1,
+            Some(Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap()),
+        );
+        assert_eq!(
+            aux2,
+            Some(Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap()),
+        );
+    }
+
+    #[test]
+    fn v8_snapshot_with_both_legacy_and_new_palette_refs_merges() {
+        // Edge case: a snapshot file written by some version that has both
+        // legacy and new fields populated. Both should end up in the
+        // unified map; legacy entries fill in the Eq slot for any channels
+        // not already covered by the new map.
+        let json = r#"{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Mixed Snap",
+            "scope": {"id": "00000000-0000-0000-0000-000000000002", "name": "S", "channel_scopes": []},
+            "kind": "ApplyOnSave",
+            "data": {"values": []},
+            "palette_refs": [
+                {"channel": {"Input": 1}, "kind": "Dyn1", "palette_id": "33333333-3333-3333-3333-333333333333"}
+            ],
+            "eq_palette_refs": [
+                {"channel": {"Input": 1}, "palette_id": "11111111-1111-1111-1111-111111111111"}
+            ],
+            "created_at": "2025-01-01T00:00:00Z",
+            "modified_at": "2025-01-01T00:00:00Z"
+        }"#;
+
+        let loaded: Snapshot = serde_json::from_str(json).unwrap();
+        // Two entries: the new Dyn1 + the migrated Eq.
+        assert_eq!(loaded.palette_refs.len(), 2);
+        assert!(loaded.palette_refs.contains_key(&(ChannelId::Input(1), PaletteKind::Eq)));
+        assert!(loaded.palette_refs.contains_key(&(ChannelId::Input(1), PaletteKind::Dyn1)));
+    }
+
+    #[test]
+    fn palette_ref_for_returns_correct_uuid() {
+        let scope = ScopeTemplate::new("Test".into(), vec![]);
+        let mut snapshot = Snapshot::new(
+            "Test".into(),
+            scope,
+            SnapshotData::new(),
+            SnapshotKind::ApplyOnSave,
+        );
+        let eq_id = Uuid::new_v4();
+        let dyn1_id = Uuid::new_v4();
+        snapshot.palette_refs.insert((ChannelId::Input(1), PaletteKind::Eq), eq_id);
+        snapshot.palette_refs.insert((ChannelId::Input(1), PaletteKind::Dyn1), dyn1_id);
+
+        // EQ-section parameter on Input(1) → eq palette.
+        let eq_addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::EqBandFrequency(1),
+        };
+        assert_eq!(snapshot.palette_ref_for(&eq_addr), Some(eq_id));
+
+        // Dyn1-section parameter on Input(1) → dyn1 palette.
+        let dyn1_addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Dyn1Threshold(1),
+        };
+        assert_eq!(snapshot.palette_ref_for(&dyn1_addr), Some(dyn1_id));
+
+        // Fader on Input(1) → no palette kind for FaderMutePan section.
+        let fader_addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        assert_eq!(snapshot.palette_ref_for(&fader_addr), None);
+
+        // EQ on Input(2) → no link for that channel.
+        let other_eq = ParameterAddress {
+            channel: ChannelId::Input(2),
+            parameter: ParameterPath::EqBandFrequency(1),
+        };
+        assert_eq!(snapshot.palette_ref_for(&other_eq), None);
     }
 
     #[test]
