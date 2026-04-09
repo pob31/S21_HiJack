@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use crate::console::cue_manager::CueManager;
 use crate::console::eq_palette_manager::EqPaletteManager;
-use crate::model::snapshot::{Cue, Snapshot};
+use crate::console::snapshot_engine::SnapshotEngine;
+use crate::model::snapshot::{Cue, Snapshot, SnapshotKind};
 use crate::model::state::ConsoleState;
 use super::eq_palettes_ui::{EqPalettesUiState, draw_eq_palettes_section};
 use super::scope_editor::ScopeEditorState;
@@ -32,6 +33,9 @@ pub struct SnapshotsTabState {
     // Snapshot management
     pub new_snapshot_name: String,
     pub selected_snapshot_id: Option<Uuid>,
+    /// Snapshot kind picked at capture time. Defaults to ApplyOnSave so the
+    /// behaviour matches v7.
+    pub pending_kind: SnapshotKind,
 
     // Scope
     pub scope_editor: ScopeEditorState,
@@ -56,6 +60,7 @@ impl Default for SnapshotsTabState {
             editing_cue_notes: String::new(),
             new_snapshot_name: String::new(),
             selected_snapshot_id: None,
+            pending_kind: SnapshotKind::default(),
             scope_editor: ScopeEditorState::default(),
             new_template_name: String::new(),
             selected_scope_template_id: None,
@@ -65,6 +70,7 @@ impl Default for SnapshotsTabState {
 }
 
 /// Draw the Snapshots tab.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_snapshots_tab(
     ui: &mut egui::Ui,
     snap_state: &mut SnapshotsTabState,
@@ -72,6 +78,7 @@ pub fn draw_snapshots_tab(
     console_state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
     eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
+    snapshot_engine: &Option<Arc<SnapshotEngine>>,
     connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -460,13 +467,42 @@ pub fn draw_snapshots_tab(
                     theme::card_frame().show(ui, |ui| {
                         theme::section_heading(ui, "Snapshots");
 
-                        // Capture controls
+                        // Snapshot kind picker — controls whether the scope is
+                        // applied at SAVE time (only in-scope params stored,
+                        // current behaviour) or at RECALL time (all params
+                        // captured; scope filters at recall, with the option
+                        // to "Recall without scope" to restore the entire
+                        // saved state in one shot).
+                        ui.horizontal(|ui| {
+                            ui.label("Apply scope:");
+                            ui.radio_value(
+                                &mut snap_state.pending_kind,
+                                SnapshotKind::ApplyOnSave,
+                                "On save",
+                            );
+                            ui.radio_value(
+                                &mut snap_state.pending_kind,
+                                SnapshotKind::ApplyOnRecall,
+                                "On recall",
+                            );
+                        });
+
+                        // Capture controls. ApplyOnRecall doesn't need a
+                        // populated scope (the whole state is captured) so
+                        // the selection-count gate only applies to ApplyOnSave.
                         ui.horizontal(|ui| {
                             ui.label("Name:");
                             ui.add(egui::TextEdit::singleline(&mut snap_state.new_snapshot_name).desired_width(150.0));
 
-                            let can_capture = is_connected && !snap_state.new_snapshot_name.is_empty()
-                                && snap_state.scope_editor.selection_count() > 0;
+                            let scope_required = matches!(
+                                snap_state.pending_kind,
+                                SnapshotKind::ApplyOnSave
+                            );
+                            let scope_ok = !scope_required
+                                || snap_state.scope_editor.selection_count() > 0;
+                            let can_capture = is_connected
+                                && !snap_state.new_snapshot_name.is_empty()
+                                && scope_ok;
 
                             let capture_btn = theme::action_button("Capture Now", theme::ACCENT_GREEN, egui::Vec2::new(110.0, 28.0));
                             if ui.add_enabled(can_capture, capture_btn).clicked() {
@@ -482,8 +518,10 @@ pub fn draw_snapshots_tab(
 
                         if !is_connected {
                             ui.label(egui::RichText::new("Connect to console to capture snapshots.").color(theme::TEXT_SECONDARY));
-                        } else if snap_state.scope_editor.selection_count() == 0 {
-                            ui.label(egui::RichText::new("Select scope channels/sections to capture.").color(theme::TEXT_SECONDARY));
+                        } else if matches!(snap_state.pending_kind, SnapshotKind::ApplyOnSave)
+                            && snap_state.scope_editor.selection_count() == 0
+                        {
+                            ui.label(egui::RichText::new("Select scope parameters to capture (or switch to 'On recall').").color(theme::TEXT_SECONDARY));
                         }
 
                         ui.add_space(8.0);
@@ -517,6 +555,18 @@ pub fn draw_snapshots_tab(
                                                             .strong()
                                                             .color(theme::TEXT_PRIMARY),
                                                     );
+                                                    let kind_label = match snap.kind {
+                                                        SnapshotKind::ApplyOnSave => "scope: save",
+                                                        SnapshotKind::ApplyOnRecall => "scope: recall",
+                                                    };
+                                                    theme::colored_badge(
+                                                        ui,
+                                                        kind_label,
+                                                        match snap.kind {
+                                                            SnapshotKind::ApplyOnSave => theme::BG_ELEVATED,
+                                                            SnapshotKind::ApplyOnRecall => theme::ACCENT_BLUE,
+                                                        },
+                                                    );
                                                     ui.label(
                                                         egui::RichText::new(format!(
                                                             "{} params  {}",
@@ -541,10 +591,68 @@ pub fn draw_snapshots_tab(
                                 }
                             });
 
-                        // Re-capture and delete snapshot buttons
+                        // Recall / Re-capture / Delete buttons.
+                        // The "Recall (no scope)" button is only meaningful
+                        // for ApplyOnRecall snapshots — ApplyOnSave snapshots
+                        // already filtered at capture time, so the stored
+                        // data IS the scope and there's nothing extra to
+                        // recall. The button is greyed out (with a tooltip)
+                        // when the selected snapshot is ApplyOnSave.
+                        let selected_kind: Option<SnapshotKind> = snap_state
+                            .selected_snapshot_id
+                            .and_then(|id| {
+                                cue_manager
+                                    .try_read()
+                                    .ok()
+                                    .and_then(|mgr| mgr.snapshots.get(&id).map(|s| s.kind))
+                            });
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             let has_selection = snap_state.selected_snapshot_id.is_some();
+                            let engine_ready = snapshot_engine.is_some() && is_connected;
+
+                            let recall_btn = theme::action_button("Recall", theme::ACCENT_GREEN, egui::Vec2::new(80.0, 28.0));
+                            if ui.add_enabled(has_selection && engine_ready, recall_btn).clicked() {
+                                recall_selected_snapshot(
+                                    snap_state,
+                                    cue_manager,
+                                    eq_palette_manager,
+                                    snapshot_engine,
+                                    runtime,
+                                    ui_tx,
+                                    /* ignore_scope */ false,
+                                );
+                            }
+
+                            let can_recall_no_scope = matches!(selected_kind, Some(SnapshotKind::ApplyOnRecall));
+                            let recall_no_scope_btn = theme::action_button(
+                                "Recall (no scope)",
+                                theme::ACCENT_AMBER,
+                                egui::Vec2::new(140.0, 28.0),
+                            );
+                            let recall_no_scope_resp = ui.add_enabled(
+                                has_selection && engine_ready && can_recall_no_scope,
+                                recall_no_scope_btn,
+                            );
+                            if !can_recall_no_scope && has_selection {
+                                let _ = recall_no_scope_resp.clone().on_hover_text(
+                                    "Only available for snapshots captured with 'Apply scope on recall' \
+                                     — ApplyOnSave snapshots already filtered at capture time, so there \
+                                     is nothing outside the saved scope to recall.",
+                                );
+                            }
+                            if recall_no_scope_resp.clicked() {
+                                recall_selected_snapshot(
+                                    snap_state,
+                                    cue_manager,
+                                    eq_palette_manager,
+                                    snapshot_engine,
+                                    runtime,
+                                    ui_tx,
+                                    /* ignore_scope */ true,
+                                );
+                            }
+
                             let recapture_btn = theme::action_button("Re-capture", theme::ACCENT_BLUE, egui::Vec2::new(100.0, 28.0));
                             if ui.add_enabled(has_selection && is_connected, recapture_btn).clicked() {
                                 recapture_snapshot(snap_state, console_state, cue_manager, runtime, ui_tx);
@@ -600,17 +708,18 @@ fn capture_snapshot(
         snap_state.new_snapshot_name.clone(),
     );
     let name = snap_state.new_snapshot_name.clone();
+    let kind = snap_state.pending_kind;
     let st = console_state.clone();
     let cue_mgr = cue_manager.clone();
     let tx = ui_tx.clone();
 
     runtime.spawn(async move {
         let state_guard = st.read().await;
-        let data = state_guard.capture(&scope);
+        let data = state_guard.capture(&scope, kind);
         let param_count = data.parameter_count();
         drop(state_guard);
 
-        let snapshot = Snapshot::new(name.clone(), scope, data);
+        let snapshot = Snapshot::new(name.clone(), scope, data, kind);
         cue_mgr.write().await.add_snapshot(snapshot);
 
         let _ = tx.send(UiEvent::SnapshotCaptured {
@@ -637,16 +746,18 @@ fn recapture_snapshot(
     let tx = ui_tx.clone();
 
     runtime.spawn(async move {
-        // Read the existing snapshot's scope
+        // Read the existing snapshot's scope AND its kind so re-capture
+        // honours the original ApplyOnSave / ApplyOnRecall semantics.
         let mgr = cue_mgr.read().await;
         let Some(existing) = mgr.snapshots.get(&snap_id) else { return };
         let scope = existing.scope.clone();
         let name = existing.name.clone();
+        let kind = existing.kind;
         drop(mgr);
 
-        // Capture fresh data
+        // Capture fresh data using the original kind.
         let state_guard = st.read().await;
-        let data = state_guard.capture(&scope);
+        let data = state_guard.capture(&scope, kind);
         let param_count = data.parameter_count();
         drop(state_guard);
 
@@ -660,4 +771,64 @@ fn recapture_snapshot(
     });
 
     snap_state.status_message = Some("Re-capturing...".into());
+}
+
+/// Recall the currently-selected snapshot, optionally bypassing the scope.
+///
+/// `ignore_scope = false` is the standard recall: filter by `snapshot.scope`
+/// (or, if the snapshot is `ApplyOnSave`, the scope filter is a no-op since
+/// the stored data is already inside the scope).
+///
+/// `ignore_scope = true` only makes sense for `ApplyOnRecall` snapshots:
+/// fire every stored parameter regardless of scope, so the operator can jump
+/// into a cue list mid-show without dragging accumulated partial changes
+/// along. The button gating in the UI prevents this from being clicked on
+/// `ApplyOnSave` snapshots, but the engine handles either input gracefully.
+#[allow(clippy::too_many_arguments)]
+fn recall_selected_snapshot(
+    snap_state: &mut SnapshotsTabState,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
+    snapshot_engine: &Option<Arc<SnapshotEngine>>,
+    runtime: &tokio::runtime::Handle,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+    ignore_scope: bool,
+) {
+    let Some(snap_id) = snap_state.selected_snapshot_id else { return };
+    let Some(engine) = snapshot_engine.clone() else { return };
+    let cue_mgr = cue_manager.clone();
+    let eq_mgr = eq_palette_manager.clone();
+    let tx = ui_tx.clone();
+
+    runtime.spawn(async move {
+        // Read the snapshot + scope under the cue-manager lock.
+        let mgr = cue_mgr.read().await;
+        let Some(snapshot) = mgr.snapshots.get(&snap_id).cloned() else { return };
+        let scope = snapshot.scope.clone();
+        let name = snapshot.name.clone();
+        drop(mgr);
+
+        // Read palettes under the eq-palette-manager lock.
+        let pmgr = eq_mgr.read().await;
+        let result = engine
+            .recall(&snapshot, &scope, &pmgr.palettes, ignore_scope)
+            .await;
+        drop(pmgr);
+
+        let label = if ignore_scope {
+            format!("Recalled '{name}' without scope ({} params sent)", result.parameters_sent)
+        } else {
+            format!("Recalled '{name}' ({} params sent)", result.parameters_sent)
+        };
+        let _ = tx.send(UiEvent::SnapshotCaptured {
+            name: label,
+            param_count: result.parameters_sent,
+        });
+    });
+
+    snap_state.status_message = Some(if ignore_scope {
+        "Recalling without scope...".into()
+    } else {
+        "Recalling...".into()
+    });
 }

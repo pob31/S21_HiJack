@@ -52,11 +52,18 @@ impl SnapshotEngine {
     ///
     /// After processing snapshot data, also sends palette-only values (params in
     /// palette but not in snapshot) for linked channels within scope.
+    ///
+    /// When `ignore_scope == true`, the scope filter is bypassed entirely and
+    /// every parameter in the snapshot data (and every linked palette value)
+    /// is recalled. Only meaningful for `SnapshotKind::ApplyOnRecall` snapshots
+    /// — `ApplyOnSave` snapshots already filtered at capture time, so the
+    /// stored data IS the scope.
     pub async fn recall(
         &self,
         snapshot: &Snapshot,
         scope: &ScopeTemplate,
         palettes: &HashMap<Uuid, EqPalette>,
+        ignore_scope: bool,
     ) -> RecallResult {
         let state = self.state.read().await;
         let mut sent = 0usize;
@@ -66,8 +73,9 @@ impl SnapshotEngine {
         let mut palette_params_seen: HashMap<(uuid::Uuid, _), bool> = HashMap::new();
 
         for (addr, snap_value) in &snapshot.data.values {
-            // Only recall parameters within the effective scope
-            if !scope.contains(addr) {
+            // Only recall parameters within the effective scope (unless
+            // ignore_scope is set, in which case every stored param is sent).
+            if !ignore_scope && !scope.contains(addr) {
                 skipped += 1;
                 continue;
             }
@@ -105,7 +113,7 @@ impl SnapshotEngine {
                         channel: channel.clone(),
                         parameter: param_path.clone(),
                     };
-                    if !scope.contains(&addr) {
+                    if !ignore_scope && !scope.contains(&addr) {
                         skipped += 1;
                         continue;
                     }
@@ -179,11 +187,16 @@ impl SnapshotEngine {
     ///
     /// When `cue.fade_time > 0`, continuous parameters are interpolated in a
     /// background task while discrete parameters fire immediately.
+    ///
+    /// When `ignore_scope == true`, the scope filter is bypassed entirely
+    /// (see `recall` for details). Only meaningful for `ApplyOnRecall`
+    /// snapshots.
     pub async fn recall_cue(
         &self,
         cue: &Cue,
         snapshot: &Snapshot,
         palettes: &HashMap<Uuid, EqPalette>,
+        ignore_scope: bool,
     ) -> RecallResult {
         let effective_scope = cue.scope_override.as_ref().unwrap_or(&snapshot.scope);
         info!(
@@ -191,6 +204,7 @@ impl SnapshotEngine {
             cue_name = %cue.name,
             snapshot_name = %snapshot.name,
             fade_time = cue.fade_time,
+            ignore_scope,
             "Recalling cue"
         );
 
@@ -198,7 +212,7 @@ impl SnapshotEngine {
         if cue.fade_time <= 0.0 {
             // Cancel any in-progress fade from a previous cue
             self.fade_controller.cancel_active().await;
-            return self.recall(snapshot, effective_scope, palettes).await;
+            return self.recall(snapshot, effective_scope, palettes, ignore_scope).await;
         }
 
         // Fade recall: split parameters into discrete (immediate) and continuous (fade)
@@ -211,7 +225,7 @@ impl SnapshotEngine {
         let mut palette_params_seen: HashMap<(Uuid, _), bool> = HashMap::new();
 
         for (addr, snap_value) in &snapshot.data.values {
-            if !effective_scope.contains(addr) {
+            if !ignore_scope && !effective_scope.contains(addr) {
                 skipped += 1;
                 continue;
             }
@@ -264,7 +278,7 @@ impl SnapshotEngine {
                         channel: channel.clone(),
                         parameter: param_path.clone(),
                     };
-                    if !effective_scope.contains(&addr) {
+                    if !ignore_scope && !effective_scope.contains(&addr) {
                         skipped += 1;
                         continue;
                     }
@@ -376,7 +390,7 @@ mod tests {
     use crate::model::channel::ChannelId;
     use crate::model::config::ConsoleConfig;
     use crate::model::parameter::{ParameterPath, ParameterSection};
-    use crate::model::snapshot::{ChannelScope, ScopeTemplate, Snapshot, SnapshotData};
+    use crate::model::snapshot::{ChannelScope, ScopeTemplate, Snapshot, SnapshotData, SnapshotKind};
     use crate::osc::client::OscClient;
     use std::net::SocketAddr;
 
@@ -434,9 +448,10 @@ mod tests {
             "Test Snap".into(),
             scope.clone(),
             SnapshotData { values },
+            SnapshotKind::ApplyOnSave,
         );
 
-        let result = engine.recall(&snapshot, &scope, &no_palettes()).await;
+        let result = engine.recall(&snapshot, &scope, &no_palettes(), false).await;
         assert_eq!(result.parameters_sent, 1);
         assert_eq!(result.parameters_skipped, 1);
     }
@@ -464,9 +479,10 @@ mod tests {
             "Test".into(),
             scope.clone(),
             SnapshotData { values },
+            SnapshotKind::ApplyOnSave,
         );
 
-        let result = engine.recall(&snapshot, &scope, &no_palettes()).await;
+        let result = engine.recall(&snapshot, &scope, &no_palettes(), false).await;
         assert_eq!(result.parameters_sent, 0);
         assert_eq!(result.parameters_skipped, 1);
     }
@@ -499,7 +515,7 @@ mod tests {
             ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqBandGain(1) },
             ParameterValue::Float(2.0),
         );
-        let mut snapshot = Snapshot::new("Snap".into(), scope.clone(), SnapshotData { values });
+        let mut snapshot = Snapshot::new("Snap".into(), scope.clone(), SnapshotData { values }, SnapshotKind::ApplyOnSave);
 
         // Palette has EQ gain = 5.0 (should override snapshot's 2.0)
         let mut eq_vals = HashMap::new();
@@ -513,7 +529,7 @@ mod tests {
         let mut palettes = HashMap::new();
         palettes.insert(palette_id, palette);
 
-        let result = engine.recall(&snapshot, &scope, &palettes).await;
+        let result = engine.recall(&snapshot, &scope, &palettes, false).await;
         // Palette value (5.0) differs from live (0.0) → sent
         assert_eq!(result.parameters_sent, 1);
     }
@@ -536,12 +552,12 @@ mod tests {
             ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqBandGain(1) },
             ParameterValue::Float(3.0),
         );
-        let mut snapshot = Snapshot::new("Snap".into(), scope.clone(), SnapshotData { values });
+        let mut snapshot = Snapshot::new("Snap".into(), scope.clone(), SnapshotData { values }, SnapshotKind::ApplyOnSave);
 
         // Reference a palette that doesn't exist
         snapshot.eq_palette_refs.insert(ChannelId::Input(1), Uuid::new_v4());
 
-        let result = engine.recall(&snapshot, &scope, &no_palettes()).await;
+        let result = engine.recall(&snapshot, &scope, &no_palettes(), false).await;
         // Falls back to snapshot value (3.0), live is None → sent
         assert_eq!(result.parameters_sent, 1);
     }
@@ -564,7 +580,7 @@ mod tests {
             ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
             ParameterValue::Float(-5.0),
         );
-        let mut snapshot = Snapshot::new("Snap".into(), scope.clone(), SnapshotData { values });
+        let mut snapshot = Snapshot::new("Snap".into(), scope.clone(), SnapshotData { values }, SnapshotKind::ApplyOnSave);
 
         // Link a palette — should not affect the fader
         let eq_vals = HashMap::new();
@@ -574,7 +590,7 @@ mod tests {
         let mut palettes = HashMap::new();
         palettes.insert(palette.id, palette);
 
-        let result = engine.recall(&snapshot, &scope, &palettes).await;
+        let result = engine.recall(&snapshot, &scope, &palettes, false).await;
         // Fader is non-EQ → uses snapshot value (-5.0), live None → sent
         assert_eq!(result.parameters_sent, 1);
     }
@@ -612,9 +628,10 @@ mod tests {
             "Test".into(),
             scope.clone(),
             SnapshotData { values },
+            SnapshotKind::ApplyOnSave,
         );
 
-        let result = engine.recall(&snapshot, &scope, &no_palettes()).await;
+        let result = engine.recall(&snapshot, &scope, &no_palettes(), false).await;
         // With iPad sender: InsertAEnabled is iPad-only but should now be sent
         assert_eq!(result.parameters_sent, 1);
         assert_eq!(result.parameters_skipped, 0);
@@ -635,7 +652,7 @@ mod tests {
 
         // Snapshot has no EQ data at all
         let snapshot_values = HashMap::new();
-        let mut snapshot = Snapshot::new("Snap".into(), scope.clone(), SnapshotData { values: snapshot_values });
+        let mut snapshot = Snapshot::new("Snap".into(), scope.clone(), SnapshotData { values: snapshot_values }, SnapshotKind::ApplyOnSave);
 
         // Palette has EQ values that should be sent even though they're not in snapshot
         let mut eq_vals = HashMap::new();
@@ -649,7 +666,7 @@ mod tests {
         let mut palettes = HashMap::new();
         palettes.insert(pid, palette);
 
-        let result = engine.recall(&snapshot, &scope, &palettes).await;
+        let result = engine.recall(&snapshot, &scope, &palettes, false).await;
         // Both palette-only params sent (live is None for both)
         assert_eq!(result.parameters_sent, 2);
     }
@@ -677,10 +694,10 @@ mod tests {
             ParameterValue::Bool(true),
         );
 
-        let snapshot = Snapshot::new("Snap".into(), scope.clone(), SnapshotData { values });
+        let snapshot = Snapshot::new("Snap".into(), scope.clone(), SnapshotData { values }, SnapshotKind::ApplyOnSave);
         let cue = crate::model::snapshot::Cue::new(1.0, "Test Cue".into(), snapshot.id);
 
-        let result = engine.recall_cue(&cue, &snapshot, &no_palettes()).await;
+        let result = engine.recall_cue(&cue, &snapshot, &no_palettes(), false).await;
         // Both are new (no live state) → both sent
         assert_eq!(result.parameters_sent, 2);
     }
@@ -719,11 +736,11 @@ mod tests {
             ParameterValue::Bool(true),
         );
 
-        let snapshot = Snapshot::new("Snap".into(), scope.clone(), SnapshotData { values });
+        let snapshot = Snapshot::new("Snap".into(), scope.clone(), SnapshotData { values }, SnapshotKind::ApplyOnSave);
         let mut cue = crate::model::snapshot::Cue::new(1.0, "Fade Cue".into(), snapshot.id);
         cue.fade_time = 2.0;
 
-        let result = engine.recall_cue(&cue, &snapshot, &no_palettes()).await;
+        let result = engine.recall_cue(&cue, &snapshot, &no_palettes(), false).await;
         // Mute sent immediately; Fader deferred to background fade
         assert_eq!(result.parameters_sent, 1);
         assert_eq!(result.parameters_skipped, 0);
@@ -763,13 +780,109 @@ mod tests {
             ParameterValue::Bool(true),
         );
 
-        let snapshot = Snapshot::new("Snap".into(), full_scope, SnapshotData { values });
+        let snapshot = Snapshot::new("Snap".into(), full_scope, SnapshotData { values }, SnapshotKind::ApplyOnSave);
         let mut cue = crate::model::snapshot::Cue::new(1.0, "Scoped".into(), snapshot.id);
         cue.scope_override = Some(eq_only_scope);
 
-        let result = engine.recall_cue(&cue, &snapshot, &no_palettes()).await;
+        let result = engine.recall_cue(&cue, &snapshot, &no_palettes(), false).await;
         // Only EqEnabled sent (within override scope); Fader skipped
         assert_eq!(result.parameters_sent, 1);
         assert_eq!(result.parameters_skipped, 1);
+    }
+
+    #[tokio::test]
+    async fn recall_ignore_scope_sends_every_stored_param() {
+        // Phase B: when ignore_scope=true, the scope filter is bypassed
+        // entirely. Even params outside the snapshot's stored scope are sent.
+        let (engine, _state) = setup_test().await;
+
+        // Stored data covers Fader (in scope) + EqEnabled (out of scope).
+        let mut values = HashMap::new();
+        values.insert(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
+            ParameterValue::Float(-10.0),
+        );
+        values.insert(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqEnabled },
+            ParameterValue::Bool(true),
+        );
+
+        // Narrow scope: only FaderMutePan.
+        let scope = ScopeTemplate::new(
+            "Narrow".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+
+        let snapshot = Snapshot::new(
+            "Test".into(),
+            scope.clone(),
+            SnapshotData { values },
+            SnapshotKind::ApplyOnRecall,
+        );
+
+        // Standard recall: only Fader is sent (EqEnabled is filtered out).
+        let result = engine.recall(&snapshot, &scope, &no_palettes(), false).await;
+        assert_eq!(result.parameters_sent, 1);
+        assert_eq!(result.parameters_skipped, 1);
+
+        // Recall with ignore_scope=true: BOTH params are sent.
+        let result = engine.recall(&snapshot, &scope, &no_palettes(), true).await;
+        assert_eq!(result.parameters_sent, 2);
+        assert_eq!(result.parameters_skipped, 0);
+    }
+
+    #[tokio::test]
+    async fn recall_cue_ignore_scope_bypasses_override() {
+        // Phase B: ignore_scope on recall_cue also bypasses cue.scope_override.
+        let (engine, _state) = setup_test().await;
+
+        let mut values = HashMap::new();
+        values.insert(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
+            ParameterValue::Float(-10.0),
+        );
+        values.insert(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqEnabled },
+            ParameterValue::Bool(true),
+        );
+
+        let full_scope = ScopeTemplate::new(
+            "Full".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([
+                    ParameterSection::FaderMutePan,
+                    ParameterSection::Eq,
+                ]),
+            )],
+        );
+        let fader_only_scope = ScopeTemplate::new(
+            "FaderOnly".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+
+        let snapshot = Snapshot::new(
+            "Test".into(),
+            full_scope,
+            SnapshotData { values },
+            SnapshotKind::ApplyOnRecall,
+        );
+        let mut cue = crate::model::snapshot::Cue::new(1.0, "Cue".into(), snapshot.id);
+        cue.scope_override = Some(fader_only_scope);
+
+        // ignore_scope=false honours the override → only Fader sent.
+        let result = engine.recall_cue(&cue, &snapshot, &no_palettes(), false).await;
+        assert_eq!(result.parameters_sent, 1);
+        assert_eq!(result.parameters_skipped, 1);
+
+        // ignore_scope=true bypasses the override → both sent.
+        let result = engine.recall_cue(&cue, &snapshot, &no_palettes(), true).await;
+        assert_eq!(result.parameters_sent, 2);
     }
 }

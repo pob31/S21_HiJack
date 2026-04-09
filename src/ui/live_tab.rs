@@ -250,7 +250,7 @@ fn fire_go(
             if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                 drop(mgr);
                 let pmgr = eq_mgr.read().await;
-                let result = engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
+                let result = engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
                 let _ = tx.send(UiEvent::CueRecalled {
                     cue_number: cue.cue_number,
                     params_sent: result.parameters_sent,
@@ -279,7 +279,7 @@ fn fire_prev(
             if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                 drop(mgr);
                 let pmgr = eq_mgr.read().await;
-                let result = engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
+                let result = engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
                 let _ = tx.send(UiEvent::CueRecalled {
                     cue_number: cue.cue_number,
                     params_sent: result.parameters_sent,

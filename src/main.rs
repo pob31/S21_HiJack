@@ -313,7 +313,7 @@ async fn run_headless(args: Args) {
                         if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                             drop(mgr);
                             let pmgr = trigger_eq_mgr.read().await;
-                            let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
+                            let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
                             info!(sent = result.parameters_sent, "Cue GO recall complete");
                         } else {
                             warn!(snapshot_id = %cue.snapshot_id, "Snapshot not found for cue");
@@ -327,7 +327,7 @@ async fn run_headless(args: Args) {
                         if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                             drop(mgr);
                             let pmgr = trigger_eq_mgr.read().await;
-                            let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
+                            let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
                             info!(sent = result.parameters_sent, "Cue PREVIOUS recall complete");
                         } else {
                             warn!(snapshot_id = %cue.snapshot_id, "Snapshot not found for cue");
@@ -341,7 +341,7 @@ async fn run_headless(args: Args) {
                         if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                             drop(mgr);
                             let pmgr = trigger_eq_mgr.read().await;
-                            let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
+                            let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
                             info!(number, sent = result.parameters_sent, "Cue FIRE recall complete");
                         } else {
                             warn!(snapshot_id = %cue.snapshot_id, "Snapshot not found for cue");

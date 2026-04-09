@@ -379,6 +379,7 @@ impl eframe::App for HiJackApp {
                         &self.state,
                         &self.cue_manager,
                         &self.eq_palette_manager,
+                        &self.snapshot_engine,
                         &self.connected,
                         &self.runtime,
                         &self.ui_tx,

@@ -103,6 +103,30 @@ impl ChannelScope {
     }
 }
 
+/// How the scope interacts with capture and recall.
+///
+/// Two modes mirroring the WFS-DIY snapshot system:
+///
+/// - **`ApplyOnSave`** (default, current behaviour): the scope filters at
+///   CAPTURE time. Only in-scope parameters are stored in `SnapshotData`. The
+///   stored data IS the scope — there's nothing outside it to recall later, so
+///   "recall without scope" is a no-op.
+///
+/// - **`ApplyOnRecall`**: every live parameter is captured (the scope is
+///   ignored at capture time). At RECALL time the scope is used as an
+///   exclusion filter. The operator can also "Recall without scope" to
+///   restore the entire saved state in one shot — useful for jumping into a
+///   cue list mid-show without dragging accumulated partial changes along.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SnapshotKind {
+    /// Scope is applied when capturing — only in-scope parameters are stored.
+    /// (Current S21_HiJack behaviour, kept as the default for v7 back-compat.)
+    #[default]
+    ApplyOnSave,
+    /// Every live parameter is captured; scope filters at recall time only.
+    ApplyOnRecall,
+}
+
 /// A captured snapshot of console parameters.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -110,6 +134,11 @@ pub struct Snapshot {
     pub name: String,
     /// The scope used when this snapshot was captured.
     pub scope: ScopeTemplate,
+    /// How the scope interacts with capture and recall. New in v8 — old v7
+    /// snapshots load with the default `ApplyOnSave`, which preserves their
+    /// captured-data semantics exactly.
+    #[serde(default)]
+    pub kind: SnapshotKind,
     /// The stored parameter values.
     pub data: SnapshotData,
     /// EQ palette links: channel → palette ID. When set, recall uses palette EQ
@@ -122,12 +151,18 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// Create a new snapshot with generated ID and current timestamps.
-    pub fn new(name: String, scope: ScopeTemplate, data: SnapshotData) -> Self {
+    pub fn new(
+        name: String,
+        scope: ScopeTemplate,
+        data: SnapshotData,
+        kind: SnapshotKind,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
             name,
             scope,
+            kind,
             data,
             eq_palette_refs: HashMap::new(),
             created_at: now,
@@ -382,7 +417,12 @@ mod tests {
     #[test]
     fn snapshot_palette_refs_serde_round_trip() {
         let scope = ScopeTemplate::new("Test".into(), vec![]);
-        let mut snapshot = Snapshot::new("Test Snap".into(), scope, SnapshotData::new());
+        let mut snapshot = Snapshot::new(
+            "Test Snap".into(),
+            scope,
+            SnapshotData::new(),
+            SnapshotKind::ApplyOnSave,
+        );
 
         let palette_id = Uuid::new_v4();
         snapshot.eq_palette_refs.insert(ChannelId::Input(1), palette_id);
@@ -536,6 +576,56 @@ mod tests {
         assert_eq!(cs.sections.len(), 2);
         assert!(cs.sections.contains(&ParameterSection::Eq));
         assert!(cs.sections.contains(&ParameterSection::FaderMutePan));
+    }
+
+    // ─── Phase B: snapshot kinds ───────────────────────────────────────
+
+    #[test]
+    fn snapshot_kind_default_is_apply_on_save() {
+        // Mirrors v7 behaviour: capture is scope-filtered.
+        assert_eq!(SnapshotKind::default(), SnapshotKind::ApplyOnSave);
+    }
+
+    #[test]
+    fn snapshot_new_carries_kind() {
+        let scope = ScopeTemplate::new("S".into(), vec![]);
+        let snap = Snapshot::new(
+            "Test".into(),
+            scope,
+            SnapshotData::new(),
+            SnapshotKind::ApplyOnRecall,
+        );
+        assert_eq!(snap.kind, SnapshotKind::ApplyOnRecall);
+    }
+
+    #[test]
+    fn v7_snapshot_loads_as_apply_on_save() {
+        // v7 JSON had no `kind` field. Loading it must default to ApplyOnSave
+        // so existing show files keep their captured-data semantics intact.
+        let json = r#"{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Old Snap",
+            "scope": {"id": "00000000-0000-0000-0000-000000000002", "name": "S", "channel_scopes": []},
+            "data": {"values": []},
+            "created_at": "2025-01-01T00:00:00Z",
+            "modified_at": "2025-01-01T00:00:00Z"
+        }"#;
+        let loaded: Snapshot = serde_json::from_str(json).unwrap();
+        assert_eq!(loaded.kind, SnapshotKind::ApplyOnSave);
+    }
+
+    #[test]
+    fn snapshot_kind_round_trips_through_serde() {
+        let scope = ScopeTemplate::new("S".into(), vec![]);
+        let snap = Snapshot::new(
+            "Round trip".into(),
+            scope,
+            SnapshotData::new(),
+            SnapshotKind::ApplyOnRecall,
+        );
+        let json = serde_json::to_string(&snap).unwrap();
+        let loaded: Snapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.kind, SnapshotKind::ApplyOnRecall);
     }
 
     #[test]

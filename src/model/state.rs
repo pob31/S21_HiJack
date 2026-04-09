@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use super::channel::ChannelId;
 use super::config::ConsoleConfig;
 use super::parameter::{ParameterAddress, ParameterPath, ParameterSection, ParameterValue};
-use super::snapshot::{ScopeTemplate, SnapshotData};
+use super::snapshot::{ScopeTemplate, SnapshotData, SnapshotKind};
 
 /// GP OSC link health, derived from inbound traffic and ping/pong activity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,11 +68,23 @@ impl ConsoleState {
         self.parameters.len()
     }
 
-    /// Capture parameters within scope from the live state mirror (PRD §5.2).
-    pub fn capture(&self, scope: &ScopeTemplate) -> SnapshotData {
+    /// Capture parameters from the live state mirror (PRD §5.2).
+    ///
+    /// Behaviour depends on `kind`:
+    /// - `SnapshotKind::ApplyOnSave` (default): only in-scope parameters are
+    ///   captured. The stored data IS the scope.
+    /// - `SnapshotKind::ApplyOnRecall`: every live parameter is captured; the
+    ///   scope is stored alongside but only consulted at recall time. This
+    ///   is the mode that lets the operator "Recall without scope" later to
+    ///   restore the entire saved state in one shot.
+    pub fn capture(&self, scope: &ScopeTemplate, kind: SnapshotKind) -> SnapshotData {
         let mut data = SnapshotData::new();
         for (addr, value) in &self.parameters {
-            if scope.contains(addr) {
+            let include = match kind {
+                SnapshotKind::ApplyOnSave => scope.contains(addr),
+                SnapshotKind::ApplyOnRecall => true,
+            };
+            if include {
                 data.values.insert(addr.clone(), value.clone());
             }
         }
@@ -162,7 +174,7 @@ mod tests {
     use std::collections::HashSet;
     use crate::model::channel::ChannelId;
     use crate::model::parameter::{ParameterPath, ParameterSection};
-    use crate::model::snapshot::{ChannelScope, ScopeTemplate};
+    use crate::model::snapshot::{ChannelScope, ScopeTemplate, SnapshotKind};
 
     #[test]
     fn update_and_get() {
@@ -256,7 +268,7 @@ mod tests {
             )],
         );
 
-        let captured = state.capture(&scope);
+        let captured = state.capture(&scope, SnapshotKind::ApplyOnSave);
 
         // Should capture fader and mute for Input 1, but not EQ or Input 2
         assert_eq!(captured.parameter_count(), 2);
@@ -276,6 +288,77 @@ mod tests {
         // Input 2 not in scope
         assert!(!captured.values.contains_key(&ParameterAddress {
             channel: ChannelId::Input(2),
+            parameter: ParameterPath::Fader,
+        }));
+    }
+
+    #[test]
+    fn capture_apply_on_recall_includes_out_of_scope_params() {
+        // Same fixture as capture_within_scope, but with ApplyOnRecall — every
+        // live parameter should be captured regardless of scope.
+        let mut state = ConsoleState::new(ConsoleConfig::default());
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
+            ParameterValue::Float(-10.0),
+        );
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqEnabled },
+            ParameterValue::Bool(true),
+        );
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(2), parameter: ParameterPath::Fader },
+            ParameterValue::Float(-5.0),
+        );
+
+        // Narrow scope: only FaderMutePan for Input 1.
+        let scope = ScopeTemplate::new(
+            "Test".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+
+        let captured = state.capture(&scope, SnapshotKind::ApplyOnRecall);
+
+        // ApplyOnRecall captures everything — all 3 live params should be present.
+        assert_eq!(captured.parameter_count(), 3);
+        assert!(captured.values.contains_key(&ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::EqEnabled,
+        }));
+        assert!(captured.values.contains_key(&ParameterAddress {
+            channel: ChannelId::Input(2),
+            parameter: ParameterPath::Fader,
+        }));
+    }
+
+    #[test]
+    fn capture_apply_on_save_filters_by_scope() {
+        // Same as capture_within_scope but spelled out as the explicit
+        // ApplyOnSave behaviour, for symmetry with the ApplyOnRecall test.
+        let mut state = ConsoleState::new(ConsoleConfig::default());
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
+            ParameterValue::Float(-10.0),
+        );
+        state.update(
+            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqEnabled },
+            ParameterValue::Bool(true),
+        );
+
+        let scope = ScopeTemplate::new(
+            "Test".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+
+        let captured = state.capture(&scope, SnapshotKind::ApplyOnSave);
+        assert_eq!(captured.parameter_count(), 1);
+        assert!(captured.values.contains_key(&ParameterAddress {
+            channel: ChannelId::Input(1),
             parameter: ParameterPath::Fader,
         }));
     }

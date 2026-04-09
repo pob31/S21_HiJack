@@ -919,7 +919,7 @@ fn start_connection(
                                             if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                                                 drop(mgr);
                                                 let pmgr = trigger_eq_mgr.read().await;
-                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
+                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
                                                 info!(sent = result.parameters_sent, "Trigger GO recall complete");
                                             }
                                         }
@@ -931,7 +931,7 @@ fn start_connection(
                                             if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                                                 drop(mgr);
                                                 let pmgr = trigger_eq_mgr.read().await;
-                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
+                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
                                                 info!(sent = result.parameters_sent, "Trigger PREV recall complete");
                                             }
                                         }
@@ -943,7 +943,7 @@ fn start_connection(
                                             if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                                                 drop(mgr);
                                                 let pmgr = trigger_eq_mgr.read().await;
-                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes).await;
+                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
                                                 info!(number, sent = result.parameters_sent, "Trigger FIRE recall complete");
                                             }
                                         }
