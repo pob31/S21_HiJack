@@ -139,23 +139,25 @@ impl ParameterPath {
             ParameterPath::HighpassFrequency => Some("eq/highpass/frequency".into()),
             ParameterPath::LowpassEnabled => Some("eq/lowpass/enabled".into()),
             ParameterPath::LowpassFrequency => Some("eq/lowpass/frequency".into()),
-            ParameterPath::EqBandFrequency(b) => Some(format!("eq/{b}/frequency")),
-            ParameterPath::EqBandGain(b) => Some(format!("eq/{b}/gain")),
-            ParameterPath::EqBandQ(b) => Some(format!("eq/{b}/q")),
-            ParameterPath::EqBandDynEnabled(b) => Some(format!("eq/{b}/dyn/enabled")),
-            ParameterPath::EqBandDynThreshold(b) => Some(format!("eq/{b}/dyn/threshold")),
-            ParameterPath::EqBandDynRatio(b) => Some(format!("eq/{b}/dyn/ratio")),
-            ParameterPath::EqBandDynAttack(b) => Some(format!("eq/{b}/dyn/attack")),
-            ParameterPath::EqBandDynRelease(b) => Some(format!("eq/{b}/dyn/release")),
+            // EQ bands: internal model is 1-based, wire format is 0-based.
+            ParameterPath::EqBandFrequency(b) => Some(format!("eq/{}/frequency", b - 1)),
+            ParameterPath::EqBandGain(b) => Some(format!("eq/{}/gain", b - 1)),
+            ParameterPath::EqBandQ(b) => Some(format!("eq/{}/q", b - 1)),
+            ParameterPath::EqBandDynEnabled(b) => Some(format!("eq/{}/dyn/enabled", b - 1)),
+            ParameterPath::EqBandDynThreshold(b) => Some(format!("eq/{}/dyn/threshold", b - 1)),
+            ParameterPath::EqBandDynRatio(b) => Some(format!("eq/{}/dyn/ratio", b - 1)),
+            ParameterPath::EqBandDynAttack(b) => Some(format!("eq/{}/dyn/attack", b - 1)),
+            ParameterPath::EqBandDynRelease(b) => Some(format!("eq/{}/dyn/release", b - 1)),
             ParameterPath::Dyn1Enabled => Some("dyn1/enabled".into()),
             ParameterPath::Dyn1Mode => Some("dyn1/mode".into()),
-            ParameterPath::Dyn1Threshold(b) => Some(format!("dyn1/{b}/threshold")),
-            ParameterPath::Dyn1Knee(b) => Some(format!("dyn1/{b}/knee")),
-            ParameterPath::Dyn1Ratio(b) => Some(format!("dyn1/{b}/ratio")),
-            ParameterPath::Dyn1Attack(b) => Some(format!("dyn1/{b}/attack")),
-            ParameterPath::Dyn1Release(b) => Some(format!("dyn1/{b}/release")),
-            ParameterPath::Dyn1Gain(b) => Some(format!("dyn1/{b}/gain")),
-            ParameterPath::Dyn1Listen(b) => Some(format!("dyn1/{b}/listen")),
+            // Dyn1 (multiband compressor) bands: internal 1-based, wire 0-based.
+            ParameterPath::Dyn1Threshold(b) => Some(format!("dyn1/{}/threshold", b - 1)),
+            ParameterPath::Dyn1Knee(b) => Some(format!("dyn1/{}/knee", b - 1)),
+            ParameterPath::Dyn1Ratio(b) => Some(format!("dyn1/{}/ratio", b - 1)),
+            ParameterPath::Dyn1Attack(b) => Some(format!("dyn1/{}/attack", b - 1)),
+            ParameterPath::Dyn1Release(b) => Some(format!("dyn1/{}/release", b - 1)),
+            ParameterPath::Dyn1Gain(b) => Some(format!("dyn1/{}/gain", b - 1)),
+            ParameterPath::Dyn1Listen(b) => Some(format!("dyn1/{}/listen", b - 1)),
             ParameterPath::Dyn1CrossoverHigh => Some("dyn1/crossover_high".into()),
             ParameterPath::Dyn1CrossoverLow => Some("dyn1/crossover_low".into()),
             ParameterPath::Dyn2Enabled => Some("dyn2/enabled".into()),
@@ -431,10 +433,11 @@ impl ParameterPath {
         let parts: Vec<&str> = suffix.splitn(4, '/').collect();
 
         match parts.as_slice() {
-            // EQ band parameters: eq/{band}/{param}
+            // EQ band parameters: eq/{wire_band}/{param} — wire is 0-based, internal is 1-based.
             ["eq", band, param] => {
-                let b: u8 = band.parse().ok()?;
-                if !(1..=4).contains(&b) {
+                let wire: u8 = band.parse().ok()?;
+                let b = wire.checked_add(1)?;
+                if !Self::EQ_BAND_RANGE.contains(&b) {
                     return None;
                 }
                 match *param {
@@ -444,10 +447,11 @@ impl ParameterPath {
                     _ => None,
                 }
             }
-            // EQ band dynamic: eq/{band}/dyn/{param}
+            // EQ band dynamic: eq/{wire_band}/dyn/{param} — wire is 0-based.
             ["eq", band, "dyn", param] => {
-                let b: u8 = band.parse().ok()?;
-                if !(1..=4).contains(&b) {
+                let wire: u8 = band.parse().ok()?;
+                let b = wire.checked_add(1)?;
+                if !Self::EQ_BAND_RANGE.contains(&b) {
                     return None;
                 }
                 match *param {
@@ -459,10 +463,11 @@ impl ParameterPath {
                     _ => None,
                 }
             }
-            // Dyn1 band parameters: dyn1/{band}/{param}
+            // Dyn1 band parameters: dyn1/{wire_band}/{param} — wire is 0-based.
             ["dyn1", band, param] => {
-                let b: u8 = band.parse().ok()?;
-                if !(1..=3).contains(&b) {
+                let wire: u8 = band.parse().ok()?;
+                let b = wire.checked_add(1)?;
+                if !Self::DYN1_BAND_RANGE.contains(&b) {
                     return None;
                 }
                 match *param {
@@ -492,9 +497,12 @@ impl ParameterPath {
 
     // ─── Phase 0: per-path scope granularity ────────────────────────────
 
-    /// EQ band index range (1..=4).
+    /// EQ band index range (1..=4). Internal model is 1-based; the GP OSC wire
+    /// uses 0..=3 — encode/parse handle the shift. Names: 1=Low, 2=Lo Mid,
+    /// 3=Hi Mid, 4=High (see `eq_band_name`).
     pub const EQ_BAND_RANGE: std::ops::RangeInclusive<u8> = 1..=4;
     /// Dyn1 band index range (1..=3 for the multiband compressor).
+    /// Names: 1=Low, 2=Mid, 3=High (see `dyn1_band_name`).
     pub const DYN1_BAND_RANGE: std::ops::RangeInclusive<u8> = 1..=3;
     /// Graphic EQ band index range (1..=32).
     pub const GEQ_BAND_RANGE: std::ops::RangeInclusive<u8> = 1..=32;
@@ -509,6 +517,9 @@ impl ParameterPath {
     ///   - iPad `Channel_Input/analog_gain` (line 194) = the actual analog mic
     ///     preamp, only reachable via the iPad protocol.
     /// The label below reflects the GP OSC meaning.
+    /// Band parameters use human-readable band names (Low/Lo Mid/Hi Mid/High
+    /// for EQ; Low/Mid/High for the multiband compressor) — see
+    /// [`eq_band_name`] and [`dyn1_band_name`] below.
     pub fn label(&self) -> String {
         match self {
             ParameterPath::Name => "Name".into(),
@@ -535,26 +546,26 @@ impl ParameterPath {
             ParameterPath::HighpassFrequency => "HPF Frequency".into(),
             ParameterPath::LowpassEnabled => "LPF On/Off".into(),
             ParameterPath::LowpassFrequency => "LPF Frequency".into(),
-            ParameterPath::EqBandFrequency(b) => format!("EQ Band {b} Frequency"),
-            ParameterPath::EqBandGain(b) => format!("EQ Band {b} Gain"),
-            ParameterPath::EqBandQ(b) => format!("EQ Band {b} Q"),
-            ParameterPath::EqBandCurve(b) => format!("EQ Band {b} Curve"),
-            ParameterPath::EqBandDynEnabled(b) => format!("Dyn EQ Band {b} On/Off"),
-            ParameterPath::EqBandDynThreshold(b) => format!("Dyn EQ Band {b} Threshold"),
-            ParameterPath::EqBandDynRatio(b) => format!("Dyn EQ Band {b} Ratio"),
-            ParameterPath::EqBandDynAttack(b) => format!("Dyn EQ Band {b} Attack"),
-            ParameterPath::EqBandDynRelease(b) => format!("Dyn EQ Band {b} Release"),
-            ParameterPath::EqBandDynOverUnder(b) => format!("Dyn EQ Band {b} Over/Under"),
+            ParameterPath::EqBandFrequency(b) => format!("EQ {} Frequency", eq_band_name(*b)),
+            ParameterPath::EqBandGain(b) => format!("EQ {} Gain", eq_band_name(*b)),
+            ParameterPath::EqBandQ(b) => format!("EQ {} Q", eq_band_name(*b)),
+            ParameterPath::EqBandCurve(b) => format!("EQ {} Curve", eq_band_name(*b)),
+            ParameterPath::EqBandDynEnabled(b) => format!("Dyn EQ {} On/Off", eq_band_name(*b)),
+            ParameterPath::EqBandDynThreshold(b) => format!("Dyn EQ {} Threshold", eq_band_name(*b)),
+            ParameterPath::EqBandDynRatio(b) => format!("Dyn EQ {} Ratio", eq_band_name(*b)),
+            ParameterPath::EqBandDynAttack(b) => format!("Dyn EQ {} Attack", eq_band_name(*b)),
+            ParameterPath::EqBandDynRelease(b) => format!("Dyn EQ {} Release", eq_band_name(*b)),
+            ParameterPath::EqBandDynOverUnder(b) => format!("Dyn EQ {} Over/Under", eq_band_name(*b)),
             ParameterPath::Dyn1Enabled => "Compressor On/Off".into(),
             ParameterPath::Dyn1Mode => "Compressor Mode".into(),
             ParameterPath::Dyn1MultibandDeesser => "Multiband De-esser".into(),
-            ParameterPath::Dyn1Threshold(b) => format!("Comp Band {b} Threshold"),
-            ParameterPath::Dyn1Knee(b) => format!("Comp Band {b} Knee"),
-            ParameterPath::Dyn1Ratio(b) => format!("Comp Band {b} Ratio"),
-            ParameterPath::Dyn1Attack(b) => format!("Comp Band {b} Attack"),
-            ParameterPath::Dyn1Release(b) => format!("Comp Band {b} Release"),
-            ParameterPath::Dyn1Gain(b) => format!("Comp Band {b} Gain"),
-            ParameterPath::Dyn1Listen(b) => format!("Comp Band {b} Listen"),
+            ParameterPath::Dyn1Threshold(b) => format!("Comp {} Threshold", dyn1_band_name(*b)),
+            ParameterPath::Dyn1Knee(b) => format!("Comp {} Knee", dyn1_band_name(*b)),
+            ParameterPath::Dyn1Ratio(b) => format!("Comp {} Ratio", dyn1_band_name(*b)),
+            ParameterPath::Dyn1Attack(b) => format!("Comp {} Attack", dyn1_band_name(*b)),
+            ParameterPath::Dyn1Release(b) => format!("Comp {} Release", dyn1_band_name(*b)),
+            ParameterPath::Dyn1Gain(b) => format!("Comp {} Gain", dyn1_band_name(*b)),
+            ParameterPath::Dyn1Listen(b) => format!("Comp {} Listen", dyn1_band_name(*b)),
             ParameterPath::Dyn1CrossoverHigh => "Comp Crossover High".into(),
             ParameterPath::Dyn1CrossoverLow => "Comp Crossover Low".into(),
             ParameterPath::Dyn2Enabled => "Gate On/Off".into(),
@@ -1084,6 +1095,72 @@ impl ParameterPath {
             // Everything else is discrete
             _ => false,
         }
+    }
+}
+
+// ── Protocol-coverage table (for the setup-tab help card) ────────────
+
+/// One row of the protocol-coverage matrix shown in the setup-tab help card.
+/// `gp` = reachable via GP OSC, `ipad` = reachable via the iPad protocol.
+/// Items where both are false (e.g. dynamic-EQ over/under) are surfaced so
+/// the operator knows the parameter exists but is console-surface only.
+pub struct ProtocolCoverageRow {
+    pub label: &'static str,
+    pub gp: bool,
+    pub ipad: bool,
+}
+
+/// Operator-facing protocol-coverage matrix. Hand-curated to match the
+/// `to_gp_osc_suffix` / `to_ipad_suffix` mappings on `ParameterPath`.
+/// Keep this in sync when adding/removing parameters from those mappings.
+pub const PROTOCOL_COVERAGE: &[ProtocolCoverageRow] = &[
+    ProtocolCoverageRow { label: "Fader / Mute / Solo / Pan",      gp: true,  ipad: true  },
+    ProtocolCoverageRow { label: "Channel name",                   gp: true,  ipad: true  },
+    ProtocolCoverageRow { label: "Total gain (post-fader sum)",    gp: true,  ipad: false },
+    ProtocolCoverageRow { label: "Analog preamp gain",             gp: false, ipad: true  },
+    ProtocolCoverageRow { label: "+48V phantom power",             gp: false, ipad: true  },
+    ProtocolCoverageRow { label: "Polarity, trim, delay",          gp: true,  ipad: true  },
+    ProtocolCoverageRow { label: "Stereo balance / width",         gp: true,  ipad: false },
+    ProtocolCoverageRow { label: "DiGiTube",                       gp: true,  ipad: false },
+    ProtocolCoverageRow { label: "EQ band freq / gain / Q",        gp: true,  ipad: true  },
+    ProtocolCoverageRow { label: "EQ band curve",                  gp: false, ipad: true  },
+    ProtocolCoverageRow { label: "Dynamic EQ band threshold/ratio/attack/release", gp: true, ipad: true },
+    ProtocolCoverageRow { label: "Dynamic EQ over/under mode",     gp: false, ipad: false },
+    ProtocolCoverageRow { label: "Compressor (single-band + multiband)", gp: true, ipad: true },
+    ProtocolCoverageRow { label: "Multiband de-esser",             gp: false, ipad: true  },
+    ProtocolCoverageRow { label: "Gate / ducker",                  gp: true,  ipad: true  },
+    ProtocolCoverageRow { label: "Gate key solo",                  gp: false, ipad: true  },
+    ProtocolCoverageRow { label: "Inserts A / B",                  gp: false, ipad: true  },
+    ProtocolCoverageRow { label: "Aux sends",                      gp: true,  ipad: true  },
+    ProtocolCoverageRow { label: "Group send routing",             gp: false, ipad: true  },
+    ProtocolCoverageRow { label: "Matrix send levels / on",        gp: false, ipad: true  },
+    ProtocolCoverageRow { label: "Graphic EQ band gains",          gp: false, ipad: true  },
+    ProtocolCoverageRow { label: "Control group level / mute",     gp: false, ipad: true  },
+];
+
+// ── Band naming helpers ──────────────────────────────────────────────
+
+/// Human-readable name for an EQ band (1-based internal index).
+/// 1=Low, 2=Lo Mid, 3=Hi Mid, 4=High. Falls back to the numeric form
+/// for any out-of-range index so logging/tests stay informative.
+pub fn eq_band_name(b: u8) -> String {
+    match b {
+        1 => "Low".into(),
+        2 => "Lo Mid".into(),
+        3 => "Hi Mid".into(),
+        4 => "High".into(),
+        _ => format!("Band {b}"),
+    }
+}
+
+/// Human-readable name for a multiband-compressor band (1-based internal index).
+/// 1=Low, 2=Mid, 3=High.
+pub fn dyn1_band_name(b: u8) -> String {
+    match b {
+        1 => "Low".into(),
+        2 => "Mid".into(),
+        3 => "High".into(),
+        _ => format!("Band {b}"),
     }
 }
 

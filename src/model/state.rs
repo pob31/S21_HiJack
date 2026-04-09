@@ -6,6 +6,25 @@ use super::config::ConsoleConfig;
 use super::parameter::{ParameterAddress, ParameterPath, ParameterSection, ParameterValue};
 use super::snapshot::{ScopeTemplate, SnapshotData};
 
+/// GP OSC link health, derived from inbound traffic and ping/pong activity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionHealth {
+    /// Recent inbound traffic — link is healthy.
+    Connected,
+    /// No traffic for a while; ping(s) sent but not yet missed.
+    Idle,
+    /// At least one ping went unanswered; link is suspect.
+    Stale,
+    /// Recovery resend was issued and pings still unanswered. Link is presumed lost.
+    Lost,
+}
+
+impl Default for ConnectionHealth {
+    fn default() -> Self {
+        ConnectionHealth::Connected
+    }
+}
+
 /// Live mirror of the full console state.
 pub struct ConsoleState {
     pub config: ConsoleConfig,
@@ -13,6 +32,8 @@ pub struct ConsoleState {
     parameters: HashMap<ParameterAddress, ParameterValue>,
     /// Timestamp of last update per parameter.
     last_updated: HashMap<ParameterAddress, DateTime<Utc>>,
+    /// GP OSC connection health, updated by the state-mirror loop.
+    pub health: ConnectionHealth,
 }
 
 impl ConsoleState {
@@ -21,6 +42,7 @@ impl ConsoleState {
             config,
             parameters: HashMap::new(),
             last_updated: HashMap::new(),
+            health: ConnectionHealth::Connected,
         }
     }
 

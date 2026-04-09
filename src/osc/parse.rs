@@ -12,10 +12,21 @@ pub enum ParsedOscMessage {
     Ping,
     /// Console pong (keepalive response).
     Pong,
-    /// Discovery response: channel count for a specific type.
+    /// Discovery response: channel count for a specific type (per-type sub-path form).
     DiscoveryCount {
         channel_type: String,
         count: u8,
+    },
+    /// Discovery response: positional channel counts reply.
+    /// `/console/channel/counts <inputs> <aux> <groups> <control_groups> <matrices> <master>`
+    /// This is the canonical GP OSC reply form on the real S21+.
+    ChannelCounts {
+        inputs: u8,
+        aux: u8,
+        groups: u8,
+        control_groups: u8,
+        matrices: u8,
+        master: u8,
     },
     /// Unrecognized message.
     Unknown(String),
@@ -30,7 +41,30 @@ pub fn parse_gp_osc(path: &str, args: &[OscType]) -> ParsedOscMessage {
         _ => {}
     }
 
-    // Discovery responses: /console/channel/counts/{type} INT
+    // Positional channel counts (canonical GP OSC reply form):
+    // /console/channel/counts <inputs> <aux> <groups> <control_groups> <matrices> <master>
+    if path == "/console/channel/counts" && args.len() >= 6 {
+        if let (Some(inputs), Some(aux), Some(groups), Some(cgs), Some(matrices), Some(master)) = (
+            extract_u8(&args[0]),
+            extract_u8(&args[1]),
+            extract_u8(&args[2]),
+            extract_u8(&args[3]),
+            extract_u8(&args[4]),
+            extract_u8(&args[5]),
+        ) {
+            return ParsedOscMessage::ChannelCounts {
+                inputs,
+                aux,
+                groups,
+                control_groups: cgs,
+                matrices,
+                master,
+            };
+        }
+    }
+
+    // Per-type discovery responses (kept for back-compat with mock/iPad sources):
+    // /console/channel/counts/{type} INT
     if let Some(type_name) = path.strip_prefix("/console/channel/counts/") {
         if let Some(count) = args.first().and_then(extract_u8) {
             return ParsedOscMessage::DiscoveryCount {
@@ -145,6 +179,7 @@ fn extract_bool(arg: &OscType) -> Option<ParameterValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::parameter::ParameterAddress;
 
     #[test]
     fn parse_fader() {
@@ -174,14 +209,57 @@ mod tests {
 
     #[test]
     fn parse_eq_band() {
+        // GP OSC wire band index is 0-based: wire `2` = the third band (internal band 3).
         let result = parse_gp_osc("/channel/1/eq/2/frequency", &[OscType::Float(1000.0)]);
         match result {
             ParsedOscMessage::ParameterUpdate(addr, val) => {
                 assert_eq!(addr.channel, ChannelId::Input(1));
-                assert_eq!(addr.parameter, ParameterPath::EqBandFrequency(2));
+                assert_eq!(addr.parameter, ParameterPath::EqBandFrequency(3));
                 assert_eq!(val, ParameterValue::Float(1000.0));
             }
             _ => panic!("Expected ParameterUpdate"),
+        }
+    }
+
+    #[test]
+    fn gp_osc_eq_band_round_trip() {
+        // Round-trip every band through encode → parse to lock the 0-based wire convention.
+        use crate::osc::encode::encode_parameter;
+        for b in 1u8..=4 {
+            let addr = ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::EqBandGain(b),
+            };
+            let (path, args) = encode_parameter(&addr, &ParameterValue::Float(0.0))
+                .expect("encode EQ band");
+            // Wire path uses (b-1)
+            assert_eq!(path, format!("/channel/1/eq/{}/gain", b - 1));
+            match parse_gp_osc(&path, &args) {
+                ParsedOscMessage::ParameterUpdate(parsed_addr, _) => {
+                    assert_eq!(parsed_addr, addr);
+                }
+                _ => panic!("round-trip failed for band {b}"),
+            }
+        }
+    }
+
+    #[test]
+    fn gp_osc_dyn1_band_round_trip() {
+        use crate::osc::encode::encode_parameter;
+        for b in 1u8..=3 {
+            let addr = ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Dyn1Threshold(b),
+            };
+            let (path, args) = encode_parameter(&addr, &ParameterValue::Float(-20.0))
+                .expect("encode Dyn1 band");
+            assert_eq!(path, format!("/channel/1/dyn1/{}/threshold", b - 1));
+            match parse_gp_osc(&path, &args) {
+                ParsedOscMessage::ParameterUpdate(parsed_addr, _) => {
+                    assert_eq!(parsed_addr, addr);
+                }
+                _ => panic!("round-trip failed for dyn1 band {b}"),
+            }
         }
     }
 
@@ -195,6 +273,39 @@ mod tests {
                 assert_eq!(val, ParameterValue::Float(-5.0));
             }
             _ => panic!("Expected ParameterUpdate"),
+        }
+    }
+
+    #[test]
+    fn parse_channel_counts_positional() {
+        let result = parse_gp_osc(
+            "/console/channel/counts",
+            &[
+                OscType::Int(60),
+                OscType::Int(10),
+                OscType::Int(14),
+                OscType::Int(10),
+                OscType::Int(8),
+                OscType::Int(1),
+            ],
+        );
+        match result {
+            ParsedOscMessage::ChannelCounts {
+                inputs,
+                aux,
+                groups,
+                control_groups,
+                matrices,
+                master,
+            } => {
+                assert_eq!(inputs, 60);
+                assert_eq!(aux, 10);
+                assert_eq!(groups, 14);
+                assert_eq!(control_groups, 10);
+                assert_eq!(matrices, 8);
+                assert_eq!(master, 1);
+            }
+            other => panic!("Expected ChannelCounts, got {other:?}"),
         }
     }
 

@@ -20,6 +20,7 @@ use crate::console::monitor_manager::MonitorManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::config::ChannelOption;
 use crate::model::operating_mode::OperatingMode;
+use crate::model::parameter::PROTOCOL_COVERAGE;
 use crate::model::osc_log::OscLog;
 use crate::model::snapshot::CueList;
 use crate::model::state::ConsoleState;
@@ -231,6 +232,46 @@ pub fn draw_setup_tab(
                     }
                 }
             });
+
+            // Protocol-coverage help card — shows what the currently-selected
+            // mode actually reaches and which parameters are unavailable.
+            ui.add_space(2.0);
+            egui::CollapsingHeader::new("Parameter coverage for this mode")
+                .id_salt("protocol_coverage_help")
+                .default_open(false)
+                .show(ui, |ui| {
+                    let uses_ipad = setup.operating_mode.uses_ipad_protocol();
+                    ui.label(
+                        egui::RichText::new(if uses_ipad {
+                            "Mode uses GP OSC + iPad protocol — almost everything is reachable."
+                        } else {
+                            "Mode 1 is GP OSC only — several parameters require switching to Mode 2 or 3."
+                        })
+                        .color(theme::TEXT_SECONDARY),
+                    );
+                    ui.add_space(4.0);
+                    egui::Grid::new("protocol_coverage_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 2.0])
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("Parameter").strong());
+                            ui.label(egui::RichText::new("Available?").strong());
+                            ui.end_row();
+                            for row in PROTOCOL_COVERAGE {
+                                let available = row.gp || (uses_ipad && row.ipad);
+                                let (mark, color) = if available {
+                                    ("yes", theme::TEXT_PRIMARY)
+                                } else if row.gp || row.ipad {
+                                    ("needs Mode 2/3", theme::TEXT_SECONDARY)
+                                } else {
+                                    ("console surface only", theme::TEXT_SECONDARY)
+                                };
+                                ui.label(row.label);
+                                ui.label(egui::RichText::new(mark).color(color));
+                                ui.end_row();
+                            }
+                        });
+                });
 
             // Monitor port
             ui.add_space(4.0);

@@ -4,13 +4,22 @@ use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
 
 /// GP OSC commands that can be sent to the console.
 ///
-/// Note: Discovery (`/console/channel/counts`), state dump (`/console/resend`),
-/// and keepalive (`/console/ping`/`pong`) are NOT part of GP OSC — they belong
-/// to the iPad protocol.
+/// Connection-lifecycle commands confirmed working on the real S21+ (2026-04-09):
+///   - `/console/resend` — full parameter dump
+///   - `/console/channel/counts` (no args) → positional reply
+///   - `/console/ping` → `/console/pong` connection check
 pub enum SystemCommand {
     SnapshotFire(i32),
     SnapshotNext,
     SnapshotPrevious,
+    /// Request a full parameter dump from the console.
+    Resend,
+    /// Query channel counts (positional reply).
+    ChannelCountsQuery,
+    /// Connection-check ping. Console replies with `/console/pong`.
+    Ping,
+    /// Pong reply (used if the console ever sends us a ping).
+    Pong,
 }
 
 impl SystemCommand {
@@ -20,6 +29,10 @@ impl SystemCommand {
             SystemCommand::SnapshotFire(_) => "/digico/snapshots/fire",
             SystemCommand::SnapshotNext => "/digico/snapshots/fire/next",
             SystemCommand::SnapshotPrevious => "/digico/snapshots/fire/previous",
+            SystemCommand::Resend => "/console/resend",
+            SystemCommand::ChannelCountsQuery => "/console/channel/counts",
+            SystemCommand::Ping => "/console/ping",
+            SystemCommand::Pong => "/console/pong",
         }
     }
 
@@ -30,6 +43,15 @@ impl SystemCommand {
             _ => vec![],
         }
     }
+}
+
+/// Encode a parameter-query: a GP OSC path with no value triggers the console
+/// to reply with the current value of that single parameter.
+/// Returns None for iPad-only parameters.
+pub fn encode_parameter_query(addr: &ParameterAddress) -> Option<(String, Vec<OscType>)> {
+    let ch_num = addr.channel.to_gp_osc_number()?;
+    let suffix = addr.parameter.to_gp_osc_suffix()?;
+    Some((format!("/channel/{ch_num}/{suffix}"), Vec::new()))
 }
 
 /// Encode a parameter address and value into a GP OSC path and args.

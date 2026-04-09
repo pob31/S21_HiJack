@@ -2,6 +2,29 @@ use rosc::OscType;
 
 use crate::model::config::{ChannelMode, ConsoleConfig};
 
+/// Apply a positional `/console/channel/counts` reply to the config in one shot.
+///
+/// Wire form (operator-confirmed on real S21+, 2026-04-09):
+/// `/console/channel/counts <inputs> <aux> <groups> <control_groups> <matrices> <master>`
+///
+/// Note: the `master` slot is acknowledged but not stored — the console always has
+/// exactly one master and the config has no field for it.
+pub fn apply_channel_counts(
+    config: &mut ConsoleConfig,
+    inputs: u8,
+    aux: u8,
+    groups: u8,
+    control_groups: u8,
+    matrices: u8,
+    _master: u8,
+) {
+    config.input_channel_count = inputs;
+    config.aux_output_count = aux;
+    config.group_output_count = groups;
+    config.control_group_count = control_groups;
+    config.matrix_output_count = matrices;
+}
+
 /// Map a channel type name (from /console/channel/counts/{type}) to a config update.
 /// Returns true if the type was recognized and applied.
 pub fn apply_channel_count(config: &mut ConsoleConfig, channel_type: &str, count: u8) -> bool {
