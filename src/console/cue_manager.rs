@@ -117,6 +117,22 @@ impl CueManager {
         self.snapshots.get(id)
     }
 
+    /// Phase E: resolve a snapshot identifier to a snapshot reference.
+    /// Tries UUID parsing first; if the string doesn't parse as a UUID (or
+    /// the UUID isn't found), falls back to a case-insensitive name match.
+    /// Used by the `/snapshot/recall` trigger listener so QLab cues can
+    /// reference snapshots by either their stable id or their human name.
+    pub fn resolve_snapshot(&self, identifier: &str) -> Option<&Snapshot> {
+        if let Ok(uuid) = Uuid::parse_str(identifier) {
+            if let Some(s) = self.snapshots.get(&uuid) {
+                return Some(s);
+            }
+        }
+        self.snapshots
+            .values()
+            .find(|s| s.name.eq_ignore_ascii_case(identifier))
+    }
+
     /// Add a snapshot.
     pub fn add_snapshot(&mut self, snapshot: Snapshot) {
         info!(name = %snapshot.name, id = %snapshot.id, "Added snapshot");
@@ -308,5 +324,69 @@ mod tests {
     fn update_cue_nonexistent_returns_false() {
         let mut mgr = CueManager::new(CueList::default());
         assert!(!mgr.update_cue(Uuid::new_v4(), 1.0, None, String::new()));
+    }
+
+    // ─── Phase E: resolve_snapshot ──────────────────────────────────
+
+    fn make_snapshot(name: &str) -> Snapshot {
+        use crate::model::snapshot::{ScopeTemplate, SnapshotData, SnapshotKind};
+        Snapshot::new(
+            name.into(),
+            ScopeTemplate::new("S".into(), vec![]),
+            SnapshotData::new(),
+            SnapshotKind::ApplyOnSave,
+        )
+    }
+
+    #[test]
+    fn resolve_snapshot_by_uuid_first() {
+        let mut mgr = CueManager::new(CueList::default());
+        let snap = make_snapshot("Verse 1");
+        let id = snap.id;
+        mgr.add_snapshot(snap);
+
+        let resolved = mgr.resolve_snapshot(&id.to_string());
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap().id, id);
+    }
+
+    #[test]
+    fn resolve_snapshot_by_name_case_insensitive() {
+        let mut mgr = CueManager::new(CueList::default());
+        mgr.add_snapshot(make_snapshot("Verse 1"));
+
+        // Exact match.
+        assert!(mgr.resolve_snapshot("Verse 1").is_some());
+        // Case-insensitive match.
+        assert!(mgr.resolve_snapshot("verse 1").is_some());
+        assert!(mgr.resolve_snapshot("VERSE 1").is_some());
+    }
+
+    #[test]
+    fn resolve_snapshot_returns_none_for_unknown_identifier() {
+        let mut mgr = CueManager::new(CueList::default());
+        mgr.add_snapshot(make_snapshot("Verse 1"));
+        assert!(mgr.resolve_snapshot("Chorus").is_none());
+        // Random UUID that doesn't exist.
+        assert!(mgr.resolve_snapshot(&Uuid::new_v4().to_string()).is_none());
+    }
+
+    #[test]
+    fn resolve_snapshot_uuid_takes_precedence_over_name() {
+        // If a snapshot's name happens to look like a UUID and ANOTHER
+        // snapshot's id matches that UUID, the UUID lookup should win.
+        let mut mgr = CueManager::new(CueList::default());
+        let target = make_snapshot("Real");
+        let target_id = target.id;
+        let mut decoy = make_snapshot(&target_id.to_string());
+        decoy.name = target_id.to_string();
+        mgr.add_snapshot(target);
+        mgr.add_snapshot(decoy);
+
+        // Looking up by the UUID string should hit the target by id, not
+        // the decoy by name.
+        let resolved = mgr.resolve_snapshot(&target_id.to_string()).unwrap();
+        assert_eq!(resolved.id, target_id);
+        assert_eq!(resolved.name, "Real");
     }
 }

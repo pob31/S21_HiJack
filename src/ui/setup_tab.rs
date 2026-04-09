@@ -976,6 +976,25 @@ fn start_connection(
                                             tracing::warn!(name, "MacroFire: macro not found");
                                         }
                                     }
+                                    TriggerEvent::SnapshotRecall { identifier, ignore_scope } => {
+                                        let mgr = trigger_cue_mgr.read().await;
+                                        if let Some(snapshot) = mgr.resolve_snapshot(&identifier).cloned() {
+                                            drop(mgr);
+                                            let pmgr = trigger_eq_mgr.read().await;
+                                            let scope = snapshot.scope.clone();
+                                            let result = trigger_engine
+                                                .recall(&snapshot, &scope, &pmgr.palettes, ignore_scope)
+                                                .await;
+                                            info!(
+                                                identifier,
+                                                ignore_scope,
+                                                sent = result.parameters_sent,
+                                                "Trigger SnapshotRecall complete"
+                                            );
+                                        } else {
+                                            tracing::warn!(identifier, "SnapshotRecall: snapshot not found");
+                                        }
+                                    }
                                 }
                             }
                             else => break,

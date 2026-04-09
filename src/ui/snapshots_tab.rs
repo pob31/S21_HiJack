@@ -11,6 +11,8 @@ use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::snapshot::{Cue, Snapshot, SnapshotKind};
 use crate::model::state::ConsoleState;
+use crate::osc::qlab_client::QLabClient;
+use crate::osc::qlab_cue_builder::{build_snapshot_cues, build_snapshot_load_cue};
 use super::eq_palettes_ui::{EqPalettesUiState, draw_eq_palettes_section};
 use super::scope_editor::ScopeEditorState;
 use super::theme;
@@ -81,6 +83,8 @@ pub fn draw_snapshots_tab(
     eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     snapshot_engine: &Option<Arc<SnapshotEngine>>,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
+    qlab_ip: &str,
+    qlab_port: u16,
     connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -672,6 +676,64 @@ pub fn draw_snapshots_tab(
                                 }
                             }
                         });
+
+                        // ── Phase D: QLab export buttons ──
+                        // Two flavours mirroring WFS-DIY's snapshot exports:
+                        //
+                        // - "Create Trigger Cue in QLab" — single network cue
+                        //   whose customString is /snapshot/recall <name>.
+                        //   Best for large snapshots: QLab fires one cue, the
+                        //   daemon does the heavy lifting via Phase E listener.
+                        //
+                        // - "Export to QLab" — one network cue per stored
+                        //   parameter, all in a group. QLab holds the data
+                        //   and fires each cue directly to the console. Best
+                        //   for small snapshots where the operator wants the
+                        //   cues visible inside QLab itself.
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            let has_selection = snap_state.selected_snapshot_id.is_some();
+                            let qlab_ip_owned = qlab_ip.to_string();
+                            let qlab_port_local = qlab_port;
+
+                            let trigger_btn = theme::action_button(
+                                "Create Trigger Cue in QLab",
+                                theme::ACCENT_BLUE,
+                                egui::Vec2::new(200.0, 28.0),
+                            );
+                            if ui.add_enabled(has_selection, trigger_btn).clicked() {
+                                qlab_create_trigger_cue(
+                                    snap_state,
+                                    cue_manager,
+                                    qlab_ip_owned.clone(),
+                                    qlab_port_local,
+                                    runtime,
+                                    ui_tx,
+                                );
+                            }
+
+                            let export_btn = theme::action_button(
+                                "Export to QLab",
+                                theme::ACCENT_BLUE,
+                                egui::Vec2::new(140.0, 28.0),
+                            );
+                            if ui.add_enabled(has_selection, export_btn).clicked() {
+                                qlab_export_full_snapshot(
+                                    snap_state,
+                                    cue_manager,
+                                    qlab_ip_owned,
+                                    qlab_port_local,
+                                    runtime,
+                                    ui_tx,
+                                );
+                            }
+
+                            ui.label(
+                                egui::RichText::new(format!("→ {qlab_ip}:{qlab_port}"))
+                                    .color(theme::TEXT_SECONDARY)
+                                    .small(),
+                            );
+                        });
                     });
 
                     // Status message
@@ -846,4 +908,113 @@ fn recall_selected_snapshot(
     } else {
         "Recalling...".into()
     });
+}
+
+/// Phase D: spawn a background task that builds the per-parameter QLab
+/// export (one network cue per stored parameter, all in a group) and fires
+/// it at the configured QLab address. Reports success/failure via
+/// `UiEvent::SnapshotCaptured` (used here as a generic status message
+/// channel — Phase D doesn't have a dedicated event variant).
+fn qlab_export_full_snapshot(
+    snap_state: &mut SnapshotsTabState,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    qlab_ip: String,
+    qlab_port: u16,
+    runtime: &tokio::runtime::Handle,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+) {
+    let Some(snap_id) = snap_state.selected_snapshot_id else { return };
+    let cue_mgr = cue_manager.clone();
+    let tx = ui_tx.clone();
+
+    runtime.spawn(async move {
+        // Pull the snapshot under the cue-manager lock.
+        let mgr = cue_mgr.read().await;
+        let Some(snapshot) = mgr.snapshots.get(&snap_id).cloned() else { return };
+        drop(mgr);
+
+        let sequence = build_snapshot_cues(&snapshot, /* qlab_patch */ 1);
+        let child_count = sequence.network_cues.len();
+
+        match QLabClient::new(&qlab_ip, qlab_port).await {
+            Ok(client) => match client.send_sequence(&sequence).await {
+                Ok(sent) => {
+                    let _ = tx.send(UiEvent::SnapshotCaptured {
+                        name: format!(
+                            "Exported '{}' to QLab: {child_count} cues, {sent} OSC messages",
+                            snapshot.name
+                        ),
+                        param_count: child_count,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(UiEvent::SnapshotCaptured {
+                        name: format!("QLab export failed: {e}"),
+                        param_count: 0,
+                    });
+                }
+            },
+            Err(e) => {
+                let _ = tx.send(UiEvent::SnapshotCaptured {
+                    name: format!("QLab connect failed: {e}"),
+                    param_count: 0,
+                });
+            }
+        }
+    });
+
+    snap_state.status_message = Some("Exporting to QLab...".into());
+}
+
+/// Phase D: spawn a background task that builds the single-trigger-cue
+/// QLab sequence (one network cue whose customString is `/snapshot/recall
+/// <name>`) and fires it. Used for large snapshots where pushing every
+/// parameter as its own cue would stall QLab.
+fn qlab_create_trigger_cue(
+    snap_state: &mut SnapshotsTabState,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    qlab_ip: String,
+    qlab_port: u16,
+    runtime: &tokio::runtime::Handle,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+) {
+    let Some(snap_id) = snap_state.selected_snapshot_id else { return };
+    let cue_mgr = cue_manager.clone();
+    let tx = ui_tx.clone();
+
+    runtime.spawn(async move {
+        let mgr = cue_mgr.read().await;
+        let Some(snapshot) = mgr.snapshots.get(&snap_id).cloned() else { return };
+        drop(mgr);
+
+        let sequence = build_snapshot_load_cue(&snapshot.name, /* qlab_patch */ 1);
+
+        match QLabClient::new(&qlab_ip, qlab_port).await {
+            Ok(client) => match client.send_sequence(&sequence).await {
+                Ok(sent) => {
+                    let _ = tx.send(UiEvent::SnapshotCaptured {
+                        name: format!(
+                            "Trigger cue created in QLab for '{}' ({sent} OSC messages)",
+                            snapshot.name
+                        ),
+                        param_count: sent,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(UiEvent::SnapshotCaptured {
+                        name: format!("QLab trigger cue failed: {e}"),
+                        param_count: 0,
+                    });
+                }
+            },
+            Err(e) => {
+                let _ = tx.send(UiEvent::SnapshotCaptured {
+                    name: format!("QLab connect failed: {e}"),
+                    param_count: 0,
+                });
+            }
+        }
+    });
+
+    snap_state.status_message = Some("Creating QLab trigger cue...".into());
 }

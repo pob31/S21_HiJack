@@ -379,6 +379,13 @@ impl eframe::App for HiJackApp {
                     );
                 }
                 Tab::Snapshots => {
+                    let qlab_port: u16 =
+                        self.setup.qlab_port.parse().unwrap_or(53000);
+                    let qlab_ip = if self.setup.qlab_ip.is_empty() {
+                        "127.0.0.1"
+                    } else {
+                        self.setup.qlab_ip.as_str()
+                    };
                     super::snapshots_tab::draw_snapshots_tab(
                         ui,
                         &mut self.snapshots,
@@ -388,6 +395,8 @@ impl eframe::App for HiJackApp {
                         &self.eq_palette_manager,
                         &self.snapshot_engine,
                         &self.dirty_tracker,
+                        qlab_ip,
+                        qlab_port,
                         &self.connected,
                         &self.runtime,
                         &self.ui_tx,
