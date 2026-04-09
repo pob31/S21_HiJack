@@ -6,6 +6,7 @@ use tracing::{info, warn, debug};
 use uuid::Uuid;
 
 use crate::console::fade_engine::{FadeController, FadeTarget};
+use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::eq_palette::EqPalette;
 use crate::model::parameter::{ParameterAddress, ParameterSection, ParameterValue};
 use crate::model::snapshot::{Cue, ScopeTemplate, Snapshot};
@@ -30,16 +31,54 @@ pub struct SnapshotEngine {
     sender: OscSender,
     ipad_sender: Option<IpadSender>,
     fade_controller: FadeController,
+    /// Phase C: optional dirty tracker. When present, recall() and
+    /// recall_cue() bracket their writes with begin_suppression /
+    /// end_suppression so console echoes from the recall don't pollute the
+    /// dirty set, and clear() the tracker on a successful recall (mirroring
+    /// `ParameterDirtyTracker::endSuppressionAndClear` from WFS-DIY).
+    dirty_tracker: Option<Arc<RwLock<DirtyTracker>>>,
 }
 
 impl SnapshotEngine {
     pub fn new(state: Arc<RwLock<ConsoleState>>, sender: OscSender) -> Self {
-        Self { state, sender, ipad_sender: None, fade_controller: FadeController::new() }
+        Self {
+            state,
+            sender,
+            ipad_sender: None,
+            fade_controller: FadeController::new(),
+            dirty_tracker: None,
+        }
     }
 
     /// Set (or clear) the iPad sender for iPad-only parameter recall.
     pub fn set_ipad_sender(&mut self, sender: Option<IpadSender>) {
         self.ipad_sender = sender;
+    }
+
+    /// Attach a dirty tracker (Phase C). Called once at engine construction.
+    pub fn set_dirty_tracker(&mut self, dirty: Arc<RwLock<DirtyTracker>>) {
+        self.dirty_tracker = Some(dirty);
+    }
+
+    /// Helper: bracket an async operation with begin/end suppression on the
+    /// dirty tracker, if one is attached. Used internally by recall paths.
+    /// Clears the dirty set on the way out so the operator's "what's
+    /// changed since the last recall" view is correctly anchored to this
+    /// recall.
+    async fn with_dirty_suppression<F, R>(&self, body: F) -> R
+    where
+        F: std::future::Future<Output = R>,
+    {
+        if let Some(dirty) = &self.dirty_tracker {
+            dirty.write().await.begin_suppression();
+        }
+        let result = body.await;
+        if let Some(dirty) = &self.dirty_tracker {
+            let mut t = dirty.write().await;
+            t.end_suppression();
+            t.clear();
+        }
+        result
     }
 
     /// Recall a snapshot using the given scope.
@@ -58,7 +97,26 @@ impl SnapshotEngine {
     /// is recalled. Only meaningful for `SnapshotKind::ApplyOnRecall` snapshots
     /// — `ApplyOnSave` snapshots already filtered at capture time, so the
     /// stored data IS the scope.
+    ///
+    /// Phase C: brackets the entire body in begin_suppression / end_suppression
+    /// on the attached dirty tracker (if any), and clears the dirty set on
+    /// the way out so the operator's "what's changed since" view is anchored
+    /// to this recall.
     pub async fn recall(
+        &self,
+        snapshot: &Snapshot,
+        scope: &ScopeTemplate,
+        palettes: &HashMap<Uuid, EqPalette>,
+        ignore_scope: bool,
+    ) -> RecallResult {
+        self.with_dirty_suppression(self.recall_inner(snapshot, scope, palettes, ignore_scope))
+            .await
+    }
+
+    /// Recall body without dirty-tracker suppression. Used by `recall` (which
+    /// wraps it) and by `recall_cue`'s no-fade path (which is itself wrapped
+    /// at the cue level so we don't double-suppress).
+    async fn recall_inner(
         &self,
         snapshot: &Snapshot,
         scope: &ScopeTemplate,
@@ -198,6 +256,21 @@ impl SnapshotEngine {
         palettes: &HashMap<Uuid, EqPalette>,
         ignore_scope: bool,
     ) -> RecallResult {
+        // Phase C: bracket the whole cue recall in dirty suppression so
+        // BOTH the no-fade path (which calls recall_inner) AND the fade
+        // path's discrete-target writes are suppressed and the dirty set
+        // is cleared on success.
+        self.with_dirty_suppression(self.recall_cue_inner(cue, snapshot, palettes, ignore_scope))
+            .await
+    }
+
+    async fn recall_cue_inner(
+        &self,
+        cue: &Cue,
+        snapshot: &Snapshot,
+        palettes: &HashMap<Uuid, EqPalette>,
+        ignore_scope: bool,
+    ) -> RecallResult {
         let effective_scope = cue.scope_override.as_ref().unwrap_or(&snapshot.scope);
         info!(
             cue_number = cue.cue_number,
@@ -208,11 +281,13 @@ impl SnapshotEngine {
             "Recalling cue"
         );
 
-        // No fade — instant recall (existing behavior)
+        // No fade — instant recall (existing behavior). Call the inner
+        // body so we don't double-suppress (the outer recall_cue is
+        // already inside with_dirty_suppression).
         if cue.fade_time <= 0.0 {
             // Cancel any in-progress fade from a previous cue
             self.fade_controller.cancel_active().await;
-            return self.recall(snapshot, effective_scope, palettes, ignore_scope).await;
+            return self.recall_inner(snapshot, effective_scope, palettes, ignore_scope).await;
         }
 
         // Fade recall: split parameters into discrete (immediate) and continuous (fade)
@@ -403,6 +478,25 @@ mod tests {
         let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
         let engine = SnapshotEngine::new(state.clone(), sender);
         (engine, state)
+    }
+
+    /// Phase C test helper: same as `setup_test` but with a dirty tracker
+    /// attached to the engine.
+    async fn setup_test_with_dirty() -> (
+        SnapshotEngine,
+        Arc<RwLock<ConsoleState>>,
+        Arc<RwLock<DirtyTracker>>,
+    ) {
+        let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let remote: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let client = OscClient::new(local, remote, None).await.unwrap();
+        let (sender, _rx) = client.into_parts();
+
+        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
+        let dirty = Arc::new(RwLock::new(DirtyTracker::new()));
+        let mut engine = SnapshotEngine::new(state.clone(), sender);
+        engine.set_dirty_tracker(dirty.clone());
+        (engine, state, dirty)
     }
 
     fn no_palettes() -> HashMap<Uuid, EqPalette> {
@@ -884,5 +978,62 @@ mod tests {
         // ignore_scope=true bypasses the override → both sent.
         let result = engine.recall_cue(&cue, &snapshot, &no_palettes(), true).await;
         assert_eq!(result.parameters_sent, 2);
+    }
+
+    // ─── Phase C: dirty tracker integration ─────────────────────────
+
+    #[tokio::test]
+    async fn recall_clears_dirty_tracker_on_success() {
+        // Mark a few cells dirty as if the operator had wiggled some
+        // parameters since the last recall. Then run a recall and verify
+        // the dirty set is cleared on the way out.
+        let (engine, _state, dirty) = setup_test_with_dirty().await;
+        {
+            let mut t = dirty.write().await;
+            t.mark(&ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Fader,
+            });
+            t.mark(&ParameterAddress {
+                channel: ChannelId::Input(2),
+                parameter: ParameterPath::Mute,
+            });
+            assert!(t.has_any());
+        }
+
+        // A trivial recall — empty snapshot, empty scope. The point is
+        // exercising the with_dirty_suppression wrapper.
+        let scope = ScopeTemplate::new("S".into(), vec![]);
+        let snapshot = Snapshot::new(
+            "Snap".into(),
+            scope.clone(),
+            SnapshotData::new(),
+            SnapshotKind::ApplyOnSave,
+        );
+        let _ = engine.recall(&snapshot, &scope, &no_palettes(), false).await;
+
+        // After the recall, the tracker should be empty.
+        assert!(!dirty.read().await.has_any());
+    }
+
+    #[tokio::test]
+    async fn recall_cue_clears_dirty_tracker_on_success() {
+        let (engine, _state, dirty) = setup_test_with_dirty().await;
+        dirty.write().await.mark(&ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        });
+
+        let scope = ScopeTemplate::new("S".into(), vec![]);
+        let snapshot = Snapshot::new(
+            "Snap".into(),
+            scope,
+            SnapshotData::new(),
+            SnapshotKind::ApplyOnSave,
+        );
+        let cue = crate::model::snapshot::Cue::new(1.0, "Cue".into(), snapshot.id);
+        let _ = engine.recall_cue(&cue, &snapshot, &no_palettes(), false).await;
+
+        assert!(!dirty.read().await.has_any());
     }
 }

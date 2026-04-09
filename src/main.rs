@@ -138,6 +138,8 @@ async fn run_headless(args: Args) {
     let macro_manager = Arc::new(RwLock::new(MacroManager::new()));
     let monitor_manager = Arc::new(RwLock::new(MonitorManager::new()));
     let gang_manager = Arc::new(RwLock::new(GangManager::new()));
+    // Phase C: dirty tracker for "select modified" / "auto-preselect modified".
+    let dirty_tracker = Arc::new(RwLock::new(model::dirty_tracker::DirtyTracker::new()));
 
     // Create state + OscClient so we can build GangEngine before spawning the loop
     let state = {
@@ -158,7 +160,8 @@ async fn run_headless(args: Args) {
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let manager = ConnectionManager::connect_from_parts(
         sender.clone(), rx, state, macro_manager.clone(),
-        gang_engine.clone(), gang_manager.clone(), cancel_token.clone(),
+        gang_engine.clone(), gang_manager.clone(), dirty_tracker.clone(),
+        cancel_token.clone(),
     );
     info!("Connected successfully");
 
@@ -169,6 +172,7 @@ async fn run_headless(args: Args) {
     let cue_manager = Arc::new(RwLock::new(CueManager::new(CueList::default())));
     let eq_palette_manager = Arc::new(RwLock::new(EqPaletteManager::new()));
     let mut snapshot_engine = SnapshotEngine::new(manager.state(), manager.sender());
+    snapshot_engine.set_dirty_tracker(dirty_tracker.clone());
     let macro_engine = Arc::new(MacroEngine::new(manager.state(), manager.sender()));
 
     // iPad protocol connection (Mode 2 or 3)
@@ -188,7 +192,7 @@ async fn run_headless(args: Args) {
                 } else {
                     "0.0.0.0:0".parse().unwrap()
                 };
-                match ipad_connection::connect_mode2(console_ipad_addr, ipad_local, manager.state(), None).await {
+                match ipad_connection::connect_mode2(console_ipad_addr, ipad_local, manager.state(), dirty_tracker.clone(), None).await {
                     Ok((ipad_sender, result, _handle)) => {
                         info!(
                             name = %result.config.console_name,
@@ -220,7 +224,7 @@ async fn run_headless(args: Args) {
                 match ipad_connection::connect_mode3_proxy(
                     console_ipad_addr, local_console_addr, ipad_listen_addr,
                     ipad_target, ipad_reply_port,
-                    manager.state(), cancel_token.clone(), None,
+                    manager.state(), dirty_tracker.clone(), cancel_token.clone(), None,
                 ).await {
                     Ok(ipad_sender) => {
                         info!(

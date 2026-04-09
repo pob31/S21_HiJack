@@ -13,6 +13,7 @@ use crate::console::macro_manager::MacroManager;
 use crate::console::monitor_manager::MonitorManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::config::ConsoleConfig;
+use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::osc_log::OscLog;
 use crate::model::snapshot::CueList;
 use crate::model::operating_mode::OperatingMode;
@@ -42,6 +43,10 @@ pub struct HiJackApp {
     pub gang_manager: Arc<RwLock<GangManager>>,
     pub snapshot_engine: Option<Arc<SnapshotEngine>>,
     pub macro_engine: Option<Arc<MacroEngine>>,
+    /// Dirty tracker — populated by the OSC dispatcher whenever an inbound
+    /// parameter update changes the live state. The scope editor reads it to
+    /// power "select modified" / "auto-preselect modified" / "clear changes".
+    pub dirty_tracker: Arc<RwLock<DirtyTracker>>,
 
     // OSC log (shared with network tasks)
     pub osc_log: OscLog,
@@ -96,6 +101,7 @@ impl HiJackApp {
             gang_manager: Arc::new(RwLock::new(GangManager::new())),
             snapshot_engine: None,
             macro_engine: None,
+            dirty_tracker: Arc::new(RwLock::new(DirtyTracker::new())),
 
             osc_log: OscLog::new(),
 
@@ -361,6 +367,7 @@ impl eframe::App for HiJackApp {
                         &self.monitor_manager,
                         &self.eq_palette_manager,
                         &self.gang_manager,
+                        &self.dirty_tracker,
                         &mut self.snapshot_engine,
                         &mut self.sender,
                         &self.connected,
@@ -380,6 +387,7 @@ impl eframe::App for HiJackApp {
                         &self.cue_manager,
                         &self.eq_palette_manager,
                         &self.snapshot_engine,
+                        &self.dirty_tracker,
                         &self.connected,
                         &self.runtime,
                         &self.ui_tx,
@@ -447,16 +455,31 @@ impl eframe::App for HiJackApp {
 
         // ── Scope editor window (floats above any tab) ──
         // Drawn outside the CentralPanel so it can overlay anything. Borrows
-        // ConsoleState for one frame to compute availability + channel names.
-        // try_read() so we don't deadlock if a write is in flight; the next
+        // ConsoleState (and the dirty tracker) for one frame to compute
+        // availability, channel names, and the dirty earmark map. try_read()
+        // on both so we don't deadlock if a write is in flight; the next
         // frame will redraw.
         if self.snapshots.scope_editor.window_open {
             if let Ok(state_guard) = self.state.try_read() {
-                let _ = super::scope_editor::draw_scope_window(
+                let dirty_guard = self.dirty_tracker.try_read().ok();
+                let outcome = super::scope_editor::draw_scope_window(
                     ctx,
                     &mut self.snapshots.scope_editor,
                     &state_guard,
+                    dirty_guard.as_deref(),
                 );
+                drop(dirty_guard);
+                drop(state_guard);
+
+                // Phase C: the toolbar can request a dirty-tracker clear.
+                // We can only fulfil it after dropping the read borrow, so
+                // do it here outside the render closure.
+                if outcome.clear_dirty_requested {
+                    let dirty_arc = self.dirty_tracker.clone();
+                    self.runtime.spawn(async move {
+                        dirty_arc.write().await.clear();
+                    });
+                }
             }
         }
     }

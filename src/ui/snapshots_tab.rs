@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::console::cue_manager::CueManager;
 use crate::console::eq_palette_manager::EqPaletteManager;
 use crate::console::snapshot_engine::SnapshotEngine;
+use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::snapshot::{Cue, Snapshot, SnapshotKind};
 use crate::model::state::ConsoleState;
 use super::eq_palettes_ui::{EqPalettesUiState, draw_eq_palettes_section};
@@ -79,6 +80,7 @@ pub fn draw_snapshots_tab(
     cue_manager: &Arc<RwLock<CueManager>>,
     eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     snapshot_engine: &Option<Arc<SnapshotEngine>>,
+    dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -510,6 +512,7 @@ pub fn draw_snapshots_tab(
                                     snap_state,
                                     console_state,
                                     cue_manager,
+                                    dirty_tracker,
                                     runtime,
                                     ui_tx,
                                 );
@@ -655,7 +658,7 @@ pub fn draw_snapshots_tab(
 
                             let recapture_btn = theme::action_button("Re-capture", theme::ACCENT_BLUE, egui::Vec2::new(100.0, 28.0));
                             if ui.add_enabled(has_selection && is_connected, recapture_btn).clicked() {
-                                recapture_snapshot(snap_state, console_state, cue_manager, runtime, ui_tx);
+                                recapture_snapshot(snap_state, console_state, cue_manager, dirty_tracker, runtime, ui_tx);
                             }
                             let del_btn = theme::action_button("Delete", theme::ACCENT_RED, egui::Vec2::new(80.0, 28.0));
                             if ui.add_enabled(has_selection, del_btn).clicked() {
@@ -701,6 +704,7 @@ fn capture_snapshot(
     snap_state: &mut SnapshotsTabState,
     console_state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
+    dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
@@ -711,6 +715,7 @@ fn capture_snapshot(
     let kind = snap_state.pending_kind;
     let st = console_state.clone();
     let cue_mgr = cue_manager.clone();
+    let dirty = dirty_tracker.clone();
     let tx = ui_tx.clone();
 
     runtime.spawn(async move {
@@ -721,6 +726,11 @@ fn capture_snapshot(
 
         let snapshot = Snapshot::new(name.clone(), scope, data, kind);
         cue_mgr.write().await.add_snapshot(snapshot);
+
+        // Phase C: capture establishes a new baseline — anything that
+        // changes from now on is "modified since the last snapshot".
+        // Mirrors WFS-DIY's clear-on-store behaviour.
+        dirty.write().await.clear();
 
         let _ = tx.send(UiEvent::SnapshotCaptured {
             name,
@@ -736,6 +746,7 @@ fn recapture_snapshot(
     snap_state: &mut SnapshotsTabState,
     console_state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
+    dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
@@ -743,6 +754,7 @@ fn recapture_snapshot(
 
     let st = console_state.clone();
     let cue_mgr = cue_manager.clone();
+    let dirty = dirty_tracker.clone();
     let tx = ui_tx.clone();
 
     runtime.spawn(async move {
@@ -763,6 +775,9 @@ fn recapture_snapshot(
 
         // Update
         cue_mgr.write().await.update_snapshot(snap_id, data);
+
+        // Phase C: re-capture also re-anchors the dirty baseline.
+        dirty.write().await.clear();
 
         let _ = tx.send(UiEvent::SnapshotCaptured {
             name,

@@ -10,6 +10,7 @@ use crate::console::discovery::apply_channel_counts;
 use crate::console::gang_engine::GangEngine;
 use crate::console::gang_manager::GangManager;
 use crate::console::macro_manager::MacroManager;
+use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::state::{ConnectionHealth, ConsoleState};
 use crate::osc::client::{OscSender, ReceivedOscMessage};
 use crate::osc::encode::SystemCommand;
@@ -35,6 +36,7 @@ pub struct ConnectionManager {
     macro_manager: Arc<RwLock<MacroManager>>,
     gang_engine: Arc<RwLock<GangEngine>>,
     gang_manager: Arc<RwLock<GangManager>>,
+    dirty_tracker: Arc<RwLock<DirtyTracker>>,
 }
 
 impl ConnectionManager {
@@ -60,6 +62,7 @@ impl ConnectionManager {
     /// populate the parameter database and discover the bus layout. While running, an
     /// idle-triggered ping/pong heartbeat watches link health; if pings go unanswered
     /// for long enough, a recovery `/console/resend` is issued.
+    #[allow(clippy::too_many_arguments)]
     pub fn connect_from_parts(
         sender: OscSender,
         rx: tokio::sync::mpsc::Receiver<ReceivedOscMessage>,
@@ -67,13 +70,15 @@ impl ConnectionManager {
         macro_manager: Arc<RwLock<MacroManager>>,
         gang_engine: Arc<RwLock<GangEngine>>,
         gang_manager: Arc<RwLock<GangManager>>,
+        dirty_tracker: Arc<RwLock<DirtyTracker>>,
         cancel: CancellationToken,
     ) -> Self {
         info!("ConnectionManager created from parts");
 
         tokio::spawn(run_loop(
             sender.clone(), rx, state.clone(), macro_manager.clone(),
-            gang_engine.clone(), gang_manager.clone(), cancel.clone(),
+            gang_engine.clone(), gang_manager.clone(), dirty_tracker.clone(),
+            cancel.clone(),
         ));
 
         Self {
@@ -82,7 +87,13 @@ impl ConnectionManager {
             macro_manager,
             gang_engine,
             gang_manager,
+            dirty_tracker,
         }
+    }
+
+    /// Get a reference to the dirty tracker.
+    pub fn dirty_tracker(&self) -> Arc<RwLock<DirtyTracker>> {
+        self.dirty_tracker.clone()
     }
 
     /// Get a reference to the gang engine.
@@ -105,6 +116,7 @@ impl ConnectionManager {
 ///   - After `MAX_UNANSWERED_PINGS` consecutive pings without a reply, fire one
 ///     `/console/resend` as a recovery refresh; reset the counter and re-arm.
 ///   - If pings still go unanswered after the recovery resend, mark health as `Lost`.
+#[allow(clippy::too_many_arguments)]
 async fn run_loop(
     sender: OscSender,
     mut rx: tokio::sync::mpsc::Receiver<ReceivedOscMessage>,
@@ -112,6 +124,7 @@ async fn run_loop(
     macro_manager: Arc<RwLock<MacroManager>>,
     gang_engine: Arc<RwLock<GangEngine>>,
     gang_manager: Arc<RwLock<GangManager>>,
+    dirty_tracker: Arc<RwLock<DirtyTracker>>,
     cancel: CancellationToken,
 ) {
     info!("GP OSC state mirror started — sending initial /console/resend and /console/channel/counts");
@@ -138,7 +151,7 @@ async fn run_loop(
             // Process incoming OSC messages
             Some(msg) = rx.recv() => {
                 let parsed = parse::parse_gp_osc(&msg.path, &msg.args);
-                process_message(&parsed, &state, &macro_manager, &gang_engine, &gang_manager, &sender).await;
+                process_message(&parsed, &state, &macro_manager, &gang_engine, &gang_manager, &dirty_tracker, &sender).await;
 
                 // Any inbound traffic counts as "alive": reset idle/ping bookkeeping.
                 last_inbound_at = Instant::now();
@@ -221,18 +234,31 @@ async fn set_health(state: &Arc<RwLock<ConsoleState>>, health: ConnectionHealth)
 }
 
 /// Process a parsed GP OSC message — update state mirror, propagate gangs, record macros.
+#[allow(clippy::too_many_arguments)]
 async fn process_message(
     parsed: &ParsedOscMessage,
     state: &Arc<RwLock<ConsoleState>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
     gang_engine: &Arc<RwLock<GangEngine>>,
     gang_manager: &Arc<RwLock<GangManager>>,
+    dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     sender: &OscSender,
 ) {
     match parsed {
         ParsedOscMessage::ParameterUpdate(addr, value) => {
             debug!(%addr, %value, "Parameter update");
             let old_value = state.write().await.update(addr.clone(), value.clone());
+
+            // Mark this cell dirty IF the value actually changed. The dirty
+            // tracker is suppression-aware, so echoes from snapshot recall
+            // (which set begin_suppression before sending) are ignored. The
+            // first sample after a connection comes through old_value=None,
+            // which we treat as "this is the baseline" — not a change.
+            if let Some(prev) = &old_value {
+                if prev != value {
+                    dirty_tracker.write().await.mark(addr);
+                }
+            }
 
             // Gang propagation — before macro recording so the engineer's
             // original change is what gets recorded, not ganged echoes.

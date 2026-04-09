@@ -19,6 +19,7 @@ use crate::console::monitor_engine::MonitorEngine;
 use crate::console::monitor_manager::MonitorManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::config::ChannelOption;
+use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::operating_mode::OperatingMode;
 use crate::model::parameter::PROTOCOL_COVERAGE;
 use crate::model::osc_log::OscLog;
@@ -126,6 +127,7 @@ pub fn draw_setup_tab(
     monitor_manager: &Arc<RwLock<MonitorManager>>,
     eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
+    dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
     sender: &mut Option<OscSender>,
     connected: &Arc<AtomicBool>,
@@ -341,7 +343,8 @@ pub fn draw_setup_tab(
                     if ui.add(connect_btn).clicked() {
                         start_connection(
                             setup, state, cue_manager, macro_manager, monitor_manager,
-                            eq_palette_manager, gang_manager, snapshot_engine, sender,
+                            eq_palette_manager, gang_manager, dirty_tracker,
+                            snapshot_engine, sender,
                             connected, cancel_token, osc_log,
                             runtime, ui_tx, egui_ctx,
                         );
@@ -657,6 +660,7 @@ fn start_connection(
     monitor_manager: &Arc<RwLock<MonitorManager>>,
     eq_palette_manager: &Arc<RwLock<EqPaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
+    dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     _snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
     _sender: &mut Option<OscSender>,
     connected: &Arc<AtomicBool>,
@@ -771,6 +775,7 @@ fn start_connection(
     let mon_mgr = monitor_manager.clone();
     let eq_mgr = eq_palette_manager.clone();
     let gang_mgr = gang_manager.clone();
+    let dirty = dirty_tracker.clone();
     let conn_flag = connected.clone();
     let tx = ui_tx.clone();
     let ctx = egui_ctx.clone();
@@ -810,7 +815,8 @@ fn start_connection(
         ));
 
         let manager = ConnectionManager::connect_from_parts(
-            osc_sender, rx, st.clone(), macro_mgr, gang_engine.clone(), gang_mgr, token.clone(),
+            osc_sender, rx, st.clone(), macro_mgr, gang_engine.clone(), gang_mgr,
+            dirty.clone(), token.clone(),
         );
 
         info!("Connected to console via UI");
@@ -818,6 +824,7 @@ fn start_connection(
 
         // Create SnapshotEngine (mut so we can set iPad sender before wrapping in Arc)
         let mut snapshot_engine = SnapshotEngine::new(st.clone(), manager.sender());
+        snapshot_engine.set_dirty_tracker(dirty.clone());
 
         // iPad connection (Mode 2 or 3)
         if operating_mode.uses_ipad_protocol() && ipad_console_port > 0 {
@@ -830,7 +837,7 @@ fn start_connection(
 
             match operating_mode {
                 OperatingMode::Mode2 => {
-                    match ipad_connection::connect_mode2(console_ipad_addr, local_ipad_addr, st.clone(), iface_name.as_deref()).await {
+                    match ipad_connection::connect_mode2(console_ipad_addr, local_ipad_addr, st.clone(), dirty.clone(), iface_name.as_deref()).await {
                         Ok((ipad_sender, result, _handle)) => {
                             info!(
                                 name = %result.config.console_name,
@@ -869,6 +876,7 @@ fn start_connection(
                         ipad_target,
                         ipad_reply_port,
                         st.clone(),
+                        dirty.clone(),
                         token.clone(),
                         iface_name.clone(),
                     ).await {

@@ -1,5 +1,6 @@
 pub mod channel;
 pub mod config;
+pub mod dirty_tracker;
 pub mod gang;
 pub mod eq_palette;
 pub mod macro_def;

@@ -6,6 +6,7 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tracing::{info, warn, debug};
 
+use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::state::ConsoleState;
 use crate::osc::client::ReceivedOscMessage;
 use crate::osc::ipad_client::{IpadClient, IpadSender};
@@ -55,6 +56,7 @@ pub async fn connect_mode2(
     console_ipad_addr: SocketAddr,
     local_addr: SocketAddr,
     state: Arc<RwLock<ConsoleState>>,
+    dirty_tracker: Arc<RwLock<DirtyTracker>>,
     interface_name: Option<&str>,
 ) -> Result<(IpadSender, HandshakeResult, JoinHandle<()>), IpadConnectionError> {
     info!(%console_ipad_addr, "Mode 2: connecting to console iPad port...");
@@ -77,8 +79,9 @@ pub async fn connect_mode2(
 
     // Start background state mirror loop
     let state_clone = state.clone();
+    let dirty_clone = dirty_tracker.clone();
     let handle = tokio::spawn(async move {
-        ipad_state_mirror_loop(rx, state_clone).await;
+        ipad_state_mirror_loop(rx, state_clone, dirty_clone).await;
     });
 
     Ok((sender, handshake_result, handle))
@@ -91,6 +94,7 @@ pub async fn connect_mode2(
 ///
 /// Starts forwarding immediately without blocking on a handshake.
 /// All traffic is logged and captured into the state mirror.
+#[allow(clippy::too_many_arguments)]
 pub async fn connect_mode3_proxy(
     console_ipad_addr: SocketAddr,
     local_console_addr: SocketAddr,
@@ -98,6 +102,7 @@ pub async fn connect_mode3_proxy(
     ipad_target: Option<SocketAddr>,
     ipad_reply_port: u16,
     state: Arc<RwLock<ConsoleState>>,
+    dirty_tracker: Arc<RwLock<DirtyTracker>>,
     cancel: tokio_util::sync::CancellationToken,
     interface_name: Option<String>,
 ) -> Result<IpadSender, IpadConnectionError> {
@@ -130,6 +135,7 @@ pub async fn connect_mode3_proxy(
 
     // Start the bidirectional proxy loop immediately (no handshake)
     let state_clone = state.clone();
+    let dirty_clone = dirty_tracker.clone();
 
     tokio::spawn(async move {
         raw_proxy_loop(
@@ -139,6 +145,7 @@ pub async fn connect_mode3_proxy(
             ipad_target,
             ipad_reply_port,
             state_clone,
+            dirty_clone,
             cancel,
         ).await;
     });
@@ -150,6 +157,7 @@ pub async fn connect_mode3_proxy(
 async fn ipad_state_mirror_loop(
     mut rx: tokio::sync::mpsc::Receiver<ReceivedOscMessage>,
     state: Arc<RwLock<ConsoleState>>,
+    dirty_tracker: Arc<RwLock<DirtyTracker>>,
 ) {
     info!("iPad state mirror loop started");
     while let Some(msg) = rx.recv().await {
@@ -157,7 +165,12 @@ async fn ipad_state_mirror_loop(
         match parsed {
             ParsedIpadMessage::ParameterUpdate(addr, value) => {
                 debug!(%addr, %value, "iPad mirror: parameter update");
-                state.write().await.update(addr, value);
+                let old = state.write().await.update(addr.clone(), value.clone());
+                if let Some(prev) = &old {
+                    if prev != &value {
+                        dirty_tracker.write().await.mark(&addr);
+                    }
+                }
             }
             ParsedIpadMessage::MeterValues(_) => {
                 // Meters are high-frequency — skip state updates
@@ -175,6 +188,7 @@ async fn ipad_state_mirror_loop(
 ///
 /// Two raw UDP sockets, no parsing, no wrappers. Just forwards bytes.
 /// Parsing is best-effort for logging only.
+#[allow(clippy::too_many_arguments)]
 async fn raw_proxy_loop(
     console_socket: std::sync::Arc<tokio::net::UdpSocket>,
     console_addr: SocketAddr,
@@ -182,6 +196,7 @@ async fn raw_proxy_loop(
     ipad_target: Option<SocketAddr>,
     ipad_reply_port: u16,
     state: Arc<RwLock<ConsoleState>>,
+    dirty_tracker: Arc<RwLock<DirtyTracker>>,
     cancel: tokio_util::sync::CancellationToken,
 ) {
     info!("Mode 3 raw proxy started");
@@ -203,7 +218,7 @@ async fn raw_proxy_loop(
             result = console_socket.recv_from(&mut console_buf) => {
                 match result {
                     Ok((size, _src)) => {
-                        log_and_capture_packet(&console_buf[..size], "C→I", &state).await;
+                        log_and_capture_packet(&console_buf[..size], "C→I", &state, &dirty_tracker).await;
 
                         if let Some(dest) = ipad_addr {
                             match ipad_socket.send_to(&console_buf[..size], dest).await {
@@ -239,7 +254,7 @@ async fn raw_proxy_loop(
                             ipad_addr = Some(detected);
                         }
 
-                        log_and_capture_packet(&ipad_buf[..size], "I→C", &state).await;
+                        log_and_capture_packet(&ipad_buf[..size], "I→C", &state, &dirty_tracker).await;
 
                         match console_socket.send_to(&ipad_buf[..size], console_addr).await {
                             Ok(sent) => {
@@ -271,6 +286,7 @@ async fn log_and_capture_packet(
     data: &[u8],
     direction: &str,
     state: &Arc<RwLock<ConsoleState>>,
+    dirty_tracker: &Arc<RwLock<DirtyTracker>>,
 ) {
     // Try standard OSC first
     if let Ok((_, packet)) = rosc::decoder::decode_udp(data) {
@@ -280,7 +296,12 @@ async fn log_and_capture_packet(
             match &parsed {
                 ParsedIpadMessage::ParameterUpdate(addr, value) => {
                     debug!(%addr, %value, "Proxy {direction}: param");
-                    state.write().await.update(addr.clone(), value.clone());
+                    let old = state.write().await.update(addr.clone(), value.clone());
+                    if let Some(prev) = &old {
+                        if prev != value {
+                            dirty_tracker.write().await.mark(addr);
+                        }
+                    }
                 }
                 ParsedIpadMessage::ConfigResponse(cfg) => {
                     info!(?cfg, "Proxy {direction}: config");

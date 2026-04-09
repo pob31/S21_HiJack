@@ -24,6 +24,7 @@ use eframe::egui;
 
 use crate::model::channel::ChannelId;
 use crate::model::config::ConsoleConfig;
+use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::parameter::{ParameterPath, ParameterSection};
 use crate::model::snapshot::{ChannelScope, ScopeTemplate};
 use crate::model::state::ConsoleState;
@@ -140,6 +141,12 @@ pub struct ScopeEditorState {
     /// Snapshot of `channel_paths` taken at window-open time. Used by Cancel
     /// to roll back. None when the window is closed.
     backup: Option<HashMap<ChannelId, HashSet<ParameterPath>>>,
+    /// Phase C: when true, the scope editor automatically replaces its
+    /// selections with the dirty tracker's contents on every change.
+    pub auto_preselect_modified: bool,
+    /// Phase C: cached generation of the dirty tracker, so the editor knows
+    /// when the dirty set has changed and it should refresh.
+    pub last_dirty_generation: u64,
 }
 
 impl Default for ScopeEditorState {
@@ -150,6 +157,8 @@ impl Default for ScopeEditorState {
             expanded_sections: HashSet::new(),
             window_open: false,
             backup: None,
+            auto_preselect_modified: false,
+            last_dirty_generation: 0,
         }
     }
 }
@@ -232,6 +241,42 @@ impl ScopeEditorState {
     /// Clear all selections.
     pub fn clear(&mut self) {
         self.channel_paths.clear();
+    }
+
+    /// Phase C: replace the editor's selections with the dirty tracker's
+    /// contents. Called by the scope window when the user clicks "Select
+    /// modified" (one-shot) or while "Auto-preselect modified" is enabled
+    /// (every frame the dirty generation changes).
+    pub fn apply_dirty_set(
+        &mut self,
+        dirty: &HashMap<ChannelId, HashSet<ParameterPath>>,
+    ) {
+        self.channel_paths.clear();
+        for (ch, paths) in dirty {
+            if paths.is_empty() {
+                continue;
+            }
+            self.channel_paths.insert(ch.clone(), paths.clone());
+        }
+    }
+
+    /// Phase C: additive variant — merge the dirty tracker's contents into
+    /// the editor's existing selections without clearing first. Useful when
+    /// the operator wants "select what I've changed plus the channels I had
+    /// already picked manually".
+    pub fn merge_dirty_set(
+        &mut self,
+        dirty: &HashMap<ChannelId, HashSet<ParameterPath>>,
+    ) {
+        for (ch, paths) in dirty {
+            if paths.is_empty() {
+                continue;
+            }
+            let entry = self.channel_paths.entry(ch.clone()).or_default();
+            for p in paths {
+                entry.insert(p.clone());
+            }
+        }
     }
 
     /// Total number of selected (channel, path) pairs.
@@ -554,10 +599,23 @@ fn cell_available(
 
 // ── Window-rendering entrypoint ─────────────────────────────────────
 
+/// Outcome of a single `draw_scope_window` frame. Carries the window
+/// open/close result plus any deferred side effects the caller needs to
+/// dispatch on the dirty tracker (which the editor only has read access to
+/// during render).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ScopeWindowOutcome {
+    pub status: ScopeWindowResult,
+    /// True if the operator clicked "Clear changes" — the caller should
+    /// acquire a write lock on the dirty tracker and call `clear()`.
+    pub clear_dirty_requested: bool,
+}
+
 /// Result of a single `draw_scope_window` frame.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub enum ScopeWindowResult {
     /// Window is still open and waiting for user input.
+    #[default]
     StillOpen,
     /// User clicked OK; caller should read `to_scope_template`.
     Committed,
@@ -568,13 +626,30 @@ pub enum ScopeWindowResult {
 /// Render the scope editor window. Early-returns `StillOpen` (without drawing)
 /// when `state.window_open` is false. The caller should invoke this from the
 /// App-level `update()` so the window floats above the central panel.
+///
+/// `dirty` is the live dirty tracker borrow (from `try_read()`). When `None`
+/// the toolbar's three "modified" controls render greyed out — there's no
+/// data to show.
 pub fn draw_scope_window(
     ctx: &egui::Context,
     state: &mut ScopeEditorState,
     console_state: &ConsoleState,
-) -> ScopeWindowResult {
+    dirty: Option<&DirtyTracker>,
+) -> ScopeWindowOutcome {
     if !state.window_open {
-        return ScopeWindowResult::StillOpen;
+        return ScopeWindowOutcome::default();
+    }
+
+    // Phase C: if auto-preselect is on AND the dirty tracker's generation
+    // has changed since we last looked, replace the selections with the
+    // dirty set. Done BEFORE rendering so the matrix shows the new state.
+    if state.auto_preselect_modified {
+        if let Some(d) = dirty {
+            if d.generation() != state.last_dirty_generation {
+                state.apply_dirty_set(d.dirty_set());
+                state.last_dirty_generation = d.generation();
+            }
+        }
     }
 
     // Snapshot config + channel names once per frame, BEFORE entering the
@@ -621,6 +696,18 @@ pub fn draw_scope_window(
                 .map(|ch| (ch.clone(), path_set.clone()))
                 .collect();
             let channel_names = console_state.channel_names_for(&channels);
+            // Per-group dirty subset (only the channels in this group).
+            let mut dirty_subset: HashMap<ChannelId, HashSet<ParameterPath>> = HashMap::new();
+            if let Some(d) = dirty {
+                let full = d.dirty_set();
+                for ch in &channels {
+                    if let Some(paths) = full.get(ch) {
+                        if !paths.is_empty() {
+                            dirty_subset.insert(ch.clone(), paths.clone());
+                        }
+                    }
+                }
+            }
             GroupRenderData {
                 group: *g,
                 channels,
@@ -628,12 +715,14 @@ pub fn draw_scope_window(
                 available,
                 channel_names,
                 config: config.clone(),
+                dirty: dirty_subset,
             }
         })
         .collect();
 
-    let mut result = ScopeWindowResult::StillOpen;
+    let mut outcome = ScopeWindowOutcome::default();
     let mut still_open = state.window_open;
+    let dirty_has_any = dirty.map(|d| d.has_any()).unwrap_or(false);
 
     egui::Window::new("Snapshot Scope")
         .collapsible(false)
@@ -657,6 +746,63 @@ pub fn draw_scope_window(
                     &format!("{} selections", state.selection_count()),
                     theme::ACCENT_BLUE,
                 );
+                ui.add_space(16.0);
+
+                // ── Phase C: dirty tracker controls ──
+                ui.separator();
+                ui.add_space(8.0);
+                let dirty_available = dirty.is_some();
+
+                // "Auto-preselect modified" toggle.
+                let auto_resp = ui.add_enabled(
+                    dirty_available,
+                    egui::Checkbox::new(
+                        &mut state.auto_preselect_modified,
+                        "Auto-preselect modified",
+                    ),
+                );
+                if auto_resp.changed() && state.auto_preselect_modified {
+                    if let Some(d) = dirty {
+                        state.apply_dirty_set(d.dirty_set());
+                        state.last_dirty_generation = d.generation();
+                    }
+                }
+
+                // "Select modified" one-shot button (hidden when auto is on,
+                // following WFS-DIY behaviour — the auto toggle subsumes it).
+                if !state.auto_preselect_modified {
+                    let select_btn = theme::action_button(
+                        "Select modified",
+                        theme::ACCENT_BLUE,
+                        egui::Vec2::new(130.0, 28.0),
+                    );
+                    if ui
+                        .add_enabled(dirty_available && dirty_has_any, select_btn)
+                        .clicked()
+                    {
+                        if let Some(d) = dirty {
+                            state.apply_dirty_set(d.dirty_set());
+                            state.last_dirty_generation = d.generation();
+                        }
+                    }
+                }
+
+                // "Clear changes" — wipe the dirty set without sending
+                // anything. The actual clear happens in the caller after
+                // this frame returns (we only have a borrow of the tracker).
+                let clear_changes_btn = theme::action_button(
+                    "Clear changes",
+                    theme::BG_ELEVATED,
+                    egui::Vec2::new(120.0, 28.0),
+                );
+                if ui
+                    .add_enabled(dirty_available && dirty_has_any, clear_changes_btn)
+                    .clicked()
+                {
+                    outcome.clear_dirty_requested = true;
+                    state.last_dirty_generation = 0;
+                }
+
                 ui.add_space(8.0);
                 ui.label(
                     egui::RichText::new("Click any header to bulk toggle.")
@@ -692,7 +838,7 @@ pub fn draw_scope_window(
                     );
                     if ui.add(ok_btn).clicked() {
                         state.commit();
-                        result = ScopeWindowResult::Committed;
+                        outcome.status = ScopeWindowResult::Committed;
                     }
                     ui.add_space(8.0);
                     let cancel_btn = theme::action_button(
@@ -702,7 +848,7 @@ pub fn draw_scope_window(
                     );
                     if ui.add(cancel_btn).clicked() {
                         state.cancel();
-                        result = ScopeWindowResult::Cancelled;
+                        outcome.status = ScopeWindowResult::Cancelled;
                     }
                 });
             });
@@ -710,12 +856,12 @@ pub fn draw_scope_window(
 
     // Honour the X close button (which flips `still_open` to false). Treat
     // closing-via-X as Cancel — discard pending changes.
-    if !still_open && state.window_open && result == ScopeWindowResult::StillOpen {
+    if !still_open && state.window_open && outcome.status == ScopeWindowResult::StillOpen {
         state.cancel();
-        result = ScopeWindowResult::Cancelled;
+        outcome.status = ScopeWindowResult::Cancelled;
     }
 
-    result
+    outcome
 }
 
 /// Per-group data assembled once per frame, before drawing.
@@ -729,6 +875,10 @@ struct GroupRenderData {
     /// `ParameterPath::label_with_config` to render bus rows with their
     /// current "Aux N" / "Group N" labels.
     config: ConsoleConfig,
+    /// Phase C: per-channel dirty path set, sliced from the global dirty
+    /// tracker. Empty when the dirty tracker is unavailable. Used by the
+    /// matrix cell renderer to draw the golden earmark.
+    dirty: HashMap<ChannelId, HashSet<ParameterPath>>,
 }
 
 /// Draw one channel-type group: collapsible header + (when expanded) matrix.
@@ -788,8 +938,15 @@ fn draw_channel_group_block(
                 ui.add_space(8.0);
 
                 // Group tristate cell.
-                let tri_cell =
-                    matrix_cell(ui, egui::Vec2::new(28.0, 20.0), group_all, group_any, true, "");
+                let tri_cell = matrix_cell(
+                    ui,
+                    egui::Vec2::new(28.0, 20.0),
+                    group_all,
+                    group_any,
+                    true,
+                    /* dirty */ false,
+                    "",
+                );
                 if tri_cell.clicked() {
                     state.toggle_all(&data.channels, &data.paths, &data.available);
                 }
@@ -850,6 +1007,7 @@ fn draw_group_matrix(
                     corner_all,
                     corner_any,
                     true,
+                    /* dirty */ false,
                     "All",
                 );
                 if corner_resp.clicked() {
@@ -864,8 +1022,20 @@ fn draw_group_matrix(
                     let col_any =
                         state.is_column_any_selected(ch, &data.paths, &data.available);
                     let label = channel_short_label(ch);
-                    let resp =
-                        matrix_cell(ui, CELL_SIZE, col_all, col_any, true, &label);
+                    // Channel header is "dirty" if any cell under it is dirty.
+                    let col_dirty = data
+                        .dirty
+                        .get(ch)
+                        .is_some_and(|s| !s.is_empty());
+                    let resp = matrix_cell(
+                        ui,
+                        CELL_SIZE,
+                        col_all,
+                        col_any,
+                        true,
+                        col_dirty,
+                        &label,
+                    );
                     if resp.clicked() {
                         state.toggle_column(ch, &data.paths, &data.available);
                     }
@@ -942,12 +1112,19 @@ fn draw_group_matrix(
                         }
                         let cell_all = any_available && all_on;
                         let cell_any = any_on;
+                        // Section-row cell is "dirty" if any path in the
+                        // section is dirty for this channel.
+                        let cell_dirty = data
+                            .dirty
+                            .get(ch)
+                            .is_some_and(|set| section_paths.iter().any(|p| set.contains(p)));
                         let resp = matrix_cell(
                             ui,
                             CELL_SIZE,
                             cell_all,
                             cell_any,
                             any_available,
+                            cell_dirty,
                             "",
                         );
                         if resp.clicked() && any_available {
@@ -986,8 +1163,19 @@ fn draw_group_matrix(
                             for ch in &data.channels {
                                 let avail = cell_available(&data.available, ch, path);
                                 let sel = state.is_cell_selected(ch, path);
-                                let resp =
-                                    matrix_cell(ui, CELL_SIZE, sel, sel, avail, "");
+                                let cell_dirty = data
+                                    .dirty
+                                    .get(ch)
+                                    .is_some_and(|s| s.contains(path));
+                                let resp = matrix_cell(
+                                    ui,
+                                    CELL_SIZE,
+                                    sel,
+                                    sel,
+                                    avail,
+                                    cell_dirty,
+                                    "",
+                                );
                                 if resp.clicked() && avail {
                                     state.toggle_cell(ch, path);
                                 }
@@ -1183,12 +1371,14 @@ fn path_row_label(
 
 /// Render a single matrix cell. Available cells respond to clicks; unavailable
 /// cells render dim and ignore interaction.
+#[allow(clippy::too_many_arguments)]
 fn matrix_cell(
     ui: &mut egui::Ui,
     size: egui::Vec2,
     all_selected: bool,
     any_selected: bool,
     available: bool,
+    dirty: bool,
     label: &str,
 ) -> egui::Response {
     let sense = if available {
@@ -1239,6 +1429,23 @@ fn matrix_cell(
         );
         let pos = rect.center() - galley.size() / 2.0;
         ui.painter().galley(pos, galley, color);
+    }
+
+    // Phase C: golden earmark in the top-right corner when dirty.
+    // Triangle ~35% of the cell width — visible without obscuring the label.
+    if dirty {
+        let earmark_size = (size.x.min(size.y) * 0.35).max(4.0);
+        let cx = rect.right() - 1.0;
+        let cy = rect.top() + 1.0;
+        let mut points = Vec::with_capacity(3);
+        points.push(egui::pos2(cx - earmark_size, cy));
+        points.push(egui::pos2(cx, cy));
+        points.push(egui::pos2(cx, cy + earmark_size));
+        ui.painter().add(egui::Shape::convex_polygon(
+            points,
+            theme::SCOPE_DIRTY,
+            egui::Stroke::NONE,
+        ));
     }
 
     response
@@ -1502,5 +1709,73 @@ mod tests {
             ChannelGroup::ControlGroups.channels_from(&config).len(),
             config.control_group_count as usize,
         );
+    }
+
+    // ─── Phase C: dirty-set apply / merge ────────────────────────────
+
+    fn dirty_map(
+        entries: &[(ChannelId, &[ParameterPath])],
+    ) -> HashMap<ChannelId, HashSet<ParameterPath>> {
+        entries
+            .iter()
+            .map(|(ch, paths)| (ch.clone(), paths.iter().cloned().collect()))
+            .collect()
+    }
+
+    #[test]
+    fn apply_dirty_set_replaces_selections() {
+        let mut s = ScopeEditorState::default();
+        // Pre-populate with something OTHER than what the dirty set has.
+        s.toggle_cell(&ChannelId::Input(99), &ParameterPath::Mute);
+
+        let dirty = dirty_map(&[(ChannelId::Input(1), &[ParameterPath::Fader])]);
+        s.apply_dirty_set(&dirty);
+
+        // The pre-existing Input(99) selection is gone.
+        assert!(!s.is_cell_selected(&ChannelId::Input(99), &ParameterPath::Mute));
+        // The dirty cell is now selected.
+        assert!(s.is_cell_selected(&ChannelId::Input(1), &ParameterPath::Fader));
+        assert_eq!(s.selection_count(), 1);
+    }
+
+    #[test]
+    fn apply_dirty_set_drops_empty_channel_entries() {
+        let mut s = ScopeEditorState::default();
+        let mut dirty: HashMap<ChannelId, HashSet<ParameterPath>> = HashMap::new();
+        // Channel with empty path set should NOT show up in selections.
+        dirty.insert(ChannelId::Input(1), HashSet::new());
+        dirty.insert(
+            ChannelId::Input(2),
+            HashSet::from([ParameterPath::Fader]),
+        );
+
+        s.apply_dirty_set(&dirty);
+        assert!(!s.channel_paths.contains_key(&ChannelId::Input(1)));
+        assert!(s.is_cell_selected(&ChannelId::Input(2), &ParameterPath::Fader));
+    }
+
+    #[test]
+    fn merge_dirty_set_adds_to_existing_selections() {
+        let mut s = ScopeEditorState::default();
+        s.toggle_cell(&ChannelId::Input(1), &ParameterPath::Fader);
+
+        let dirty = dirty_map(&[
+            (ChannelId::Input(1), &[ParameterPath::Mute]),
+            (ChannelId::Input(2), &[ParameterPath::EqEnabled]),
+        ]);
+        s.merge_dirty_set(&dirty);
+
+        // Both the original Fader AND the merged-in Mute are present.
+        assert!(s.is_cell_selected(&ChannelId::Input(1), &ParameterPath::Fader));
+        assert!(s.is_cell_selected(&ChannelId::Input(1), &ParameterPath::Mute));
+        // The new Input(2) selection appeared.
+        assert!(s.is_cell_selected(&ChannelId::Input(2), &ParameterPath::EqEnabled));
+    }
+
+    #[test]
+    fn auto_preselect_modified_default_is_false() {
+        let s = ScopeEditorState::default();
+        assert!(!s.auto_preselect_modified);
+        assert_eq!(s.last_dirty_generation, 0);
     }
 }
