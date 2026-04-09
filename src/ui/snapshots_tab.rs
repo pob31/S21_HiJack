@@ -668,8 +668,15 @@ pub fn draw_snapshots_tab(
                             if ui.add_enabled(has_selection, del_btn).clicked() {
                                 if let Some(id) = snap_state.selected_snapshot_id {
                                     let cue_mgr = cue_manager.clone();
+                                    let eq_mgr = eq_palette_manager.clone();
                                     runtime.spawn(async move {
                                         cue_mgr.write().await.remove_snapshot(id);
+                                        // Drop back-references from every palette so the
+                                        // "Linked Snapshots" UI count stays accurate. Recall
+                                        // doesn't depend on this list (the forward direction
+                                        // is on the snapshot itself, which is now gone), but
+                                        // the palette detail pane reads it for display.
+                                        eq_mgr.write().await.unlink_all_from_snapshot(id);
                                     });
                                     snap_state.selected_snapshot_id = None;
                                     snap_state.status_message = Some("Snapshot deleted".into());
