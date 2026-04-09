@@ -475,10 +475,20 @@ fn run_ui(args: Args) {
         runtime.handle().clone(),
     );
 
+    // Load the app icon. Embedded at compile time so the binary is
+    // self-contained — no runtime dependency on assets/icon.png being
+    // present next to the executable.
+    let icon = load_app_icon();
+
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_inner_size([1024.0, 600.0])
+        .with_title("S21 HiJack");
+    if let Some(icon) = icon {
+        viewport = viewport.with_icon(icon);
+    }
+
     let native_options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1024.0, 600.0])
-            .with_title("S21 HiJack"),
+        viewport,
         ..Default::default()
     };
 
@@ -495,4 +505,29 @@ fn run_ui(args: Args) {
     });
 
     info!("UI closed.");
+}
+
+/// Load the app icon for the window title bar / dock / taskbar.
+///
+/// The 256x256 PNG at `assets/icon.png` is embedded into the binary at
+/// compile time via `include_bytes!` and decoded into raw RGBA on first
+/// call. Returns None and logs a warning if decoding fails so a broken
+/// icon doesn't prevent the app from starting.
+fn load_app_icon() -> Option<eframe::egui::IconData> {
+    const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
+    match image::load_from_memory(ICON_PNG) {
+        Ok(img) => {
+            let rgba = img.to_rgba8();
+            let (width, height) = rgba.dimensions();
+            Some(eframe::egui::IconData {
+                rgba: rgba.into_raw(),
+                width,
+                height,
+            })
+        }
+        Err(e) => {
+            warn!("Failed to decode app icon: {e}");
+            None
+        }
+    }
 }

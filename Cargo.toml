@@ -20,3 +20,4 @@ tokio-util = { version = "0.7", features = ["rt"] }
 libc = "0.2"
 socket2 = { version = "0.5", features = ["all"] }
 rfd = "0.15"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
