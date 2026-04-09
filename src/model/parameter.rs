@@ -11,7 +11,7 @@ pub struct ParameterAddress {
 }
 
 /// Parameter within a channel, organized by section.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ParameterPath {
     // Output
     Name,
@@ -489,11 +489,326 @@ impl ParameterPath {
             _ => None,
         }
     }
+
+    // ─── Phase 0: per-path scope granularity ────────────────────────────
+
+    /// EQ band index range (1..=4).
+    pub const EQ_BAND_RANGE: std::ops::RangeInclusive<u8> = 1..=4;
+    /// Dyn1 band index range (1..=3 for the multiband compressor).
+    pub const DYN1_BAND_RANGE: std::ops::RangeInclusive<u8> = 1..=3;
+    /// Graphic EQ band index range (1..=32).
+    pub const GEQ_BAND_RANGE: std::ops::RangeInclusive<u8> = 1..=32;
+
+    /// Human-readable display label used as the row label in the scope-editor matrix.
+    /// Stable strings — keep them aligned with the DiGiCo console GUI naming.
+    ///
+    /// NOTE: `ParameterPath::Gain` is mapped to two physically different things on
+    /// the two protocols, which is a known pre-existing model bug NOT fixed here:
+    ///   - GP OSC `total/gain` (line 126) = post-fader + CG sum, range -20..+60 dB.
+    ///     The GP OSC protocol provides NO access to the analog preamp on the S21.
+    ///   - iPad `Channel_Input/analog_gain` (line 194) = the actual analog mic
+    ///     preamp, only reachable via the iPad protocol.
+    /// The label below reflects the GP OSC meaning.
+    pub fn label(&self) -> String {
+        match self {
+            ParameterPath::Name => "Name".into(),
+            ParameterPath::Fader => "Fader".into(),
+            ParameterPath::Mute => "Mute".into(),
+            ParameterPath::Solo => "Solo".into(),
+            ParameterPath::Pan => "Pan".into(),
+            ParameterPath::Gain => "Total Gain (Fader + CG)".into(),
+            ParameterPath::GainTracking => "Gain Tracking".into(),
+            ParameterPath::Trim => "Trim".into(),
+            ParameterPath::Balance => "Balance".into(),
+            ParameterPath::Width => "Stereo Width".into(),
+            ParameterPath::Polarity => "Polarity".into(),
+            ParameterPath::Phantom => "+48V".into(),
+            ParameterPath::MainAltIn => "Main / Alt In".into(),
+            ParameterPath::StereoMode => "Stereo Mode".into(),
+            ParameterPath::DelayEnabled => "Delay On/Off".into(),
+            ParameterPath::DelayTime => "Delay Time".into(),
+            ParameterPath::DigitubeEnabled => "DiGiTube On/Off".into(),
+            ParameterPath::DigitubeDrive => "DiGiTube Drive".into(),
+            ParameterPath::DigitubeBias => "DiGiTube Bias".into(),
+            ParameterPath::EqEnabled => "EQ On/Off".into(),
+            ParameterPath::HighpassEnabled => "HPF On/Off".into(),
+            ParameterPath::HighpassFrequency => "HPF Frequency".into(),
+            ParameterPath::LowpassEnabled => "LPF On/Off".into(),
+            ParameterPath::LowpassFrequency => "LPF Frequency".into(),
+            ParameterPath::EqBandFrequency(b) => format!("EQ Band {b} Frequency"),
+            ParameterPath::EqBandGain(b) => format!("EQ Band {b} Gain"),
+            ParameterPath::EqBandQ(b) => format!("EQ Band {b} Q"),
+            ParameterPath::EqBandCurve(b) => format!("EQ Band {b} Curve"),
+            ParameterPath::EqBandDynEnabled(b) => format!("Dyn EQ Band {b} On/Off"),
+            ParameterPath::EqBandDynThreshold(b) => format!("Dyn EQ Band {b} Threshold"),
+            ParameterPath::EqBandDynRatio(b) => format!("Dyn EQ Band {b} Ratio"),
+            ParameterPath::EqBandDynAttack(b) => format!("Dyn EQ Band {b} Attack"),
+            ParameterPath::EqBandDynRelease(b) => format!("Dyn EQ Band {b} Release"),
+            ParameterPath::EqBandDynOverUnder(b) => format!("Dyn EQ Band {b} Over/Under"),
+            ParameterPath::Dyn1Enabled => "Compressor On/Off".into(),
+            ParameterPath::Dyn1Mode => "Compressor Mode".into(),
+            ParameterPath::Dyn1MultibandDeesser => "Multiband De-esser".into(),
+            ParameterPath::Dyn1Threshold(b) => format!("Comp Band {b} Threshold"),
+            ParameterPath::Dyn1Knee(b) => format!("Comp Band {b} Knee"),
+            ParameterPath::Dyn1Ratio(b) => format!("Comp Band {b} Ratio"),
+            ParameterPath::Dyn1Attack(b) => format!("Comp Band {b} Attack"),
+            ParameterPath::Dyn1Release(b) => format!("Comp Band {b} Release"),
+            ParameterPath::Dyn1Gain(b) => format!("Comp Band {b} Gain"),
+            ParameterPath::Dyn1Listen(b) => format!("Comp Band {b} Listen"),
+            ParameterPath::Dyn1CrossoverHigh => "Comp Crossover High".into(),
+            ParameterPath::Dyn1CrossoverLow => "Comp Crossover Low".into(),
+            ParameterPath::Dyn2Enabled => "Gate On/Off".into(),
+            ParameterPath::Dyn2Mode => "Gate Mode".into(),
+            ParameterPath::Dyn2Threshold => "Gate Threshold".into(),
+            ParameterPath::Dyn2Knee => "Gate Knee".into(),
+            ParameterPath::Dyn2Ratio => "Gate Ratio".into(),
+            ParameterPath::Dyn2Range => "Gate Range".into(),
+            ParameterPath::Dyn2Attack => "Gate Attack".into(),
+            ParameterPath::Dyn2Hold => "Gate Hold".into(),
+            ParameterPath::Dyn2Release => "Gate Release".into(),
+            ParameterPath::Dyn2Gain => "Gate Gain".into(),
+            ParameterPath::Dyn2Highpass => "Gate Side-Chain HPF".into(),
+            ParameterPath::Dyn2Lowpass => "Gate Side-Chain LPF".into(),
+            ParameterPath::Dyn2Listen => "Gate Listen".into(),
+            ParameterPath::Dyn2KeySolo => "Gate Key Solo".into(),
+            ParameterPath::SendEnabled(s) => format!("Aux {s} Send On"),
+            ParameterPath::SendLevel(s) => format!("Aux {s} Send Level"),
+            ParameterPath::SendPan(s) => format!("Aux {s} Send Pan"),
+            ParameterPath::GroupSendOn(g) => format!("Group {g} Send On"),
+            ParameterPath::MasterBusOn => "Master Bus Send".into(),
+            ParameterPath::InsertAEnabled => "Insert A".into(),
+            ParameterPath::InsertBEnabled => "Insert B".into(),
+            ParameterPath::CgLevel => "CG Level".into(),
+            ParameterPath::CgMute => "CG Mute".into(),
+            ParameterPath::MatrixSendLevel(s) => format!("Matrix {s} Level"),
+            ParameterPath::MatrixSendOn(s) => format!("Matrix {s} On"),
+            ParameterPath::GeqBandGain(b) => format!("GEQ Band {b}"),
+            ParameterPath::GeqEnabled => "GEQ On/Off".into(),
+        }
+    }
+
+    /// Whether this path is reachable on the given channel type via either the
+    /// GP OSC protocol or the iPad protocol. Source of truth:
+    /// - GP OSC: `Documentation/DiGiCo S OSC Commandset_OSCpaths.csv`
+    /// - iPad protocol: existing `// iPad protocol only` annotations on this enum
+    ///   plus `Documentation/iPad_commands.png`.
+    ///
+    /// CSV table summary (X = present):
+    /// ```text
+    /// path family                          | input | aux | grp | mtx | CG
+    /// name, mute, solo, fader              |   X   |  X  |  X  |  X  |  X
+    /// total/gain, gain_tracking, balance,  |   X   |     |     |     |
+    ///   width, pan, send/{n}/*             |       |     |     |     |
+    /// trim, polarity, delay/*, digitube/*, |   X   |  X  |  X  |  X  |
+    ///   eq/*, dyn1/*, dyn2/*               |       |     |     |     |
+    /// ```
+    /// CG channels expose only Name/Mute/Solo/Fader on GP OSC.
+    pub fn available_for_channel(&self, channel: &ChannelId) -> bool {
+        use ChannelId as C;
+        use ParameterPath as P;
+
+        // First filter by channel-type restrictions for paths that only exist on
+        // specific channel kinds (regardless of GP/iPad).
+        match self {
+            // GraphicEq channels: only GEQ paths plus name/mute/solo/fader.
+            P::GeqBandGain(_) | P::GeqEnabled => return matches!(channel, C::GraphicEq(_)),
+            // MatrixInput channels: only matrix-send paths plus name/mute/solo/fader.
+            P::MatrixSendLevel(_) | P::MatrixSendOn(_) => {
+                return matches!(channel, C::MatrixInput(_));
+            }
+            _ => {}
+        }
+
+        // GraphicEq / MatrixInput channels: outside their specialised paths,
+        // they only support the four universal channel verbs.
+        match channel {
+            C::GraphicEq(_) | C::MatrixInput(_) => {
+                return matches!(self, P::Name | P::Mute | P::Solo | P::Fader);
+            }
+            _ => {}
+        }
+
+        // Universal four (every channel kind in the GP OSC table).
+        if matches!(self, P::Name | P::Mute | P::Solo | P::Fader) {
+            return true;
+        }
+
+        // Control Groups: only the universal four (handled above).
+        if matches!(channel, C::ControlGroup(_)) {
+            return false;
+        }
+
+        // input-only paths (GP OSC + iPad-only input fields).
+        let input_only = matches!(
+            self,
+            P::Gain
+                | P::GainTracking
+                | P::Balance
+                | P::Width
+                | P::Pan
+                | P::SendEnabled(_)
+                | P::SendLevel(_)
+                | P::SendPan(_)
+                // iPad-only input fields:
+                | P::Phantom
+                | P::MainAltIn
+                | P::StereoMode
+                // iPad-only routing originating from inputs:
+                | P::GroupSendOn(_)
+                | P::MasterBusOn
+        );
+        if input_only {
+            return matches!(channel, C::Input(_));
+        }
+
+        // The remaining paths (Trim, Polarity, Delay/*, Digitube/*, all Eq*,
+        // all Dyn1*, all Dyn2*, Inserts, CG membership) apply to
+        // input/aux/grp/mtx but NOT CG/GraphicEq/MatrixInput. CG was already
+        // returned above; GraphicEq/MatrixInput were handled above too.
+        matches!(
+            channel,
+            C::Input(_) | C::Aux(_) | C::Group(_) | C::Matrix(_)
+        )
+    }
+
+    /// Every applicable `ParameterPath` for a given channel type, in signal-flow
+    /// order. Stable across runs so the matrix layout doesn't shuffle between
+    /// frames. The aux/group/matrix send-number ranges are passed in via
+    /// `aux_count` / `group_count` / `matrix_count` so the result respects the
+    /// actual show config.
+    pub fn applicable_to(
+        channel: &ChannelId,
+        aux_count: u8,
+        group_count: u8,
+        matrix_count: u8,
+    ) -> Vec<ParameterPath> {
+        let mut out: Vec<ParameterPath> = Vec::new();
+
+        // Helper closure: push if available on this channel.
+        let push = |p: ParameterPath, out: &mut Vec<ParameterPath>| {
+            if p.available_for_channel(channel) {
+                out.push(p);
+            }
+        };
+
+        // Identity / Output
+        push(ParameterPath::Name, &mut out);
+
+        // Fader/Mute/Pan
+        push(ParameterPath::Fader, &mut out);
+        push(ParameterPath::Mute, &mut out);
+        push(ParameterPath::Solo, &mut out);
+        push(ParameterPath::Pan, &mut out);
+
+        // Input
+        push(ParameterPath::Gain, &mut out);
+        push(ParameterPath::GainTracking, &mut out);
+        push(ParameterPath::Trim, &mut out);
+        push(ParameterPath::Balance, &mut out);
+        push(ParameterPath::Width, &mut out);
+        push(ParameterPath::Polarity, &mut out);
+        push(ParameterPath::Phantom, &mut out);
+        push(ParameterPath::MainAltIn, &mut out);
+        push(ParameterPath::StereoMode, &mut out);
+
+        // Input Processing
+        push(ParameterPath::DelayEnabled, &mut out);
+        push(ParameterPath::DelayTime, &mut out);
+        push(ParameterPath::DigitubeEnabled, &mut out);
+        push(ParameterPath::DigitubeDrive, &mut out);
+        push(ParameterPath::DigitubeBias, &mut out);
+
+        // EQ
+        push(ParameterPath::EqEnabled, &mut out);
+        push(ParameterPath::HighpassEnabled, &mut out);
+        push(ParameterPath::HighpassFrequency, &mut out);
+        push(ParameterPath::LowpassEnabled, &mut out);
+        push(ParameterPath::LowpassFrequency, &mut out);
+        for b in Self::EQ_BAND_RANGE {
+            push(ParameterPath::EqBandFrequency(b), &mut out);
+            push(ParameterPath::EqBandGain(b), &mut out);
+            push(ParameterPath::EqBandQ(b), &mut out);
+            push(ParameterPath::EqBandCurve(b), &mut out);
+            push(ParameterPath::EqBandDynEnabled(b), &mut out);
+            push(ParameterPath::EqBandDynThreshold(b), &mut out);
+            push(ParameterPath::EqBandDynRatio(b), &mut out);
+            push(ParameterPath::EqBandDynAttack(b), &mut out);
+            push(ParameterPath::EqBandDynRelease(b), &mut out);
+            push(ParameterPath::EqBandDynOverUnder(b), &mut out);
+        }
+
+        // Dynamics 1 (compressor / multiband)
+        push(ParameterPath::Dyn1Enabled, &mut out);
+        push(ParameterPath::Dyn1Mode, &mut out);
+        push(ParameterPath::Dyn1MultibandDeesser, &mut out);
+        for b in Self::DYN1_BAND_RANGE {
+            push(ParameterPath::Dyn1Threshold(b), &mut out);
+            push(ParameterPath::Dyn1Knee(b), &mut out);
+            push(ParameterPath::Dyn1Ratio(b), &mut out);
+            push(ParameterPath::Dyn1Attack(b), &mut out);
+            push(ParameterPath::Dyn1Release(b), &mut out);
+            push(ParameterPath::Dyn1Gain(b), &mut out);
+            push(ParameterPath::Dyn1Listen(b), &mut out);
+        }
+        push(ParameterPath::Dyn1CrossoverHigh, &mut out);
+        push(ParameterPath::Dyn1CrossoverLow, &mut out);
+
+        // Dynamics 2 (gate / duck / comp)
+        push(ParameterPath::Dyn2Enabled, &mut out);
+        push(ParameterPath::Dyn2Mode, &mut out);
+        push(ParameterPath::Dyn2Threshold, &mut out);
+        push(ParameterPath::Dyn2Knee, &mut out);
+        push(ParameterPath::Dyn2Ratio, &mut out);
+        push(ParameterPath::Dyn2Range, &mut out);
+        push(ParameterPath::Dyn2Attack, &mut out);
+        push(ParameterPath::Dyn2Hold, &mut out);
+        push(ParameterPath::Dyn2Release, &mut out);
+        push(ParameterPath::Dyn2Gain, &mut out);
+        push(ParameterPath::Dyn2Highpass, &mut out);
+        push(ParameterPath::Dyn2Lowpass, &mut out);
+        push(ParameterPath::Dyn2Listen, &mut out);
+        push(ParameterPath::Dyn2KeySolo, &mut out);
+
+        // Sends (input only)
+        for s in 1..=aux_count {
+            push(ParameterPath::SendEnabled(s), &mut out);
+            push(ParameterPath::SendLevel(s), &mut out);
+            push(ParameterPath::SendPan(s), &mut out);
+        }
+
+        // Group routing (input only, iPad protocol)
+        for g in 1..=group_count {
+            push(ParameterPath::GroupSendOn(g), &mut out);
+        }
+        push(ParameterPath::MasterBusOn, &mut out);
+
+        // Inserts
+        push(ParameterPath::InsertAEnabled, &mut out);
+        push(ParameterPath::InsertBEnabled, &mut out);
+
+        // CG membership
+        push(ParameterPath::CgLevel, &mut out);
+        push(ParameterPath::CgMute, &mut out);
+
+        // Matrix sends (only on MatrixInput channels)
+        for s in 1..=matrix_count {
+            push(ParameterPath::MatrixSendLevel(s), &mut out);
+            push(ParameterPath::MatrixSendOn(s), &mut out);
+        }
+
+        // Graphic EQ (only on GraphicEq channels)
+        push(ParameterPath::GeqEnabled, &mut out);
+        for b in Self::GEQ_BAND_RANGE {
+            push(ParameterPath::GeqBandGain(b), &mut out);
+        }
+
+        out
+    }
 }
 
 /// Parameter sections for scope control (PRD §4.5).
 /// Each section groups related parameters that are captured/recalled together.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ParameterSection {
     Name,
     InputGain,
@@ -1231,5 +1546,271 @@ mod tests {
         let a = ParameterValue::String("foo".into());
         let b = ParameterValue::String("bar".into());
         assert_eq!(a.lerp(&b, 0.5), None);
+    }
+
+    // ─── Phase 0: per-path scope granularity ────────────────────────────
+
+    /// Sample of `ParameterPath` variants used by tests below. Includes at
+    /// least one variant from every section so the matrix-test asserts touch
+    /// every category.
+    fn sample_paths() -> Vec<ParameterPath> {
+        vec![
+            ParameterPath::Name,
+            ParameterPath::Fader,
+            ParameterPath::Mute,
+            ParameterPath::Solo,
+            ParameterPath::Pan,
+            ParameterPath::Gain,
+            ParameterPath::GainTracking,
+            ParameterPath::Trim,
+            ParameterPath::Balance,
+            ParameterPath::Width,
+            ParameterPath::Polarity,
+            ParameterPath::Phantom,
+            ParameterPath::MainAltIn,
+            ParameterPath::StereoMode,
+            ParameterPath::DelayEnabled,
+            ParameterPath::DelayTime,
+            ParameterPath::DigitubeEnabled,
+            ParameterPath::DigitubeDrive,
+            ParameterPath::DigitubeBias,
+            ParameterPath::EqEnabled,
+            ParameterPath::HighpassEnabled,
+            ParameterPath::HighpassFrequency,
+            ParameterPath::LowpassEnabled,
+            ParameterPath::LowpassFrequency,
+            ParameterPath::EqBandFrequency(1),
+            ParameterPath::EqBandGain(2),
+            ParameterPath::EqBandQ(3),
+            ParameterPath::EqBandCurve(4),
+            ParameterPath::EqBandDynEnabled(1),
+            ParameterPath::EqBandDynThreshold(2),
+            ParameterPath::EqBandDynRatio(3),
+            ParameterPath::EqBandDynAttack(4),
+            ParameterPath::EqBandDynRelease(1),
+            ParameterPath::EqBandDynOverUnder(2),
+            ParameterPath::Dyn1Enabled,
+            ParameterPath::Dyn1Mode,
+            ParameterPath::Dyn1MultibandDeesser,
+            ParameterPath::Dyn1Threshold(1),
+            ParameterPath::Dyn1Knee(2),
+            ParameterPath::Dyn1Ratio(3),
+            ParameterPath::Dyn1Attack(1),
+            ParameterPath::Dyn1Release(2),
+            ParameterPath::Dyn1Gain(3),
+            ParameterPath::Dyn1Listen(1),
+            ParameterPath::Dyn1CrossoverHigh,
+            ParameterPath::Dyn1CrossoverLow,
+            ParameterPath::Dyn2Enabled,
+            ParameterPath::Dyn2Mode,
+            ParameterPath::Dyn2Threshold,
+            ParameterPath::Dyn2Knee,
+            ParameterPath::Dyn2Ratio,
+            ParameterPath::Dyn2Range,
+            ParameterPath::Dyn2Attack,
+            ParameterPath::Dyn2Hold,
+            ParameterPath::Dyn2Release,
+            ParameterPath::Dyn2Gain,
+            ParameterPath::Dyn2Highpass,
+            ParameterPath::Dyn2Lowpass,
+            ParameterPath::Dyn2Listen,
+            ParameterPath::Dyn2KeySolo,
+            ParameterPath::SendEnabled(1),
+            ParameterPath::SendLevel(2),
+            ParameterPath::SendPan(3),
+            ParameterPath::GroupSendOn(1),
+            ParameterPath::MasterBusOn,
+            ParameterPath::InsertAEnabled,
+            ParameterPath::InsertBEnabled,
+            ParameterPath::CgLevel,
+            ParameterPath::CgMute,
+            ParameterPath::MatrixSendLevel(1),
+            ParameterPath::MatrixSendOn(2),
+            ParameterPath::GeqEnabled,
+            ParameterPath::GeqBandGain(5),
+        ]
+    }
+
+    #[test]
+    fn parameter_path_label_is_unique_per_variant() {
+        use std::collections::HashSet;
+        let mut labels = HashSet::new();
+        for path in sample_paths() {
+            let label = path.label();
+            assert!(!label.is_empty(), "empty label for {path:?}");
+            assert!(
+                labels.insert(label.clone()),
+                "duplicate label '{label}' on {path:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn available_for_channel_pan_is_input_only() {
+        assert!(ParameterPath::Pan.available_for_channel(&ChannelId::Input(1)));
+        assert!(!ParameterPath::Pan.available_for_channel(&ChannelId::Aux(1)));
+        assert!(!ParameterPath::Pan.available_for_channel(&ChannelId::Group(1)));
+        assert!(!ParameterPath::Pan.available_for_channel(&ChannelId::Matrix(1)));
+        assert!(!ParameterPath::Pan.available_for_channel(&ChannelId::ControlGroup(1)));
+    }
+
+    #[test]
+    fn available_for_channel_total_gain_is_input_only() {
+        assert!(ParameterPath::Gain.available_for_channel(&ChannelId::Input(1)));
+        assert!(!ParameterPath::Gain.available_for_channel(&ChannelId::Aux(1)));
+        assert!(!ParameterPath::Gain.available_for_channel(&ChannelId::Group(1)));
+        assert!(!ParameterPath::Gain.available_for_channel(&ChannelId::Matrix(1)));
+        assert!(!ParameterPath::Gain.available_for_channel(&ChannelId::ControlGroup(1)));
+    }
+
+    #[test]
+    fn available_for_channel_send_is_input_only() {
+        let s = ParameterPath::SendLevel(1);
+        assert!(s.available_for_channel(&ChannelId::Input(1)));
+        assert!(!s.available_for_channel(&ChannelId::Aux(1)));
+        assert!(!s.available_for_channel(&ChannelId::Group(1)));
+    }
+
+    #[test]
+    fn available_for_channel_cg_only_has_name_mute_solo_fader() {
+        let cg = ChannelId::ControlGroup(1);
+        // The four universal verbs.
+        assert!(ParameterPath::Name.available_for_channel(&cg));
+        assert!(ParameterPath::Mute.available_for_channel(&cg));
+        assert!(ParameterPath::Solo.available_for_channel(&cg));
+        assert!(ParameterPath::Fader.available_for_channel(&cg));
+        // Everything else from the sample is excluded.
+        for path in sample_paths() {
+            if matches!(
+                path,
+                ParameterPath::Name
+                    | ParameterPath::Mute
+                    | ParameterPath::Solo
+                    | ParameterPath::Fader
+            ) {
+                continue;
+            }
+            assert!(
+                !path.available_for_channel(&cg),
+                "{path:?} should NOT be available on Control Group",
+            );
+        }
+    }
+
+    #[test]
+    fn available_for_channel_eq_dyn_apply_to_input_aux_grp_mtx_but_not_cg() {
+        let eq = ParameterPath::EqBandGain(1);
+        assert!(eq.available_for_channel(&ChannelId::Input(1)));
+        assert!(eq.available_for_channel(&ChannelId::Aux(1)));
+        assert!(eq.available_for_channel(&ChannelId::Group(1)));
+        assert!(eq.available_for_channel(&ChannelId::Matrix(1)));
+        assert!(!eq.available_for_channel(&ChannelId::ControlGroup(1)));
+
+        let dyn1 = ParameterPath::Dyn1Threshold(1);
+        assert!(dyn1.available_for_channel(&ChannelId::Input(1)));
+        assert!(dyn1.available_for_channel(&ChannelId::Aux(1)));
+        assert!(!dyn1.available_for_channel(&ChannelId::ControlGroup(1)));
+    }
+
+    #[test]
+    fn available_for_channel_geq_only_on_graphic_eq_channel() {
+        let geq = ParameterPath::GeqBandGain(5);
+        assert!(geq.available_for_channel(&ChannelId::GraphicEq(1)));
+        assert!(!geq.available_for_channel(&ChannelId::Input(1)));
+        assert!(!geq.available_for_channel(&ChannelId::Aux(1)));
+    }
+
+    #[test]
+    fn available_for_channel_matrix_send_only_on_matrix_input_channel() {
+        let m = ParameterPath::MatrixSendLevel(1);
+        assert!(m.available_for_channel(&ChannelId::MatrixInput(1)));
+        assert!(!m.available_for_channel(&ChannelId::Input(1)));
+        assert!(!m.available_for_channel(&ChannelId::Matrix(1)));
+    }
+
+    #[test]
+    fn graphic_eq_channel_supports_only_geq_and_universal_four() {
+        let geq_ch = ChannelId::GraphicEq(1);
+        // Universal four:
+        assert!(ParameterPath::Name.available_for_channel(&geq_ch));
+        assert!(ParameterPath::Mute.available_for_channel(&geq_ch));
+        assert!(ParameterPath::Solo.available_for_channel(&geq_ch));
+        assert!(ParameterPath::Fader.available_for_channel(&geq_ch));
+        // GEQ-specific:
+        assert!(ParameterPath::GeqEnabled.available_for_channel(&geq_ch));
+        assert!(ParameterPath::GeqBandGain(1).available_for_channel(&geq_ch));
+        // Channel-processing paths are NOT applicable to a GEQ channel:
+        assert!(!ParameterPath::EqBandGain(1).available_for_channel(&geq_ch));
+        assert!(!ParameterPath::Dyn1Enabled.available_for_channel(&geq_ch));
+        assert!(!ParameterPath::Trim.available_for_channel(&geq_ch));
+    }
+
+    #[test]
+    fn applicable_to_input_includes_eq_bands_1_through_4() {
+        let paths = ParameterPath::applicable_to(&ChannelId::Input(1), 8, 8, 8);
+        for b in 1..=4 {
+            assert!(
+                paths.contains(&ParameterPath::EqBandFrequency(b)),
+                "missing EqBandFrequency({b}) for Input",
+            );
+            assert!(paths.contains(&ParameterPath::EqBandGain(b)));
+            assert!(paths.contains(&ParameterPath::EqBandQ(b)));
+        }
+    }
+
+    #[test]
+    fn applicable_to_aux_excludes_pan_and_total_gain() {
+        let paths = ParameterPath::applicable_to(&ChannelId::Aux(1), 8, 8, 8);
+        assert!(!paths.contains(&ParameterPath::Pan));
+        assert!(!paths.contains(&ParameterPath::Gain));
+        assert!(!paths.contains(&ParameterPath::SendLevel(1)));
+        // EQ + Dyn still apply.
+        assert!(paths.contains(&ParameterPath::EqBandFrequency(1)));
+        assert!(paths.contains(&ParameterPath::Dyn1Threshold(1)));
+        // Universal four.
+        assert!(paths.contains(&ParameterPath::Fader));
+        assert!(paths.contains(&ParameterPath::Mute));
+    }
+
+    #[test]
+    fn applicable_to_cg_returns_only_four_paths() {
+        let paths = ParameterPath::applicable_to(&ChannelId::ControlGroup(1), 8, 8, 8);
+        assert_eq!(paths.len(), 4);
+        assert!(paths.contains(&ParameterPath::Name));
+        assert!(paths.contains(&ParameterPath::Fader));
+        assert!(paths.contains(&ParameterPath::Mute));
+        assert!(paths.contains(&ParameterPath::Solo));
+    }
+
+    #[test]
+    fn applicable_to_input_includes_send_count_rows() {
+        let paths = ParameterPath::applicable_to(&ChannelId::Input(1), 12, 8, 8);
+        assert!(paths.contains(&ParameterPath::SendLevel(1)));
+        assert!(paths.contains(&ParameterPath::SendLevel(12)));
+        assert!(!paths.contains(&ParameterPath::SendLevel(13)));
+    }
+
+    #[test]
+    fn applicable_to_orders_deterministically() {
+        let a = ParameterPath::applicable_to(&ChannelId::Input(1), 8, 8, 8);
+        let b = ParameterPath::applicable_to(&ChannelId::Input(1), 8, 8, 8);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn parameter_path_orders_via_derived_ord() {
+        // Smoke test for the new PartialOrd/Ord derive on ParameterPath.
+        let mut paths = vec![
+            ParameterPath::Solo,
+            ParameterPath::Fader,
+            ParameterPath::Mute,
+        ];
+        paths.sort();
+        // The order is the natural enum-discriminant order, which puts
+        // Fader before Mute before Solo (per the variant ordering at the
+        // top of this file).
+        assert_eq!(paths[0], ParameterPath::Fader);
+        assert_eq!(paths[1], ParameterPath::Mute);
+        assert_eq!(paths[2], ParameterPath::Solo);
     }
 }

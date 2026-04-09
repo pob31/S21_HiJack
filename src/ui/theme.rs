@@ -327,7 +327,7 @@ pub fn channel_color(channel: &ChannelId) -> egui::Color32 {
 }
 
 /// Lighten a color by adding a fixed amount to each channel.
-fn lighten(color: egui::Color32, amount: u8) -> egui::Color32 {
+pub fn lighten(color: egui::Color32, amount: u8) -> egui::Color32 {
     egui::Color32::from_rgb(
         color.r().saturating_add(amount),
         color.g().saturating_add(amount),

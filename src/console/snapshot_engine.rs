@@ -415,6 +415,7 @@ mod tests {
             "Test".into(),
             vec![ChannelScope {
                 channel: ChannelId::Input(1),
+                paths: HashSet::new(),
                 sections: HashSet::from([ParameterSection::FaderMutePan]),
             }],
         );
@@ -448,6 +449,7 @@ mod tests {
             "Test".into(),
             vec![ChannelScope {
                 channel: ChannelId::Input(1),
+                paths: HashSet::new(),
                 sections: HashSet::from([ParameterSection::Inserts]),
             }],
         );
@@ -486,6 +488,7 @@ mod tests {
             "Test".into(),
             vec![ChannelScope {
                 channel: ChannelId::Input(1),
+                paths: HashSet::new(),
                 sections: HashSet::from([ParameterSection::Eq]),
             }],
         );
@@ -523,6 +526,7 @@ mod tests {
             "Test".into(),
             vec![ChannelScope {
                 channel: ChannelId::Input(1),
+                paths: HashSet::new(),
                 sections: HashSet::from([ParameterSection::Eq]),
             }],
         );
@@ -550,6 +554,7 @@ mod tests {
             "Test".into(),
             vec![ChannelScope {
                 channel: ChannelId::Input(1),
+                paths: HashSet::new(),
                 sections: HashSet::from([ParameterSection::FaderMutePan, ParameterSection::Eq]),
             }],
         );
@@ -592,6 +597,7 @@ mod tests {
             "Test".into(),
             vec![ChannelScope {
                 channel: ChannelId::Input(1),
+                paths: HashSet::new(),
                 sections: HashSet::from([ParameterSection::Inserts]),
             }],
         );
@@ -622,6 +628,7 @@ mod tests {
             "Test".into(),
             vec![ChannelScope {
                 channel: ChannelId::Input(1),
+                paths: HashSet::new(),
                 sections: HashSet::from([ParameterSection::Eq]),
             }],
         );
@@ -655,6 +662,7 @@ mod tests {
             "Test".into(),
             vec![ChannelScope {
                 channel: ChannelId::Input(1),
+                paths: HashSet::new(),
                 sections: HashSet::from([ParameterSection::FaderMutePan]),
             }],
         );
@@ -694,6 +702,7 @@ mod tests {
             "Test".into(),
             vec![ChannelScope {
                 channel: ChannelId::Input(1),
+                paths: HashSet::new(),
                 sections: HashSet::from([ParameterSection::FaderMutePan]),
             }],
         );
@@ -729,6 +738,7 @@ mod tests {
             "Full".into(),
             vec![ChannelScope {
                 channel: ChannelId::Input(1),
+                paths: HashSet::new(),
                 sections: HashSet::from([ParameterSection::FaderMutePan, ParameterSection::Eq]),
             }],
         );
@@ -738,6 +748,7 @@ mod tests {
             "EQ Only".into(),
             vec![ChannelScope {
                 channel: ChannelId::Input(1),
+                paths: HashSet::new(),
                 sections: HashSet::from([ParameterSection::Eq]),
             }],
         );

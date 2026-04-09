@@ -208,10 +208,7 @@ impl ScopeEditorState {
             .channel_selections
             .iter()
             .filter(|(_, sections)| !sections.is_empty())
-            .map(|(ch, sections)| ChannelScope {
-                channel: ch.clone(),
-                sections: sections.clone(),
-            })
+            .map(|(ch, sections)| ChannelScope::from_sections(ch.clone(), sections.clone()))
             .collect();
         ScopeTemplate::new(name, channel_scopes)
     }
@@ -277,6 +274,45 @@ impl ScopeEditorState {
                 .get(ch)
                 .is_some_and(|s| s.contains(section))
         })
+    }
+
+    /// Toggle a single (channel, section) cell.
+    pub fn toggle_channel_section(&mut self, channel: &ChannelId, section: &ParameterSection) {
+        let entry = self.channel_selections.entry(channel.clone()).or_default();
+        if entry.contains(section) {
+            entry.remove(section);
+            if entry.is_empty() {
+                self.channel_selections.remove(channel);
+            }
+        } else {
+            entry.insert(section.clone());
+        }
+    }
+
+    /// Check whether a single (channel, section) cell is selected.
+    pub fn is_channel_section_selected(
+        &self,
+        channel: &ChannelId,
+        section: &ParameterSection,
+    ) -> bool {
+        self.channel_selections
+            .get(channel)
+            .is_some_and(|s| s.contains(section))
+    }
+
+    /// Toggle every section for one channel: turn them all off if any are on,
+    /// otherwise enable every applicable section.
+    pub fn toggle_channel_all(&mut self, channel: &ChannelId, applicable: &[ParameterSection]) {
+        let any_on = self
+            .channel_selections
+            .get(channel)
+            .is_some_and(|s| !s.is_empty());
+        if any_on {
+            self.channel_selections.remove(channel);
+        } else {
+            let set: HashSet<ParameterSection> = applicable.iter().cloned().collect();
+            self.channel_selections.insert(channel.clone(), set);
+        }
     }
 
     /// Check if any channels in a group have a specific section selected.
@@ -443,5 +479,185 @@ pub fn draw_scope_editor(
                     }
                 });
             });
+
+        ui.add_space(12.0);
+        draw_per_channel_matrix(
+            ui,
+            state,
+            active_group,
+            &applicable,
+            input_count,
+            aux_count,
+            group_count,
+        );
+    }
+}
+
+/// Per-channel matrix: one row per channel in the active group, one cell per
+/// applicable section. Allows enabling/disabling individual channel-section pairs.
+fn draw_per_channel_matrix(
+    ui: &mut egui::Ui,
+    state: &mut ScopeEditorState,
+    active_group: &ChannelGroup,
+    applicable: &[ParameterSection],
+    input_count: u8,
+    aux_count: u8,
+    group_count: u8,
+) {
+    let channels = active_group.channels(input_count, aux_count, group_count);
+    if channels.is_empty() || applicable.is_empty() {
+        return;
+    }
+
+    ui.label(
+        egui::RichText::new("Per-Channel")
+            .strong()
+            .color(theme::TEXT_PRIMARY)
+            .size(theme::FONT_SIZE_BADGE),
+    );
+    ui.add_space(4.0);
+
+    // Sort applicable sections so the column order is stable across frames.
+    // ParameterSection derives Ord via its enum order, which is good enough.
+    let mut sections: Vec<ParameterSection> = applicable.to_vec();
+    sections.sort();
+
+    let cell_size = egui::Vec2::new(28.0, 18.0);
+    let cell_spacing = 3.0;
+    let label_width = 70.0;
+
+    egui::ScrollArea::both()
+        .id_salt("scope_per_channel_matrix")
+        .max_height(280.0)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            // Header row: short section names above their column.
+            ui.horizontal(|ui| {
+                // Spacer matching channel label + "All" cell width.
+                ui.allocate_exact_size(
+                    egui::Vec2::new(label_width + cell_size.x + cell_spacing * 2.0, cell_size.y),
+                    egui::Sense::hover(),
+                );
+                for section in &sections {
+                    let (rect, _) = ui.allocate_exact_size(cell_size, egui::Sense::hover());
+                    let galley = ui.painter().layout_no_wrap(
+                        section_short_label(section).to_string(),
+                        egui::FontId::proportional(10.0),
+                        theme::TEXT_SECONDARY,
+                    );
+                    let pos = rect.center() - galley.size() / 2.0;
+                    ui.painter().galley(pos, galley, theme::TEXT_SECONDARY);
+                    ui.add_space(cell_spacing);
+                }
+            });
+
+            // One row per channel.
+            for ch in &channels {
+                ui.horizontal(|ui| {
+                    // Channel label.
+                    let (label_rect, _) = ui.allocate_exact_size(
+                        egui::Vec2::new(label_width, cell_size.y),
+                        egui::Sense::hover(),
+                    );
+                    let label_text = format!("{ch}");
+                    let label_galley = ui.painter().layout_no_wrap(
+                        label_text,
+                        egui::FontId::proportional(11.0),
+                        theme::TEXT_PRIMARY,
+                    );
+                    let lp = egui::pos2(
+                        label_rect.left() + 4.0,
+                        label_rect.center().y - label_galley.size().y / 2.0,
+                    );
+                    ui.painter().galley(lp, label_galley, theme::TEXT_PRIMARY);
+                    ui.add_space(cell_spacing);
+
+                    // "All" toggle for this channel.
+                    let any_on = state
+                        .channel_selections
+                        .get(ch)
+                        .is_some_and(|s| !s.is_empty());
+                    let all_on = state
+                        .channel_selections
+                        .get(ch)
+                        .is_some_and(|s| sections.iter().all(|sec| s.contains(sec)));
+                    let all_resp = matrix_cell(ui, cell_size, all_on, any_on, "All");
+                    if all_resp.clicked() {
+                        state.toggle_channel_all(ch, &sections);
+                    }
+                    ui.add_space(cell_spacing);
+
+                    // One cell per section.
+                    for section in &sections {
+                        let selected = state.is_channel_section_selected(ch, section);
+                        let resp = matrix_cell(ui, cell_size, selected, selected, "");
+                        if resp.clicked() {
+                            state.toggle_channel_section(ch, section);
+                        }
+                        let _ = resp.on_hover_text(format!("{ch} — {}", section_short_label(section)));
+                        ui.add_space(cell_spacing);
+                    }
+                });
+            }
+        });
+}
+
+/// Render a single matrix cell. Green if `all_selected`, partial green if
+/// `any_selected`, dark grey otherwise. Optional centred label text.
+fn matrix_cell(
+    ui: &mut egui::Ui,
+    size: egui::Vec2,
+    all_selected: bool,
+    any_selected: bool,
+    label: &str,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let base = if all_selected {
+        theme::SCOPE_ACTIVE
+    } else if any_selected {
+        theme::SCOPE_PARTIAL
+    } else {
+        theme::SCOPE_INACTIVE
+    };
+    let fill = if response.hovered() {
+        theme::lighten(base, 25)
+    } else {
+        base
+    };
+    ui.painter().rect_filled(rect, 3.0, fill);
+    if !label.is_empty() {
+        let color = if all_selected || any_selected {
+            theme::TEXT_PRIMARY
+        } else {
+            theme::TEXT_SECONDARY
+        };
+        let galley = ui.painter().layout_no_wrap(
+            label.to_string(),
+            egui::FontId::proportional(9.0),
+            color,
+        );
+        let pos = rect.center() - galley.size() / 2.0;
+        ui.painter().galley(pos, galley, color);
+    }
+    response
+}
+
+/// Short label used as a column header in the per-channel matrix.
+fn section_short_label(section: &ParameterSection) -> &'static str {
+    match section {
+        ParameterSection::Name => "Name",
+        ParameterSection::InputGain => "Gain",
+        ParameterSection::Digitube => "Tube",
+        ParameterSection::Delay => "Dly",
+        ParameterSection::Inserts => "Ins",
+        ParameterSection::Eq => "EQ",
+        ParameterSection::Dyn1 => "Dy1",
+        ParameterSection::Dyn2 => "Dy2",
+        ParameterSection::GraphicEq => "GEQ",
+        ParameterSection::Sends => "Snd",
+        ParameterSection::GroupRouting => "Grp",
+        ParameterSection::MatrixSends => "Mtx",
+        ParameterSection::FaderMutePan => "Fdr",
+        ParameterSection::CgMembership => "CG",
     }
 }

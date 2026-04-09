@@ -56,6 +56,11 @@ pub struct SetupTabState {
     pub ipad_reply_port: String,
     pub ipad_connected: bool,
     pub monitor_port: String,
+    /// QLab destination IP — defaults to localhost. Can point to a remote Mac
+    /// running QLab when the daemon runs on a separate box (e.g. a Linux host).
+    pub qlab_ip: String,
+    /// QLab destination port (default 53000 — QLab's standard OSC listen port).
+    pub qlab_port: String,
     pub channel_option: ChannelOption,
     pub aux_count: String,
 }
@@ -101,6 +106,8 @@ impl SetupTabState {
             } else {
                 String::new()
             },
+            qlab_ip: "127.0.0.1".to_string(),
+            qlab_port: "53000".to_string(),
             channel_option: ChannelOption::Base,
             aux_count: "8".to_string(),
         }
@@ -182,8 +189,26 @@ pub fn draw_setup_tab(
                     ui.add_enabled(!is_connected, egui::TextEdit::singleline(&mut setup.local_port).desired_width(80.0));
                     ui.end_row();
 
-                    ui.label("Trigger Port (QLab):");
+                    ui.label("Trigger Port (QLab→daemon):");
                     ui.add_enabled(!is_connected, egui::TextEdit::singleline(&mut setup.trigger_port).desired_width(80.0));
+                    ui.end_row();
+
+                    ui.label("QLab IP (daemon→QLab):");
+                    ui.add_enabled(
+                        !is_connected,
+                        egui::TextEdit::singleline(&mut setup.qlab_ip)
+                            .desired_width(200.0)
+                            .hint_text("127.0.0.1"),
+                    );
+                    ui.end_row();
+
+                    ui.label("QLab Port (daemon→QLab):");
+                    ui.add_enabled(
+                        !is_connected,
+                        egui::TextEdit::singleline(&mut setup.qlab_port)
+                            .desired_width(80.0)
+                            .hint_text("53000"),
+                    );
                     ui.end_row();
                 });
 
@@ -1102,6 +1127,8 @@ fn save_show_file(
         ipad_listen_port: setup.ipad_listen_port.parse().unwrap_or(0),
         ipad_reply_port: setup.ipad_reply_port.parse().unwrap_or(0),
         monitor_port: setup.monitor_port.parse().unwrap_or(0),
+        qlab_ip: setup.qlab_ip.clone(),
+        qlab_port: setup.qlab_port.parse().unwrap_or(53000),
     };
 
     runtime.spawn(async move {
@@ -1113,7 +1140,7 @@ fn save_show_file(
         let gmgr = gang_mgr.read().await;
 
         let show = ShowFile {
-            version: 6,
+            version: 8,
             console_config: state_guard.config.clone(),
             connection: conn_settings,
             scope_templates: mgr.scope_templates.values().cloned().collect(),

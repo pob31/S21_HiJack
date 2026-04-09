@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::channel::ChannelId;
-use super::parameter::{ParameterAddress, ParameterSection, ParameterValue};
+use super::parameter::{ParameterAddress, ParameterPath, ParameterSection, ParameterValue};
 
 /// Reusable scope template — defines which channels and sections to capture/recall.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -26,19 +26,81 @@ impl ScopeTemplate {
     }
 
     /// Check if a parameter address is within this scope.
+    ///
+    /// Reads BOTH the new per-path `paths` field (the v8+ source of truth)
+    /// AND the legacy per-section `sections` field (kept for v7 back-compat).
+    /// New scopes write only `paths`; the migration helper expands legacy
+    /// section selections into paths the first time the scope editor opens
+    /// a v7 template.
     pub fn contains(&self, addr: &ParameterAddress) -> bool {
         let section = addr.parameter.section();
         self.channel_scopes.iter().any(|cs| {
-            cs.channel == addr.channel && cs.sections.contains(&section)
+            cs.channel == addr.channel
+                && (cs.paths.contains(&addr.parameter) || cs.sections.contains(&section))
         })
     }
 }
 
-/// Which sections are in scope for a specific channel.
+/// Which parameters are in scope for a specific channel.
+///
+/// Carries both the new per-`ParameterPath` granularity (`paths`, v8+) and the
+/// legacy per-`ParameterSection` field (`sections`, v7 and earlier). The two
+/// fields are read additively by `ScopeTemplate::contains` so legacy show files
+/// keep working without a load-time migration. New scopes write only to
+/// `paths`; `migrate_sections_to_paths` expands the legacy field into the new
+/// one when the scope editor first touches a legacy template.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChannelScope {
     pub channel: ChannelId,
+    /// Per-path scope (new in v8). Maximum granularity — every distinct
+    /// `ParameterPath` is independently selectable.
+    #[serde(default)]
+    pub paths: HashSet<ParameterPath>,
+    /// Legacy per-section scope (v7 and earlier). Empty for new scopes; kept
+    /// populated only for legacy templates that haven't yet been edited.
+    #[serde(default)]
     pub sections: HashSet<ParameterSection>,
+}
+
+impl ChannelScope {
+    /// Build a new path-granularity ChannelScope (v8+ style).
+    pub fn new(channel: ChannelId, paths: HashSet<ParameterPath>) -> Self {
+        Self {
+            channel,
+            paths,
+            sections: HashSet::new(),
+        }
+    }
+
+    /// Build a legacy section-granularity ChannelScope. Used by tests and the
+    /// section→path migration helper.
+    pub fn from_sections(channel: ChannelId, sections: HashSet<ParameterSection>) -> Self {
+        Self {
+            channel,
+            paths: HashSet::new(),
+            sections,
+        }
+    }
+
+    /// Expand the legacy `sections` field into `paths` (every applicable path
+    /// whose section is in `sections` is added). Called by the scope editor
+    /// when it loads a legacy template so subsequent edits operate on paths.
+    /// Idempotent — safe to call repeatedly. The aux/group/matrix counts come
+    /// from the show config so the path enumeration respects the actual
+    /// number of sends configured.
+    pub fn migrate_sections_to_paths(&mut self, aux_count: u8, group_count: u8, matrix_count: u8) {
+        if self.sections.is_empty() {
+            return;
+        }
+        for path in
+            ParameterPath::applicable_to(&self.channel, aux_count, group_count, matrix_count)
+        {
+            if self.sections.contains(&path.section()) {
+                self.paths.insert(path);
+            }
+        }
+        self.sections.clear();
+    }
 }
 
 /// A captured snapshot of console parameters.
@@ -240,13 +302,13 @@ mod tests {
     fn scope_contains_matching_parameter() {
         let scope = ScopeTemplate::new(
             "Test".into(),
-            vec![ChannelScope {
-                channel: ChannelId::Input(1),
-                sections: HashSet::from([
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([
                     ParameterSection::FaderMutePan,
                     ParameterSection::Eq,
                 ]),
-            }],
+            )],
         );
 
         let fader_addr = ParameterAddress {
@@ -266,10 +328,10 @@ mod tests {
     fn scope_rejects_out_of_scope() {
         let scope = ScopeTemplate::new(
             "Test".into(),
-            vec![ChannelScope {
-                channel: ChannelId::Input(1),
-                sections: HashSet::from([ParameterSection::FaderMutePan]),
-            }],
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
         );
 
         // Wrong section
@@ -355,5 +417,137 @@ mod tests {
         let list = CueList::default();
         assert_eq!(list.name, "Main");
         assert!(list.cues.is_empty());
+    }
+
+    // ─── Phase 0: per-path scope granularity ────────────────────────────
+
+    #[test]
+    fn legacy_section_scope_still_contains_in_section_param() {
+        // Legacy v7 ChannelScope: only `sections` is populated, no `paths`.
+        let scope = ScopeTemplate::new(
+            "Legacy".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::Eq]),
+            )],
+        );
+
+        // EqBandFrequency(2) belongs to ParameterSection::Eq → still in scope.
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::EqBandFrequency(2),
+        };
+        assert!(scope.contains(&addr));
+
+        // FaderMutePan is NOT in {Eq} → out of scope.
+        let fader_addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        assert!(!scope.contains(&fader_addr));
+    }
+
+    #[test]
+    fn new_path_scope_contains_only_listed_paths() {
+        let scope = ScopeTemplate::new(
+            "New".into(),
+            vec![ChannelScope::new(
+                ChannelId::Input(1),
+                HashSet::from([ParameterPath::EqBandGain(1)]),
+            )],
+        );
+
+        // Exact match.
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::EqBandGain(1),
+        };
+        assert!(scope.contains(&addr));
+
+        // Same section but different path → out of scope (per-path granularity).
+        let addr2 = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::EqBandGain(2),
+        };
+        assert!(!scope.contains(&addr2));
+    }
+
+    #[test]
+    fn migrate_sections_to_paths_expands_correctly() {
+        let mut cs = ChannelScope::from_sections(
+            ChannelId::Input(1),
+            HashSet::from([ParameterSection::Eq]),
+        );
+        assert!(cs.paths.is_empty());
+        assert!(!cs.sections.is_empty());
+
+        cs.migrate_sections_to_paths(8, 8, 8);
+
+        assert!(cs.sections.is_empty(), "sections should be drained");
+        // Every applicable EQ-section path should now be present.
+        assert!(cs.paths.contains(&ParameterPath::EqEnabled));
+        assert!(cs.paths.contains(&ParameterPath::EqBandFrequency(1)));
+        assert!(cs.paths.contains(&ParameterPath::EqBandFrequency(4)));
+        assert!(cs.paths.contains(&ParameterPath::EqBandDynRelease(2)));
+        // Non-EQ paths must NOT be present.
+        assert!(!cs.paths.contains(&ParameterPath::Fader));
+        assert!(!cs.paths.contains(&ParameterPath::Dyn1Threshold(1)));
+    }
+
+    #[test]
+    fn migrate_sections_to_paths_is_idempotent() {
+        let mut cs = ChannelScope::from_sections(
+            ChannelId::Input(1),
+            HashSet::from([ParameterSection::FaderMutePan]),
+        );
+        cs.migrate_sections_to_paths(8, 8, 8);
+        let snapshot = cs.paths.clone();
+        // Second call is a no-op (sections already drained).
+        cs.migrate_sections_to_paths(8, 8, 8);
+        assert_eq!(cs.paths, snapshot);
+    }
+
+    #[test]
+    fn migrate_sections_to_paths_skips_paths_not_applicable_to_channel() {
+        // Aux channel has no Pan / no Send paths even if `Sends` is in scope.
+        let mut cs = ChannelScope::from_sections(
+            ChannelId::Aux(1),
+            HashSet::from([ParameterSection::Sends, ParameterSection::FaderMutePan]),
+        );
+        cs.migrate_sections_to_paths(8, 8, 8);
+        // Sends section produced 0 paths for Aux (sends are input-only).
+        assert!(!cs.paths.iter().any(|p| matches!(p, ParameterPath::SendLevel(_))));
+        // FaderMutePan paths are present, but not Pan (input-only on S21 GP OSC).
+        assert!(cs.paths.contains(&ParameterPath::Fader));
+        assert!(cs.paths.contains(&ParameterPath::Mute));
+        assert!(cs.paths.contains(&ParameterPath::Solo));
+        assert!(!cs.paths.contains(&ParameterPath::Pan));
+    }
+
+    #[test]
+    fn channel_scope_deserializes_v7_shape_with_only_sections_field() {
+        // v7-shaped JSON: ChannelScope had only the `sections` field.
+        let json = r#"{
+            "channel": {"Input": 1},
+            "sections": ["Eq", "FaderMutePan"]
+        }"#;
+        let cs: ChannelScope = serde_json::from_str(json).unwrap();
+        assert!(cs.paths.is_empty());
+        assert_eq!(cs.sections.len(), 2);
+        assert!(cs.sections.contains(&ParameterSection::Eq));
+        assert!(cs.sections.contains(&ParameterSection::FaderMutePan));
+    }
+
+    #[test]
+    fn channel_scope_deserializes_v8_shape_with_paths_only() {
+        // v8 shape: only `paths`, no `sections`.
+        let json = r#"{
+            "channel": {"Input": 1},
+            "paths": [{"EqBandGain": 2}]
+        }"#;
+        let cs: ChannelScope = serde_json::from_str(json).unwrap();
+        assert!(cs.sections.is_empty());
+        assert_eq!(cs.paths.len(), 1);
+        assert!(cs.paths.contains(&ParameterPath::EqBandGain(2)));
     }
 }

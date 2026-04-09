@@ -226,6 +226,12 @@ impl HiJackApp {
                         if conn.monitor_port > 0 {
                             self.setup.monitor_port = conn.monitor_port.to_string();
                         }
+                        if !conn.qlab_ip.is_empty() {
+                            self.setup.qlab_ip = conn.qlab_ip;
+                        }
+                        if conn.qlab_port > 0 {
+                            self.setup.qlab_port = conn.qlab_port.to_string();
+                        }
                     }
                 }
                 UiEvent::ShowFileSaved(path) => {

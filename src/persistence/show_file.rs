@@ -41,11 +41,19 @@ pub struct ConnectionSettings {
     pub ipad_reply_port: u16,
     #[serde(default)]
     pub monitor_port: u16,
+    /// QLab destination IP (for outbound OSC — e.g. building network cues in QLab).
+    /// Empty string falls back to localhost in the UI.
+    #[serde(default)]
+    pub qlab_ip: String,
+    /// QLab destination port. Default 53000 (QLab's standard OSC listen port).
+    #[serde(default = "default_qlab_port")]
+    pub qlab_port: u16,
 }
 
 fn default_gp_port() -> u16 { 8024 }
 fn default_local_port() -> u16 { 8023 }
 fn default_trigger_port() -> u16 { 53001 }
+fn default_qlab_port() -> u16 { 53000 }
 fn default_aux_count() -> u8 { 8 }
 
 impl Default for ConnectionSettings {
@@ -65,6 +73,8 @@ impl Default for ConnectionSettings {
             ipad_listen_port: 0,
             ipad_reply_port: 0,
             monitor_port: 0,
+            qlab_ip: String::new(),
+            qlab_port: default_qlab_port(),
         }
     }
 }
@@ -108,7 +118,7 @@ pub struct ShowFile {
 impl ShowFile {
     pub fn new(config: ConsoleConfig) -> Self {
         Self {
-            version: 6,
+            version: 8,
             console_config: config,
             connection: ConnectionSettings::default(),
             scope_templates: Vec::new(),
@@ -155,7 +165,7 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 6);
+        assert_eq!(loaded.version, 8);
         assert_eq!(loaded.console_config.input_channel_count, 48);
         assert_eq!(loaded.console_config.control_group_count, 10);
         assert!(loaded.scope_templates.is_empty());
@@ -335,6 +345,79 @@ mod tests {
         assert!(loaded.monitor_clients.is_empty());
         // New gang_groups field should default to empty
         assert!(loaded.gang_groups.is_empty());
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn v7_file_loads_with_legacy_section_scopes() {
+        // A v7 ChannelScope has only the `sections` field, no `paths`. The
+        // new `paths` field must default to empty AND legacy scopes must
+        // still be honoured by ScopeTemplate::contains via the additive
+        // read path.
+        let v7_json = r#"{
+            "version": 7,
+            "console_config": {
+                "console_name": "",
+                "console_serial": "",
+                "session_filename": null,
+                "input_channel_count": 48,
+                "aux_output_count": 8,
+                "group_output_count": 16,
+                "matrix_output_count": 8,
+                "matrix_input_count": 10,
+                "control_group_count": 10,
+                "graphic_eq_count": 16,
+                "talkback_output_count": 0,
+                "mix_output_types": [],
+                "mix_output_modes": [],
+                "input_modes": [],
+                "group_modes": []
+            },
+            "scope_templates": [
+                {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "name": "Legacy Eq Scope",
+                    "channel_scopes": [
+                        {
+                            "channel": {"Input": 1},
+                            "sections": ["Eq"]
+                        }
+                    ]
+                }
+            ],
+            "snapshots": [],
+            "cue_list": { "id": "00000000-0000-0000-0000-000000000000", "name": "Main", "cues": [] },
+            "macros": [],
+            "macro_quick_trigger_ids": [],
+            "eq_palettes": [],
+            "monitor_clients": [],
+            "gang_groups": []
+        }"#;
+
+        let dir = std::env::temp_dir().join("s21_hijack_test");
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let path = dir.join("test_v7_legacy_scope_compat.json");
+        tokio::fs::write(&path, v7_json).await.unwrap();
+
+        let loaded = ShowFile::load(&path).await.unwrap();
+        assert_eq!(loaded.version, 7);
+        assert_eq!(loaded.scope_templates.len(), 1);
+        let scope = &loaded.scope_templates[0];
+        // Legacy section is preserved on the loaded scope.
+        assert_eq!(scope.channel_scopes.len(), 1);
+        assert!(scope.channel_scopes[0].paths.is_empty());
+        assert!(!scope.channel_scopes[0].sections.is_empty());
+
+        // Crucially: ScopeTemplate::contains still returns true for an EQ
+        // parameter on Input(1), via the legacy `sections` read path.
+        use crate::model::channel::ChannelId;
+        use crate::model::parameter::{ParameterAddress, ParameterPath};
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::EqBandFrequency(2),
+        };
+        assert!(scope.contains(&addr));
 
         let _ = tokio::fs::remove_file(&path).await;
     }

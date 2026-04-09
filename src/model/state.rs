@@ -170,10 +170,10 @@ mod tests {
         // Scope: only FaderMutePan for Input 1
         let scope = ScopeTemplate::new(
             "Test".into(),
-            vec![ChannelScope {
-                channel: ChannelId::Input(1),
-                sections: HashSet::from([ParameterSection::FaderMutePan]),
-            }],
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
         );
 
         let captured = state.capture(&scope);
