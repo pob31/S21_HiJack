@@ -598,6 +598,21 @@ impl ParameterPath {
         }
     }
 
+    /// Display label that uses the live console config to disambiguate
+    /// dynamic parameters. Currently the only disambiguation is bus
+    /// sends — `SendEnabled/SendLevel/SendPan` show as "Aux N" or "Group N"
+    /// (with "(Stereo)" suffix when applicable) depending on
+    /// `ConsoleConfig::mix_output_types`. Every other variant falls through
+    /// to `label()` so existing labels stay stable.
+    pub fn label_with_config(&self, config: &crate::model::config::ConsoleConfig) -> String {
+        match self {
+            ParameterPath::SendEnabled(s) => format!("{} Send On", config.bus_label(*s)),
+            ParameterPath::SendLevel(s) => format!("{} Send Level", config.bus_label(*s)),
+            ParameterPath::SendPan(s) => format!("{} Send Pan", config.bus_label(*s)),
+            _ => self.label(),
+        }
+    }
+
     /// Whether this path is reachable on the given channel type via either the
     /// GP OSC protocol or the iPad protocol. Source of truth:
     /// - GP OSC: `Documentation/DiGiCo S OSC Commandset_OSCpaths.csv`
@@ -780,14 +795,24 @@ impl ParameterPath {
         push(ParameterPath::Dyn2Listen, &mut out);
         push(ParameterPath::Dyn2KeySolo, &mut out);
 
-        // Sends (input only)
-        for s in 1..=aux_count {
+        // Bus sends (input only) — the GP OSC `send/{n}/*` path family
+        // covers EVERY mix output bus, regardless of whether bus N is
+        // currently configured as aux or group. The aux/group split is
+        // dynamic; `ConsoleConfig::mix_output_types` tracks which is which.
+        // The total bus count is `aux_count + group_count`, so iterate over
+        // the union here. The scope editor uses
+        // `ParameterPath::label_with_config` to render each bus row with its
+        // live "Aux N" / "Group N" label.
+        let bus_count = aux_count.saturating_add(group_count);
+        for s in 1..=bus_count {
             push(ParameterPath::SendEnabled(s), &mut out);
             push(ParameterPath::SendLevel(s), &mut out);
             push(ParameterPath::SendPan(s), &mut out);
         }
 
-        // Group routing (input only, iPad protocol)
+        // Group routing (input only, iPad protocol). This is a SEPARATE
+        // concept from the bus sends above — it's the iPad-side input→group
+        // routing assignment, not the per-bus send level.
         for g in 1..=group_count {
             push(ParameterPath::GroupSendOn(g), &mut out);
         }
@@ -1861,10 +1886,28 @@ mod tests {
 
     #[test]
     fn applicable_to_input_includes_send_count_rows() {
+        // The send-row range covers EVERY mix output bus (aux + group),
+        // because GP OSC `send/{n}/*` is one path family for both kinds.
+        // 12 aux + 8 group = 20 buses total, so SendLevel(1..=20) should
+        // be present and SendLevel(21) should not.
         let paths = ParameterPath::applicable_to(&ChannelId::Input(1), 12, 8, 8);
         assert!(paths.contains(&ParameterPath::SendLevel(1)));
         assert!(paths.contains(&ParameterPath::SendLevel(12)));
-        assert!(!paths.contains(&ParameterPath::SendLevel(13)));
+        assert!(paths.contains(&ParameterPath::SendLevel(20)));
+        assert!(!paths.contains(&ParameterPath::SendLevel(21)));
+    }
+
+    #[test]
+    fn applicable_to_send_count_uses_aux_plus_group() {
+        // 8 + 8 = 16 buses (S21 base config).
+        let paths = ParameterPath::applicable_to(&ChannelId::Input(1), 8, 8, 10);
+        for s in 1..=16 {
+            assert!(
+                paths.contains(&ParameterPath::SendLevel(s)),
+                "missing SendLevel({s}) — should be present for 8+8=16 buses",
+            );
+        }
+        assert!(!paths.contains(&ParameterPath::SendLevel(17)));
     }
 
     #[test]
@@ -1872,6 +1915,45 @@ mod tests {
         let a = ParameterPath::applicable_to(&ChannelId::Input(1), 8, 8, 8);
         let b = ParameterPath::applicable_to(&ChannelId::Input(1), 8, 8, 8);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn label_with_config_uses_bus_type_for_send_paths() {
+        use crate::model::config::{ChannelMode, ConsoleConfig};
+        let mut config = ConsoleConfig::default();
+        // Bus 1 = aux, bus 2 = group (stereo).
+        config.aux_output_count = 1;
+        config.group_output_count = 1;
+        config.mix_output_types = vec![true, false];
+        config.mix_output_modes = vec![ChannelMode::Mono, ChannelMode::Stereo];
+
+        assert_eq!(
+            ParameterPath::SendLevel(1).label_with_config(&config),
+            "Aux 1 Send Level",
+        );
+        assert_eq!(
+            ParameterPath::SendEnabled(2).label_with_config(&config),
+            "Group 1 (Stereo) Send On",
+        );
+        assert_eq!(
+            ParameterPath::SendPan(2).label_with_config(&config),
+            "Group 1 (Stereo) Send Pan",
+        );
+    }
+
+    #[test]
+    fn label_with_config_falls_through_for_non_send_paths() {
+        use crate::model::config::ConsoleConfig;
+        let config = ConsoleConfig::default();
+        // Non-send paths should produce the same label() output.
+        assert_eq!(
+            ParameterPath::EqBandFrequency(1).label_with_config(&config),
+            ParameterPath::EqBandFrequency(1).label(),
+        );
+        assert_eq!(
+            ParameterPath::Fader.label_with_config(&config),
+            ParameterPath::Fader.label(),
+        );
     }
 
     #[test]

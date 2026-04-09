@@ -97,10 +97,16 @@ impl ConsoleState {
             .collect()
     }
 
-    // ─── Phase A: scope-editor availability lookups ─────────────────────
+    // ─── Live-data lookups (currently used by Phase C dirty tracker plans) ──
+    //
+    // The scope editor uses STATIC availability (ParameterPath::available_for_channel)
+    // so the matrix is selectable from the moment the window opens, before any
+    // GP OSC discovery has populated the parameter mirror. These two helpers
+    // remain for the upcoming dirty tracker and other "what does the console
+    // currently know" queries.
 
     /// True if a tracked parameter exists at the exact `(channel, path)`.
-    /// Used by the scope editor to grey out cells that have no live data.
+    #[allow(dead_code)]
     pub fn has_path_for_channel(&self, channel: &ChannelId, path: &ParameterPath) -> bool {
         self.parameters.contains_key(&ParameterAddress {
             channel: channel.clone(),
@@ -108,10 +114,9 @@ impl ConsoleState {
         })
     }
 
-    /// Build the per-channel availability map for a list of channels.
-    /// Computed once per scope-editor frame; the inner `HashSet<ParameterPath>`
-    /// is the set of paths that have a live value for that channel.
+    /// Build the per-channel set of paths that currently have a live value.
     /// Channels not in the input slice are absent from the result.
+    #[allow(dead_code)]
     pub fn available_paths_for(
         &self,
         channels: &[ChannelId],

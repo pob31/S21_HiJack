@@ -577,8 +577,8 @@ pub fn draw_scope_window(
         return ScopeWindowResult::StillOpen;
     }
 
-    // Snapshot config + availability + channel names once per frame, BEFORE
-    // entering the egui::Window closure that holds an exclusive borrow of state.
+    // Snapshot config + channel names once per frame, BEFORE entering the
+    // egui::Window closure that holds an exclusive borrow of state.
     let config = console_state.config.clone();
     let aux_count = config.aux_output_count;
     let group_count = config.group_output_count;
@@ -587,6 +587,19 @@ pub fn draw_scope_window(
     // Build per-group data: channels, applicable paths, availability map,
     // channel-name lookup. Done up front so the inner closures don't need
     // ConsoleState anymore.
+    //
+    // Availability is **static** — sourced from ParameterPath::available_for_channel
+    // (the CSV table). Every cell whose path is applicable to the channel type
+    // is selectable, regardless of whether the live console has pushed a value
+    // for it yet. This lets the operator build a scope BEFORE connecting, and
+    // it lets aux/group/matrix/CG cells be selectable from the moment the
+    // window opens (the previous live-data check left them all greyed until GP
+    // OSC discovery populated the parameter mirror, which made it look like
+    // those channel types were missing from the scope).
+    //
+    // Capturing a (channel, path) cell that has no live value just produces no
+    // entry in the snapshot — ConsoleState::capture skips missing parameters
+    // silently. No harm.
     let groups_data: Vec<GroupRenderData> = ChannelGroup::all()
         .iter()
         .map(|g| {
@@ -597,7 +610,16 @@ pub fn draw_scope_window(
                 group_count,
                 matrix_count,
             );
-            let available = console_state.available_paths_for(&channels);
+            // Build the availability map: every (channel, path) pair where the
+            // path is statically applicable to the channel type. Within a
+            // group every channel has the same type, so every channel gets the
+            // same set of available paths. ParameterPath::applicable_to has
+            // already filtered the rows, so the set is just `paths` cloned.
+            let path_set: HashSet<ParameterPath> = paths.iter().cloned().collect();
+            let available: HashMap<ChannelId, HashSet<ParameterPath>> = channels
+                .iter()
+                .map(|ch| (ch.clone(), path_set.clone()))
+                .collect();
             let channel_names = console_state.channel_names_for(&channels);
             GroupRenderData {
                 group: *g,
@@ -605,6 +627,7 @@ pub fn draw_scope_window(
                 paths,
                 available,
                 channel_names,
+                config: config.clone(),
             }
         })
         .collect();
@@ -702,6 +725,10 @@ struct GroupRenderData {
     paths: Vec<ParameterPath>,
     available: HashMap<ChannelId, HashSet<ParameterPath>>,
     channel_names: HashMap<ChannelId, String>,
+    /// Cloned snapshot of the live console config, used by
+    /// `ParameterPath::label_with_config` to render bus rows with their
+    /// current "Aux N" / "Group N" labels.
+    config: ConsoleConfig,
 }
 
 /// Draw one channel-type group: collapsible header + (when expanded) matrix.
@@ -944,7 +971,12 @@ fn draw_group_matrix(
                                 .is_row_all_selected(path, &data.channels, &data.available);
                             let row_any = state
                                 .is_row_any_selected(path, &data.channels, &data.available);
-                            let row_resp = path_row_label(ui, &path.label(), row_all, row_any);
+                            let row_resp = path_row_label(
+                                ui,
+                                &path.label_with_config(&data.config),
+                                row_all,
+                                row_any,
+                            );
                             if row_resp.clicked() {
                                 state.toggle_row(path, &data.channels, &data.available);
                             }
