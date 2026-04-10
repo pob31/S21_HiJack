@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use super::channel::ChannelId;
 use super::config::ConsoleConfig;
@@ -100,9 +100,8 @@ impl ConsoleState {
     /// Returns a map of `ParameterPath → ParameterValue` suitable for
     /// passing to `ChannelPalette::new`.
     ///
-    /// Generalizes the original `capture_eq` so palettes can be built for
-    /// any section (EQ, Dyn1, Dyn2, …). The old `capture_eq` is kept as a
-    /// thin wrapper for back-compat with any unmigrated callers.
+    /// Capture all parameters in a given section for a channel, suitable for
+    /// passing to `ChannelPalette::new`. Works for any section (EQ, Dyn1, Dyn2, …).
     pub fn capture_section(
         &self,
         channel: &ChannelId,
@@ -115,51 +114,6 @@ impl ConsoleState {
             })
             .map(|(addr, value)| (addr.parameter.clone(), value.clone()))
             .collect()
-    }
-
-    /// Back-compat shim: capture only EQ-section parameters for a channel.
-    /// Equivalent to `capture_section(channel, ParameterSection::Eq)`.
-    pub fn capture_eq(&self, channel: &ChannelId) -> HashMap<ParameterPath, ParameterValue> {
-        self.capture_section(channel, ParameterSection::Eq)
-    }
-
-    // ─── Live-data lookups (currently used by Phase C dirty tracker plans) ──
-    //
-    // The scope editor uses STATIC availability (ParameterPath::available_for_channel)
-    // so the matrix is selectable from the moment the window opens, before any
-    // GP OSC discovery has populated the parameter mirror. These two helpers
-    // remain for the upcoming dirty tracker and other "what does the console
-    // currently know" queries.
-
-    /// True if a tracked parameter exists at the exact `(channel, path)`.
-    #[allow(dead_code)]
-    pub fn has_path_for_channel(&self, channel: &ChannelId, path: &ParameterPath) -> bool {
-        self.parameters.contains_key(&ParameterAddress {
-            channel: channel.clone(),
-            parameter: path.clone(),
-        })
-    }
-
-    /// Build the per-channel set of paths that currently have a live value.
-    /// Channels not in the input slice are absent from the result.
-    #[allow(dead_code)]
-    pub fn available_paths_for(
-        &self,
-        channels: &[ChannelId],
-    ) -> HashMap<ChannelId, HashSet<ParameterPath>> {
-        let wanted: HashSet<&ChannelId> = channels.iter().collect();
-        let mut map: HashMap<ChannelId, HashSet<ParameterPath>> = HashMap::new();
-        for ch in channels {
-            map.insert(ch.clone(), HashSet::new());
-        }
-        for addr in self.parameters.keys() {
-            if wanted.contains(&addr.channel) {
-                if let Some(set) = map.get_mut(&addr.channel) {
-                    set.insert(addr.parameter.clone());
-                }
-            }
-        }
-        map
     }
 
     /// Look up the live channel name (the `Name` parameter value) for each
@@ -237,7 +191,7 @@ mod tests {
             ParameterValue::Bool(false),
         );
 
-        let eq = state.capture_eq(&ChannelId::Input(1));
+        let eq = state.capture_section(&ChannelId::Input(1), ParameterSection::Eq);
         assert_eq!(eq.len(), 3);
         assert_eq!(eq.get(&ParameterPath::EqEnabled), Some(&ParameterValue::Bool(true)));
         assert_eq!(eq.get(&ParameterPath::EqBandFrequency(1)), Some(&ParameterValue::Float(1000.0)));
@@ -247,7 +201,7 @@ mod tests {
     #[test]
     fn capture_eq_empty_for_no_data() {
         let state = ConsoleState::new(ConsoleConfig::default());
-        let eq = state.capture_eq(&ChannelId::Input(99));
+        let eq = state.capture_section(&ChannelId::Input(99), ParameterSection::Eq);
         assert!(eq.is_empty());
     }
 

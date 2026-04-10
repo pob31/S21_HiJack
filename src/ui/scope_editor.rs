@@ -58,20 +58,6 @@ impl ChannelGroup {
         }
     }
 
-    /// Color for this channel group (DiGiCo style). Used by older callers
-    /// outside the scope editor; the matrix UI uses the universal scope colors.
-    pub fn color(&self) -> egui::Color32 {
-        match self {
-            ChannelGroup::Inputs => theme::CH_INPUT,
-            ChannelGroup::Aux => theme::CH_AUX,
-            ChannelGroup::Groups => theme::CH_GROUP,
-            ChannelGroup::Matrix | ChannelGroup::GraphicEq | ChannelGroup::MatrixInputs => {
-                theme::CH_MATRIX
-            }
-            ChannelGroup::ControlGroups => theme::CH_CG,
-        }
-    }
-
     /// All channel groups in display order.
     pub fn all() -> &'static [ChannelGroup] {
         &[
