@@ -472,11 +472,11 @@ impl MonitorEngine {
         }
     }
 
-    /// PRD 5.7 step 5: Poll ConsoleState for send parameter changes and push updates.
-    /// `last_send_state` tracks the previous values to detect changes.
+    /// PRD 5.7 step 5: Poll ConsoleState for send + aux parameter changes and push updates.
     pub async fn poll_and_push_state_changes(
         &self,
         last_send_state: &mut HashMap<(u8, u8), (f32, f32, bool)>,
+        last_aux_state: &mut HashMap<u8, (f32, bool)>,
         manager: &MonitorManager,
         monitor_sender: &MonitorSender,
     ) {
@@ -573,6 +573,51 @@ impl MonitorEngine {
                             )
                             .await;
                     }
+                }
+            }
+        }
+
+        // Poll aux fader/mute for permitted auxes
+        for &aux in &auxes_of_interest {
+            let fader = state
+                .get(&ParameterAddress {
+                    channel: ChannelId::Aux(aux),
+                    parameter: ParameterPath::Fader,
+                })
+                .and_then(|v| v.as_float())
+                .unwrap_or(-150.0);
+
+            let mute = state
+                .get(&ParameterAddress {
+                    channel: ChannelId::Aux(aux),
+                    parameter: ParameterPath::Mute,
+                })
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let new_aux_state = (fader, mute);
+            if let Some(old) = last_aux_state.get(&aux) {
+                if *old == new_aux_state {
+                    continue;
+                }
+            }
+            last_aux_state.insert(aux, new_aux_state);
+
+            for client in manager.clients.values() {
+                if !client.is_connected() || !client.permitted_auxes.contains(&aux) {
+                    continue;
+                }
+                if let Some(addr) = client.connected_addr {
+                    let _ = monitor_sender
+                        .send_to(
+                            addr,
+                            &format!("/monitor/state/aux/{aux}"),
+                            vec![
+                                rosc::OscType::Float(fader),
+                                rosc::OscType::Bool(mute),
+                            ],
+                        )
+                        .await;
                 }
             }
         }

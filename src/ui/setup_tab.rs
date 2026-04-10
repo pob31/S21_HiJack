@@ -1024,6 +1024,7 @@ fn start_connection(
                     let _ = tx_monitor.send(UiEvent::MonitorServerStarted);
                     tokio::spawn(async move {
                         let mut last_send_state = std::collections::HashMap::new();
+                        let mut last_aux_state = std::collections::HashMap::new();
                         let mut poll_interval = tokio::time::interval(
                             std::time::Duration::from_millis(500),
                         );
@@ -1043,6 +1044,7 @@ fn start_connection(
                                     let mgr = mon_mgr_loop.read().await;
                                     monitor_engine.poll_and_push_state_changes(
                                         &mut last_send_state,
+                                        &mut last_aux_state,
                                         &mgr,
                                         &monitor_sender,
                                     ).await;

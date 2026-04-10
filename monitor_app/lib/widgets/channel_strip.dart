@@ -26,7 +26,7 @@ class VerticalChannelStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 80,
+      width: 90,
       child: Column(
         children: [
           Expanded(
@@ -45,8 +45,8 @@ class VerticalChannelStrip extends StatelessWidget {
             style: const TextStyle(color: Colors.white54, fontSize: 9),
           ),
           SizedBox(
-            width: 76,
-            height: 36,
+            width: 86,
+            height: 40,
             child: SliderTheme(
               data: SliderThemeData(
                 trackHeight: 4,
