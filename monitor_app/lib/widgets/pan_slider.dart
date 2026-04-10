@@ -7,6 +7,7 @@ class CenterPanSlider extends StatefulWidget {
   final ValueChanged<double> onChanged;
   final double width;
   final double height;
+  final bool active;
 
   const CenterPanSlider({
     super.key,
@@ -14,6 +15,7 @@ class CenterPanSlider extends StatefulWidget {
     required this.onChanged,
     this.width = 86,
     this.height = 40,
+    this.active = true,
   });
 
   @override
@@ -50,6 +52,7 @@ class _CenterPanSliderState extends State<CenterPanSlider> {
         painter: _PanPainter(
           value: widget.value.clamp(-1.0, 1.0),
           dragging: _dragging,
+          active: widget.active,
         ),
       ),
     );
@@ -59,8 +62,9 @@ class _CenterPanSliderState extends State<CenterPanSlider> {
 class _PanPainter extends CustomPainter {
   final double value;
   final bool dragging;
+  final bool active;
 
-  _PanPainter({required this.value, required this.dragging});
+  _PanPainter({required this.value, required this.dragging, required this.active});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -95,8 +99,9 @@ class _PanPainter extends CustomPainter {
 
     // Active track (from center to thumb)
     final thumbX = trackLeft + (value + 1.0) / 2.0 * trackWidth;
+    final activeColor = active ? Colors.orangeAccent : const Color(0xFF555555);
     final activePaint = Paint()
-      ..color = Colors.orangeAccent
+      ..color = activeColor
       ..strokeWidth = trackHeight
       ..strokeCap = StrokeCap.round;
     canvas.drawLine(
@@ -106,8 +111,11 @@ class _PanPainter extends CustomPainter {
     );
 
     // Thumb
+    final thumbColor = active
+        ? (dragging ? Colors.orangeAccent : Colors.orange)
+        : const Color(0xFF666666);
     final thumbPaint = Paint()
-      ..color = dragging ? Colors.orangeAccent : Colors.orange;
+      ..color = thumbColor;
     canvas.drawCircle(Offset(thumbX, trackY), thumbRadius, thumbPaint);
 
     // Thumb border
@@ -119,6 +127,7 @@ class _PanPainter extends CustomPainter {
   }
 
   @override
+  @override
   bool shouldRepaint(_PanPainter oldDelegate) =>
-      value != oldDelegate.value || dragging != oldDelegate.dragging;
+      value != oldDelegate.value || dragging != oldDelegate.dragging || active != oldDelegate.active;
 }

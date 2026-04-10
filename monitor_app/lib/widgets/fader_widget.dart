@@ -65,6 +65,7 @@ class VerticalFader extends StatelessWidget {
   final double dbMin;
   final double dbMax;
   final String label;
+  final bool active;
   final ValueChanged<double> onChanged;
 
   const VerticalFader({
@@ -73,6 +74,7 @@ class VerticalFader extends StatelessWidget {
     this.dbMin = -60.0,
     this.dbMax = 10.0,
     required this.label,
+    this.active = true,
     required this.onChanged,
   });
 
@@ -83,8 +85,8 @@ class VerticalFader extends StatelessWidget {
       children: [
         Text(
           label,
-          style: const TextStyle(
-            color: Colors.white70,
+          style: TextStyle(
+            color: active ? Colors.white70 : Colors.white30,
             fontSize: 10,
             fontWeight: FontWeight.w500,
           ),
@@ -93,7 +95,10 @@ class VerticalFader extends StatelessWidget {
         const SizedBox(height: 2),
         Text(
           formatDb(value, dbMin),
-          style: const TextStyle(color: Colors.white54, fontSize: 12),
+          style: TextStyle(
+            color: active ? Colors.white54 : Colors.white24,
+            fontSize: 12,
+          ),
         ),
         const SizedBox(height: 4),
         Expanded(
@@ -103,10 +108,10 @@ class VerticalFader extends StatelessWidget {
               data: SliderThemeData(
                 trackHeight: 4,
                 thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
-                activeTrackColor: Colors.blueAccent,
+                activeTrackColor: active ? Colors.blueAccent : Colors.grey[700]!,
                 inactiveTrackColor: Colors.white12,
-                thumbColor: Colors.white,
-                overlayColor: Colors.blueAccent.withAlpha(40),
+                thumbColor: active ? Colors.white : Colors.grey[600]!,
+                overlayColor: (active ? Colors.blueAccent : Colors.grey).withAlpha(40),
               ),
               child: Slider(
                 value: dbToPosition(value, dbMin, dbMax),
@@ -127,6 +132,7 @@ class HorizontalFader extends StatelessWidget {
   final double value; // dB
   final double dbMin;
   final double dbMax;
+  final bool active;
   final ValueChanged<double> onChanged;
 
   const HorizontalFader({
@@ -134,6 +140,7 @@ class HorizontalFader extends StatelessWidget {
     required this.value,
     this.dbMin = -60.0,
     this.dbMax = 10.0,
+    this.active = true,
     required this.onChanged,
   });
 
@@ -143,10 +150,10 @@ class HorizontalFader extends StatelessWidget {
       data: SliderThemeData(
         trackHeight: 4,
         thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
-        activeTrackColor: Colors.blueAccent,
+        activeTrackColor: active ? Colors.blueAccent : Colors.grey[700]!,
         inactiveTrackColor: Colors.white12,
-        thumbColor: Colors.white,
-        overlayColor: Colors.blueAccent.withAlpha(40),
+        thumbColor: active ? Colors.white : Colors.grey[600]!,
+        overlayColor: (active ? Colors.blueAccent : Colors.grey).withAlpha(40),
       ),
       child: Slider(
         value: dbToPosition(value, dbMin, dbMax),

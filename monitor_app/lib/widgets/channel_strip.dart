@@ -36,6 +36,7 @@ class VerticalChannelStrip extends StatelessWidget {
               dbMin: -60.0,
               dbMax: 10.0,
               label: send.inputLabel,
+              active: send.on,
               onChanged: onLevelChanged,
             ),
           ),
@@ -43,7 +44,10 @@ class VerticalChannelStrip extends StatelessWidget {
           // Pan slider (-1.0 L .. 0.0 C .. +1.0 R)
           Text(
             _formatPan(send.pan),
-            style: const TextStyle(color: Colors.white54, fontSize: 9),
+            style: TextStyle(
+              color: send.on ? Colors.white54 : Colors.white24,
+              fontSize: 9,
+            ),
           ),
           const SizedBox(height: 4),
           CenterPanSlider(
@@ -51,6 +55,7 @@ class VerticalChannelStrip extends StatelessWidget {
             onChanged: onPanChanged,
             width: 120,
             height: 40,
+            active: send.on,
           ),
           const SizedBox(height: 12),
           // On/Off toggle
