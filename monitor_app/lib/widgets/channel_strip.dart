@@ -108,7 +108,7 @@ class HorizontalChannelStrip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF16213E),
+        color: const Color(0xFF1A1A1A),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(

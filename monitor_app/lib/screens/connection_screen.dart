@@ -36,7 +36,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF1A1A2E),
+      backgroundColor: const Color(0xFF0D0D0D),
       body: Center(
         child: Container(
           constraints: const BoxConstraints(maxWidth: 400),
@@ -71,7 +71,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                   hintText: 'e.g. Drums, Keys, Vocals',
                   border: OutlineInputBorder(),
                   filled: true,
-                  fillColor: Color(0xFF16213E),
+                  fillColor: Color(0xFF1A1A1A),
                 ),
                 style: const TextStyle(color: Colors.white),
               ),
@@ -85,7 +85,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                   hintText: 'e.g. 192.168.1.100',
                   border: OutlineInputBorder(),
                   filled: true,
-                  fillColor: Color(0xFF16213E),
+                  fillColor: Color(0xFF1A1A1A),
                 ),
                 style: const TextStyle(color: Colors.white),
                 keyboardType: TextInputType.url,
@@ -99,7 +99,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                   labelText: 'Port',
                   border: OutlineInputBorder(),
                   filled: true,
-                  fillColor: Color(0xFF16213E),
+                  fillColor: Color(0xFF1A1A1A),
                 ),
                 style: const TextStyle(color: Colors.white),
                 keyboardType: TextInputType.number,

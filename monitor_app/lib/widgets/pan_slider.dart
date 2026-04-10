@@ -96,7 +96,7 @@ class _PanPainter extends CustomPainter {
     // Active track (from center to thumb)
     final thumbX = trackLeft + (value + 1.0) / 2.0 * trackWidth;
     final activePaint = Paint()
-      ..color = Colors.grey
+      ..color = Colors.orangeAccent
       ..strokeWidth = trackHeight
       ..strokeCap = StrokeCap.round;
     canvas.drawLine(
@@ -107,7 +107,7 @@ class _PanPainter extends CustomPainter {
 
     // Thumb
     final thumbPaint = Paint()
-      ..color = dragging ? Colors.grey : Colors.white70;
+      ..color = dragging ? Colors.orangeAccent : Colors.orange;
     canvas.drawCircle(Offset(thumbX, trackY), thumbRadius, thumbPaint);
 
     // Thumb border

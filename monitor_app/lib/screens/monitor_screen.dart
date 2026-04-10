@@ -171,9 +171,9 @@ class _MonitorScreenState extends State<MonitorScreen> {
     return Consumer<MonitorClientModel>(
       builder: (context, model, _) {
         return Scaffold(
-          backgroundColor: const Color(0xFF1A1A2E),
+          backgroundColor: const Color(0xFF0D0D0D),
           appBar: AppBar(
-            backgroundColor: const Color(0xFF16213E),
+            backgroundColor: const Color(0xFF1A1A1A),
             title: Row(
               children: [
                 Text(
@@ -211,7 +211,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
             children: [
               // Tab bar
               Container(
-                color: const Color(0xFF16213E),
+                color: const Color(0xFF1A1A1A),
                 child: Row(
                   children: [
                     _tabButton('My Mix', 0),
@@ -225,7 +225,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
                           value: model.selectedAux,
                           hint: const Text('Select Aux',
                               style: TextStyle(color: Colors.white54)),
-                          dropdownColor: const Color(0xFF16213E),
+                          dropdownColor: const Color(0xFF1A1A1A),
                           style: const TextStyle(color: Colors.white),
                           items: model.availableAuxes
                               .map((a) {
@@ -268,7 +268,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
         decoration: BoxDecoration(
           border: Border(
             bottom: BorderSide(
-              color: selected ? Colors.white54 : Colors.transparent,
+              color: selected ? Colors.blueAccent : Colors.transparent,
               width: 2,
             ),
           ),
@@ -376,7 +376,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
           margin: const EdgeInsets.only(bottom: 12),
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: const Color(0xFF16213E),
+            color: const Color(0xFF1A1A1A),
             borderRadius: BorderRadius.circular(8),
           ),
           child: Column(
