@@ -16,6 +16,7 @@ android/app/debug/
 android/app/profile/
 android/app/release/
 android/key.properties
+android/gradle/gradle-daemon-jvm.properties
 *.jks
 
 # iOS
