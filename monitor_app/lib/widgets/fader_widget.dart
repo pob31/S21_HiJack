@@ -90,6 +90,11 @@ class VerticalFader extends StatelessWidget {
           ),
           overflow: TextOverflow.ellipsis,
         ),
+        const SizedBox(height: 2),
+        Text(
+          formatDb(value, dbMin),
+          style: const TextStyle(color: Colors.white54, fontSize: 12),
+        ),
         const SizedBox(height: 4),
         Expanded(
           child: RotatedBox(
@@ -98,10 +103,10 @@ class VerticalFader extends StatelessWidget {
               data: SliderThemeData(
                 trackHeight: 4,
                 thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
-                activeTrackColor: Colors.blueAccent,
+                activeTrackColor: Colors.grey,
                 inactiveTrackColor: Colors.white12,
                 thumbColor: Colors.white,
-                overlayColor: Colors.blueAccent.withAlpha(40),
+                overlayColor: Colors.grey.withAlpha(40),
               ),
               child: Slider(
                 value: dbToPosition(value, dbMin, dbMax),
@@ -111,10 +116,6 @@ class VerticalFader extends StatelessWidget {
               ),
             ),
           ),
-        ),
-        Text(
-          formatDb(value, dbMin),
-          style: const TextStyle(color: Colors.white54, fontSize: 9),
         ),
       ],
     );
@@ -142,10 +143,10 @@ class HorizontalFader extends StatelessWidget {
       data: SliderThemeData(
         trackHeight: 4,
         thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
-        activeTrackColor: Colors.blueAccent,
+        activeTrackColor: Colors.grey,
         inactiveTrackColor: Colors.white12,
         thumbColor: Colors.white,
-        overlayColor: Colors.blueAccent.withAlpha(40),
+        overlayColor: Colors.grey.withAlpha(40),
       ),
       child: Slider(
         value: dbToPosition(value, dbMin, dbMax),

@@ -41,6 +41,10 @@ class _CenterPanSliderState extends State<CenterPanSlider> {
         final newVal = (pos * 2.0 - 1.0).clamp(-1.0, 1.0);
         widget.onChanged(newVal);
       },
+      onDoubleTap: () {
+        // Double-tap to center
+        widget.onChanged(0.0);
+      },
       child: CustomPaint(
         size: Size(widget.width, widget.height),
         painter: _PanPainter(
@@ -92,7 +96,7 @@ class _PanPainter extends CustomPainter {
     // Active track (from center to thumb)
     final thumbX = trackLeft + (value + 1.0) / 2.0 * trackWidth;
     final activePaint = Paint()
-      ..color = Colors.orangeAccent
+      ..color = Colors.grey
       ..strokeWidth = trackHeight
       ..strokeCap = StrokeCap.round;
     canvas.drawLine(
@@ -103,7 +107,7 @@ class _PanPainter extends CustomPainter {
 
     // Thumb
     final thumbPaint = Paint()
-      ..color = dragging ? Colors.orangeAccent : Colors.orange;
+      ..color = dragging ? Colors.grey : Colors.white70;
     canvas.drawCircle(Offset(thumbX, trackY), thumbRadius, thumbPaint);
 
     // Thumb border

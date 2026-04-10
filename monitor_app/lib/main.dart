@@ -59,7 +59,7 @@ class _S21MonitorAppState extends State<S21MonitorApp> with WidgetsBindingObserv
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
-        colorSchemeSeed: Colors.blue,
+        colorSchemeSeed: Colors.grey,
         useMaterial3: true,
       ),
       home: ConnectionScreen(osc: widget.osc),

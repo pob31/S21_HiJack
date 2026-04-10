@@ -268,7 +268,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
         decoration: BoxDecoration(
           border: Border(
             bottom: BorderSide(
-              color: selected ? Colors.blueAccent : Colors.transparent,
+              color: selected ? Colors.white54 : Colors.transparent,
               width: 2,
             ),
           ),
