@@ -112,7 +112,7 @@ pub fn draw_recall_popup(
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_size([700.0, 450.0])
+        .default_size([850.0, 500.0])
         .show(ctx, |ui| {
             // Warning banner
             ui.label(
@@ -289,7 +289,7 @@ fn draw_column(
         ui.label(
             egui::RichText::new(header)
                 .color(theme::TEXT_SECONDARY)
-                .size(9.0),
+                .size(11.0),
         );
         ui.add_space(4.0);
 
@@ -328,7 +328,7 @@ fn draw_block_button(
     is_scope: bool,
     mut on_toggle: impl FnMut(bool),
 ) {
-    let size = egui::Vec2::new(80.0, 36.0);
+    let size = egui::Vec2::new(95.0, 40.0);
 
     let fill = if !available {
         theme::BG_PANEL
@@ -350,15 +350,29 @@ fn draw_block_button(
         theme::TEXT_SECONDARY
     };
 
-    let btn = egui::Button::new(
-        egui::RichText::new(block.label()).color(text_color).size(9.0),
-    )
-    .fill(fill)
-    .corner_radius(4.0)
-    .min_size(size);
+    // Manual paint to avoid egui Button adding checkbox-like decorations
+    let (rect, resp) = ui.allocate_exact_size(size, if available { egui::Sense::click() } else { egui::Sense::hover() });
+    let bg = if available && resp.hovered() {
+        theme::lighten(fill, 20)
+    } else {
+        fill
+    };
+    ui.painter().rect_filled(rect, 4.0, bg);
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0, theme::BORDER_SUBTLE), egui::StrokeKind::Outside);
 
-    let resp = ui.add_enabled(available, btn);
-    if resp.clicked() {
+    let galley = ui.painter().layout(
+        block.label().to_string(),
+        egui::FontId::proportional(11.0),
+        text_color,
+        rect.width() - 6.0,
+    );
+    let text_pos = egui::pos2(
+        rect.center().x - galley.size().x / 2.0,
+        rect.center().y - galley.size().y / 2.0,
+    );
+    ui.painter().galley(text_pos, galley, text_color);
+
+    if resp.clicked() && available {
         on_toggle(!active);
     }
 }
