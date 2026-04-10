@@ -494,14 +494,29 @@ impl MonitorEngine {
     }
 
     /// PRD 5.7 step 5: Poll ConsoleState for send + aux parameter changes and push updates.
+    /// Uses a generation counter to skip scanning when nothing changed.
+    /// Per-parameter rate limited to 20Hz via `last_push_times`.
     pub async fn poll_and_push_state_changes(
         &self,
         last_send_state: &mut HashMap<(u8, u8), (f32, f32, bool)>,
         last_aux_state: &mut HashMap<u8, (f32, bool)>,
+        last_generation: &mut u64,
+        last_push_times: &mut HashMap<(u8, u8), std::time::Instant>,
+        last_aux_push_times: &mut HashMap<u8, std::time::Instant>,
         manager: &MonitorManager,
         monitor_sender: &MonitorSender,
     ) {
         let state = self.state.read().await;
+
+        // Skip entirely if nothing changed since last poll
+        let current_gen = state.generation();
+        if current_gen == *last_generation {
+            return;
+        }
+        *last_generation = current_gen;
+
+        let now = std::time::Instant::now();
+        let min_interval = std::time::Duration::from_millis(50); // 20Hz per parameter
 
         // Collect all auxes and inputs of interest from connected clients
         let mut auxes_of_interest = std::collections::HashSet::new();
@@ -569,8 +584,16 @@ impl MonitorEngine {
                     }
                 }
 
+                // Per-parameter 20Hz rate limit
+                if let Some(last_push) = last_push_times.get(&key) {
+                    if now.duration_since(*last_push) < min_interval {
+                        continue;
+                    }
+                }
+
                 // State changed — push to affected clients
                 last_send_state.insert(key, new_state);
+                last_push_times.insert(key, now);
 
                 for client in manager.clients.values() {
                     if !client.is_connected() || !client.permitted_auxes.contains(&aux) {
@@ -618,7 +641,16 @@ impl MonitorEngine {
                     continue;
                 }
             }
+
+            // Per-parameter 20Hz rate limit
+            if let Some(last_push) = last_aux_push_times.get(&aux) {
+                if now.duration_since(*last_push) < min_interval {
+                    continue;
+                }
+            }
+
             last_aux_state.insert(aux, new_aux_state);
+            last_aux_push_times.insert(aux, now);
 
             for client in manager.clients.values() {
                 if !client.is_connected() || !client.permitted_auxes.contains(&aux) {

@@ -34,6 +34,9 @@ pub struct ConsoleState {
     last_updated: HashMap<ParameterAddress, DateTime<Utc>>,
     /// GP OSC connection health, updated by the state-mirror loop.
     pub health: ConnectionHealth,
+    /// Monotonic counter incremented on every parameter update.
+    /// Used by the monitor poll to skip scanning when nothing changed.
+    generation: u64,
 }
 
 impl ConsoleState {
@@ -43,6 +46,7 @@ impl ConsoleState {
             parameters: HashMap::new(),
             last_updated: HashMap::new(),
             health: ConnectionHealth::Connected,
+            generation: 0,
         }
     }
 
@@ -50,7 +54,13 @@ impl ConsoleState {
     /// Returns the previous value if one existed.
     pub fn update(&mut self, addr: ParameterAddress, value: ParameterValue) -> Option<ParameterValue> {
         self.last_updated.insert(addr.clone(), Utc::now());
+        self.generation += 1;
         self.parameters.insert(addr, value)
+    }
+
+    /// Current generation counter. Incremented on every parameter update.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Get current value of a parameter.

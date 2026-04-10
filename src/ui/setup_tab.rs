@@ -1025,8 +1025,11 @@ fn start_connection(
                     tokio::spawn(async move {
                         let mut last_send_state = std::collections::HashMap::new();
                         let mut last_aux_state = std::collections::HashMap::new();
+                        let mut last_generation: u64 = 0;
+                        let mut last_push_times = std::collections::HashMap::new();
+                        let mut last_aux_push_times = std::collections::HashMap::new();
                         let mut poll_interval = tokio::time::interval(
-                            std::time::Duration::from_millis(100),
+                            std::time::Duration::from_millis(10),
                         );
                         loop {
                             tokio::select! {
@@ -1045,6 +1048,9 @@ fn start_connection(
                                     monitor_engine.poll_and_push_state_changes(
                                         &mut last_send_state,
                                         &mut last_aux_state,
+                                        &mut last_generation,
+                                        &mut last_push_times,
+                                        &mut last_aux_push_times,
                                         &mgr,
                                         &monitor_sender,
                                     ).await;
