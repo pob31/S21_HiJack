@@ -370,13 +370,35 @@ impl MonitorEngine {
             }
         }
 
-        {
-            debug!(
-                name = %client.name,
-                send_count = sends.len(),
-                "Sent full state to monitor client"
-            );
+        // Send aux fader/mute for each permitted aux
+        for &aux in &client.permitted_auxes {
+            let fader = state
+                .get(&ParameterAddress {
+                    channel: ChannelId::Aux(aux),
+                    parameter: ParameterPath::Fader,
+                })
+                .and_then(|v| v.as_float())
+                .unwrap_or(-150.0);
+            let mute = state
+                .get(&ParameterAddress {
+                    channel: ChannelId::Aux(aux),
+                    parameter: ParameterPath::Mute,
+                })
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let _ = monitor_sender.send_to(
+                addr,
+                &format!("/monitor/state/aux/{aux}"),
+                vec![OscType::Float(fader), OscType::Bool(mute)],
+            ).await;
+            debug!(aux, fader, mute, "Sent aux state to monitor client");
         }
+
+        debug!(
+            name = %client.name,
+            send_count = sends.len(),
+            "Sent full state to monitor client"
+        );
     }
 
     /// Forward a send parameter change to the console via GP OSC (or iPad fallback).
@@ -602,6 +624,7 @@ impl MonitorEngine {
                 }
             }
             last_aux_state.insert(aux, new_aux_state);
+            debug!(aux, fader, mute, "Aux state changed — pushing to clients");
 
             for client in manager.clients.values() {
                 if !client.is_connected() || !client.permitted_auxes.contains(&aux) {

@@ -42,28 +42,40 @@ class _MonitorScreenState extends State<MonitorScreen> {
   }
 
   DateTime _lastReceived = DateTime.now();
+  int _missedHeartbeats = 0;
 
-  /// Watchdog: if no messages received for 5s, mark disconnected and
-  /// attempt reconnect by re-sending connect + state request.
+  /// Watchdog: tracks heartbeat responses. The app sends connect every 10s
+  /// (via OscService heartbeat). The daemon responds with a full state push.
+  /// If no data arrives for 15s (missing 1+ heartbeat cycles), attempt
+  /// reconnect. Only show red after 3 consecutive missed cycles.
   void _startWatchdog() {
-    _watchdog = Timer.periodic(const Duration(seconds: 3), (_) {
+    _watchdog = Timer.periodic(const Duration(seconds: 5), (_) {
       if (!mounted) return;
       final model = context.read<MonitorClientModel>();
       final elapsed = DateTime.now().difference(_lastReceived).inSeconds;
 
-      if (elapsed > 5 && model.status == ConnectionStatus.connected) {
-        debugPrint('S21 Monitor: no data for ${elapsed}s — reconnecting');
-        model.status = ConnectionStatus.connecting;
-        model.notifyListeners();
-
-        // Re-send connect + state
+      if (elapsed > 15) {
+        _missedHeartbeats++;
+        // Re-send connect + state to recover
         widget.osc.send(model.daemonHost, model.daemonPort,
             '/monitor/${model.clientName}/connect', []);
         widget.osc.send(model.daemonHost, model.daemonPort,
             '/monitor/${model.clientName}/state', []);
-      } else if (elapsed <= 5 && model.status == ConnectionStatus.connecting) {
-        model.status = ConnectionStatus.connected;
-        model.notifyListeners();
+
+        // Only show red after 3 consecutive misses (45s+ of silence)
+        if (_missedHeartbeats >= 3 && model.status == ConnectionStatus.connected) {
+          debugPrint('S21 Monitor: connection lost after ${_missedHeartbeats} missed heartbeats');
+          model.status = ConnectionStatus.connecting;
+          model.notifyListeners();
+        }
+      } else {
+        if (_missedHeartbeats > 0) {
+          _missedHeartbeats = 0;
+        }
+        if (model.status == ConnectionStatus.connecting) {
+          model.status = ConnectionStatus.connected;
+          model.notifyListeners();
+        }
       }
     });
   }
@@ -145,7 +157,9 @@ class _MonitorScreenState extends State<MonitorScreen> {
         final aux = int.tryParse(parts[4]);
         if (aux != null) {
           final fader = (msg.args[0] is OscFloat) ? (msg.args[0] as OscFloat).value : -150.0;
-          final mute = (msg.args[1] is OscInt) ? (msg.args[1] as OscInt).value != 0 : false;
+          bool mute = false;
+          if (msg.args[1] is OscBool) mute = (msg.args[1] as OscBool).value;
+          else if (msg.args[1] is OscInt) mute = (msg.args[1] as OscInt).value != 0;
           model.updateAux(aux, fader, mute);
         }
       }
