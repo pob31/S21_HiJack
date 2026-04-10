@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
+use rosc::OscType;
 use tracing::{debug, info, warn};
 
 use crate::model::channel::ChannelId;
@@ -141,6 +142,39 @@ impl MonitorEngine {
                 )
                 .await;
             }
+            MonitorCommand::SetAuxFader {
+                client_name,
+                aux_ch,
+                value,
+                reply_addr,
+            } => {
+                manager.update_last_seen(&client_name, reply_addr);
+                self.handle_aux_change(&client_name, aux_ch, "fader", ParameterValue::Float(value), manager).await;
+            }
+            MonitorCommand::SetAuxMute {
+                client_name,
+                aux_ch,
+                mute,
+                reply_addr,
+            } => {
+                manager.update_last_seen(&client_name, reply_addr);
+                self.handle_aux_change(&client_name, aux_ch, "mute", ParameterValue::Bool(mute), manager).await;
+            }
+            MonitorCommand::Discover { reply_addr } => {
+                let state = self.state.read().await;
+                let name = if state.config.console_name.is_empty() {
+                    "S21_HiJack".to_string()
+                } else {
+                    state.config.console_name.clone()
+                };
+                drop(state);
+                let _ = monitor_sender.send_to(
+                    reply_addr,
+                    "/monitor/discovered",
+                    vec![OscType::String(name)],
+                ).await;
+                info!(%reply_addr, "Monitor discovery reply sent");
+            }
             MonitorCommand::QueryConsoleStatus { reply_addr } => {
                 self.handle_status_console(reply_addr, console_connected, monitor_sender)
                     .await;
@@ -150,6 +184,58 @@ impl MonitorEngine {
                     .await;
             }
         }
+    }
+
+    /// Handle an aux output parameter change (fader or mute).
+    async fn handle_aux_change(
+        &self,
+        client_name: &str,
+        aux_ch: u8,
+        param: &str,
+        value: ParameterValue,
+        manager: &MonitorManager,
+    ) {
+        let client = match manager.find_by_name(client_name) {
+            Some(c) => c,
+            None => {
+                warn!(name = %client_name, "Monitor aux: unknown client");
+                return;
+            }
+        };
+        if !client.is_permitted(aux_ch, 1) {
+            warn!(name = %client_name, aux_ch, "Monitor aux: not permitted");
+            return;
+        }
+
+        let addr = match param {
+            "fader" => ParameterAddress {
+                channel: ChannelId::Aux(aux_ch),
+                parameter: ParameterPath::Fader,
+            },
+            "mute" => ParameterAddress {
+                channel: ChannelId::Aux(aux_ch),
+                parameter: ParameterPath::Mute,
+            },
+            _ => return,
+        };
+
+        // Forward to console via GP OSC (with iPad fallback)
+        match encode::encode_parameter(&addr, &value) {
+            Some((path, args)) => {
+                if let Err(e) = self.sender.send(&path, args).await {
+                    warn!(%addr, "Monitor aux: send failed: {e}");
+                    return;
+                }
+            }
+            None => {
+                if let Some(ref ipad) = self.ipad_sender {
+                    if let Some((path, args)) = ipad_encode::encode_ipad_parameter(&addr, &value) {
+                        let _ = ipad.send(&path, args).await;
+                    }
+                }
+            }
+        }
+        self.state.write().await.update(addr, value);
     }
 
     /// Process a send parameter change: validate, forward, echo.

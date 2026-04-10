@@ -44,6 +44,22 @@ pub enum MonitorCommand {
         on: bool,
         reply_addr: SocketAddr,
     },
+    /// Set aux output fader: `/monitor/{name}/aux/{aux}/fader {value}`
+    SetAuxFader {
+        client_name: String,
+        aux_ch: u8,
+        value: f32,
+        reply_addr: SocketAddr,
+    },
+    /// Set aux output mute: `/monitor/{name}/aux/{aux}/mute {0|1}`
+    SetAuxMute {
+        client_name: String,
+        aux_ch: u8,
+        mute: bool,
+        reply_addr: SocketAddr,
+    },
+    /// Discovery: `/monitor/discover` — app broadcasts to find daemons on the LAN.
+    Discover { reply_addr: SocketAddr },
     /// PRD 6.4: `/status/console` — query console connection status.
     QueryConsoleStatus { reply_addr: SocketAddr },
     /// PRD 6.4: `/status/clients` — query connected monitoring client count.
@@ -214,6 +230,11 @@ pub fn parse_monitor_message(
         return Some(MonitorCommand::QueryClientCount { reply_addr: src });
     }
 
+    // Discovery: /monitor/discover (no client name)
+    if path == "/monitor/discover" {
+        return Some(MonitorCommand::Discover { reply_addr: src });
+    }
+
     // Monitor paths: /monitor/{name}/...
     let rest = path.strip_prefix("/monitor/")?;
     let (name, action) = rest.split_once('/')?;
@@ -234,6 +255,41 @@ pub fn parse_monitor_message(
             reply_addr: src,
         }),
         _ => {
+            // Try aux path: aux/{aux}/{param}
+            if let Some(aux_rest) = action.strip_prefix("aux/") {
+                let (aux_str, param) = aux_rest.split_once('/')?;
+                let aux_ch: u8 = aux_str.parse().ok()?;
+                return match param {
+                    "fader" => {
+                        let value = match args.first() {
+                            Some(OscType::Float(f)) => *f,
+                            Some(OscType::Int(i)) => *i as f32,
+                            _ => return None,
+                        };
+                        Some(MonitorCommand::SetAuxFader {
+                            client_name,
+                            aux_ch,
+                            value,
+                            reply_addr: src,
+                        })
+                    }
+                    "mute" => {
+                        let mute = match args.first() {
+                            Some(OscType::Int(i)) => *i != 0,
+                            Some(OscType::Float(f)) => *f != 0.0,
+                            _ => return None,
+                        };
+                        Some(MonitorCommand::SetAuxMute {
+                            client_name,
+                            aux_ch,
+                            mute,
+                            reply_addr: src,
+                        })
+                    }
+                    _ => None,
+                };
+            }
+
             // Try send path: send/{input}/{aux}/{param}
             let send_rest = action.strip_prefix("send/")?;
             let parts: Vec<&str> = send_rest.split('/').collect();
