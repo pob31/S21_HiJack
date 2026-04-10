@@ -1166,6 +1166,7 @@ fn save_show_file(
             palettes: pmgr.palettes.values().cloned().collect(),
             monitor_clients: monmgr.clients.values().cloned().collect(),
             gang_groups: gmgr.groups.values().cloned().collect(),
+            console_recall: crate::model::recall_scope::ConsoleRecallConfig::default(),
         };
 
         drop(state_guard);

@@ -8,5 +8,6 @@ pub mod operating_mode;
 pub mod osc_log;
 pub mod palette;
 pub mod parameter;
+pub mod recall_scope;
 pub mod snapshot;
 pub mod state;

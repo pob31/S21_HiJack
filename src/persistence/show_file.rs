@@ -8,6 +8,7 @@ use crate::model::gang::GangGroup;
 use crate::model::monitor::MonitorClient;
 use crate::model::operating_mode::OperatingMode;
 use crate::model::palette::ChannelPalette;
+use crate::model::recall_scope::ConsoleRecallConfig;
 use crate::model::snapshot::{CueList, ScopeTemplate, Snapshot};
 
 /// Connection settings persisted in the show file.
@@ -108,6 +109,9 @@ pub struct ShowFile {
     /// Gang groups for smart ganging.
     #[serde(default)]
     pub gang_groups: Vec<GangGroup>,
+    /// Console recall scope & per-channel recall safe (visual reference).
+    #[serde(default)]
+    pub console_recall: ConsoleRecallConfig,
 }
 
 impl ShowFile {
@@ -124,6 +128,7 @@ impl ShowFile {
             palettes: Vec::new(),
             monitor_clients: Vec::new(),
             gang_groups: Vec::new(),
+            console_recall: ConsoleRecallConfig::default(),
         }
     }
 
