@@ -904,7 +904,7 @@ pub fn draw_scope_window(
             ui.separator();
 
             // ─ Per-group matrices (scroll area leaves room for footer) ─
-            let footer_height = 36.0;
+            let footer_height = 60.0; // footer row + separator + margins
             let available = ui.available_height() - footer_height;
             egui::ScrollArea::both()
                 .auto_shrink([false, false])
