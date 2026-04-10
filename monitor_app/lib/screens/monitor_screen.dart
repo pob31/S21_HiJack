@@ -384,8 +384,8 @@ class _MonitorScreenState extends State<MonitorScreen> {
             children: [
               Text(
                 displayName,
-                style: const TextStyle(
-                  color: Colors.white,
+                style: TextStyle(
+                  color: mute ? Colors.white30 : Colors.white,
                   fontSize: 16,
                   fontWeight: FontWeight.bold,
                 ),
@@ -398,6 +398,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
                       value: fader,
                       dbMin: -80.0,
                       dbMax: 10.0,
+                      active: !mute,
                       onChanged: (v) {
                         model.updateAux(auxCh, v, mute);
                         widget.osc.send(
@@ -412,7 +413,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
                   const SizedBox(width: 8),
                   Text(
                     _formatDb(fader),
-                    style: const TextStyle(color: Colors.white54),
+                    style: TextStyle(color: mute ? Colors.white24 : Colors.white54),
                   ),
                   const SizedBox(width: 12),
                   GestureDetector(
