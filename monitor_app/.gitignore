@@ -7,7 +7,7 @@ build/
 *.iml
 .idea/
 .vscode/
-*.lock
+.metadata
 
 # Android
 android/.gradle/
@@ -15,17 +15,20 @@ android/local.properties
 android/app/debug/
 android/app/profile/
 android/app/release/
+android/key.properties
+*.jks
 
 # iOS
 ios/Pods/
 ios/.symlinks/
 ios/Flutter/Flutter.framework
 ios/Flutter/Flutter.podspec
+ios/Flutter/ephemeral/
 
 # macOS
 macos/Flutter/GeneratedPluginRegistrant.swift
+macos/Flutter/ephemeral/
 
 # Generated
 *.g.dart
 *.freezed.dart
-.dart_tool/
