@@ -601,30 +601,27 @@ impl MonitorEngine {
 
         // Poll aux fader/mute for permitted auxes
         for &aux in &auxes_of_interest {
-            let fader = state
-                .get(&ParameterAddress {
-                    channel: ChannelId::Aux(aux),
-                    parameter: ParameterPath::Fader,
-                })
-                .and_then(|v| v.as_float())
-                .unwrap_or(-150.0);
+            let fader_val = state.get(&ParameterAddress {
+                channel: ChannelId::Aux(aux),
+                parameter: ParameterPath::Fader,
+            });
+            let mute_val = state.get(&ParameterAddress {
+                channel: ChannelId::Aux(aux),
+                parameter: ParameterPath::Mute,
+            });
 
-            let mute = state
-                .get(&ParameterAddress {
-                    channel: ChannelId::Aux(aux),
-                    parameter: ParameterPath::Mute,
-                })
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let fader = fader_val.and_then(|v| v.as_float()).unwrap_or(-150.0);
+            let mute = mute_val.and_then(|v| v.as_bool()).unwrap_or(false);
 
             let new_aux_state = (fader, mute);
             if let Some(old) = last_aux_state.get(&aux) {
-                if *old == new_aux_state {
+                if (old.0 - new_aux_state.0).abs() < 0.001 && old.1 == new_aux_state.1 {
                     continue;
                 }
             }
             last_aux_state.insert(aux, new_aux_state);
-            debug!(aux, fader, mute, "Aux state changed — pushing to clients");
+            debug!(aux, fader, mute, has_fader = fader_val.is_some(), has_mute = mute_val.is_some(),
+                "Aux state changed — pushing to clients");
 
             for client in manager.clients.values() {
                 if !client.is_connected() || !client.permitted_auxes.contains(&aux) {
