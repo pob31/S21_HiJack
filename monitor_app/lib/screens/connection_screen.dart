@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/monitor_client.dart';
@@ -74,7 +75,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                   fillColor: Color(0xFF16213E),
                 ),
                 style: const TextStyle(color: Colors.white),
-                keyboardType: TextInputType.number,
+                keyboardType: TextInputType.url,
               ),
               const SizedBox(height: 16),
 
@@ -153,17 +154,21 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     model.clientName = name;
     model.setConnected(host, port, '');
 
+    debugPrint('S21 Monitor: connecting to $host:$port as "$name"');
+
     // Start heartbeat
     widget.osc.startHeartbeat(host, port, name);
 
-    // Request initial state
-    widget.osc.send(host, port, '/monitor/$name/state', []);
+    // Send connect (heartbeat will maintain it)
+    widget.osc.send(host, port, '/monitor/$name/connect', []);
+    debugPrint('S21 Monitor: sent connect to $host:$port as "$name"');
 
-    // Navigate to monitor screen
+    // Navigate to monitor screen FIRST, then request state
+    // so the listener is ready when the state messages arrive.
     if (mounted) {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
-          builder: (_) => MonitorScreen(osc: widget.osc),
+          builder: (_) => MonitorScreen(osc: widget.osc, requestStateOnMount: true),
         ),
       );
     }

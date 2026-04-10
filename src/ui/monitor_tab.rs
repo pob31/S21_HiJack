@@ -5,7 +5,10 @@ use eframe::egui;
 use tokio::sync::RwLock;
 
 use crate::console::monitor_manager::MonitorManager;
+use crate::model::channel::ChannelId;
 use crate::model::monitor::MonitorClient;
+use crate::model::parameter::{ParameterAddress, ParameterPath};
+use crate::model::state::ConsoleState;
 use super::theme;
 
 /// Per-tab UI state for the Monitor tab.
@@ -23,6 +26,7 @@ pub fn draw_monitor_tab(
     ui: &mut egui::Ui,
     tab: &mut MonitorTabState,
     monitor_manager: &Arc<RwLock<MonitorManager>>,
+    console_state: &Arc<RwLock<ConsoleState>>,
     connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
 ) {
@@ -82,6 +86,65 @@ pub fn draw_monitor_tab(
                 });
 
                 drop(mgr);
+            });
+
+            ui.add_space(8.0);
+
+            // ── Aux Reference Table ──
+            theme::card_frame().show(ui, |ui| {
+                theme::section_heading(ui, "Aux Channels");
+
+                let st = runtime.block_on(console_state.read());
+                let aux_count = st.config.aux_output_count;
+
+                if aux_count == 0 {
+                    ui.label(
+                        egui::RichText::new("Connect to console to see aux channels.")
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                } else {
+                    egui::Grid::new("aux_ref_grid")
+                        .num_columns(3)
+                        .spacing([16.0, 4.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            // Header
+                            ui.label(egui::RichText::new("Ch #").strong().color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("Name").strong().color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("Send #").strong().color(theme::TEXT_SECONDARY));
+                            ui.end_row();
+
+                            for aux in 1..=aux_count {
+                                let name = st
+                                    .get(&ParameterAddress {
+                                        channel: ChannelId::Aux(aux),
+                                        parameter: ParameterPath::Name,
+                                    })
+                                    .and_then(|v| match v {
+                                        crate::model::parameter::ParameterValue::String(s) => {
+                                            Some(s.clone())
+                                        }
+                                        _ => None,
+                                    })
+                                    .unwrap_or_default();
+
+                                ui.label(
+                                    egui::RichText::new(format!("Aux {aux}"))
+                                        .color(theme::CH_AUX),
+                                );
+                                ui.label(
+                                    egui::RichText::new(if name.is_empty() { "—" } else { &name })
+                                        .color(theme::TEXT_PRIMARY),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("{aux}"))
+                                        .color(theme::TEXT_SECONDARY),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                }
+                drop(st);
             });
 
             ui.add_space(8.0);

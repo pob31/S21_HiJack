@@ -47,6 +47,12 @@
 			</array>
 		</dict>
 	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>S21 Monitor needs local network access to communicate with the mixing console daemon.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_osc._udp</string>
+	</array>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

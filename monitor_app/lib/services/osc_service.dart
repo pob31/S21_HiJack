@@ -6,21 +6,26 @@ import 'dart:typed_data';
 /// OSC messages: /address\0 (padded to 4) + ,types\0 (padded to 4) + args
 class OscService {
   RawDatagramSocket? _socket;
-  final StreamController<OscMessage> _incoming = StreamController.broadcast();
+  StreamController<OscMessage> _incoming = StreamController.broadcast();
   Timer? _heartbeat;
 
   Stream<OscMessage> get incoming => _incoming.stream;
   bool get isBound => _socket != null;
 
   /// Bind a local UDP socket on an ephemeral port.
+  /// Safe to call multiple times — closes any existing socket first.
   Future<void> bind() async {
+    // Close existing socket if any (handles hot restart)
+    _socket?.close();
+    _socket = null;
+
     _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
     _socket!.listen((event) {
       if (event == RawSocketEvent.read) {
         final dg = _socket!.receive();
         if (dg != null) {
           final msg = _decode(dg.data);
-          if (msg != null) _incoming.add(msg);
+          if (msg != null && !_incoming.isClosed) _incoming.add(msg);
         }
       }
     });
@@ -61,7 +66,14 @@ class OscService {
     stopHeartbeat();
     _socket?.close();
     _socket = null;
-    _incoming.close();
+    if (!_incoming.isClosed) _incoming.close();
+  }
+
+  /// Reset and rebind — creates a fresh stream controller + socket.
+  Future<void> reset() async {
+    dispose();
+    _incoming = StreamController.broadcast();
+    await bind();
   }
 
   // ── OSC Encoding ──

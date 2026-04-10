@@ -127,11 +127,43 @@ async fn run_loop(
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
     cancel: CancellationToken,
 ) {
-    info!("GP OSC state mirror started — sending initial /console/resend and /console/channel/counts");
+    info!("GP OSC state mirror started — querying channel counts before full dump");
 
-    // Connect-time bootstrap: dump and discover.
-    send_system(&sender, SystemCommand::Resend).await;
+    // Step 1: Query channel counts and wait for the reply before requesting
+    // the full state dump. This ensures the config is populated so the UI
+    // can display the correct channel counts and send counts.
     send_system(&sender, SystemCommand::ChannelCountsQuery).await;
+
+    let mut counts_received = false;
+    let counts_timeout = Instant::now() + Duration::from_secs(3);
+
+    while !counts_received && Instant::now() < counts_timeout {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                info!("Connection cancelled during channel counts wait");
+                return;
+            }
+            Some(msg) = rx.recv() => {
+                let parsed = parse::parse_gp_osc(&msg.path, &msg.args);
+                process_message(&parsed, &state, &macro_manager, &gang_engine, &gang_manager, &dirty_tracker, &sender).await;
+                match &parsed {
+                    ParsedOscMessage::ChannelCounts { .. } | ParsedOscMessage::DiscoveryCount { .. } => {
+                        counts_received = true;
+                        info!("Channel counts received — requesting full state dump");
+                    }
+                    _ => {}
+                }
+            }
+            _ = time::sleep(Duration::from_millis(100)) => {}
+        }
+    }
+
+    if !counts_received {
+        warn!("Channel counts not received within 3s — proceeding with resend anyway");
+    }
+
+    // Step 2: Request full state dump now that config is populated.
+    send_system(&sender, SystemCommand::Resend).await;
 
     let mut last_inbound_at = Instant::now();
     let mut last_ping_at: Option<Instant> = None;

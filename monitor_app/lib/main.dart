@@ -18,9 +18,39 @@ void main() async {
   );
 }
 
-class S21MonitorApp extends StatelessWidget {
+class S21MonitorApp extends StatefulWidget {
   final OscService osc;
   const S21MonitorApp({super.key, required this.osc});
+
+  @override
+  State<S21MonitorApp> createState() => _S21MonitorAppState();
+}
+
+class _S21MonitorAppState extends State<S21MonitorApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    widget.osc.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.detached) {
+      widget.osc.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      // Rebind socket if it was closed
+      if (!widget.osc.isBound) {
+        widget.osc.bind();
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -32,7 +62,7 @@ class S21MonitorApp extends StatelessWidget {
         colorSchemeSeed: Colors.blue,
         useMaterial3: true,
       ),
-      home: ConnectionScreen(osc: osc),
+      home: ConnectionScreen(osc: widget.osc),
     );
   }
 }

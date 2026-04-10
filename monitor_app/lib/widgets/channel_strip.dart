@@ -17,6 +17,12 @@ class VerticalChannelStrip extends StatelessWidget {
     required this.onToggle,
   });
 
+  static String _formatPan(double pan) {
+    if (pan.abs() < 0.02) return 'C';
+    if (pan < 0) return 'L${(-pan * 100).round()}';
+    return 'R${(pan * 100).round()}';
+  }
+
   @override
   Widget build(BuildContext context) {
     return SizedBox(
@@ -31,26 +37,30 @@ class VerticalChannelStrip extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 4),
-          // Pan knob (simplified as small slider)
+          // Pan slider (-1.0 L .. 0.0 C .. +1.0 R)
           SizedBox(
-            width: 48,
-            height: 24,
+            width: 52,
+            height: 32,
             child: SliderTheme(
               data: SliderThemeData(
-                trackHeight: 2,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+                trackHeight: 3,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
                 activeTrackColor: Colors.orangeAccent,
                 inactiveTrackColor: Colors.white12,
                 thumbColor: Colors.orange,
                 overlayColor: Colors.orangeAccent.withAlpha(30),
               ),
               child: Slider(
-                value: send.pan.clamp(-100.0, 100.0),
-                min: -100.0,
-                max: 100.0,
+                value: send.pan.clamp(-1.0, 1.0),
+                min: -1.0,
+                max: 1.0,
                 onChanged: onPanChanged,
               ),
             ),
+          ),
+          Text(
+            _formatPan(send.pan),
+            style: const TextStyle(color: Colors.white38, fontSize: 8),
           ),
           const SizedBox(height: 4),
           // On/Off toggle
@@ -84,6 +94,12 @@ class VerticalChannelStrip extends StatelessWidget {
 
 /// A horizontal channel strip (phone layout): label + fader + pan + on/off.
 class HorizontalChannelStrip extends StatelessWidget {
+  static String _formatPan(double pan) {
+    if (pan.abs() < 0.02) return 'C';
+    if (pan < 0) return 'L${(-pan * 100).round()}';
+    return 'R${(pan * 100).round()}';
+  }
+
   final SendState send;
   final ValueChanged<double> onLevelChanged;
   final ValueChanged<double> onPanChanged;
@@ -132,23 +148,26 @@ class HorizontalChannelStrip extends StatelessWidget {
           ),
           Row(
             children: [
-              const Text('Pan', style: TextStyle(color: Colors.white38, fontSize: 11)),
+              Text(
+                'Pan ${_formatPan(send.pan)}',
+                style: const TextStyle(color: Colors.white38, fontSize: 11),
+              ),
               Expanded(
                 child: SizedBox(
-                  height: 24,
+                  height: 32,
                   child: SliderTheme(
                     data: SliderThemeData(
-                      trackHeight: 2,
-                      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+                      trackHeight: 3,
+                      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
                       activeTrackColor: Colors.orangeAccent,
                       inactiveTrackColor: Colors.white12,
                       thumbColor: Colors.orange,
                       overlayColor: Colors.orangeAccent.withAlpha(30),
                     ),
                     child: Slider(
-                      value: send.pan.clamp(-100.0, 100.0),
-                      min: -100.0,
-                      max: 100.0,
+                      value: send.pan.clamp(-1.0, 1.0),
+                      min: -1.0,
+                      max: 1.0,
                       onChanged: onPanChanged,
                     ),
                   ),

@@ -2,13 +2,16 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/monitor_client.dart';
+import '../models/send_state.dart';
 import '../services/osc_service.dart';
 import '../widgets/channel_strip.dart';
 import '../widgets/fader_widget.dart';
+import 'connection_screen.dart';
 
 class MonitorScreen extends StatefulWidget {
   final OscService osc;
-  const MonitorScreen({super.key, required this.osc});
+  final bool requestStateOnMount;
+  const MonitorScreen({super.key, required this.osc, this.requestStateOnMount = false});
 
   @override
   State<MonitorScreen> createState() => _MonitorScreenState();
@@ -22,6 +25,19 @@ class _MonitorScreenState extends State<MonitorScreen> {
   void initState() {
     super.initState();
     _sub = widget.osc.incoming.listen(_handleIncoming);
+
+    if (widget.requestStateOnMount) {
+      // Delay slightly to ensure listener is active
+      Future.delayed(const Duration(milliseconds: 100), () {
+        if (!mounted) return;
+        final model = context.read<MonitorClientModel>();
+        final name = model.clientName;
+        final host = model.daemonHost;
+        final port = model.daemonPort;
+        widget.osc.send(host, port, '/monitor/$name/state', []);
+        debugPrint('S21 Monitor: state request sent after mount');
+      });
+    }
   }
 
   @override
@@ -32,56 +48,43 @@ class _MonitorScreenState extends State<MonitorScreen> {
 
   void _handleIncoming(OscMessage msg) {
     final model = context.read<MonitorClientModel>();
+    debugPrint('S21 Monitor: received ${msg.address} (${msg.args.length} args)');
 
-    // Parse send state pushes: /monitor/send/{input}/{aux}/{level|pan|on}
-    if (msg.address.startsWith('/monitor/send/')) {
+    // Parse send state pushes: /monitor/state/send/{input}/{aux} [level, pan, on]
+    // Single message with 3 args: Float(level), Float(pan), Int(on)
+    if (msg.address.startsWith('/monitor/state/send/')) {
       final parts = msg.address.split('/');
-      // /monitor/send/{input}/{aux}/{param}
-      if (parts.length >= 6) {
-        final input = int.tryParse(parts[3]);
-        final aux = int.tryParse(parts[4]);
-        final param = parts[5];
-        if (input != null && aux != null && msg.args.isNotEmpty) {
-          final key = (input, aux);
-          final current = model.sends[key];
-          double level = current?.level ?? -150.0;
-          double pan = current?.pan ?? 0.0;
-          bool on = current?.on ?? false;
-
-          final val = msg.args[0];
-          switch (param) {
-            case 'level':
-              if (val is OscFloat) level = val.value;
-            case 'pan':
-              if (val is OscFloat) pan = val.value;
-            case 'on':
-              if (val is OscInt) on = val.value != 0;
-              if (val is OscFloat) on = val.value != 0.0;
-          }
+      // parts: ['', 'monitor', 'state', 'send', '{input}', '{aux}']
+      if (parts.length >= 6 && msg.args.length >= 3) {
+        final input = int.tryParse(parts[4]);
+        final aux = int.tryParse(parts[5]);
+        if (input != null && aux != null) {
+          final level = (msg.args[0] is OscFloat) ? (msg.args[0] as OscFloat).value : -150.0;
+          final pan = (msg.args[1] is OscFloat) ? (msg.args[1] as OscFloat).value : 0.0;
+          final on = (msg.args[2] is OscInt) ? (msg.args[2] as OscInt).value != 0 : false;
           model.updateSend(input, aux, level, pan, on);
+          debugPrint('S21 Monitor: parsed send in=$input aux=$aux level=$level pan=$pan on=$on');
+
+          // Auto-discover permitted auxes from incoming data
+          if (!model.permittedAuxes.contains(aux)) {
+            model.permittedAuxes.add(aux);
+            model.permittedAuxes.sort();
+            // Auto-select first aux if none selected
+            model.selectedAux ??= aux;
+            debugPrint('S21 Monitor: discovered aux $aux, selected=${model.selectedAux}');
+          }
         }
       }
     }
 
-    // Parse aux state pushes: /monitor/aux/{aux}/{fader|mute}
-    if (msg.address.startsWith('/monitor/aux/')) {
+    // Parse aux state pushes: /monitor/state/aux/{aux} [fader, mute]
+    if (msg.address.startsWith('/monitor/state/aux/')) {
       final parts = msg.address.split('/');
-      if (parts.length >= 5) {
-        final aux = int.tryParse(parts[3]);
-        final param = parts[4];
-        if (aux != null && msg.args.isNotEmpty) {
-          final current = model.auxStates[aux];
-          double fader = current?.fader ?? -150.0;
-          bool mute = current?.mute ?? false;
-
-          final val = msg.args[0];
-          switch (param) {
-            case 'fader':
-              if (val is OscFloat) fader = val.value;
-            case 'mute':
-              if (val is OscInt) mute = val.value != 0;
-              if (val is OscFloat) mute = val.value != 0.0;
-          }
+      if (parts.length >= 5 && msg.args.length >= 2) {
+        final aux = int.tryParse(parts[4]);
+        if (aux != null) {
+          final fader = (msg.args[0] is OscFloat) ? (msg.args[0] as OscFloat).value : -150.0;
+          final mute = (msg.args[1] is OscInt) ? (msg.args[1] as OscInt).value != 0 : false;
           model.updateAux(aux, fader, mute);
         }
       }
@@ -121,6 +124,13 @@ class _MonitorScreenState extends State<MonitorScreen> {
                 ),
               ],
             ),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.logout, size: 20),
+                tooltip: 'Disconnect',
+                onPressed: () => _disconnect(model),
+              ),
+            ],
           ),
           body: Column(
             children: [
@@ -393,6 +403,23 @@ class _MonitorScreenState extends State<MonitorScreen> {
       '/monitor/${model.clientName}/send/${send.inputCh}/${send.auxCh}/on',
       [OscInt(send.on ? 1 : 0)],
     );
+  }
+
+  Future<void> _disconnect(MonitorClientModel model) async {
+    await _sub.cancel();
+    await widget.osc.reset();
+    model.setDisconnected();
+    model.sends.clear();
+    model.auxStates.clear();
+    model.selectedAux = null;
+    model.permittedAuxes.clear();
+    if (mounted) {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => ConnectionScreen(osc: widget.osc),
+        ),
+      );
+    }
   }
 
   String _formatDb(double db) {

@@ -441,6 +441,7 @@ impl eframe::App for HiJackApp {
                         ui,
                         &mut self.monitor,
                         &self.monitor_manager,
+                        &self.state,
                         &self.connected,
                         &self.runtime,
                     );
