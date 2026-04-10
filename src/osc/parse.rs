@@ -34,6 +34,11 @@ pub enum ParsedOscMessage {
 
 /// Parse a GP OSC message path and arguments into a typed result.
 pub fn parse_gp_osc(path: &str, args: &[OscType]) -> ParsedOscMessage {
+    parse_gp_osc_with_config(path, args, None)
+}
+
+/// Config-aware GP OSC parser that correctly classifies aux vs group buses.
+pub fn parse_gp_osc_with_config(path: &str, args: &[OscType], mix_output_types: Option<&[bool]>) -> ParsedOscMessage {
     // System commands
     match path {
         "/console/ping" => return ParsedOscMessage::Ping,
@@ -76,7 +81,7 @@ pub fn parse_gp_osc(path: &str, args: &[OscType]) -> ParsedOscMessage {
 
     // Channel parameter: /channel/{ch}/...
     if let Some(rest) = path.strip_prefix("/channel/") {
-        if let Some(parsed) = parse_channel_parameter(rest, args) {
+        if let Some(parsed) = parse_channel_parameter(rest, args, mix_output_types) {
             return ParsedOscMessage::ParameterUpdate(parsed.0, parsed.1);
         }
     }
@@ -96,6 +101,7 @@ fn extract_u8(arg: &OscType) -> Option<u8> {
 fn parse_channel_parameter(
     path: &str,
     args: &[OscType],
+    mix_output_types: Option<&[bool]>,
 ) -> Option<(ParameterAddress, ParameterValue)> {
     // Split into channel number and parameter suffix
     let slash = path.find('/')?;
@@ -103,7 +109,7 @@ fn parse_channel_parameter(
     let suffix = &path[slash + 1..];
 
     let ch_num: u8 = ch_str.parse().ok()?;
-    let channel = ChannelId::from_gp_osc_number(ch_num)?;
+    let channel = ChannelId::from_gp_osc_number_with_config(ch_num, mix_output_types)?;
     let parameter = ParameterPath::from_gp_osc_suffix(suffix)?;
 
     let value = extract_value(&parameter, args)?;

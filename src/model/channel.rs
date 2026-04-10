@@ -30,11 +30,54 @@ impl ChannelId {
     }
 
     /// Parse from a GP OSC unified channel number.
+    /// Parse from a GP OSC unified channel number.
+    ///
+    /// Buses 70-93 are a shared aux/group pool. Without config data, all
+    /// buses in this range are classified by their per-type index using the
+    /// `mix_output_types` array. If no config is available, falls back to
+    /// assuming aux for 70-77 and group for 78-93 (8 aux / 16 group default).
     pub fn from_gp_osc_number(n: u8) -> Option<Self> {
+        Self::from_gp_osc_number_with_config(n, None)
+    }
+
+    /// Config-aware version that classifies buses correctly.
+    pub fn from_gp_osc_number_with_config(
+        n: u8,
+        mix_output_types: Option<&[bool]>,
+    ) -> Option<Self> {
         match n {
             1..=60 => Some(ChannelId::Input(n)),
-            70..=77 => Some(ChannelId::Aux(n - 69)),
-            78..=93 => Some(ChannelId::Group(n - 77)),
+            70..=93 => {
+                let bus_index_0 = (n - 70) as usize; // 0-based bus index
+                if let Some(types) = mix_output_types {
+                    if let Some(&is_aux) = types.get(bus_index_0) {
+                        if is_aux {
+                            // Count how many auxes come before this bus
+                            let aux_num = types[..=bus_index_0]
+                                .iter()
+                                .filter(|&&t| t)
+                                .count() as u8;
+                            Some(ChannelId::Aux(aux_num))
+                        } else {
+                            let group_num = types[..=bus_index_0]
+                                .iter()
+                                .filter(|&&t| !t)
+                                .count() as u8;
+                            Some(ChannelId::Group(group_num))
+                        }
+                    } else {
+                        // Bus index out of range of config
+                        None
+                    }
+                } else {
+                    // No config: fallback — first 8 are aux, rest are group
+                    if n <= 77 {
+                        Some(ChannelId::Aux(n - 69))
+                    } else {
+                        Some(ChannelId::Group(n - 77))
+                    }
+                }
+            }
             110..=119 => Some(ChannelId::ControlGroup(n - 109)),
             120..=127 => Some(ChannelId::Matrix(n - 119)),
             _ => None,

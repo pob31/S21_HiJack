@@ -182,7 +182,11 @@ async fn run_loop(
 
             // Process incoming OSC messages
             Some(msg) = rx.recv() => {
-                let parsed = parse::parse_gp_osc(&msg.path, &msg.args);
+                let mix_types = {
+                    let s = state.read().await;
+                    if s.config.mix_output_types.is_empty() { None } else { Some(s.config.mix_output_types.clone()) }
+                };
+                let parsed = parse::parse_gp_osc_with_config(&msg.path, &msg.args, mix_types.as_deref());
                 process_message(&parsed, &state, &macro_manager, &gang_engine, &gang_manager, &dirty_tracker, &sender).await;
 
                 // Any inbound traffic counts as "alive": reset idle/ping bookkeeping.
