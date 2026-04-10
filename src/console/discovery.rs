@@ -23,6 +23,15 @@ pub fn apply_channel_counts(
     config.group_output_count = groups;
     config.control_group_count = control_groups;
     config.matrix_output_count = matrices;
+
+    // Generate default mix_output_types if not already populated (e.g. from
+    // iPad handshake). First `aux` buses are aux, remaining are group.
+    if config.mix_output_types.is_empty() {
+        config.mix_output_types = std::iter::repeat(true)
+            .take(aux as usize)
+            .chain(std::iter::repeat(false).take(groups as usize))
+            .collect();
+    }
 }
 
 /// Map a channel type name (from /console/channel/counts/{type}) to a config update.
