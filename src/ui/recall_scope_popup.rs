@@ -97,12 +97,13 @@ pub fn draw_recall_popup(
     config: &mut ConsoleRecallConfig,
     console_state: &ConsoleState,
 ) {
+    let Some(kind) = state.open.clone() else { return };
+
     let input_count = console_state.config.input_channel_count;
     let aux_count = console_state.config.aux_output_count;
     let group_count = console_state.config.group_output_count;
     let matrix_count = console_state.config.matrix_output_count;
     let cg_count = console_state.config.control_group_count;
-    let Some(kind) = state.open.clone() else { return };
 
     let title = kind.label();
     let mut open = true;
@@ -110,8 +111,8 @@ pub fn draw_recall_popup(
     egui::Window::new(title)
         .open(&mut open)
         .collapsible(false)
-        .resizable(false)
-        .default_width(420.0)
+        .resizable(true)
+        .default_size([700.0, 450.0])
         .show(ctx, |ui| {
             // Warning banner
             ui.label(
@@ -122,7 +123,7 @@ pub fn draw_recall_popup(
             );
             ui.add_space(4.0);
 
-            // Channel selector (for safe popups): number + arrows
+            // Channel selector: ◀ N ▶ / max  + channel name
             if !kind.is_scope() {
                 let max = kind.max_channels(input_count, aux_count, group_count, matrix_count, cg_count);
                 if max > 0 {
@@ -150,7 +151,7 @@ pub fn draw_recall_popup(
                                 .color(theme::TEXT_SECONDARY)
                                 .small(),
                         );
-                        // Show channel name
+                        // Channel name
                         if let Some(ch_id) = kind.channel_id(state.selected_channel) {
                             let name = console_state
                                 .get(&ParameterAddress {
@@ -182,63 +183,58 @@ pub fn draw_recall_popup(
 
             // Global blocks row (Session Scope only)
             if is_scope {
-                ui.label(egui::RichText::new("Global").color(theme::TEXT_SECONDARY).small());
-                ui.horizontal_wrapped(|ui| {
+                ui.horizontal(|ui| {
                     for &block in RecallBlock::global_blocks() {
-                        draw_block_button(ui, block, config.session_scope.active_blocks.contains(&block), true, is_scope, |toggled| {
+                        let active = config.session_scope.active_blocks.contains(&block);
+                        draw_block_button(ui, block, active, true, is_scope, |toggled| {
                             if toggled { config.session_scope.active_blocks.insert(block); }
                             else { config.session_scope.active_blocks.remove(&block); }
                         });
+                        ui.add_space(4.0);
                     }
                 });
-                ui.add_space(4.0);
+                ui.add_space(8.0);
                 ui.separator();
+                ui.add_space(8.0);
+            }
+
+            // Signal-flow columns (horizontal layout matching the console)
+            ui.horizontal(|ui| {
+                // Sources
+                draw_column(ui, "Sources", RecallBlock::sources_column(), &ref_channel, is_scope, &channel_id, config);
                 ui.add_space(4.0);
-            }
+                ui.label(egui::RichText::new("►").color(theme::TEXT_SECONDARY));
+                ui.add_space(4.0);
 
-            // Signal-flow sections — compact vertical layout
-            let sections: &[(&str, &[RecallBlock])] = &[
-                ("Sources", RecallBlock::sources_column()),
-                ("Input Processing", RecallBlock::input_processing_column()),
-                ("Insert (A)", RecallBlock::insert_a_column()),
-                ("Channel Processing", RecallBlock::channel_processing_column()),
-                ("Insert (B)", RecallBlock::insert_b_column()),
-                ("Outputs", RecallBlock::outputs_column()),
-            ];
+                // Input Processing
+                draw_column(ui, "Input\nProcessing", RecallBlock::input_processing_column(), &ref_channel, is_scope, &channel_id, config);
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("►").color(theme::TEXT_SECONDARY));
+                ui.add_space(4.0);
 
-            for &(section_name, blocks) in sections {
-                // Skip sections with no applicable blocks for this channel type
-                let any_available = blocks.iter().any(|b| RecallBlock::available_for_channel(*b, &ref_channel));
-                if !any_available { continue; }
+                // Insert A
+                draw_column(ui, "Insert\n(A)", RecallBlock::insert_a_column(), &ref_channel, is_scope, &channel_id, config);
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("►").color(theme::TEXT_SECONDARY));
+                ui.add_space(4.0);
 
-                ui.label(egui::RichText::new(section_name).color(theme::TEXT_SECONDARY).small());
-                ui.horizontal_wrapped(|ui| {
-                    for &block in blocks {
-                        let available = RecallBlock::available_for_channel(block, &ref_channel);
-                        let active = if is_scope {
-                            config.session_scope.active_blocks.contains(&block)
-                        } else if let Some(ch) = &channel_id {
-                            config.channel_safes.get(ch).is_some_and(|s| s.safe_blocks.contains(&block))
-                        } else {
-                            false
-                        };
+                // Channel Processing
+                draw_column(ui, "Channel\nProcessing", RecallBlock::channel_processing_column(), &ref_channel, is_scope, &channel_id, config);
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("►").color(theme::TEXT_SECONDARY));
+                ui.add_space(4.0);
 
-                        draw_block_button(ui, block, active, available, is_scope, |toggled| {
-                            if is_scope {
-                                if toggled { config.session_scope.active_blocks.insert(block); }
-                                else { config.session_scope.active_blocks.remove(&block); }
-                            } else if let Some(ch) = &channel_id {
-                                let safe = config.channel_safes.entry(ch.clone()).or_default();
-                                if toggled { safe.safe_blocks.insert(block); }
-                                else { safe.safe_blocks.remove(&block); }
-                            }
-                        });
-                    }
-                });
-                ui.add_space(2.0);
-            }
+                // Insert B
+                draw_column(ui, "Insert\n(B)", RecallBlock::insert_b_column(), &ref_channel, is_scope, &channel_id, config);
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("►").color(theme::TEXT_SECONDARY));
+                ui.add_space(4.0);
 
-            ui.add_space(8.0);
+                // Outputs
+                draw_column(ui, "Outputs", RecallBlock::outputs_column(), &ref_channel, is_scope, &channel_id, config);
+            });
+
+            ui.add_space(12.0);
             ui.separator();
             ui.add_space(4.0);
 
@@ -279,7 +275,51 @@ pub fn draw_recall_popup(
     }
 }
 
-/// Draw a single toggle block button (compact).
+/// Draw a column of blocks with a header.
+fn draw_column(
+    ui: &mut egui::Ui,
+    header: &str,
+    blocks: &[RecallBlock],
+    ref_channel: &ChannelId,
+    is_scope: bool,
+    channel_id: &Option<ChannelId>,
+    config: &mut ConsoleRecallConfig,
+) {
+    ui.vertical(|ui| {
+        ui.label(
+            egui::RichText::new(header)
+                .color(theme::TEXT_SECONDARY)
+                .size(9.0),
+        );
+        ui.add_space(4.0);
+
+        for &block in blocks {
+            let available = RecallBlock::available_for_channel(block, ref_channel);
+
+            let active = if is_scope {
+                config.session_scope.active_blocks.contains(&block)
+            } else if let Some(ch) = channel_id {
+                config.channel_safes.get(ch).is_some_and(|s| s.safe_blocks.contains(&block))
+            } else {
+                false
+            };
+
+            draw_block_button(ui, block, active, available, is_scope, |toggled| {
+                if is_scope {
+                    if toggled { config.session_scope.active_blocks.insert(block); }
+                    else { config.session_scope.active_blocks.remove(&block); }
+                } else if let Some(ch) = channel_id {
+                    let safe = config.channel_safes.entry(ch.clone()).or_default();
+                    if toggled { safe.safe_blocks.insert(block); }
+                    else { safe.safe_blocks.remove(&block); }
+                }
+            });
+            ui.add_space(2.0);
+        }
+    });
+}
+
+/// Draw a single toggle block button.
 fn draw_block_button(
     ui: &mut egui::Ui,
     block: RecallBlock,
@@ -288,8 +328,7 @@ fn draw_block_button(
     is_scope: bool,
     mut on_toggle: impl FnMut(bool),
 ) {
-    // Single-line label (replace newlines with spaces)
-    let label_text = block.label().replace('\n', " ");
+    let size = egui::Vec2::new(80.0, 36.0);
 
     let fill = if !available {
         theme::BG_PANEL
@@ -312,11 +351,11 @@ fn draw_block_button(
     };
 
     let btn = egui::Button::new(
-        egui::RichText::new(label_text).color(text_color).size(10.0),
+        egui::RichText::new(block.label()).color(text_color).size(9.0),
     )
     .fill(fill)
     .corner_radius(4.0)
-    .min_size(egui::Vec2::new(0.0, 26.0));
+    .min_size(size);
 
     let resp = ui.add_enabled(available, btn);
     if resp.clicked() {
