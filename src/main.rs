@@ -173,7 +173,9 @@ async fn run_headless(args: Args) {
     let palette_manager = Arc::new(RwLock::new(PaletteManager::new()));
     let mut snapshot_engine = SnapshotEngine::new(manager.state(), manager.sender());
     snapshot_engine.set_dirty_tracker(dirty_tracker.clone());
-    let macro_engine = Arc::new(MacroEngine::new(manager.state(), manager.sender()));
+    let mut macro_engine = MacroEngine::new(manager.state(), manager.sender());
+    macro_engine.set_dirty_tracker(dirty_tracker.clone());
+    let macro_engine = Arc::new(macro_engine);
 
     // iPad protocol connection (Mode 2 or 3)
     let send_port = args.effective_ipad_send_port();

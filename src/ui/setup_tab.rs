@@ -901,7 +901,9 @@ fn start_connection(
         // Start trigger listener (with cancellation so port is freed on disconnect)
         match TriggerListener::start_with_cancel(trigger_addr, token.clone(), iface_name.as_deref()).await {
             Ok(mut trigger_rx) => {
-                let macro_eng = Arc::new(MacroEngine::new(st.clone(), manager.sender()));
+                let mut macro_eng = MacroEngine::new(st.clone(), manager.sender());
+                macro_eng.set_dirty_tracker(dirty.clone());
+                let macro_eng = Arc::new(macro_eng);
                 let trigger_cue_mgr = cue_mgr.clone();
                 let trigger_macro_mgr = manager.macro_manager();
                 let trigger_palette_mgr = pmgr_arc.clone();

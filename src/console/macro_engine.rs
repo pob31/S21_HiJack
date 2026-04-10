@@ -4,6 +4,7 @@ use tokio::sync::RwLock;
 use tokio::time;
 use tracing::{info, warn, debug};
 
+use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::macro_def::{MacroDef, MacroStep, MacroStepMode};
 use crate::model::parameter::ParameterValue;
 use crate::model::state::ConsoleState;
@@ -23,19 +24,50 @@ pub struct MacroExecutionResult {
 pub struct MacroEngine {
     state: Arc<RwLock<ConsoleState>>,
     sender: OscSender,
+    dirty_tracker: Option<Arc<RwLock<DirtyTracker>>>,
 }
 
 impl MacroEngine {
     pub fn new(state: Arc<RwLock<ConsoleState>>, sender: OscSender) -> Self {
-        Self { state, sender }
+        Self { state, sender, dirty_tracker: None }
+    }
+
+    /// Attach a dirty tracker so macros can optionally suppress it.
+    pub fn set_dirty_tracker(&mut self, tracker: Arc<RwLock<DirtyTracker>>) {
+        self.dirty_tracker = Some(tracker);
     }
 
     /// Execute all steps of a macro in sequence, respecting per-step delays.
+    /// When `macro_def.mark_dirty` is false, dirty tracking is suppressed
+    /// for the duration of execution and the dirty set is cleared afterward.
     pub async fn execute(&self, macro_def: &MacroDef) -> MacroExecutionResult {
+        let suppress = !macro_def.mark_dirty;
+        if suppress {
+            if let Some(dirty) = &self.dirty_tracker {
+                dirty.write().await.begin_suppression();
+            }
+        }
+
+        let result = self.execute_inner(macro_def).await;
+
+        if suppress {
+            if let Some(dirty) = &self.dirty_tracker {
+                let mut t = dirty.write().await;
+                t.end_suppression();
+                t.clear();
+            }
+        }
+
+        result
+    }
+
+    /// Inner execution logic, called by `execute` with or without dirty suppression.
+    async fn execute_inner(&self, macro_def: &MacroDef) -> MacroExecutionResult {
         info!(
             name = %macro_def.name,
             id = %macro_def.id,
             steps = macro_def.steps.len(),
+            mark_dirty = macro_def.mark_dirty,
             "Executing macro"
         );
 

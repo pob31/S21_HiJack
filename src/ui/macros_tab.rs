@@ -496,7 +496,7 @@ fn draw_step_editor(
     };
 
     // Read macro data
-    let macro_data: Option<(String, Vec<(ParameterAddress, MacroStepMode, u32)>)> = macro_manager
+    let macro_data: Option<(String, Vec<(ParameterAddress, MacroStepMode, u32)>, bool)> = macro_manager
         .try_read()
         .ok()
         .and_then(|mgr| {
@@ -507,17 +507,32 @@ fn draw_step_editor(
                         .iter()
                         .map(|s| (s.address.clone(), s.mode.clone(), s.delay_ms))
                         .collect(),
+                    m.mark_dirty,
                 )
             })
         });
 
-    let Some((macro_name, steps)) = macro_data else {
+    let Some((macro_name, steps, mark_dirty)) = macro_data else {
         ui.label(egui::RichText::new("Macro not found").color(theme::TEXT_SECONDARY));
         macros_state.selected_macro_id = None;
         return;
     };
 
     theme::section_heading(ui, &format!("Steps: {macro_name}"));
+
+    // Mark-dirty toggle
+    let mut dirty_toggle = mark_dirty;
+    if ui.checkbox(&mut dirty_toggle, "Track as modified parameters").changed() {
+        let mgr = macro_manager.clone();
+        let new_val = dirty_toggle;
+        runtime.spawn(async move {
+            let mut mgr = mgr.write().await;
+            if let Some(m) = mgr.get_macro_mut(&selected_id) {
+                m.mark_dirty = new_val;
+                m.touch();
+            }
+        });
+    }
 
     // Ensure edit buffers match step count
     let step_count = steps.len();

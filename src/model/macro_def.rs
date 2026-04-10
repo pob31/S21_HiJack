@@ -12,8 +12,20 @@ pub struct MacroDef {
     pub id: Uuid,
     pub name: String,
     pub steps: Vec<MacroStep>,
+    /// When true (default), executing this macro lets the dirty tracker
+    /// record which parameters changed — useful for preset-style macros
+    /// where the operator wants to see what was modified. When false,
+    /// execution suppresses dirty tracking and clears the dirty set
+    /// afterward — useful for temporary actions (e.g. soundcheck solos)
+    /// that shouldn't pollute the "modified since last recall" view.
+    #[serde(default = "default_true")]
+    pub mark_dirty: bool,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl MacroDef {
@@ -24,6 +36,7 @@ impl MacroDef {
             id: Uuid::new_v4(),
             name,
             steps,
+            mark_dirty: true,
             created_at: now,
             modified_at: now,
         }
