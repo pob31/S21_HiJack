@@ -275,6 +275,7 @@ pub fn parse_monitor_message(
                     }
                     "mute" => {
                         let mute = match args.first() {
+                            Some(OscType::Bool(b)) => *b,
                             Some(OscType::Int(i)) => *i != 0,
                             Some(OscType::Float(f)) => *f != 0.0,
                             _ => return None,
@@ -331,6 +332,7 @@ pub fn parse_monitor_message(
                 }
                 "on" => {
                     let on = match args.first() {
+                        Some(OscType::Bool(b)) => *b,
                         Some(OscType::Int(i)) => *i != 0,
                         Some(OscType::Float(f)) => *f != 0.0,
                         _ => return None,

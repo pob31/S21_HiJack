@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/monitor_client.dart';
@@ -21,34 +22,62 @@ class _MonitorScreenState extends State<MonitorScreen> {
   late StreamSubscription<OscMessage> _sub;
   int _tabIndex = 0; // 0 = My Mix, 1 = My Aux
 
+  Timer? _watchdog;
+
   @override
   void initState() {
     super.initState();
     _sub = widget.osc.incoming.listen(_handleIncoming);
+    _startWatchdog();
 
     if (widget.requestStateOnMount) {
-      // Delay slightly to ensure listener is active
       Future.delayed(const Duration(milliseconds: 100), () {
         if (!mounted) return;
         final model = context.read<MonitorClientModel>();
-        final name = model.clientName;
-        final host = model.daemonHost;
-        final port = model.daemonPort;
-        widget.osc.send(host, port, '/monitor/$name/state', []);
+        widget.osc.send(model.daemonHost, model.daemonPort,
+            '/monitor/${model.clientName}/state', []);
         debugPrint('S21 Monitor: state request sent after mount');
       });
     }
   }
 
+  DateTime _lastReceived = DateTime.now();
+
+  /// Watchdog: if no messages received for 5s, mark disconnected and
+  /// attempt reconnect by re-sending connect + state request.
+  void _startWatchdog() {
+    _watchdog = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (!mounted) return;
+      final model = context.read<MonitorClientModel>();
+      final elapsed = DateTime.now().difference(_lastReceived).inSeconds;
+
+      if (elapsed > 5 && model.status == ConnectionStatus.connected) {
+        debugPrint('S21 Monitor: no data for ${elapsed}s — reconnecting');
+        model.status = ConnectionStatus.connecting;
+        model.notifyListeners();
+
+        // Re-send connect + state
+        widget.osc.send(model.daemonHost, model.daemonPort,
+            '/monitor/${model.clientName}/connect', []);
+        widget.osc.send(model.daemonHost, model.daemonPort,
+            '/monitor/${model.clientName}/state', []);
+      } else if (elapsed <= 5 && model.status == ConnectionStatus.connecting) {
+        model.status = ConnectionStatus.connected;
+        model.notifyListeners();
+      }
+    });
+  }
+
   @override
   void dispose() {
+    _watchdog?.cancel();
     _sub.cancel();
     super.dispose();
   }
 
   void _handleIncoming(OscMessage msg) {
+    _lastReceived = DateTime.now();
     final model = context.read<MonitorClientModel>();
-    debugPrint('S21 Monitor: received ${msg.address} (${msg.args.length} args)');
 
     // Parse send state pushes: /monitor/state/send/{input}/{aux} [level, pan, on]
     // Single message with 3 args: Float(level), Float(pan), Int(on)
@@ -61,7 +90,10 @@ class _MonitorScreenState extends State<MonitorScreen> {
         if (input != null && aux != null) {
           final level = (msg.args[0] is OscFloat) ? (msg.args[0] as OscFloat).value : -150.0;
           final pan = (msg.args[1] is OscFloat) ? (msg.args[1] as OscFloat).value : 0.0;
-          final on = (msg.args[2] is OscInt) ? (msg.args[2] as OscInt).value != 0 : false;
+          bool on = false;
+          if (msg.args[2] is OscBool) on = (msg.args[2] as OscBool).value;
+          else if (msg.args[2] is OscInt) on = (msg.args[2] as OscInt).value != 0;
+          else if (msg.args[2] is OscFloat) on = (msg.args[2] as OscFloat).value != 0.0;
           model.updateSend(input, aux, level, pan, on);
           debugPrint('S21 Monitor: parsed send in=$input aux=$aux level=$level pan=$pan on=$on');
 
@@ -377,7 +409,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
                         model.daemonHost,
                         model.daemonPort,
                         '/monitor/${model.clientName}/aux/$auxCh/mute',
-                        [OscInt(newMute ? 1 : 0)],
+                        [OscBool(newMute)],
                       );
                     },
                     child: Container(
@@ -439,7 +471,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
       model.daemonHost,
       model.daemonPort,
       '/monitor/${model.clientName}/send/${send.inputCh}/${send.auxCh}/on',
-      [OscInt(send.on ? 1 : 0)],
+      [OscBool(send.on)],
     );
   }
 

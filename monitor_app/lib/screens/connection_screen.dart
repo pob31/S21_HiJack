@@ -13,12 +13,25 @@ class ConnectionScreen extends StatefulWidget {
   State<ConnectionScreen> createState() => _ConnectionScreenState();
 }
 
+  // Persist last connection across navigation (survives disconnect/reconnect)
+  static String _lastHost = '';
+  static String _lastPort = '8025';
+  static String _lastName = '';
+
 class _ConnectionScreenState extends State<ConnectionScreen> {
-  final _hostController = TextEditingController(text: '');
-  final _portController = TextEditingController(text: '8025');
-  final _nameController = TextEditingController(text: '');
+  late final TextEditingController _hostController;
+  late final TextEditingController _portController;
+  late final TextEditingController _nameController;
   bool _discovering = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _hostController = TextEditingController(text: _lastHost);
+    _portController = TextEditingController(text: _lastPort);
+    _nameController = TextEditingController(text: _lastName);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -149,6 +162,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       setState(() => _error = 'Please enter the daemon IP address');
       return;
     }
+
+    // Save for next time
+    _lastHost = host;
+    _lastPort = port.toString();
+    _lastName = name;
 
     final model = context.read<MonitorClientModel>();
     model.clientName = name;

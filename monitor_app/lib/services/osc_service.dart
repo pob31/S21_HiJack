@@ -94,6 +94,8 @@ class OscService {
           types.write('i');
         case OscString():
           types.write('s');
+        case OscBool(:final value):
+          types.write(value ? 'T' : 'F');
       }
     }
     buf.add(_encodeString(types.toString()));
@@ -109,6 +111,8 @@ class OscService {
           buf.add(bd.buffer.asUint8List());
         case OscString(:final value):
           buf.add(_encodeString(value));
+        case OscBool():
+          break; // T/F have no argument bytes in OSC
       }
     }
 
@@ -156,6 +160,10 @@ class OscService {
             final (s, end) = _readString(data, offset);
             args.add(OscString(s));
             offset = end;
+          case 'T':
+            args.add(OscBool(true));
+          case 'F':
+            args.add(OscBool(false));
           default:
             break; // skip unknown types
         }
@@ -196,6 +204,11 @@ class OscInt extends OscArg {
 class OscString extends OscArg {
   final String value;
   OscString(this.value);
+}
+
+class OscBool extends OscArg {
+  final bool value;
+  OscBool(this.value);
 }
 
 /// A decoded OSC message.

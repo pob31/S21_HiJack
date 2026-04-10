@@ -10,18 +10,48 @@ import 'package:flutter/material.dart';
 
 // ── dB ↔ slider position with configurable range ──
 
+// Console fader taper: log-like curve that gives most resolution
+// in the -20..+10 dB range where mixing actually happens.
+// Uses a piecewise approach:
+//   - Bottom 30% of travel → dbMin..-20 dB (compressed, rarely used)
+//   - Top 70% of travel → -20..+10 dB (expanded, main working range)
+
 double dbToPosition(double db, double dbMin, double dbMax) {
   if (db <= dbMin) return 0.0;
   if (db >= dbMax) return 1.0;
-  final normalized = (db - dbMin) / (dbMax - dbMin);
-  return pow(normalized, 0.5).toDouble();
+
+  const double knee = -20.0;    // where the curve transitions
+  const double kneePos = 0.30;  // 30% of travel for everything below -20
+
+  if (db <= knee) {
+    // Bottom region: dbMin..-20 → 0..0.30
+    final range = knee - dbMin;
+    if (range <= 0) return 0.0;
+    return kneePos * (db - dbMin) / range;
+  } else {
+    // Top region: -20..dbMax → 0.30..1.0
+    final range = dbMax - knee;
+    if (range <= 0) return 1.0;
+    return kneePos + (1.0 - kneePos) * (db - knee) / range;
+  }
 }
 
 double positionToDb(double pos, double dbMin, double dbMax) {
   if (pos <= 0.0) return dbMin;
   if (pos >= 1.0) return dbMax;
-  final normalized = pos * pos;
-  return dbMin + normalized * (dbMax - dbMin);
+
+  const double knee = -20.0;
+  const double kneePos = 0.30;
+
+  if (pos <= kneePos) {
+    // Bottom region: 0..0.30 → dbMin..-20
+    final range = knee - dbMin;
+    return dbMin + range * (pos / kneePos);
+  } else {
+    // Top region: 0.30..1.0 → -20..dbMax
+    final range = dbMax - knee;
+    return knee + range * ((pos - kneePos) / (1.0 - kneePos));
+  }
 }
 
 String formatDb(double db, double dbMin) {
