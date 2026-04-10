@@ -5,10 +5,11 @@ use tokio::sync::RwLock;
 use tracing::{info, warn, debug};
 use uuid::Uuid;
 
-use crate::console::fade_engine::{FadeController, FadeTarget};
+use crate::console::fade_engine::{FadeController, FadeTarget, MultiFadeController};
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::palette::ChannelPalette;
-use crate::model::parameter::{ParameterAddress, ParameterValue};
+use crate::model::channel::ChannelId;
+use crate::model::parameter::{ParameterAddress, ParameterValue, TimingCategory};
 use crate::model::snapshot::{Cue, ScopeTemplate, Snapshot};
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
@@ -31,6 +32,7 @@ pub struct SnapshotEngine {
     sender: OscSender,
     ipad_sender: Option<IpadSender>,
     fade_controller: FadeController,
+    multi_fade: MultiFadeController,
     /// Phase C: optional dirty tracker. When present, recall() and
     /// recall_cue() bracket their writes with begin_suppression /
     /// end_suppression so console echoes from the recall don't pollute the
@@ -46,6 +48,7 @@ impl SnapshotEngine {
             sender,
             ipad_sender: None,
             fade_controller: FadeController::new(),
+            multi_fade: MultiFadeController::new(),
             dirty_tracker: None,
         }
     }
@@ -245,6 +248,12 @@ impl SnapshotEngine {
             "Recalling cue"
         );
 
+        // Per-category timed recall: if the scope has any category timings,
+        // use the new orchestrated path with mute ordering and per-group fades.
+        if effective_scope.has_any_category_timing() {
+            return self.recall_cue_timed(snapshot, effective_scope, palettes, ignore_scope).await;
+        }
+
         // No fade — instant recall (existing behavior). Call the inner
         // body so we don't double-suppress (the outer recall_cue is
         // already inside with_dirty_suppression).
@@ -384,6 +393,333 @@ impl SnapshotEngine {
         }
     }
 
+    /// Per-category timed recall with mute ordering and send enable ordering.
+    ///
+    /// Groups resolved parameters by `(ChannelId, TimingCategory)`, applies
+    /// per-group pre-wait and fade, and enforces:
+    /// - Mute ON before non-mute params, mute OFF after all others complete
+    /// - Send disable before level change, send enable after level change (per-send)
+    /// - Discrete params in fade categories sent after pre-wait, before fade starts
+    async fn recall_cue_timed(
+        &self,
+        snapshot: &Snapshot,
+        effective_scope: &ScopeTemplate,
+        palettes: &HashMap<Uuid, ChannelPalette>,
+        ignore_scope: bool,
+    ) -> RecallResult {
+        use tokio::time::{sleep, Duration};
+        use tokio_util::sync::CancellationToken;
+
+        // Cancel all in-progress fades from previous recall
+        self.multi_fade.cancel_all().await;
+        self.fade_controller.cancel_active().await;
+
+        let state = self.state.read().await;
+
+        // Step 1: Resolve all values with palette overrides
+        let resolved = crate::model::snapshot::resolve_recall_values(
+            snapshot, effective_scope, palettes, ignore_scope,
+        );
+
+        // Step 2: Diff against live state and group by (channel, category)
+        //
+        // For each changed param, classify into:
+        // - (channel, Some(category)): has timing
+        // - (channel, None): uncategorized, instant
+        struct ParamChange {
+            addr: ParameterAddress,
+            value: ParameterValue,
+            start_value: Option<ParameterValue>,
+        }
+
+        // Keyed by (ChannelId, Option<TimingCategory>)
+        let mut groups: HashMap<(ChannelId, Option<TimingCategory>), Vec<ParamChange>> =
+            HashMap::new();
+        let mut total_skipped = 0usize;
+
+        for (addr, effective_value) in &resolved {
+            let live_value = state.get(addr);
+            if live_value == Some(*effective_value) {
+                total_skipped += 1;
+                continue;
+            }
+            let cat = TimingCategory::from_parameter_path(&addr.parameter);
+            groups
+                .entry((addr.channel.clone(), cat))
+                .or_default()
+                .push(ParamChange {
+                    addr: addr.clone(),
+                    value: (*effective_value).clone(),
+                    start_value: live_value.cloned(),
+                });
+        }
+
+        // Count scope-filtered params as skipped (for RecallResult compatibility)
+        let all_resolved = crate::model::snapshot::resolve_recall_values(
+            snapshot, effective_scope, palettes, true,
+        );
+        total_skipped += all_resolved.len() - resolved.len();
+
+        drop(state);
+
+        // Step 3: For each channel, determine mute direction
+        let mut mute_directions: HashMap<ChannelId, bool> = HashMap::new(); // true=ON, false=OFF
+        for ((channel, cat), changes) in &groups {
+            if *cat == Some(TimingCategory::Mute) {
+                if let Some(change) = changes.first() {
+                    let going_on = match change.value {
+                        ParameterValue::Bool(b) => b,
+                        ParameterValue::Int(i) => i != 0,
+                        ParameterValue::Float(f) => f != 0.0,
+                        _ => false,
+                    };
+                    mute_directions.insert(channel.clone(), going_on);
+                }
+            }
+        }
+
+        // Step 4: Build execution plan — spawn concurrent tasks per channel
+        //
+        // For each channel:
+        //   - If mute going ON:  send mute → then start all non-mute groups
+        //   - If mute going OFF: start all non-mute groups → wait → send mute
+        //   - Otherwise:         start all groups concurrently
+
+        let sender = self.sender.clone();
+        let ipad_sender = self.ipad_sender.clone();
+
+        // Collect all spawned handles for tracking
+        let mut all_handles: Vec<tokio::task::JoinHandle<usize>> = Vec::new();
+
+        // Group the groups by channel for mute ordering
+        let mut by_channel: HashMap<ChannelId, Vec<(Option<TimingCategory>, Vec<ParamChange>)>> =
+            HashMap::new();
+        for ((channel, cat), changes) in groups {
+            by_channel
+                .entry(channel)
+                .or_default()
+                .push((cat, changes));
+        }
+
+        for (channel, channel_groups) in by_channel {
+            let mute_dir: Option<bool> = mute_directions.get(&channel).copied();
+            let scope_ref = effective_scope;
+
+            // Separate mute group from non-mute groups
+            let mut mute_change: Option<ParamChange> = None;
+            let mut non_mute_groups: Vec<(Option<TimingCategory>, Vec<ParamChange>)> = Vec::new();
+
+            for (cat, mut changes) in channel_groups {
+                if cat == Some(TimingCategory::Mute) {
+                    mute_change = changes.pop();
+                } else {
+                    non_mute_groups.push((cat, changes));
+                }
+            }
+
+            let mute_timing = scope_ref.timing_for(&channel, TimingCategory::Mute);
+            let s = sender.clone();
+            let is = ipad_sender.clone();
+
+            // Build the per-group execution closures
+            let mut group_tasks: Vec<(
+                Option<TimingCategory>,
+                Duration,       // pre_wait
+                Duration,       // fade_time
+                Vec<ParamChange>,
+            )> = Vec::new();
+
+            for (cat, changes) in non_mute_groups {
+                let timing = cat
+                    .map(|c| scope_ref.timing_for(&channel, c))
+                    .unwrap_or_default();
+                let pre_wait = Duration::from_secs_f32(timing.pre_wait_secs);
+                let fade_time = if cat.map(|c| c.supports_fade()).unwrap_or(false) {
+                    Duration::from_secs_f32(timing.fade_time_secs)
+                } else {
+                    Duration::ZERO
+                };
+                group_tasks.push((cat, pre_wait, fade_time, changes));
+            }
+
+            // Clone sender for spawned tasks
+            let sender_for_channel = s.clone();
+            let ipad_for_channel = is.clone();
+
+            // Spawn the channel's execution
+            let handle = tokio::spawn(async move {
+                let mut sent = 0usize;
+
+                // Helper to send one param
+                async fn send_one(
+                    sender: &OscSender,
+                    ipad: &Option<IpadSender>,
+                    addr: &ParameterAddress,
+                    value: &ParameterValue,
+                ) -> bool {
+                    match encode::encode_parameter(addr, value) {
+                        Some((path, args)) => sender.send(&path, args).await.is_ok(),
+                        None => {
+                            if let Some(ipad) = ipad {
+                                match ipad_encode::encode_ipad_parameter(addr, value) {
+                                    Some((path, args)) => ipad.send(&path, args).await.is_ok(),
+                                    None => false,
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                    }
+                }
+
+                // Execute a single timing group
+                async fn exec_group(
+                    sender: &OscSender,
+                    ipad: &Option<IpadSender>,
+                    pre_wait: Duration,
+                    fade_time: Duration,
+                    changes: Vec<ParamChange>,
+                ) -> usize {
+                    let mut sent = 0usize;
+
+                    if !pre_wait.is_zero() {
+                        sleep(pre_wait).await;
+                    }
+
+                    // Separate discrete from continuous
+                    let mut discrete = Vec::new();
+                    let mut continuous_targets = Vec::new();
+
+                    for change in changes {
+                        if change.addr.parameter.is_continuous()
+                            && change.start_value.is_some()
+                            && !fade_time.is_zero()
+                        {
+                            continuous_targets.push(FadeTarget {
+                                address: change.addr,
+                                start_value: change.start_value.unwrap(),
+                                end_value: change.value,
+                            });
+                        } else {
+                            discrete.push(change);
+                        }
+                    }
+
+                    // Send discrete params first
+                    for d in &discrete {
+                        if send_one(sender, ipad, &d.addr, &d.value).await {
+                            sent += 1;
+                        }
+                    }
+
+                    // Fade continuous params
+                    if !continuous_targets.is_empty() {
+                        let token = CancellationToken::new();
+                        let child = token.child_token();
+                        let result = crate::console::fade_engine::run_fade_inline(
+                            fade_time.as_secs_f32(),
+                            continuous_targets,
+                            sender.clone(),
+                            ipad.clone(),
+                            child,
+                        ).await;
+                        sent += result.total_steps_sent;
+                    }
+
+                    sent
+                }
+
+                // ── Mute ordering ──
+                match mute_dir {
+                    Some(true) => {
+                        // Mute ON: send mute first, then start everything else
+                        if !Duration::from_secs_f32(mute_timing.pre_wait_secs).is_zero() {
+                            sleep(Duration::from_secs_f32(mute_timing.pre_wait_secs)).await;
+                        }
+                        if let Some(mc) = &mute_change {
+                            if send_one(&sender_for_channel, &ipad_for_channel, &mc.addr, &mc.value).await {
+                                sent += 1;
+                            }
+                        }
+                        // Now run all non-mute groups concurrently
+                        let mut handles = Vec::new();
+                        for (_, pre_wait, fade_time, changes) in group_tasks {
+                            let s = sender_for_channel.clone();
+                            let i = ipad_for_channel.clone();
+                            handles.push(tokio::spawn(async move {
+                                exec_group(&s, &i, pre_wait, fade_time, changes).await
+                            }));
+                        }
+                        for h in handles {
+                            if let Ok(n) = h.await {
+                                sent += n;
+                            }
+                        }
+                    }
+                    Some(false) => {
+                        // Mute OFF: run all non-mute groups, wait, then unmute
+                        let mut handles = Vec::new();
+                        for (_, pre_wait, fade_time, changes) in group_tasks {
+                            let s = sender_for_channel.clone();
+                            let i = ipad_for_channel.clone();
+                            handles.push(tokio::spawn(async move {
+                                exec_group(&s, &i, pre_wait, fade_time, changes).await
+                            }));
+                        }
+                        for h in handles {
+                            if let Ok(n) = h.await {
+                                sent += n;
+                            }
+                        }
+                        // All non-mute complete, now unmute
+                        if !Duration::from_secs_f32(mute_timing.pre_wait_secs).is_zero() {
+                            sleep(Duration::from_secs_f32(mute_timing.pre_wait_secs)).await;
+                        }
+                        if let Some(mc) = &mute_change {
+                            if send_one(&sender_for_channel, &ipad_for_channel, &mc.addr, &mc.value).await {
+                                sent += 1;
+                            }
+                        }
+                    }
+                    None => {
+                        // No mute change — all groups run concurrently
+                        let mut handles = Vec::new();
+                        for (_, pre_wait, fade_time, changes) in group_tasks {
+                            let s = sender_for_channel.clone();
+                            let i = ipad_for_channel.clone();
+                            handles.push(tokio::spawn(async move {
+                                exec_group(&s, &i, pre_wait, fade_time, changes).await
+                            }));
+                        }
+                        for h in handles {
+                            if let Ok(n) = h.await {
+                                sent += n;
+                            }
+                        }
+                    }
+                }
+
+                sent
+            });
+
+            all_handles.push(handle);
+        }
+
+        // Wait for all channels to complete
+        let mut total_sent = 0usize;
+        for h in all_handles {
+            if let Ok(n) = h.await {
+                total_sent += n;
+            }
+        }
+
+        info!(total_sent, total_skipped, "Timed recall complete");
+        RecallResult {
+            parameters_sent: total_sent,
+            parameters_skipped: total_skipped,
+        }
+    }
+
     /// Send a parameter immediately (no state comparison — already checked).
     async fn send_now(
         &self,
@@ -489,11 +825,10 @@ mod tests {
 
         let scope = ScopeTemplate::new(
             "Test".into(),
-            vec![ChannelScope {
-                channel: ChannelId::Input(1),
-                paths: HashSet::new(),
-                sections: HashSet::from([ParameterSection::FaderMutePan]),
-            }],
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
         );
 
         let mut values = HashMap::new();
@@ -524,11 +859,10 @@ mod tests {
 
         let scope = ScopeTemplate::new(
             "Test".into(),
-            vec![ChannelScope {
-                channel: ChannelId::Input(1),
-                paths: HashSet::new(),
-                sections: HashSet::from([ParameterSection::Inserts]),
-            }],
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::Inserts]),
+            )],
         );
 
         let mut values = HashMap::new();
@@ -564,11 +898,10 @@ mod tests {
 
         let scope = ScopeTemplate::new(
             "Test".into(),
-            vec![ChannelScope {
-                channel: ChannelId::Input(1),
-                paths: HashSet::new(),
-                sections: HashSet::from([ParameterSection::Eq]),
-            }],
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::Eq]),
+            )],
         );
 
         // Snapshot has EQ gain = 2.0
@@ -602,11 +935,10 @@ mod tests {
 
         let scope = ScopeTemplate::new(
             "Test".into(),
-            vec![ChannelScope {
-                channel: ChannelId::Input(1),
-                paths: HashSet::new(),
-                sections: HashSet::from([ParameterSection::Eq]),
-            }],
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::Eq]),
+            )],
         );
 
         let mut values = HashMap::new();
@@ -630,11 +962,10 @@ mod tests {
 
         let scope = ScopeTemplate::new(
             "Test".into(),
-            vec![ChannelScope {
-                channel: ChannelId::Input(1),
-                paths: HashSet::new(),
-                sections: HashSet::from([ParameterSection::FaderMutePan, ParameterSection::Eq]),
-            }],
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan, ParameterSection::Eq]),
+            )],
         );
 
         let mut values = HashMap::new();
@@ -673,11 +1004,10 @@ mod tests {
 
         let scope = ScopeTemplate::new(
             "Test".into(),
-            vec![ChannelScope {
-                channel: ChannelId::Input(1),
-                paths: HashSet::new(),
-                sections: HashSet::from([ParameterSection::Inserts]),
-            }],
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::Inserts]),
+            )],
         );
 
         let mut values = HashMap::new();
@@ -705,11 +1035,10 @@ mod tests {
 
         let scope = ScopeTemplate::new(
             "Test".into(),
-            vec![ChannelScope {
-                channel: ChannelId::Input(1),
-                paths: HashSet::new(),
-                sections: HashSet::from([ParameterSection::Eq]),
-            }],
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::Eq]),
+            )],
         );
 
         // Snapshot has no EQ data at all
@@ -739,11 +1068,10 @@ mod tests {
 
         let scope = ScopeTemplate::new(
             "Test".into(),
-            vec![ChannelScope {
-                channel: ChannelId::Input(1),
-                paths: HashSet::new(),
-                sections: HashSet::from([ParameterSection::FaderMutePan]),
-            }],
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
         );
 
         let mut values = HashMap::new();
@@ -779,11 +1107,10 @@ mod tests {
 
         let scope = ScopeTemplate::new(
             "Test".into(),
-            vec![ChannelScope {
-                channel: ChannelId::Input(1),
-                paths: HashSet::new(),
-                sections: HashSet::from([ParameterSection::FaderMutePan]),
-            }],
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
         );
 
         let mut values = HashMap::new();
@@ -815,21 +1142,19 @@ mod tests {
         // Snapshot scope includes FaderMutePan + Eq
         let full_scope = ScopeTemplate::new(
             "Full".into(),
-            vec![ChannelScope {
-                channel: ChannelId::Input(1),
-                paths: HashSet::new(),
-                sections: HashSet::from([ParameterSection::FaderMutePan, ParameterSection::Eq]),
-            }],
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan, ParameterSection::Eq]),
+            )],
         );
 
         // Cue scope override: only Eq
         let eq_only_scope = ScopeTemplate::new(
             "EQ Only".into(),
-            vec![ChannelScope {
-                channel: ChannelId::Input(1),
-                paths: HashSet::new(),
-                sections: HashSet::from([ParameterSection::Eq]),
-            }],
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::Eq]),
+            )],
         );
 
         let mut values = HashMap::new();

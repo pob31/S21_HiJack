@@ -5,7 +5,10 @@ use tokio::time;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use crate::model::parameter::{ParameterAddress, ParameterValue};
+use std::collections::HashMap;
+
+use crate::model::channel::ChannelId;
+use crate::model::parameter::{ParameterAddress, ParameterValue, TimingCategory};
 use crate::osc::client::OscSender;
 use crate::osc::ipad_client::IpadSender;
 use crate::osc::encode;
@@ -80,6 +83,84 @@ impl FadeController {
             child,
         ))
     }
+}
+
+// ── Multi-fade controller ──────────────────────────────────────────
+
+/// Key for a fade group — one concurrent fade per (channel, category).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FadeGroupKey {
+    pub channel: ChannelId,
+    pub category: TimingCategory,
+}
+
+/// Manages multiple concurrent fades, keyed by `(ChannelId, TimingCategory)`.
+///
+/// Each group can have its own fade running independently. Starting a fade
+/// for a group that already has an active fade cancels the previous one.
+/// `cancel_all` cancels every active group (used when a new cue recall starts).
+pub struct MultiFadeController {
+    active_groups: Mutex<HashMap<FadeGroupKey, CancellationToken>>,
+}
+
+impl MultiFadeController {
+    pub fn new() -> Self {
+        Self {
+            active_groups: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Cancel all active group fades.
+    pub async fn cancel_all(&self) {
+        let mut guard = self.active_groups.lock().await;
+        for (_, token) in guard.drain() {
+            token.cancel();
+        }
+    }
+
+    /// Start a fade for one group, cancelling any existing fade for the same key.
+    /// Returns a `JoinHandle` that resolves when the fade completes or is cancelled.
+    pub async fn start_group_fade(
+        &self,
+        key: FadeGroupKey,
+        fade_time_secs: f32,
+        targets: Vec<FadeTarget>,
+        sender: OscSender,
+        ipad_sender: Option<IpadSender>,
+    ) -> tokio::task::JoinHandle<FadeResult> {
+        let mut guard = self.active_groups.lock().await;
+
+        // Cancel existing fade for this group
+        if let Some(old_token) = guard.remove(&key) {
+            old_token.cancel();
+        }
+
+        let token = CancellationToken::new();
+        let child = token.child_token();
+        guard.insert(key.clone(), token);
+        drop(guard);
+
+        tokio::spawn(run_fade(
+            0.0, // cue_number not meaningful for group fades
+            fade_time_secs,
+            targets,
+            sender,
+            ipad_sender,
+            child,
+        ))
+    }
+}
+
+/// Run a fade interpolation loop inline (not spawned). Used by per-category
+/// timed recall where each group already runs in its own spawned task.
+pub async fn run_fade_inline(
+    fade_time_secs: f32,
+    targets: Vec<FadeTarget>,
+    sender: OscSender,
+    ipad_sender: Option<IpadSender>,
+    cancel: CancellationToken,
+) -> FadeResult {
+    run_fade(0.0, fade_time_secs, targets, sender, ipad_sender, cancel).await
 }
 
 /// Run a fade interpolation loop.

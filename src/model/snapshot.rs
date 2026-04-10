@@ -8,6 +8,7 @@ use super::channel::ChannelId;
 use super::palette::ChannelPalette;
 use super::parameter::{
     ParameterAddress, ParameterPath, ParameterSection, ParameterValue, PaletteKind,
+    TimingCategory,
 };
 
 /// Reusable scope template — defines which channels and sections to capture/recall.
@@ -42,6 +43,37 @@ impl ScopeTemplate {
                 && (cs.paths.contains(&addr.parameter) || cs.sections.contains(&section))
         })
     }
+
+    /// True if any `ChannelScope` has per-category timing configured.
+    /// Used to decide whether to use the new timed-recall path or the
+    /// legacy single-fade-time path.
+    pub fn has_any_category_timing(&self) -> bool {
+        self.channel_scopes.iter().any(|cs| !cs.category_timings.is_empty())
+    }
+
+    /// Look up the timing for a specific channel + category. Returns default
+    /// (0/0) if no timing is configured for that combination.
+    pub fn timing_for(&self, channel: &ChannelId, cat: TimingCategory) -> CategoryTiming {
+        self.channel_scopes
+            .iter()
+            .find(|cs| cs.channel == *channel)
+            .map(|cs| cs.timing_for(cat))
+            .unwrap_or_default()
+    }
+}
+
+/// Per-category pre-wait and fade timing for snapshot recalls.
+/// Stored per-channel per-category on `ChannelScope`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CategoryTiming {
+    /// Delay before this category starts (seconds). Default 0.0.
+    #[serde(default)]
+    pub pre_wait_secs: f32,
+    /// Fade duration for continuous params in this category (seconds).
+    /// Ignored for `TimingCategory::Mute` (always instant after pre-wait).
+    /// Default 0.0 (instant).
+    #[serde(default)]
+    pub fade_time_secs: f32,
 }
 
 /// Which parameters are in scope for a specific channel.
@@ -63,6 +95,9 @@ pub struct ChannelScope {
     /// populated only for legacy templates that haven't yet been edited.
     #[serde(default)]
     pub sections: HashSet<ParameterSection>,
+    /// Per-category recall timing (pre-wait + fade). Empty = all instant.
+    #[serde(default)]
+    pub category_timings: HashMap<TimingCategory, CategoryTiming>,
 }
 
 impl ChannelScope {
@@ -72,6 +107,7 @@ impl ChannelScope {
             channel,
             paths,
             sections: HashSet::new(),
+            category_timings: HashMap::new(),
         }
     }
 
@@ -82,7 +118,14 @@ impl ChannelScope {
             channel,
             paths: HashSet::new(),
             sections,
+            category_timings: HashMap::new(),
         }
+    }
+
+    /// Look up the recall timing for a category on this channel.
+    /// Returns default (0/0) if no timing is configured.
+    pub fn timing_for(&self, cat: TimingCategory) -> CategoryTiming {
+        self.category_timings.get(&cat).cloned().unwrap_or_default()
     }
 
     /// Expand the legacy `sections` field into `paths` (every applicable path

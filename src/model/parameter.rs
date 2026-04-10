@@ -1115,6 +1115,153 @@ impl ParameterPath {
     }
 }
 
+// ── Timing categories ────────────────────────────────────────────────
+
+/// Coarse groupings of parameters for per-channel recall timing (pre-wait
+/// and fade). Each category maps to one or more `ParameterSection` values
+/// and defines whether its continuous parameters can be faded.
+///
+/// Parameters not belonging to any category (Name, Solo, AnalogGain, etc.)
+/// are recalled instantly with no pre-wait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum TimingCategory {
+    /// Trim, Balance, Width, Polarity, DelayEnabled, DelayTime.
+    Preprocessing,
+    /// All EQ/HP/LP params. Discrete switches (enables, modes) are sent
+    /// after pre-wait before fades start.
+    Eq,
+    /// Compressor params. Discrete switches sent before fades.
+    Dyn1,
+    /// Gate params. Discrete switches sent before fades.
+    Dyn2,
+    /// Fader + Pan.
+    Fader,
+    /// Mute only. No fade — pre-wait only. ON before others, OFF after others.
+    Mute,
+    /// SendLevel, SendPan (fade); SendEnabled follows per-send ordering
+    /// (enable AFTER level change, disable BEFORE level change).
+    Sends,
+}
+
+impl TimingCategory {
+    /// All variants in display order.
+    pub fn all_variants() -> &'static [TimingCategory] {
+        &[
+            TimingCategory::Fader,
+            TimingCategory::Mute,
+            TimingCategory::Preprocessing,
+            TimingCategory::Eq,
+            TimingCategory::Dyn1,
+            TimingCategory::Dyn2,
+            TimingCategory::Sends,
+        ]
+    }
+
+    /// Map a parameter path to its timing category, or None for uncategorized
+    /// params that are always recalled instantly.
+    pub fn from_parameter_path(path: &ParameterPath) -> Option<TimingCategory> {
+        match path {
+            // Fader
+            ParameterPath::Fader | ParameterPath::Pan => Some(TimingCategory::Fader),
+
+            // Mute
+            ParameterPath::Mute => Some(TimingCategory::Mute),
+
+            // Preprocessing (InputGain subset + Delay)
+            ParameterPath::Trim
+            | ParameterPath::Balance
+            | ParameterPath::Width
+            | ParameterPath::Polarity
+            | ParameterPath::DelayEnabled
+            | ParameterPath::DelayTime => Some(TimingCategory::Preprocessing),
+
+            // EQ (all EQ/HP/LP params)
+            ParameterPath::EqEnabled
+            | ParameterPath::HighpassEnabled
+            | ParameterPath::HighpassFrequency
+            | ParameterPath::LowpassEnabled
+            | ParameterPath::LowpassFrequency
+            | ParameterPath::EqBandFrequency(_)
+            | ParameterPath::EqBandGain(_)
+            | ParameterPath::EqBandQ(_)
+            | ParameterPath::EqBandCurve(_)
+            | ParameterPath::EqBandDynEnabled(_)
+            | ParameterPath::EqBandDynThreshold(_)
+            | ParameterPath::EqBandDynRatio(_)
+            | ParameterPath::EqBandDynAttack(_)
+            | ParameterPath::EqBandDynRelease(_)
+            | ParameterPath::EqBandDynOverUnder(_) => Some(TimingCategory::Eq),
+
+            // Dyn1
+            ParameterPath::Dyn1Enabled
+            | ParameterPath::Dyn1Mode
+            | ParameterPath::Dyn1Threshold(_)
+            | ParameterPath::Dyn1Knee(_)
+            | ParameterPath::Dyn1Ratio(_)
+            | ParameterPath::Dyn1Attack(_)
+            | ParameterPath::Dyn1Release(_)
+            | ParameterPath::Dyn1Gain(_)
+            | ParameterPath::Dyn1CrossoverHigh
+            | ParameterPath::Dyn1CrossoverLow => Some(TimingCategory::Dyn1),
+
+            // Dyn2
+            ParameterPath::Dyn2Enabled
+            | ParameterPath::Dyn2Mode
+            | ParameterPath::Dyn2Threshold
+            | ParameterPath::Dyn2Knee
+            | ParameterPath::Dyn2Ratio
+            | ParameterPath::Dyn2Range
+            | ParameterPath::Dyn2Attack
+            | ParameterPath::Dyn2Hold
+            | ParameterPath::Dyn2Release
+            | ParameterPath::Dyn2Gain
+            | ParameterPath::Dyn2Highpass
+            | ParameterPath::Dyn2Lowpass => Some(TimingCategory::Dyn2),
+
+            // Sends
+            ParameterPath::SendEnabled(_)
+            | ParameterPath::SendLevel(_)
+            | ParameterPath::SendPan(_) => Some(TimingCategory::Sends),
+
+            // Uncategorized — instant recall
+            _ => None,
+        }
+    }
+
+    /// Whether continuous params in this category can be faded.
+    /// Mute is always discrete (pre-wait only).
+    pub fn supports_fade(&self) -> bool {
+        !matches!(self, TimingCategory::Mute)
+    }
+
+    /// UI display label.
+    pub fn label(&self) -> &'static str {
+        match self {
+            TimingCategory::Preprocessing => "Preprocessing",
+            TimingCategory::Eq => "EQ",
+            TimingCategory::Dyn1 => "Dyn 1",
+            TimingCategory::Dyn2 => "Dyn 2",
+            TimingCategory::Fader => "Fader",
+            TimingCategory::Mute => "Mute",
+            TimingCategory::Sends => "Sends",
+        }
+    }
+
+    /// Which timing categories are displayed beneath a given section in the
+    /// scope editor. Returns an empty slice for sections with no timing.
+    pub fn for_section(section: &ParameterSection) -> &'static [TimingCategory] {
+        match section {
+            ParameterSection::FaderMutePan => &[TimingCategory::Fader, TimingCategory::Mute],
+            ParameterSection::InputGain | ParameterSection::Delay => &[TimingCategory::Preprocessing],
+            ParameterSection::Eq => &[TimingCategory::Eq],
+            ParameterSection::Dyn1 => &[TimingCategory::Dyn1],
+            ParameterSection::Dyn2 => &[TimingCategory::Dyn2],
+            ParameterSection::Sends => &[TimingCategory::Sends],
+            _ => &[],
+        }
+    }
+}
+
 // ── Palette kinds ────────────────────────────────────────────────────
 
 /// Which group of parameters a palette stores.
