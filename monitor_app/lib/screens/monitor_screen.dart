@@ -77,6 +77,35 @@ class _MonitorScreenState extends State<MonitorScreen> {
       }
     }
 
+    // Parse channel name pushes: /monitor/state/name/{input|aux}/{ch} [name]
+    if (msg.address.startsWith('/monitor/state/name/')) {
+      final parts = msg.address.split('/');
+      // parts: ['', 'monitor', 'state', 'name', 'input'|'aux', '{ch}']
+      if (parts.length >= 6 && msg.args.isNotEmpty) {
+        final type = parts[4];
+        final ch = int.tryParse(parts[5]);
+        final nameArg = msg.args[0];
+        if (ch != null && nameArg is OscString) {
+          final name = nameArg.value;
+          if (type == 'input') {
+            // Update name on all sends for this input
+            for (final entry in model.sends.entries) {
+              if (entry.key.$1 == ch) {
+                entry.value.name = name;
+              }
+            }
+            model.notifyListeners();
+          } else if (type == 'aux') {
+            final state = model.auxStates.putIfAbsent(
+              ch, () => AuxState(auxCh: ch),
+            );
+            state.name = name;
+            model.notifyListeners();
+          }
+        }
+      }
+    }
+
     // Parse aux state pushes: /monitor/state/aux/{aux} [fader, mute]
     if (msg.address.startsWith('/monitor/state/aux/')) {
       final parts = msg.address.split('/');
@@ -153,10 +182,15 @@ class _MonitorScreenState extends State<MonitorScreen> {
                           dropdownColor: const Color(0xFF16213E),
                           style: const TextStyle(color: Colors.white),
                           items: model.availableAuxes
-                              .map((a) => DropdownMenuItem(
-                                    value: a,
-                                    child: Text('Aux $a'),
-                                  ))
+                              .map((a) {
+                                final auxState = model.auxStates[a];
+                                final auxName = auxState?.name ?? '';
+                                final label = auxName.isNotEmpty ? '$auxName (Aux $a)' : 'Aux $a';
+                                return DropdownMenuItem(
+                                  value: a,
+                                  child: Text(label),
+                                );
+                              })
                               .toList(),
                           onChanged: (v) {
                             setState(() => model.selectedAux = v);
@@ -286,9 +320,11 @@ class _MonitorScreenState extends State<MonitorScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: auxes.map((auxCh) {
-        final state = model.auxStates[auxCh];
-        final fader = state?.fader ?? -150.0;
-        final mute = state?.mute ?? false;
+        final auxState = model.auxStates[auxCh];
+        final fader = auxState?.fader ?? -150.0;
+        final mute = auxState?.mute ?? false;
+        final auxName = auxState?.name ?? '';
+        final displayName = auxName.isNotEmpty ? '$auxName (Aux $auxCh)' : 'Aux $auxCh';
 
         return Container(
           margin: const EdgeInsets.only(bottom: 12),
@@ -301,7 +337,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Aux $auxCh',
+                displayName,
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 16,
@@ -314,6 +350,8 @@ class _MonitorScreenState extends State<MonitorScreen> {
                   Expanded(
                     child: HorizontalFader(
                       value: fader,
+                      dbMin: -80.0,
+                      dbMax: 10.0,
                       onChanged: (v) {
                         model.updateAux(auxCh, v, mute);
                         widget.osc.send(
@@ -423,7 +461,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
   }
 
   String _formatDb(double db) {
-    if (db <= -140) return '-inf';
+    if (db <= -59) return '-inf';
     return '${db.toStringAsFixed(1)} dB';
   }
 }

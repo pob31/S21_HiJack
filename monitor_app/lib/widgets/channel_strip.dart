@@ -26,29 +26,35 @@ class VerticalChannelStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 56,
+      width: 80,
       child: Column(
         children: [
           Expanded(
             child: VerticalFader(
               value: send.level,
+              dbMin: -60.0,
+              dbMax: 10.0,
               label: send.inputLabel,
               onChanged: onLevelChanged,
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           // Pan slider (-1.0 L .. 0.0 C .. +1.0 R)
+          Text(
+            _formatPan(send.pan),
+            style: const TextStyle(color: Colors.white54, fontSize: 9),
+          ),
           SizedBox(
-            width: 52,
-            height: 32,
+            width: 76,
+            height: 36,
             child: SliderTheme(
               data: SliderThemeData(
-                trackHeight: 3,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                trackHeight: 4,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 9),
                 activeTrackColor: Colors.orangeAccent,
                 inactiveTrackColor: Colors.white12,
                 thumbColor: Colors.orange,
-                overlayColor: Colors.orangeAccent.withAlpha(30),
+                overlayColor: Colors.orangeAccent.withAlpha(40),
               ),
               child: Slider(
                 value: send.pan.clamp(-1.0, 1.0),
@@ -58,27 +64,23 @@ class VerticalChannelStrip extends StatelessWidget {
               ),
             ),
           ),
-          Text(
-            _formatPan(send.pan),
-            style: const TextStyle(color: Colors.white38, fontSize: 8),
-          ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           // On/Off toggle
           GestureDetector(
             onTap: onToggle,
             child: Container(
-              width: 36,
-              height: 20,
+              width: 48,
+              height: 28,
               decoration: BoxDecoration(
                 color: send.on ? Colors.green : Colors.grey[800],
-                borderRadius: BorderRadius.circular(4),
+                borderRadius: BorderRadius.circular(6),
               ),
               child: Center(
                 child: Text(
                   send.on ? 'ON' : 'OFF',
                   style: const TextStyle(
                     color: Colors.white,
-                    fontSize: 9,
+                    fontSize: 11,
                     fontWeight: FontWeight.bold,
                   ),
                 ),

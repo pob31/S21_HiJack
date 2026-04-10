@@ -8,40 +8,40 @@ import 'package:flutter/material.dart';
 // We use: position = (dB + 60) / 70 for dB >= -60, with a compressed
 // region below -60 dB.
 
-const double _dbMin = -90.0;
-const double _dbMax = 10.0;
+// ── dB ↔ slider position with configurable range ──
 
-double _dbToPosition(double db) {
-  if (db <= _dbMin) return 0.0;
-  if (db >= _dbMax) return 1.0;
-  // Attempt a log-like curve: more space near 0dB
-  // Map -90..+10 using a power curve (exponent < 1 = more space at top)
-  final normalized = (db - _dbMin) / (_dbMax - _dbMin); // 0..1 linear
-  return pow(normalized, 0.5).toDouble(); // sqrt gives more top resolution
+double dbToPosition(double db, double dbMin, double dbMax) {
+  if (db <= dbMin) return 0.0;
+  if (db >= dbMax) return 1.0;
+  final normalized = (db - dbMin) / (dbMax - dbMin);
+  return pow(normalized, 0.5).toDouble();
 }
 
-double _positionToDb(double pos) {
-  if (pos <= 0.0) return _dbMin;
-  if (pos >= 1.0) return _dbMax;
-  // Inverse of sqrt: square
+double positionToDb(double pos, double dbMin, double dbMax) {
+  if (pos <= 0.0) return dbMin;
+  if (pos >= 1.0) return dbMax;
   final normalized = pos * pos;
-  return _dbMin + normalized * (_dbMax - _dbMin);
+  return dbMin + normalized * (dbMax - dbMin);
 }
 
-String _formatDb(double db) {
-  if (db <= -89) return '-inf';
+String formatDb(double db, double dbMin) {
+  if (db <= dbMin + 1) return '-inf';
   return '${db.toStringAsFixed(1)}';
 }
 
 /// A vertical fader slider for mixing levels (dB scale with log curve).
 class VerticalFader extends StatelessWidget {
   final double value; // dB
+  final double dbMin;
+  final double dbMax;
   final String label;
   final ValueChanged<double> onChanged;
 
   const VerticalFader({
     super.key,
     required this.value,
+    this.dbMin = -60.0,
+    this.dbMax = 10.0,
     required this.label,
     required this.onChanged,
   });
@@ -74,16 +74,16 @@ class VerticalFader extends StatelessWidget {
                 overlayColor: Colors.blueAccent.withAlpha(40),
               ),
               child: Slider(
-                value: _dbToPosition(value),
+                value: dbToPosition(value, dbMin, dbMax),
                 min: 0.0,
                 max: 1.0,
-                onChanged: (pos) => onChanged(_positionToDb(pos)),
+                onChanged: (pos) => onChanged(positionToDb(pos, dbMin, dbMax)),
               ),
             ),
           ),
         ),
         Text(
-          _formatDb(value),
+          formatDb(value, dbMin),
           style: const TextStyle(color: Colors.white54, fontSize: 9),
         ),
       ],
@@ -94,11 +94,15 @@ class VerticalFader extends StatelessWidget {
 /// A horizontal fader for phone layout (dB scale with log curve).
 class HorizontalFader extends StatelessWidget {
   final double value; // dB
+  final double dbMin;
+  final double dbMax;
   final ValueChanged<double> onChanged;
 
   const HorizontalFader({
     super.key,
     required this.value,
+    this.dbMin = -60.0,
+    this.dbMax = 10.0,
     required this.onChanged,
   });
 
@@ -114,10 +118,10 @@ class HorizontalFader extends StatelessWidget {
         overlayColor: Colors.blueAccent.withAlpha(40),
       ),
       child: Slider(
-        value: _dbToPosition(value),
+        value: dbToPosition(value, dbMin, dbMax),
         min: 0.0,
         max: 1.0,
-        onChanged: (pos) => onChanged(_positionToDb(pos)),
+        onChanged: (pos) => onChanged(positionToDb(pos, dbMin, dbMax)),
       ),
     );
   }
