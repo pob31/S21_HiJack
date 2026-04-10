@@ -18,7 +18,6 @@ use crate::console::macro_manager::MacroManager;
 use crate::console::monitor_engine::MonitorEngine;
 use crate::console::monitor_manager::MonitorManager;
 use crate::console::snapshot_engine::SnapshotEngine;
-use crate::model::config::ChannelOption;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::operating_mode::OperatingMode;
 use crate::model::parameter::PROTOCOL_COVERAGE;
@@ -63,8 +62,6 @@ pub struct SetupTabState {
     pub qlab_ip: String,
     /// QLab destination port (default 53000 — QLab's standard OSC listen port).
     pub qlab_port: String,
-    pub channel_option: ChannelOption,
-    pub aux_count: String,
 }
 
 impl SetupTabState {
@@ -110,8 +107,6 @@ impl SetupTabState {
             },
             qlab_ip: "127.0.0.1".to_string(),
             qlab_port: "53000".to_string(),
-            channel_option: ChannelOption::Base,
-            aux_count: "8".to_string(),
         }
     }
 }
@@ -284,49 +279,6 @@ pub fn draw_setup_tab(
                     egui::TextEdit::singleline(&mut setup.monitor_port)
                         .desired_width(80.0)
                         .hint_text("disabled"),
-                );
-            });
-
-            // Channel option toggle (base vs expanded "+")
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label("Channels:");
-                for opt in [ChannelOption::Base, ChannelOption::Expanded] {
-                    let is_active = setup.channel_option == opt;
-                    let fill = if is_active { theme::ACCENT_BLUE } else { theme::BG_ELEVATED };
-                    let text_color = if is_active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
-                    let btn = egui::Button::new(
-                        egui::RichText::new(opt.label()).color(text_color),
-                    )
-                    .fill(fill)
-                    .corner_radius(4.0);
-                    if ui.add_enabled(!is_connected, btn).clicked() {
-                        setup.channel_option = opt;
-                        // Update default aux count based on option
-                        let total_mix = opt.mix_output_count();
-                        let aux: u8 = setup.aux_count.parse().unwrap_or(8);
-                        if aux > total_mix {
-                            setup.aux_count = "8".to_string();
-                        }
-                    }
-                }
-                ui.add_space(8.0);
-                ui.label("Aux count:");
-                ui.add_enabled(
-                    !is_connected,
-                    egui::TextEdit::singleline(&mut setup.aux_count)
-                        .desired_width(40.0),
-                );
-                let aux_n: u8 = setup.aux_count.parse().unwrap_or(8);
-                let total_mix = setup.channel_option.mix_output_count();
-                let group_n = total_mix.saturating_sub(aux_n);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "({} in / {} aux / {} grp)",
-                        setup.channel_option.input_count(), aux_n, group_n
-                    ))
-                    .color(theme::TEXT_SECONDARY)
-                    .small(),
                 );
             });
 
@@ -781,20 +733,7 @@ fn start_connection(
     let ctx = egui_ctx.clone();
     let console_ip = setup.console_ip.clone();
     let log = osc_log.clone();
-    let channel_option = setup.channel_option;
-    let aux_count: u8 = setup.aux_count.parse().unwrap_or(8);
-
     runtime.spawn(async move {
-        // Apply manual channel config before discovery (discovery may override if it works)
-        {
-            let mut st_guard = st.write().await;
-            st_guard.config.apply_channel_option(channel_option);
-            // Override aux/group split from user setting
-            let total_mix = channel_option.mix_output_count();
-            st_guard.config.aux_output_count = aux_count.min(total_mix);
-            st_guard.config.group_output_count = total_mix.saturating_sub(aux_count);
-        }
-
         // Create OscClient manually so we can build GangEngine with the sender
         let client = match OscClient::new(local_addr, console_addr, iface_name.as_deref()).await {
             Ok(c) => c,
@@ -1197,8 +1136,6 @@ fn save_show_file(
         local_gp_port: setup.local_port.parse().unwrap_or(8023),
         trigger_port: setup.trigger_port.parse().unwrap_or(53001),
         operating_mode: setup.operating_mode,
-        channel_option: setup.channel_option,
-        aux_count: setup.aux_count.parse().unwrap_or(8),
         ipad_ip: setup.ipad_ip.clone(),
         ipad_send_port: setup.ipad_console_port.parse().unwrap_or(0),
         ipad_receive_port: setup.ipad_local_port.parse().unwrap_or(0),

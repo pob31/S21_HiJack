@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::config::{ChannelOption, ConsoleConfig};
+use crate::model::config::ConsoleConfig;
 use crate::model::macro_def::MacroDef;
 use crate::model::gang::GangGroup;
 use crate::model::monitor::MonitorClient;
@@ -25,10 +25,6 @@ pub struct ConnectionSettings {
     pub trigger_port: u16,
     #[serde(default)]
     pub operating_mode: OperatingMode,
-    #[serde(default)]
-    pub channel_option: ChannelOption,
-    #[serde(default = "default_aux_count")]
-    pub aux_count: u8,
     #[serde(default)]
     pub ipad_ip: String,
     #[serde(default)]
@@ -54,7 +50,6 @@ fn default_gp_port() -> u16 { 8024 }
 fn default_local_port() -> u16 { 8023 }
 fn default_trigger_port() -> u16 { 53001 }
 fn default_qlab_port() -> u16 { 53000 }
-fn default_aux_count() -> u8 { 8 }
 
 impl Default for ConnectionSettings {
     fn default() -> Self {
@@ -65,8 +60,6 @@ impl Default for ConnectionSettings {
             local_gp_port: default_local_port(),
             trigger_port: default_trigger_port(),
             operating_mode: OperatingMode::default(),
-            channel_option: ChannelOption::default(),
-            aux_count: default_aux_count(),
             ipad_ip: String::new(),
             ipad_send_port: 0,
             ipad_receive_port: 0,

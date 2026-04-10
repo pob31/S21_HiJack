@@ -212,8 +212,6 @@ impl HiJackApp {
                             self.setup.trigger_port = conn.trigger_port.to_string();
                         }
                         self.setup.operating_mode = conn.operating_mode;
-                        self.setup.channel_option = conn.channel_option;
-                        self.setup.aux_count = conn.aux_count.to_string();
                         if !conn.ipad_ip.is_empty() {
                             self.setup.ipad_ip = conn.ipad_ip;
                         }
