@@ -25,8 +25,8 @@ use eframe::egui;
 use crate::model::channel::ChannelId;
 use crate::model::config::ConsoleConfig;
 use crate::model::dirty_tracker::DirtyTracker;
-use crate::model::parameter::{ParameterPath, ParameterSection};
-use crate::model::snapshot::{ChannelScope, ScopeTemplate};
+use crate::model::parameter::{ParameterPath, ParameterSection, TimingCategory};
+use crate::model::snapshot::{CategoryTiming, ChannelScope, ScopeTemplate};
 use crate::model::state::ConsoleState;
 use super::theme;
 
@@ -112,10 +112,26 @@ impl ChannelGroup {
 
 // ── ScopeEditorState ────────────────────────────────────────────────
 
+/// Which aspect of the scope the editor is currently editing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScopeEditMode {
+    /// Edit which parameters are in/out of scope (default, current behavior).
+    #[default]
+    Scope,
+    /// Edit per-category pre-wait times (section-level DragValue inputs).
+    PreWait,
+    /// Edit per-category fade times (section-level DragValue inputs).
+    Fade,
+}
+
 /// Per-frame snapshot of the scope being edited, plus window state.
 pub struct ScopeEditorState {
     /// Per-channel selected paths. The source of truth for the editor.
     pub channel_paths: HashMap<ChannelId, HashSet<ParameterPath>>,
+    /// Per-channel per-category timing. Edited in PreWait/Fade modes.
+    pub channel_timings: HashMap<(ChannelId, TimingCategory), CategoryTiming>,
+    /// Which aspect of the scope is being edited.
+    pub edit_mode: ScopeEditMode,
     /// Which channel-type groups are expanded in the window.
     /// Default: all collapsed.
     pub expanded_groups: HashSet<ChannelGroup>,
@@ -127,6 +143,8 @@ pub struct ScopeEditorState {
     /// Snapshot of `channel_paths` taken at window-open time. Used by Cancel
     /// to roll back. None when the window is closed.
     backup: Option<HashMap<ChannelId, HashSet<ParameterPath>>>,
+    /// Backup of timings for Cancel.
+    timing_backup: Option<HashMap<(ChannelId, TimingCategory), CategoryTiming>>,
     /// Phase C: when true, the scope editor automatically replaces its
     /// selections with the dirty tracker's contents on every change.
     pub auto_preselect_modified: bool,
@@ -139,10 +157,13 @@ impl Default for ScopeEditorState {
     fn default() -> Self {
         Self {
             channel_paths: HashMap::new(),
+            channel_timings: HashMap::new(),
+            edit_mode: ScopeEditMode::Scope,
             expanded_groups: HashSet::new(),
             expanded_sections: HashSet::new(),
             window_open: false,
             backup: None,
+            timing_backup: None,
             auto_preselect_modified: false,
             last_dirty_generation: 0,
         }
@@ -172,8 +193,20 @@ impl ScopeEditorState {
             }
         }
 
+        // Load timings from the template.
+        let mut channel_timings: HashMap<(ChannelId, TimingCategory), CategoryTiming> =
+            HashMap::new();
+        for cs in &template.channel_scopes {
+            for (cat, timing) in &cs.category_timings {
+                channel_timings.insert((cs.channel.clone(), *cat), timing.clone());
+            }
+        }
+
         self.backup = Some(channel_paths.clone());
+        self.timing_backup = Some(channel_timings.clone());
         self.channel_paths = channel_paths;
+        self.channel_timings = channel_timings;
+        self.edit_mode = ScopeEditMode::Scope;
         self.window_open = true;
     }
 
@@ -182,6 +215,9 @@ impl ScopeEditorState {
         if let Some(backup) = self.backup.take() {
             self.channel_paths = backup;
         }
+        if let Some(backup) = self.timing_backup.take() {
+            self.channel_timings = backup;
+        }
         self.window_open = false;
     }
 
@@ -189,16 +225,46 @@ impl ScopeEditorState {
     /// `to_scope_template()` afterward.
     pub fn commit(&mut self) {
         self.backup = None;
+        self.timing_backup = None;
         self.window_open = false;
     }
 
-    /// Build a new path-granularity ScopeTemplate from the current selections.
+    /// Build a new path-granularity ScopeTemplate from the current selections,
+    /// including per-category timings.
     pub fn to_scope_template(&self, name: String) -> ScopeTemplate {
-        let channel_scopes: Vec<ChannelScope> = self
-            .channel_paths
-            .iter()
-            .filter(|(_, paths)| !paths.is_empty())
-            .map(|(ch, paths)| ChannelScope::new(ch.clone(), paths.clone()))
+        // Collect all channels that have either paths or timings.
+        let mut all_channels: HashSet<ChannelId> = HashSet::new();
+        for (ch, paths) in &self.channel_paths {
+            if !paths.is_empty() {
+                all_channels.insert(ch.clone());
+            }
+        }
+        for ((ch, _), _) in &self.channel_timings {
+            all_channels.insert(ch.clone());
+        }
+
+        let channel_scopes: Vec<ChannelScope> = all_channels
+            .into_iter()
+            .map(|ch| {
+                let paths = self
+                    .channel_paths
+                    .get(&ch)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut timings: HashMap<TimingCategory, CategoryTiming> = HashMap::new();
+                for cat in TimingCategory::all_variants() {
+                    if let Some(t) = self.channel_timings.get(&(ch.clone(), *cat)) {
+                        // Only store non-default timings
+                        if t.pre_wait_secs != 0.0 || t.fade_time_secs != 0.0 {
+                            timings.insert(*cat, t.clone());
+                        }
+                    }
+                }
+                let mut cs = ChannelScope::new(ch, paths);
+                cs.category_timings = timings;
+                cs
+            })
+            .filter(|cs| !cs.paths.is_empty() || !cs.category_timings.is_empty())
             .collect();
         ScopeTemplate::new(name, channel_scopes)
     }
@@ -222,6 +288,16 @@ impl ScopeEditorState {
             }
         }
         self.channel_paths = channel_paths;
+
+        // Also load timings.
+        let mut channel_timings: HashMap<(ChannelId, TimingCategory), CategoryTiming> =
+            HashMap::new();
+        for cs in &template.channel_scopes {
+            for (cat, timing) in &cs.category_timings {
+                channel_timings.insert((cs.channel.clone(), *cat), timing.clone());
+            }
+        }
+        self.channel_timings = channel_timings;
     }
 
     /// Clear all selections.
@@ -718,6 +794,26 @@ pub fn draw_scope_window(
         .show(ctx, |ui| {
             // ─ Toolbar ─
             ui.horizontal(|ui| {
+                // ── Mode toggle ──
+                let mode_btn_size = egui::Vec2::new(70.0, 28.0);
+                if ui.add(egui::Button::new("Scope")
+                    .selected(state.edit_mode == ScopeEditMode::Scope)
+                    .min_size(mode_btn_size)).clicked() {
+                    state.edit_mode = ScopeEditMode::Scope;
+                }
+                if ui.add(egui::Button::new("Pre-wait")
+                    .selected(state.edit_mode == ScopeEditMode::PreWait)
+                    .min_size(mode_btn_size)).clicked() {
+                    state.edit_mode = ScopeEditMode::PreWait;
+                }
+                if ui.add(egui::Button::new("Fade")
+                    .selected(state.edit_mode == ScopeEditMode::Fade)
+                    .min_size(mode_btn_size)).clicked() {
+                    state.edit_mode = ScopeEditMode::Fade;
+                }
+                ui.separator();
+                ui.add_space(8.0);
+
                 let clear_btn = theme::action_button(
                     "Clear All",
                     theme::BG_ELEVATED,
@@ -1079,52 +1175,116 @@ fn draw_group_matrix(
                     ui.add_space(CELL_SPACING);
 
                     // Per-channel cells for the section header row.
-                    for ch in &data.channels {
-                        // Tristate based on whether every section path is
-                        // selected for THIS channel.
-                        let mut any_available = false;
-                        let mut all_on = true;
-                        let mut any_on = false;
-                        for path in section_paths {
-                            if !cell_available(&data.available, ch, path) {
-                                continue;
+                    if state.edit_mode == ScopeEditMode::Scope {
+                        // Scope mode: tristate toggle cells (existing behavior)
+                        for ch in &data.channels {
+                            let mut any_available = false;
+                            let mut all_on = true;
+                            let mut any_on = false;
+                            for path in section_paths {
+                                if !cell_available(&data.available, ch, path) {
+                                    continue;
+                                }
+                                any_available = true;
+                                if state.is_cell_selected(ch, path) {
+                                    any_on = true;
+                                } else {
+                                    all_on = false;
+                                }
                             }
-                            any_available = true;
-                            if state.is_cell_selected(ch, path) {
-                                any_on = true;
-                            } else {
-                                all_on = false;
-                            }
-                        }
-                        let cell_all = any_available && all_on;
-                        let cell_any = any_on;
-                        // Section-row cell is "dirty" if any path in the
-                        // section is dirty for this channel.
-                        let cell_dirty = data
-                            .dirty
-                            .get(ch)
-                            .is_some_and(|set| section_paths.iter().any(|p| set.contains(p)));
-                        let resp = matrix_cell(
-                            ui,
-                            CELL_SIZE,
-                            cell_all,
-                            cell_any,
-                            any_available,
-                            cell_dirty,
-                            "",
-                        );
-                        if resp.clicked() && any_available {
-                            state.toggle_section_column(
-                                section_paths,
-                                ch,
-                                &data.available,
+                            let cell_all = any_available && all_on;
+                            let cell_any = any_on;
+                            let cell_dirty = data
+                                .dirty
+                                .get(ch)
+                                .is_some_and(|set| section_paths.iter().any(|p| set.contains(p)));
+                            // Check if this section+channel has any timing configured
+                            let has_timing = TimingCategory::for_section(section)
+                                .iter()
+                                .any(|cat| {
+                                    let t = state.channel_timings
+                                        .get(&(ch.clone(), *cat))
+                                        .cloned()
+                                        .unwrap_or_default();
+                                    t.pre_wait_secs != 0.0 || t.fade_time_secs != 0.0
+                                });
+                            let resp = matrix_cell(
+                                ui,
+                                CELL_SIZE,
+                                cell_all,
+                                cell_any,
+                                any_available,
+                                cell_dirty || has_timing, // show timing indicator via earmark
+                                "",
                             );
+                            if resp.clicked() && any_available {
+                                state.toggle_section_column(
+                                    section_paths,
+                                    ch,
+                                    &data.available,
+                                );
+                            }
+                            ui.add_space(CELL_SPACING);
                         }
-                        ui.add_space(CELL_SPACING);
+                    } else {
+                        // PreWait / Fade mode: skip section-level cells,
+                        // we'll render per-category timing rows below.
                     }
                 });
 
-                // Path rows (only if expanded).
+                // Per-category timing rows (only in PreWait/Fade modes).
+                if state.edit_mode != ScopeEditMode::Scope {
+                    let categories = TimingCategory::for_section(section);
+                    for cat in categories {
+                        // Skip Mute in Fade mode (Mute has no fade)
+                        if state.edit_mode == ScopeEditMode::Fade && !cat.supports_fade() {
+                            continue;
+                        }
+                        ui.horizontal(|ui| {
+                            // Row label: indented, showing category + mode
+                            let label_text = match state.edit_mode {
+                                ScopeEditMode::PreWait => format!("  {} pre-wait (s)", cat.label()),
+                                ScopeEditMode::Fade => format!("  {} fade (s)", cat.label()),
+                                _ => unreachable!(),
+                            };
+                            let label = egui::Label::new(
+                                egui::RichText::new(&label_text)
+                                    .size(theme::FONT_SIZE_BADGE)
+                                    .color(theme::TEXT_SECONDARY)
+                                    .italics(),
+                            );
+                            ui.add_sized(
+                                egui::Vec2::new(ROW_LABEL_WIDTH, CELL_SIZE.y),
+                                label,
+                            );
+                            ui.add_space(CELL_SPACING);
+
+                            // Per-channel timing inputs
+                            for ch in &data.channels {
+                                let key = (ch.clone(), *cat);
+                                let timing = state.channel_timings
+                                    .entry(key.clone())
+                                    .or_insert_with(CategoryTiming::default);
+                                let val = match state.edit_mode {
+                                    ScopeEditMode::PreWait => &mut timing.pre_wait_secs,
+                                    ScopeEditMode::Fade => &mut timing.fade_time_secs,
+                                    _ => unreachable!(),
+                                };
+                                ui.add_sized(
+                                    CELL_SIZE,
+                                    egui::DragValue::new(val)
+                                        .range(0.0..=30.0)
+                                        .speed(0.05)
+                                        .fixed_decimals(1)
+                                        .min_decimals(1),
+                                );
+                                ui.add_space(CELL_SPACING);
+                            }
+                        });
+                    }
+                }
+
+                // Path rows (only if expanded, and only in Scope mode or when section is expanded).
                 if expanded {
                     for path in section_paths {
                         ui.horizontal(|ui| {
@@ -1153,20 +1313,33 @@ fn draw_group_matrix(
                                     .dirty
                                     .get(ch)
                                     .is_some_and(|s| s.contains(path));
-                                let resp = matrix_cell(
-                                    ui,
-                                    CELL_SIZE,
-                                    sel,
-                                    sel,
-                                    avail,
-                                    cell_dirty,
-                                    "",
-                                );
-                                if resp.clicked() && avail {
-                                    state.toggle_cell(ch, path);
-                                }
-                                if !avail {
-                                    let _ = resp.on_hover_text("no live parameter");
+                                if state.edit_mode == ScopeEditMode::Scope {
+                                    let resp = matrix_cell(
+                                        ui,
+                                        CELL_SIZE,
+                                        sel,
+                                        sel,
+                                        avail,
+                                        cell_dirty,
+                                        "",
+                                    );
+                                    if resp.clicked() && avail {
+                                        state.toggle_cell(ch, path);
+                                    }
+                                    if !avail {
+                                        let _ = resp.on_hover_text("no live parameter");
+                                    }
+                                } else {
+                                    // In timing modes, path cells are dimmed/read-only
+                                    matrix_cell(
+                                        ui,
+                                        CELL_SIZE,
+                                        sel,
+                                        sel,
+                                        false, // not available = greyed
+                                        false,
+                                        "",
+                                    );
                                 }
                                 ui.add_space(CELL_SPACING);
                             }
