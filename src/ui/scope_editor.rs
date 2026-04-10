@@ -903,89 +903,86 @@ pub fn draw_scope_window(
             ui.add_space(6.0);
             ui.separator();
 
-            // ─ Per-group matrices ─
-            egui::ScrollArea::both()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    for data in &groups_data {
-                        if data.channels.is_empty() {
-                            continue;
-                        }
-                        draw_channel_group_block(ui, state, data);
-                        ui.add_space(8.0);
-                    }
-                });
-
-            // ─ Console Recall Scope / Safe buttons ─
-            ui.separator();
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("Console Recall:")
-                        .color(theme::TEXT_SECONDARY)
-                        .small(),
-                );
-                let btn_size = egui::Vec2::new(110.0, 24.0);
-                let scope_btn = egui::Button::new(
-                    egui::RichText::new("Session Scope").size(10.0).color(
-                        if state.console_recall.session_scope.active_blocks.is_empty() {
-                            theme::TEXT_SECONDARY
-                        } else {
-                            egui::Color32::from_rgb(0, 180, 0)
-                        },
-                    ),
-                )
-                .fill(theme::BG_ELEVATED)
-                .min_size(btn_size);
-                if ui.add(scope_btn).clicked() {
-                    state.recall_popup.open = Some(RecallPopupKind::SessionScope);
-                }
-
-                for (label, kind) in [
-                    ("Input Safe", RecallPopupKind::InputSafe),
-                    ("Aux Safe", RecallPopupKind::AuxSafe),
-                    ("Group Safe", RecallPopupKind::GroupSafe),
-                    ("Matrix Safe", RecallPopupKind::MatrixSafe),
-                    ("CG Safe", RecallPopupKind::CgSafe),
-                ] {
-                    let btn = egui::Button::new(
-                        egui::RichText::new(label).size(10.0),
+            // ─ Footer: Console Recall + OK/Cancel (rendered bottom-up) ─
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                // OK / Cancel row (bottommost)
+                ui.horizontal(|ui| {
+                    // Console Recall buttons (left side)
+                    ui.label(
+                        egui::RichText::new("Console Recall:")
+                            .color(theme::TEXT_SECONDARY)
+                            .small(),
+                    );
+                    let btn_size = egui::Vec2::new(100.0, 24.0);
+                    let scope_btn = egui::Button::new(
+                        egui::RichText::new("Session Scope").size(10.0).color(
+                            if state.console_recall.session_scope.active_blocks.is_empty() {
+                                theme::TEXT_SECONDARY
+                            } else {
+                                egui::Color32::from_rgb(0, 180, 0)
+                            },
+                        ),
                     )
                     .fill(theme::BG_ELEVATED)
-                    .min_size(egui::Vec2::new(80.0, 24.0));
-                    if ui.add(btn).clicked() {
-                        state.recall_popup.open = Some(kind);
-                        state.recall_popup.selected_channel = 1;
+                    .min_size(btn_size);
+                    if ui.add(scope_btn).clicked() {
+                        state.recall_popup.open = Some(RecallPopupKind::SessionScope);
                     }
-                }
-            });
-            ui.add_space(4.0);
+                    for (label, kind) in [
+                        ("Input Safe", RecallPopupKind::InputSafe),
+                        ("Aux Safe", RecallPopupKind::AuxSafe),
+                        ("Group Safe", RecallPopupKind::GroupSafe),
+                        ("Matrix Safe", RecallPopupKind::MatrixSafe),
+                        ("CG Safe", RecallPopupKind::CgSafe),
+                    ] {
+                        let btn = egui::Button::new(
+                            egui::RichText::new(label).size(10.0),
+                        )
+                        .fill(theme::BG_ELEVATED)
+                        .min_size(egui::Vec2::new(72.0, 24.0));
+                        if ui.add(btn).clicked() {
+                            state.recall_popup.open = Some(kind);
+                            state.recall_popup.selected_channel = 1;
+                        }
+                    }
 
-            // ─ Footer (OK / Cancel) ─
-            ui.separator();
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let ok_btn = theme::action_button(
-                        "OK",
-                        theme::ACCENT_GREEN,
-                        egui::Vec2::new(90.0, 30.0),
-                    );
-                    if ui.add(ok_btn).clicked() {
-                        state.commit();
-                        outcome.status = ScopeWindowResult::Committed;
-                    }
-                    ui.add_space(8.0);
-                    let cancel_btn = theme::action_button(
-                        "Cancel",
-                        theme::BG_ELEVATED,
-                        egui::Vec2::new(90.0, 30.0),
-                    );
-                    if ui.add(cancel_btn).clicked() {
-                        state.cancel();
-                        outcome.status = ScopeWindowResult::Cancelled;
-                    }
+                    // OK / Cancel (right side)
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let ok_btn = theme::action_button(
+                            "OK",
+                            theme::ACCENT_GREEN,
+                            egui::Vec2::new(90.0, 28.0),
+                        );
+                        if ui.add(ok_btn).clicked() {
+                            state.commit();
+                            outcome.status = ScopeWindowResult::Committed;
+                        }
+                        ui.add_space(8.0);
+                        let cancel_btn = theme::action_button(
+                            "Cancel",
+                            theme::BG_ELEVATED,
+                            egui::Vec2::new(90.0, 28.0),
+                        );
+                        if ui.add(cancel_btn).clicked() {
+                            state.cancel();
+                            outcome.status = ScopeWindowResult::Cancelled;
+                        }
+                    });
                 });
+                ui.separator();
+
+                // Scroll area fills remaining space above the footer
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for data in &groups_data {
+                            if data.channels.is_empty() {
+                                continue;
+                            }
+                            draw_channel_group_block(ui, state, data);
+                            ui.add_space(8.0);
+                        }
+                    });
             });
         });
 
