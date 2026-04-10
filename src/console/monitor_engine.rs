@@ -452,7 +452,7 @@ impl MonitorEngine {
         let path = format!("/monitor/state/send/{input_ch}/{aux_ch}/{param_name}");
         let args = match value {
             ParameterValue::Float(f) => vec![rosc::OscType::Float(*f)],
-            ParameterValue::Bool(b) => vec![rosc::OscType::Int(if *b { 1 } else { 0 })],
+            ParameterValue::Bool(b) => vec![rosc::OscType::Bool(*b)],
             ParameterValue::Int(i) => vec![rosc::OscType::Int(*i)],
             ParameterValue::String(s) => vec![rosc::OscType::String(s.clone())],
         };
@@ -568,7 +568,7 @@ impl MonitorEngine {
                                 vec![
                                     rosc::OscType::Float(level),
                                     rosc::OscType::Float(pan),
-                                    rosc::OscType::Int(if on { 1 } else { 0 }),
+                                    rosc::OscType::Bool(on),
                                 ],
                             )
                             .await;

@@ -13,10 +13,10 @@ class ConnectionScreen extends StatefulWidget {
   State<ConnectionScreen> createState() => _ConnectionScreenState();
 }
 
-  // Persist last connection across navigation (survives disconnect/reconnect)
-  static String _lastHost = '';
-  static String _lastPort = '8025';
-  static String _lastName = '';
+// Persist last connection across navigation (survives disconnect/reconnect)
+String _lastHost = '';
+String _lastPort = '8025';
+String _lastName = '';
 
 class _ConnectionScreenState extends State<ConnectionScreen> {
   late final TextEditingController _hostController;

@@ -70,8 +70,8 @@ fn value_to_osc_type(_parameter: &ParameterPath, value: &ParameterValue) -> OscT
         ParameterValue::Float(f) => OscType::Float(*f),
         ParameterValue::Int(i) => OscType::Int(*i),
         ParameterValue::Bool(b) => {
-            // DiGiCo uses int 0/1 for booleans over OSC
-            OscType::Int(if *b { 1 } else { 0 })
+            // OSC 1.1: T/F type tags for booleans
+            OscType::Bool(*b)
         }
         ParameterValue::String(s) => OscType::String(s.clone()),
     }
@@ -101,7 +101,7 @@ mod tests {
         };
         let (path, args) = encode_parameter(&addr, &ParameterValue::Bool(true)).unwrap();
         assert_eq!(path, "/channel/70/mute");
-        assert_eq!(args, vec![OscType::Int(1)]);
+        assert_eq!(args, vec![OscType::Bool(true)]);
     }
 
     #[test]

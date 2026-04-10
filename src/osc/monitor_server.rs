@@ -144,7 +144,7 @@ impl MonitorSender {
                 vec![
                     OscType::Float(level),
                     OscType::Float(pan),
-                    OscType::Int(if on { 1 } else { 0 }),
+                    OscType::Bool(on),
                 ],
             )
             .await?;
