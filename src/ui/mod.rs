@@ -7,6 +7,7 @@ pub mod monitor_tab;
 pub mod net_interfaces;
 pub mod osc_log_tab;
 pub mod palettes_ui;
+pub mod recall_scope_popup;
 pub mod scope_editor;
 pub mod setup_tab;
 pub mod snapshots_tab;

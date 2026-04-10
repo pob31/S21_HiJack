@@ -26,7 +26,9 @@ use crate::model::channel::ChannelId;
 use crate::model::config::ConsoleConfig;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::parameter::{ParameterPath, ParameterSection, TimingCategory};
+use crate::model::recall_scope::ConsoleRecallConfig;
 use crate::model::snapshot::{CategoryTiming, ChannelScope, ScopeTemplate};
+use super::recall_scope_popup::{RecallPopupKind, RecallScopePopupState};
 use crate::model::state::ConsoleState;
 use super::theme;
 
@@ -151,6 +153,10 @@ pub struct ScopeEditorState {
     /// Phase C: cached generation of the dirty tracker, so the editor knows
     /// when the dirty set has changed and it should refresh.
     pub last_dirty_generation: u64,
+    /// Console recall scope & safe config (visual reference).
+    pub console_recall: ConsoleRecallConfig,
+    /// Popup state for the recall scope/safe editor.
+    pub recall_popup: RecallScopePopupState,
 }
 
 impl Default for ScopeEditorState {
@@ -166,6 +172,8 @@ impl Default for ScopeEditorState {
             timing_backup: None,
             auto_preselect_modified: false,
             last_dirty_generation: 0,
+            console_recall: ConsoleRecallConfig::default(),
+            recall_popup: RecallScopePopupState::default(),
         }
     }
 }
@@ -908,6 +916,51 @@ pub fn draw_scope_window(
                     }
                 });
 
+            // ─ Console Recall Scope / Safe buttons ─
+            ui.separator();
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Console Recall:")
+                        .color(theme::TEXT_SECONDARY)
+                        .small(),
+                );
+                let btn_size = egui::Vec2::new(110.0, 24.0);
+                let scope_btn = egui::Button::new(
+                    egui::RichText::new("Session Scope").size(10.0).color(
+                        if state.console_recall.session_scope.active_blocks.is_empty() {
+                            theme::TEXT_SECONDARY
+                        } else {
+                            egui::Color32::from_rgb(0, 180, 0)
+                        },
+                    ),
+                )
+                .fill(theme::BG_ELEVATED)
+                .min_size(btn_size);
+                if ui.add(scope_btn).clicked() {
+                    state.recall_popup.open = Some(RecallPopupKind::SessionScope);
+                }
+
+                for (label, kind) in [
+                    ("Input Safe", RecallPopupKind::InputSafe),
+                    ("Aux Safe", RecallPopupKind::AuxSafe),
+                    ("Group Safe", RecallPopupKind::GroupSafe),
+                    ("Matrix Safe", RecallPopupKind::MatrixSafe),
+                    ("CG Safe", RecallPopupKind::CgSafe),
+                ] {
+                    let btn = egui::Button::new(
+                        egui::RichText::new(label).size(10.0),
+                    )
+                    .fill(theme::BG_ELEVATED)
+                    .min_size(egui::Vec2::new(80.0, 24.0));
+                    if ui.add(btn).clicked() {
+                        state.recall_popup.open = Some(kind);
+                        state.recall_popup.selected_channel = 1;
+                    }
+                }
+            });
+            ui.add_space(4.0);
+
             // ─ Footer (OK / Cancel) ─
             ui.separator();
             ui.add_space(4.0);
@@ -942,6 +995,18 @@ pub fn draw_scope_window(
         state.cancel();
         outcome.status = ScopeWindowResult::Cancelled;
     }
+
+    // Render the recall scope/safe popup if open
+    super::recall_scope_popup::draw_recall_popup(
+        ctx,
+        &mut state.recall_popup,
+        &mut state.console_recall,
+        console_state.config.input_channel_count,
+        console_state.config.aux_output_count,
+        console_state.config.group_output_count,
+        console_state.config.matrix_output_count,
+        console_state.config.control_group_count,
+    );
 
     outcome
 }
@@ -1382,13 +1447,16 @@ fn draw_group_matrix(
                                     .get(ch)
                                     .is_some_and(|s| s.contains(path));
                                 if state.edit_mode == ScopeEditMode::Scope {
-                                    let resp = matrix_cell(
+                                    let conflict = sel
+                                        && state.console_recall.is_console_recalled(ch, path);
+                                    let resp = matrix_cell_ex(
                                         ui,
                                         CELL_SIZE,
                                         sel,
                                         sel,
                                         avail,
                                         cell_dirty,
+                                        conflict,
                                         "",
                                     );
                                     if resp.clicked() && avail {
@@ -1608,6 +1676,19 @@ fn matrix_cell(
     dirty: bool,
     label: &str,
 ) -> egui::Response {
+    matrix_cell_ex(ui, size, all_selected, any_selected, available, dirty, false, label)
+}
+
+fn matrix_cell_ex(
+    ui: &mut egui::Ui,
+    size: egui::Vec2,
+    all_selected: bool,
+    any_selected: bool,
+    available: bool,
+    dirty: bool,
+    conflict: bool,
+    label: &str,
+) -> egui::Response {
     let sense = if available {
         egui::Sense::click()
     } else {
@@ -1615,8 +1696,11 @@ fn matrix_cell(
     };
     let (rect, response) = ui.allocate_exact_size(size, sense);
 
+    let scope_conflict = egui::Color32::from_rgb(50, 100, 200); // blue
     let base = if !available {
         theme::SCOPE_UNAVAILABLE
+    } else if all_selected && conflict {
+        scope_conflict
     } else if all_selected {
         theme::SCOPE_ACTIVE
     } else if any_selected {
