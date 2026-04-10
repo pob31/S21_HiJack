@@ -629,6 +629,110 @@ impl SnapshotEngine {
                     sent
                 }
 
+                // Execute a Sends group with per-send enable/disable ordering.
+                use crate::model::parameter::ParameterPath;
+                async fn exec_sends_group(
+                    sender: &OscSender,
+                    ipad: &Option<IpadSender>,
+                    pre_wait: Duration,
+                    fade_time: Duration,
+                    changes: Vec<ParamChange>,
+                ) -> usize {
+                    let mut sent = 0usize;
+
+                    if !pre_wait.is_zero() {
+                        sleep(pre_wait).await;
+                    }
+
+                    // Sub-group by send index
+                    let mut by_send: HashMap<u8, Vec<ParamChange>> = HashMap::new();
+                    let mut non_send_changes: Vec<ParamChange> = Vec::new();
+
+                    for change in changes {
+                        match &change.addr.parameter {
+                            ParameterPath::SendEnabled(n)
+                            | ParameterPath::SendLevel(n)
+                            | ParameterPath::SendPan(n) => {
+                                by_send.entry(*n).or_default().push(change);
+                            }
+                            _ => non_send_changes.push(change),
+                        }
+                    }
+
+                    // Handle non-send params (shouldn't happen but be safe)
+                    for c in &non_send_changes {
+                        if send_one(sender, ipad, &c.addr, &c.value).await {
+                            sent += 1;
+                        }
+                    }
+
+                    // Handle each send with ordering
+                    let mut per_send_handles = Vec::new();
+                    for (_send_idx, send_changes) in by_send {
+                        let s = sender.clone();
+                        let i = ipad.clone();
+                        let ft = fade_time;
+                        per_send_handles.push(tokio::spawn(async move {
+                            let mut sent = 0usize;
+
+                            // Separate enable from level/pan
+                            let mut enable_change: Option<ParamChange> = None;
+                            let mut level_pan: Vec<ParamChange> = Vec::new();
+
+                            for c in send_changes {
+                                if matches!(c.addr.parameter, ParameterPath::SendEnabled(_)) {
+                                    enable_change = Some(c);
+                                } else {
+                                    level_pan.push(c);
+                                }
+                            }
+
+                            // Determine enable direction
+                            let enabling = enable_change.as_ref().map(|c| match c.value {
+                                ParameterValue::Bool(b) => b,
+                                ParameterValue::Int(i) => i != 0,
+                                ParameterValue::Float(f) => f != 0.0,
+                                _ => false,
+                            });
+
+                            match enabling {
+                                Some(true) => {
+                                    // Enable ON: fade level/pan first, then enable
+                                    sent += exec_group(&s, &i, Duration::ZERO, ft, level_pan).await;
+                                    if let Some(ec) = &enable_change {
+                                        if send_one(&s, &i, &ec.addr, &ec.value).await {
+                                            sent += 1;
+                                        }
+                                    }
+                                }
+                                Some(false) => {
+                                    // Enable OFF: disable first, then fade level/pan
+                                    if let Some(ec) = &enable_change {
+                                        if send_one(&s, &i, &ec.addr, &ec.value).await {
+                                            sent += 1;
+                                        }
+                                    }
+                                    sent += exec_group(&s, &i, Duration::ZERO, ft, level_pan).await;
+                                }
+                                None => {
+                                    // No enable change — just fade level/pan
+                                    sent += exec_group(&s, &i, Duration::ZERO, ft, level_pan).await;
+                                }
+                            }
+
+                            sent
+                        }));
+                    }
+
+                    for h in per_send_handles {
+                        if let Ok(n) = h.await {
+                            sent += n;
+                        }
+                    }
+
+                    sent
+                }
+
                 // ── Mute ordering ──
                 match mute_dir {
                     Some(true) => {
@@ -643,12 +747,18 @@ impl SnapshotEngine {
                         }
                         // Now run all non-mute groups concurrently
                         let mut handles = Vec::new();
-                        for (_, pre_wait, fade_time, changes) in group_tasks {
+                        for (cat, pre_wait, fade_time, changes) in group_tasks {
                             let s = sender_for_channel.clone();
                             let i = ipad_for_channel.clone();
-                            handles.push(tokio::spawn(async move {
-                                exec_group(&s, &i, pre_wait, fade_time, changes).await
-                            }));
+                            if cat == Some(TimingCategory::Sends) {
+                                handles.push(tokio::spawn(async move {
+                                    exec_sends_group(&s, &i, pre_wait, fade_time, changes).await
+                                }));
+                            } else {
+                                handles.push(tokio::spawn(async move {
+                                    exec_group(&s, &i, pre_wait, fade_time, changes).await
+                                }));
+                            }
                         }
                         for h in handles {
                             if let Ok(n) = h.await {
@@ -659,12 +769,18 @@ impl SnapshotEngine {
                     Some(false) => {
                         // Mute OFF: run all non-mute groups, wait, then unmute
                         let mut handles = Vec::new();
-                        for (_, pre_wait, fade_time, changes) in group_tasks {
+                        for (cat, pre_wait, fade_time, changes) in group_tasks {
                             let s = sender_for_channel.clone();
                             let i = ipad_for_channel.clone();
-                            handles.push(tokio::spawn(async move {
-                                exec_group(&s, &i, pre_wait, fade_time, changes).await
-                            }));
+                            if cat == Some(TimingCategory::Sends) {
+                                handles.push(tokio::spawn(async move {
+                                    exec_sends_group(&s, &i, pre_wait, fade_time, changes).await
+                                }));
+                            } else {
+                                handles.push(tokio::spawn(async move {
+                                    exec_group(&s, &i, pre_wait, fade_time, changes).await
+                                }));
+                            }
                         }
                         for h in handles {
                             if let Ok(n) = h.await {
@@ -684,12 +800,18 @@ impl SnapshotEngine {
                     None => {
                         // No mute change — all groups run concurrently
                         let mut handles = Vec::new();
-                        for (_, pre_wait, fade_time, changes) in group_tasks {
+                        for (cat, pre_wait, fade_time, changes) in group_tasks {
                             let s = sender_for_channel.clone();
                             let i = ipad_for_channel.clone();
-                            handles.push(tokio::spawn(async move {
-                                exec_group(&s, &i, pre_wait, fade_time, changes).await
-                            }));
+                            if cat == Some(TimingCategory::Sends) {
+                                handles.push(tokio::spawn(async move {
+                                    exec_sends_group(&s, &i, pre_wait, fade_time, changes).await
+                                }));
+                            } else {
+                                handles.push(tokio::spawn(async move {
+                                    exec_group(&s, &i, pre_wait, fade_time, changes).await
+                                }));
+                            }
                         }
                         for h in handles {
                             if let Ok(n) = h.await {

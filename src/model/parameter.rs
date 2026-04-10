@@ -2171,4 +2171,67 @@ mod tests {
         assert_eq!(paths[1], ParameterPath::Mute);
         assert_eq!(paths[2], ParameterPath::Solo);
     }
+
+    // ── TimingCategory tests ──────────────────────────────────────
+
+    #[test]
+    fn timing_category_fader_and_pan() {
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Fader), Some(TimingCategory::Fader));
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Pan), Some(TimingCategory::Fader));
+    }
+
+    #[test]
+    fn timing_category_mute() {
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Mute), Some(TimingCategory::Mute));
+        assert!(!TimingCategory::Mute.supports_fade());
+    }
+
+    #[test]
+    fn timing_category_preprocessing() {
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Trim), Some(TimingCategory::Preprocessing));
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::DelayTime), Some(TimingCategory::Preprocessing));
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Balance), Some(TimingCategory::Preprocessing));
+    }
+
+    #[test]
+    fn timing_category_eq() {
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::EqEnabled), Some(TimingCategory::Eq));
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::EqBandFrequency(1)), Some(TimingCategory::Eq));
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::HighpassFrequency), Some(TimingCategory::Eq));
+    }
+
+    #[test]
+    fn timing_category_dyn1_dyn2() {
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Dyn1Enabled), Some(TimingCategory::Dyn1));
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Dyn1Threshold(1)), Some(TimingCategory::Dyn1));
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Dyn2Enabled), Some(TimingCategory::Dyn2));
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Dyn2Threshold), Some(TimingCategory::Dyn2));
+    }
+
+    #[test]
+    fn timing_category_sends() {
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::SendLevel(1)), Some(TimingCategory::Sends));
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::SendEnabled(1)), Some(TimingCategory::Sends));
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::SendPan(1)), Some(TimingCategory::Sends));
+    }
+
+    #[test]
+    fn timing_category_uncategorized_returns_none() {
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Name), None);
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Solo), None);
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::AnalogGain), None);
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Phantom), None);
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::DigitubeEnabled), None);
+    }
+
+    #[test]
+    fn timing_category_supports_fade() {
+        assert!(TimingCategory::Fader.supports_fade());
+        assert!(TimingCategory::Eq.supports_fade());
+        assert!(TimingCategory::Dyn1.supports_fade());
+        assert!(TimingCategory::Dyn2.supports_fade());
+        assert!(TimingCategory::Preprocessing.supports_fade());
+        assert!(TimingCategory::Sends.supports_fade());
+        assert!(!TimingCategory::Mute.supports_fade());
+    }
 }
