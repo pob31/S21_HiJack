@@ -998,11 +998,7 @@ pub fn draw_scope_window(
         ctx,
         &mut state.recall_popup,
         &mut state.console_recall,
-        console_state.config.input_channel_count,
-        console_state.config.aux_output_count,
-        console_state.config.group_output_count,
-        console_state.config.matrix_output_count,
-        console_state.config.control_group_count,
+        console_state,
     );
 
     outcome
