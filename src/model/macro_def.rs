@@ -255,7 +255,7 @@ mod tests {
                 delay_ms: 100,
             },
             MacroStep {
-                address: make_addr(3, ParameterPath::Gain),
+                address: make_addr(3, ParameterPath::AnalogGain),
                 mode: MacroStepMode::Relative(3.5),
                 delay_ms: 200,
             },

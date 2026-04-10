@@ -22,7 +22,11 @@
 
 use rosc::{OscMessage, OscType};
 
-use crate::model::snapshot::Snapshot;
+use std::collections::HashMap;
+use uuid::Uuid;
+
+use crate::model::palette::ChannelPalette;
+use crate::model::snapshot::{self, Snapshot};
 
 use super::{SNAPSHOT_RECALL_ADDR, SNAPSHOT_RECALL_FULL_ADDR};
 
@@ -168,7 +172,11 @@ pub fn build_snapshot_load_cue(snapshot_name: &str, qlab_patch: i32) -> QLabCueS
 /// QLab can't easily represent the iPad protocol's bare-path framing.
 /// Parameters that fail to encode (out-of-range bands, unknown variants)
 /// are also skipped silently.
-pub fn build_snapshot_cues(snapshot: &Snapshot, qlab_patch: i32) -> QLabCueSequence {
+pub fn build_snapshot_cues(
+    snapshot: &Snapshot,
+    palettes: &HashMap<Uuid, ChannelPalette>,
+    qlab_patch: i32,
+) -> QLabCueSequence {
     let mut sequence = QLabCueSequence::default();
 
     // ── Group cue ──
@@ -184,8 +192,10 @@ pub fn build_snapshot_cues(snapshot: &Snapshot, qlab_patch: i32) -> QLabCueSeque
         .push(cue_selected_int("/cue/selected/mode", 6));
 
     // ── Per-parameter children ──
+    // Use resolve_recall_values so palette overrides are applied.
+    let resolved = snapshot::resolve_recall_values(snapshot, &snapshot.scope, palettes, true);
     let mut position: u32 = 0;
-    for (addr, value) in &snapshot.data.values {
+    for (addr, value) in &resolved {
         let Some((path, args)) = crate::osc::encode::encode_parameter(addr, value) else {
             // Skip iPad-only or unencodable parameters (see doc above).
             continue;
@@ -409,7 +419,7 @@ mod tests {
     #[test]
     fn snapshot_cues_one_network_cue_per_param() {
         let snap = small_snapshot();
-        let seq = build_snapshot_cues(&snap, 1);
+        let seq = build_snapshot_cues(&snap, &HashMap::new(), 1);
         // 2 stored params → 2 network cues.
         assert_eq!(seq.network_cues.len(), 2);
         // Group exists.
@@ -425,7 +435,7 @@ mod tests {
             SnapshotData::new(),
             SnapshotKind::ApplyOnSave,
         );
-        let seq = build_snapshot_cues(&snap, 1);
+        let seq = build_snapshot_cues(&snap, &HashMap::new(), 1);
         // Group still created, no children.
         assert!(!seq.group_messages.is_empty());
         assert!(seq.network_cues.is_empty());
@@ -455,7 +465,7 @@ mod tests {
             data,
             SnapshotKind::ApplyOnSave,
         );
-        let seq = build_snapshot_cues(&snap, 1);
+        let seq = build_snapshot_cues(&snap, &HashMap::new(), 1);
         // Phantom skipped, only Fader exported.
         assert_eq!(seq.network_cues.len(), 1);
         let custom = seq.network_cues[0]
@@ -470,7 +480,7 @@ mod tests {
     #[test]
     fn snapshot_cues_move_positions_are_sequential_starting_at_one() {
         let snap = small_snapshot();
-        let seq = build_snapshot_cues(&snap, 1);
+        let seq = build_snapshot_cues(&snap, &HashMap::new(), 1);
         let positions: Vec<u32> = seq.network_cues.iter().map(|c| c.move_position).collect();
         // Two cues, positions 1 and 2 in some order (HashMap iteration is
         // unordered, but `position += 1` guarantees the SET is {1, 2}).

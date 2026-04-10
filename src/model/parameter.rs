@@ -21,7 +21,8 @@ pub enum ParameterPath {
     Pan,
 
     // Input section
-    Gain,
+    #[serde(alias = "Gain")]
+    AnalogGain,
     GainTracking,
     Trim,
     Balance,
@@ -123,7 +124,6 @@ impl ParameterPath {
             ParameterPath::Mute => Some("mute".into()),
             ParameterPath::Solo => Some("solo".into()),
             ParameterPath::Pan => Some("pan".into()),
-            ParameterPath::Gain => Some("total/gain".into()),
             ParameterPath::GainTracking => Some("input/gain_tracking".into()),
             ParameterPath::Trim => Some("input/trim".into()),
             ParameterPath::Balance => Some("input/balance".into()),
@@ -193,7 +193,7 @@ impl ParameterPath {
             ParameterPath::Pan => Some("Panner/pan".into()),
 
             // Input section
-            ParameterPath::Gain => Some("Channel_Input/analog_gain".into()),
+            ParameterPath::AnalogGain => Some("Channel_Input/analog_gain".into()),
             ParameterPath::Trim => Some("Channel_Input/trim".into()),
             ParameterPath::Polarity => Some("Channel_Input/phase".into()),
             ParameterPath::Phantom => Some("Channel_Input/phantom".into()),
@@ -307,7 +307,7 @@ impl ParameterPath {
             "solo" => return Some(ParameterPath::Solo),
             "Panner/pan" => return Some(ParameterPath::Pan),
             "Channel_Input/name" => return Some(ParameterPath::Name),
-            "Channel_Input/analog_gain" => return Some(ParameterPath::Gain),
+            "Channel_Input/analog_gain" => return Some(ParameterPath::AnalogGain),
             "Channel_Input/trim" => return Some(ParameterPath::Trim),
             "Channel_Input/phase" => return Some(ParameterPath::Polarity),
             "Channel_Input/phantom" => return Some(ParameterPath::Phantom),
@@ -393,7 +393,6 @@ impl ParameterPath {
             "mute" => return Some(ParameterPath::Mute),
             "solo" => return Some(ParameterPath::Solo),
             "pan" => return Some(ParameterPath::Pan),
-            "total/gain" => return Some(ParameterPath::Gain),
             "input/gain_tracking" => return Some(ParameterPath::GainTracking),
             "input/trim" => return Some(ParameterPath::Trim),
             "input/balance" => return Some(ParameterPath::Balance),
@@ -510,13 +509,6 @@ impl ParameterPath {
     /// Human-readable display label used as the row label in the scope-editor matrix.
     /// Stable strings — keep them aligned with the DiGiCo console GUI naming.
     ///
-    /// NOTE: `ParameterPath::Gain` is mapped to two physically different things on
-    /// the two protocols, which is a known pre-existing model bug NOT fixed here:
-    ///   - GP OSC `total/gain` (line 126) = post-fader + CG sum, range -20..+60 dB.
-    ///     The GP OSC protocol provides NO access to the analog preamp on the S21.
-    ///   - iPad `Channel_Input/analog_gain` (line 194) = the actual analog mic
-    ///     preamp, only reachable via the iPad protocol.
-    /// The label below reflects the GP OSC meaning.
     /// Band parameters use human-readable band names (Low/Lo Mid/Hi Mid/High
     /// for EQ; Low/Mid/High for the multiband compressor) — see
     /// [`eq_band_name`] and [`dyn1_band_name`] below.
@@ -527,7 +519,7 @@ impl ParameterPath {
             ParameterPath::Mute => "Mute".into(),
             ParameterPath::Solo => "Solo".into(),
             ParameterPath::Pan => "Pan".into(),
-            ParameterPath::Gain => "Total Gain (Fader + CG)".into(),
+            ParameterPath::AnalogGain => "Analog Gain".into(),
             ParameterPath::GainTracking => "Gain Tracking".into(),
             ParameterPath::Trim => "Trim".into(),
             ParameterPath::Balance => "Balance".into(),
@@ -667,7 +659,7 @@ impl ParameterPath {
         // input-only paths (GP OSC + iPad-only input fields).
         let input_only = matches!(
             self,
-            P::Gain
+            P::AnalogGain
                 | P::GainTracking
                 | P::Balance
                 | P::Width
@@ -727,7 +719,7 @@ impl ParameterPath {
         push(ParameterPath::Pan, &mut out);
 
         // Input
-        push(ParameterPath::Gain, &mut out);
+        push(ParameterPath::AnalogGain, &mut out);
         push(ParameterPath::GainTracking, &mut out);
         push(ParameterPath::Trim, &mut out);
         push(ParameterPath::Balance, &mut out);
@@ -970,7 +962,7 @@ impl ParameterPath {
 
             ParameterPath::Solo => ParameterSection::FaderMutePan,
 
-            ParameterPath::Gain
+            ParameterPath::AnalogGain
             | ParameterPath::GainTracking
             | ParameterPath::Trim
             | ParameterPath::Balance
@@ -1061,7 +1053,7 @@ impl ParameterPath {
             ParameterPath::Fader | ParameterPath::Pan => true,
 
             // Input continuous
-            ParameterPath::Gain
+            ParameterPath::AnalogGain
             | ParameterPath::Trim
             | ParameterPath::Balance
             | ParameterPath::Width => true,
@@ -1454,7 +1446,6 @@ mod tests {
             ParameterPath::Solo,
             ParameterPath::Pan,
             ParameterPath::Name,
-            ParameterPath::Gain,
             ParameterPath::Trim,
             ParameterPath::EqEnabled,
             ParameterPath::EqBandFrequency(1),
@@ -1480,7 +1471,7 @@ mod tests {
         assert_eq!(ParameterPath::Fader.section(), ParameterSection::FaderMutePan);
         assert_eq!(ParameterPath::Mute.section(), ParameterSection::FaderMutePan);
         assert_eq!(ParameterPath::Pan.section(), ParameterSection::FaderMutePan);
-        assert_eq!(ParameterPath::Gain.section(), ParameterSection::InputGain);
+        assert_eq!(ParameterPath::AnalogGain.section(), ParameterSection::InputGain);
         assert_eq!(ParameterPath::Trim.section(), ParameterSection::InputGain);
         assert_eq!(ParameterPath::Phantom.section(), ParameterSection::InputGain);
         assert_eq!(ParameterPath::DelayEnabled.section(), ParameterSection::Delay);
@@ -1520,7 +1511,7 @@ mod tests {
             ParameterPath::Solo,
             ParameterPath::Pan,
             ParameterPath::Name,
-            ParameterPath::Gain,
+            ParameterPath::AnalogGain,
             ParameterPath::Trim,
             ParameterPath::Polarity,
             ParameterPath::DelayEnabled,
@@ -1625,7 +1616,7 @@ mod tests {
     fn is_continuous_true_for_levels_and_gains() {
         assert!(ParameterPath::Fader.is_continuous());
         assert!(ParameterPath::Pan.is_continuous());
-        assert!(ParameterPath::Gain.is_continuous());
+        assert!(ParameterPath::AnalogGain.is_continuous());
         assert!(ParameterPath::Trim.is_continuous());
         assert!(ParameterPath::SendLevel(1).is_continuous());
         assert!(ParameterPath::SendPan(2).is_continuous());
@@ -1723,7 +1714,7 @@ mod tests {
             ParameterPath::Mute,
             ParameterPath::Solo,
             ParameterPath::Pan,
-            ParameterPath::Gain,
+            ParameterPath::AnalogGain,
             ParameterPath::GainTracking,
             ParameterPath::Trim,
             ParameterPath::Balance,
@@ -1818,12 +1809,12 @@ mod tests {
     }
 
     #[test]
-    fn available_for_channel_total_gain_is_input_only() {
-        assert!(ParameterPath::Gain.available_for_channel(&ChannelId::Input(1)));
-        assert!(!ParameterPath::Gain.available_for_channel(&ChannelId::Aux(1)));
-        assert!(!ParameterPath::Gain.available_for_channel(&ChannelId::Group(1)));
-        assert!(!ParameterPath::Gain.available_for_channel(&ChannelId::Matrix(1)));
-        assert!(!ParameterPath::Gain.available_for_channel(&ChannelId::ControlGroup(1)));
+    fn available_for_channel_analog_gain_is_input_only() {
+        assert!(ParameterPath::AnalogGain.available_for_channel(&ChannelId::Input(1)));
+        assert!(!ParameterPath::AnalogGain.available_for_channel(&ChannelId::Aux(1)));
+        assert!(!ParameterPath::AnalogGain.available_for_channel(&ChannelId::Group(1)));
+        assert!(!ParameterPath::AnalogGain.available_for_channel(&ChannelId::Matrix(1)));
+        assert!(!ParameterPath::AnalogGain.available_for_channel(&ChannelId::ControlGroup(1)));
     }
 
     #[test]
@@ -1922,10 +1913,10 @@ mod tests {
     }
 
     #[test]
-    fn applicable_to_aux_excludes_pan_and_total_gain() {
+    fn applicable_to_aux_excludes_pan_and_analog_gain() {
         let paths = ParameterPath::applicable_to(&ChannelId::Aux(1), 8, 8, 8);
         assert!(!paths.contains(&ParameterPath::Pan));
-        assert!(!paths.contains(&ParameterPath::Gain));
+        assert!(!paths.contains(&ParameterPath::AnalogGain));
         assert!(!paths.contains(&ParameterPath::SendLevel(1)));
         // EQ + Dyn still apply.
         assert!(paths.contains(&ParameterPath::EqBandFrequency(1)));

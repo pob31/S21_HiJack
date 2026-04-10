@@ -122,7 +122,7 @@ async fn process_trigger_packet(
 }
 
 /// Parse a trigger OSC message into a TriggerEvent.
-fn parse_trigger_message(path: &str, args: &[OscType], src: SocketAddr) -> Option<TriggerEvent> {
+pub(crate) fn parse_trigger_message(path: &str, args: &[OscType], src: SocketAddr) -> Option<TriggerEvent> {
     match path {
         "/cue/fire" => {
             // Accept both INT and FLOAT for cue number

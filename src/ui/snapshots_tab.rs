@@ -728,6 +728,7 @@ pub fn draw_snapshots_tab(
                                 qlab_export_full_snapshot(
                                     snap_state,
                                     cue_manager,
+                                    palette_manager,
                                     qlab_ip_owned,
                                     qlab_port_local,
                                     runtime,
@@ -925,6 +926,7 @@ fn recall_selected_snapshot(
 fn qlab_export_full_snapshot(
     snap_state: &mut SnapshotsTabState,
     cue_manager: &Arc<RwLock<CueManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
     qlab_ip: String,
     qlab_port: u16,
     runtime: &tokio::runtime::Handle,
@@ -932,6 +934,7 @@ fn qlab_export_full_snapshot(
 ) {
     let Some(snap_id) = snap_state.selected_snapshot_id else { return };
     let cue_mgr = cue_manager.clone();
+    let pal_mgr = palette_manager.clone();
     let tx = ui_tx.clone();
 
     runtime.spawn(async move {
@@ -940,7 +943,11 @@ fn qlab_export_full_snapshot(
         let Some(snapshot) = mgr.snapshots.get(&snap_id).cloned() else { return };
         drop(mgr);
 
-        let sequence = build_snapshot_cues(&snapshot, /* qlab_patch */ 1);
+        let pmgr = pal_mgr.read().await;
+        let palettes = pmgr.palettes.clone();
+        drop(pmgr);
+
+        let sequence = build_snapshot_cues(&snapshot, &palettes, /* qlab_patch */ 1);
         let child_count = sequence.network_cues.len();
 
         match QLabClient::new(&qlab_ip, qlab_port).await {

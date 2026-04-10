@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::channel::ChannelId;
+use super::palette::ChannelPalette;
 use super::parameter::{
     ParameterAddress, ParameterPath, ParameterSection, ParameterValue, PaletteKind,
 };
@@ -189,6 +190,68 @@ impl Snapshot {
         let kind = addr.parameter.section().palette_kind()?;
         self.palette_refs.get(&(addr.channel.clone(), kind)).copied()
     }
+}
+
+/// Resolve the effective parameter values for a snapshot recall, applying
+/// palette overrides where linked. Returns all `(address, value)` pairs that
+/// should be sent — both snapshot-stored values (with palette substitution)
+/// and palette-only values not present in the snapshot data.
+///
+/// When `ignore_scope` is true, every stored/palette parameter is included;
+/// otherwise only those within `scope` are returned.
+pub fn resolve_recall_values<'a>(
+    snapshot: &'a Snapshot,
+    scope: &ScopeTemplate,
+    palettes: &'a HashMap<Uuid, ChannelPalette>,
+    ignore_scope: bool,
+) -> Vec<(ParameterAddress, &'a ParameterValue)> {
+    use std::collections::HashSet;
+
+    let mut out = Vec::new();
+    let mut palette_params_seen: HashSet<(Uuid, ParameterAddress)> = HashSet::new();
+
+    // 1. Walk snapshot data, substituting palette values where linked.
+    for (addr, snap_value) in &snapshot.data.values {
+        if !ignore_scope && !scope.contains(addr) {
+            continue;
+        }
+        let effective_value = if let Some(palette_id) = snapshot.palette_ref_for(addr) {
+            if let Some(palette) = palettes.get(&palette_id) {
+                palette_params_seen.insert((palette_id, addr.clone()));
+                palette.values.get(&addr.parameter).unwrap_or(snap_value)
+            } else {
+                snap_value
+            }
+        } else {
+            snap_value
+        };
+        out.push((addr.clone(), effective_value));
+    }
+
+    // 2. Palette-only values: params in palettes but not in snapshot data.
+    for ((channel, kind), palette_id) in &snapshot.palette_refs {
+        let Some(palette) = palettes.get(palette_id) else {
+            continue;
+        };
+        if palette.kind != *kind {
+            continue;
+        }
+        for (param_path, value) in &palette.values {
+            let addr = ParameterAddress {
+                channel: channel.clone(),
+                parameter: param_path.clone(),
+            };
+            if palette_params_seen.contains(&(*palette_id, addr.clone())) {
+                continue;
+            }
+            if !ignore_scope && !scope.contains(&addr) {
+                continue;
+            }
+            out.push((addr, value));
+        }
+    }
+
+    out
 }
 
 // Manual Deserialize impl: accepts both v8 (`eq_palette_refs: HashMap<ChannelId, Uuid>`)
@@ -455,7 +518,7 @@ mod tests {
         // Wrong section
         let gain_addr = ParameterAddress {
             channel: ChannelId::Input(1),
-            parameter: ParameterPath::Gain,
+            parameter: ParameterPath::AnalogGain,
         };
         assert!(!scope.contains(&gain_addr));
 

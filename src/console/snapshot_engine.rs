@@ -130,66 +130,18 @@ impl SnapshotEngine {
         let mut sent = 0usize;
         let mut skipped = 0usize;
 
-        // Track which palette params were already handled via snapshot data,
-        // so the palette-only loop below doesn't double-send them.
-        let mut palette_params_seen: HashMap<(Uuid, ParameterAddress), bool> = HashMap::new();
+        // Resolve all candidates (ignore_scope=true) so we can count
+        // scope-filtered params as skipped, matching the old behaviour.
+        let all = crate::model::snapshot::resolve_recall_values(
+            snapshot, scope, palettes, true,
+        );
+        let resolved = crate::model::snapshot::resolve_recall_values(
+            snapshot, scope, palettes, ignore_scope,
+        );
+        skipped += all.len() - resolved.len();
 
-        for (addr, snap_value) in &snapshot.data.values {
-            // Only recall parameters within the effective scope (unless
-            // ignore_scope is set, in which case every stored param is sent).
-            if !ignore_scope && !scope.contains(addr) {
-                skipped += 1;
-                continue;
-            }
-
-            // Determine the effective value: check for a palette override
-            // for the parameter's section. Generalized in Phase 5/6 — used
-            // to be EQ-only, now works for any section that has a palette
-            // kind (EQ, Dyn1, Dyn2).
-            let effective_value = if let Some(palette_id) = snapshot.palette_ref_for(addr) {
-                if let Some(palette) = palettes.get(&palette_id) {
-                    palette_params_seen.insert((palette_id, addr.clone()), true);
-                    // Use palette value if present, else fall back to snapshot.
-                    palette.values.get(&addr.parameter).unwrap_or(snap_value)
-                } else {
-                    warn!(%addr, %palette_id, "Palette not found, using snapshot value");
-                    snap_value
-                }
-            } else {
-                snap_value
-            };
-
+        for (addr, effective_value) in &resolved {
             self.send_if_changed(&state, addr, effective_value, &mut sent, &mut skipped).await;
-        }
-
-        // Send palette-only values: params in palettes but not in snapshot data.
-        // Generalized to walk the new `(channel, kind) -> uuid` map.
-        for ((channel, kind), palette_id) in &snapshot.palette_refs {
-            let Some(palette) = palettes.get(palette_id) else {
-                continue;
-            };
-            // Defensive: skip if the palette's stored kind doesn't match the
-            // ref map's kind. Shouldn't happen because ChannelPalette::new
-            // filters values by kind, but if a hand-edited file has a
-            // mismatch we'd rather drop the orphan than send to the wrong
-            // section.
-            if palette.kind != *kind {
-                continue;
-            }
-            for (param_path, value) in &palette.values {
-                let addr = ParameterAddress {
-                    channel: channel.clone(),
-                    parameter: param_path.clone(),
-                };
-                if palette_params_seen.contains_key(&(*palette_id, addr.clone())) {
-                    continue;
-                }
-                if !ignore_scope && !scope.contains(&addr) {
-                    skipped += 1;
-                    continue;
-                }
-                self.send_if_changed(&state, &addr, value, &mut sent, &mut skipped).await;
-            }
         }
 
         info!(sent, skipped, "Snapshot recall complete");
@@ -481,7 +433,7 @@ mod tests {
     use crate::model::channel::ChannelId;
     use crate::model::config::ConsoleConfig;
     use crate::model::parameter::{ParameterPath, ParameterSection, PaletteKind};
-    use crate::model::snapshot::{ChannelScope, ScopeTemplate, Snapshot, SnapshotData, SnapshotKind};
+    use crate::model::snapshot::{ChannelScope, CueList, ScopeTemplate, Snapshot, SnapshotData, SnapshotKind};
     use crate::osc::client::OscClient;
     use std::net::SocketAddr;
 
@@ -1051,5 +1003,217 @@ mod tests {
         let _ = engine.recall_cue(&cue, &snapshot, &no_palettes(), false).await;
 
         assert!(!dirty.read().await.has_any());
+    }
+
+    // ── Integration tests: trigger → resolve → recall ──────────────
+
+    use crate::console::cue_manager::CueManager;
+    use crate::osc::trigger_listener::{parse_trigger_message, TriggerEvent};
+    use rosc::OscType;
+
+    #[tokio::test]
+    async fn trigger_recall_by_name_end_to_end() {
+        let (engine, state) = setup_test().await;
+
+        // Live state: Fader at 0 dB
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        state.write().await.update(addr.clone(), ParameterValue::Float(0.0));
+
+        // Snapshot with Fader at -10 dB
+        let mut data = SnapshotData::new();
+        data.values.insert(addr, ParameterValue::Float(-10.0));
+        let scope = ScopeTemplate::new(
+            "S".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+        let snapshot = Snapshot::new("Verse 1".into(), scope, data, SnapshotKind::ApplyOnSave);
+
+        let mut cue_mgr = CueManager::new(CueList::default());
+        cue_mgr.add_snapshot(snapshot);
+
+        // Parse trigger
+        let src: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let event = parse_trigger_message(
+            crate::osc::SNAPSHOT_RECALL_ADDR,
+            &[OscType::String("Verse 1".into())],
+            src,
+        )
+        .unwrap();
+        let TriggerEvent::SnapshotRecall { identifier, ignore_scope } = event else {
+            panic!("expected SnapshotRecall");
+        };
+        assert!(!ignore_scope);
+
+        // Resolve and recall
+        let resolved = cue_mgr.resolve_snapshot(&identifier).unwrap();
+        let result = engine.recall(resolved, &resolved.scope, &no_palettes(), ignore_scope).await;
+        assert_eq!(result.parameters_sent, 1);
+    }
+
+    #[tokio::test]
+    async fn trigger_recall_by_uuid_end_to_end() {
+        let (engine, state) = setup_test().await;
+
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        state.write().await.update(addr.clone(), ParameterValue::Float(0.0));
+
+        let mut data = SnapshotData::new();
+        data.values.insert(addr, ParameterValue::Float(-10.0));
+        let scope = ScopeTemplate::new(
+            "S".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+        let snapshot = Snapshot::new("Verse 1".into(), scope, data, SnapshotKind::ApplyOnSave);
+        let uuid_str = snapshot.id.to_string();
+
+        let mut cue_mgr = CueManager::new(CueList::default());
+        cue_mgr.add_snapshot(snapshot);
+
+        // Parse with UUID identifier
+        let src: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let event = parse_trigger_message(
+            crate::osc::SNAPSHOT_RECALL_ADDR,
+            &[OscType::String(uuid_str)],
+            src,
+        )
+        .unwrap();
+        let TriggerEvent::SnapshotRecall { identifier, .. } = event else {
+            panic!("expected SnapshotRecall");
+        };
+
+        let resolved = cue_mgr.resolve_snapshot(&identifier).unwrap();
+        let result = engine.recall(resolved, &resolved.scope, &no_palettes(), false).await;
+        assert_eq!(result.parameters_sent, 1);
+    }
+
+    #[tokio::test]
+    async fn trigger_recall_unknown_resolves_to_none() {
+        let src: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let event = parse_trigger_message(
+            crate::osc::SNAPSHOT_RECALL_ADDR,
+            &[OscType::String("NonExistent".into())],
+            src,
+        )
+        .unwrap();
+        let TriggerEvent::SnapshotRecall { identifier, .. } = event else {
+            panic!("expected SnapshotRecall");
+        };
+
+        let cue_mgr = CueManager::new(CueList::default());
+        assert!(cue_mgr.resolve_snapshot(&identifier).is_none());
+    }
+
+    #[tokio::test]
+    async fn trigger_recall_full_sends_out_of_scope_params() {
+        let (engine, state) = setup_test().await;
+
+        let fader_addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        let eq_addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::EqEnabled,
+        };
+        {
+            let mut st = state.write().await;
+            st.update(fader_addr.clone(), ParameterValue::Float(0.0));
+            st.update(eq_addr.clone(), ParameterValue::Bool(false));
+        }
+
+        // Snapshot stores both Fader and EqEnabled, but scope only covers Fader.
+        let mut data = SnapshotData::new();
+        data.values.insert(fader_addr, ParameterValue::Float(-10.0));
+        data.values.insert(eq_addr, ParameterValue::Bool(true));
+        let scope = ScopeTemplate::new(
+            "S".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+        let snapshot = Snapshot::new("Verse 1".into(), scope, data, SnapshotKind::ApplyOnSave);
+
+        let mut cue_mgr = CueManager::new(CueList::default());
+        cue_mgr.add_snapshot(snapshot);
+
+        // Parse /snapshot/recall_full → ignore_scope = true
+        let src: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let event = parse_trigger_message(
+            crate::osc::SNAPSHOT_RECALL_FULL_ADDR,
+            &[OscType::String("Verse 1".into())],
+            src,
+        )
+        .unwrap();
+        let TriggerEvent::SnapshotRecall { identifier, ignore_scope } = event else {
+            panic!("expected SnapshotRecall");
+        };
+        assert!(ignore_scope);
+
+        let resolved = cue_mgr.resolve_snapshot(&identifier).unwrap();
+        let result = engine.recall(resolved, &resolved.scope, &no_palettes(), ignore_scope).await;
+        // Both params sent (ignore_scope bypasses the Fader-only scope).
+        assert_eq!(result.parameters_sent, 2);
+    }
+
+    #[tokio::test]
+    async fn trigger_cue_fire_recalls_linked_snapshot() {
+        let (engine, state) = setup_test().await;
+
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        state.write().await.update(addr.clone(), ParameterValue::Float(0.0));
+
+        let mut data = SnapshotData::new();
+        data.values.insert(addr, ParameterValue::Float(-10.0));
+        let scope = ScopeTemplate::new(
+            "S".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+        let snapshot = Snapshot::new("Verse 1".into(), scope, data, SnapshotKind::ApplyOnSave);
+        let snap_id = snapshot.id;
+
+        let mut cue_mgr = CueManager::new(CueList::default());
+        cue_mgr.add_snapshot(snapshot);
+
+        let cue = crate::model::snapshot::Cue::new(1.0, "Cue 1".into(), snap_id);
+        cue_mgr.add_cue(cue.clone());
+
+        // Parse /cue/fire 1.0
+        let src: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let event = parse_trigger_message(
+            "/cue/fire",
+            &[OscType::Float(1.0)],
+            src,
+        )
+        .unwrap();
+        let TriggerEvent::FireCue(number) = event else {
+            panic!("expected FireCue");
+        };
+
+        // Resolve cue → snapshot (mirrors main.rs dispatch)
+        let fired_cue = cue_mgr.fire_cue_number(number).unwrap().clone();
+        let snapshot = cue_mgr.snapshots.get(&fired_cue.snapshot_id).unwrap();
+        let result = engine
+            .recall_cue(&fired_cue, snapshot, &no_palettes(), false)
+            .await;
+        assert_eq!(result.parameters_sent, 1);
     }
 }

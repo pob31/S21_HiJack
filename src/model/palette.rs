@@ -186,7 +186,7 @@ mod tests {
         let mut mixed = sample_eq_values();
         mixed.extend(sample_dyn1_values());
         mixed.insert(ParameterPath::Fader, ParameterValue::Float(-10.0));
-        mixed.insert(ParameterPath::Gain, ParameterValue::Float(20.0));
+        mixed.insert(ParameterPath::AnalogGain, ParameterValue::Float(20.0));
 
         // EQ palette only keeps the EQ values.
         let eq_palette = ChannelPalette::new(
