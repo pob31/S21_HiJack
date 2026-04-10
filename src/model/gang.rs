@@ -10,8 +10,21 @@ fn default_true() -> bool {
     true
 }
 
+/// How continuous parameters are propagated across gang members.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GangMode {
+    /// Apply the delta (difference) from the source change to each target's
+    /// current value. Members can have different absolute values but move
+    /// together.
+    #[default]
+    Relative,
+    /// Copy the source's exact value to all targets. Members snap to the
+    /// same absolute value.
+    Absolute,
+}
+
 /// A gang group: a set of channels whose selected parameter sections
-/// are linked with bidirectional relative propagation.
+/// are linked with bidirectional propagation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GangGroup {
     pub id: Uuid,
@@ -23,6 +36,13 @@ pub struct GangGroup {
     /// Whether this gang is currently active.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// How continuous parameters propagate: relative delta or absolute copy.
+    #[serde(default)]
+    pub mode: GangMode,
+    /// Temporarily suspend propagation without breaking the gang.
+    /// Quick toggle for mid-show individual channel edits.
+    #[serde(default)]
+    pub paused: bool,
 }
 
 impl GangGroup {
@@ -37,6 +57,8 @@ impl GangGroup {
             members,
             linked_sections,
             enabled: true,
+            mode: GangMode::Relative,
+            paused: false,
         }
     }
 

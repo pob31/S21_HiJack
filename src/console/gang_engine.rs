@@ -13,6 +13,7 @@ use crate::osc::encode;
 use crate::osc::ipad_client::IpadSender;
 use crate::osc::ipad_encode;
 
+use crate::model::gang::GangMode;
 use super::gang_manager::GangManager;
 
 /// Duration (ms) to suppress echo-back from the console.
@@ -100,15 +101,21 @@ impl GangEngine {
         let is_routing = ROUTING_SECTIONS.contains(&section);
         let is_continuous = addr.parameter.is_continuous();
 
-        // 4. Compute delta for continuous parameters
-        let delta = if is_continuous {
-            old_value.and_then(|old| compute_delta(old, new_value))
-        } else {
-            None
-        };
-
-        // 5. For each matching gang, propagate to other members
+        // 4. For each matching gang, propagate to other members
         for gang in gangs {
+            // Skip paused gangs
+            if gang.paused {
+                debug!(gang = %gang.name, "Gang: skipped (paused)");
+                continue;
+            }
+
+            // Compute delta for relative mode (continuous params only)
+            let delta = if is_continuous && gang.mode == GangMode::Relative {
+                old_value.and_then(|old| compute_delta(old, new_value))
+            } else {
+                None
+            };
+
             for target_channel in gang.other_members(&addr.channel) {
                 // Routing section guard: only propagate between same channel type
                 if is_routing && mem::discriminant(&addr.channel) != mem::discriminant(target_channel) {
@@ -122,7 +129,7 @@ impl GangEngine {
 
                 // Compute target value
                 let target_value = if let Some(d) = delta {
-                    // Continuous: apply relative delta
+                    // Relative mode: apply delta to target's current value
                     let current = self.state.read().await.get(&target_addr).cloned();
                     match current {
                         Some(ref cv) => match apply_delta(cv, d) {
@@ -132,7 +139,7 @@ impl GangEngine {
                         None => new_value.clone(), // no current value, use absolute
                     }
                 } else {
-                    // Discrete: propagate absolute
+                    // Absolute mode or discrete: propagate exact value
                     new_value.clone()
                 };
 

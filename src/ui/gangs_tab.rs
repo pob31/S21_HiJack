@@ -7,7 +7,8 @@ use tokio::sync::RwLock;
 
 use crate::console::gang_manager::GangManager;
 use crate::model::channel::ChannelId;
-use crate::model::gang::GangGroup;
+use crate::model::gang::{GangGroup, GangMode};
+use uuid::Uuid;
 use crate::model::parameter::ParameterSection;
 use super::theme;
 
@@ -243,9 +244,17 @@ pub fn draw_gangs_tab(
                     let mut to_remove = None;
                     let mut to_edit = None;
                     let mut to_toggle = None;
+                    let mut to_pause: Option<(Uuid, bool)> = None;
+                    let mut to_set_mode: Option<(Uuid, GangMode)> = None;
 
                     for group in &groups {
-                        let bg = if group.enabled { theme::BG_ELEVATED } else { theme::BG_PANEL };
+                        let bg = if !group.enabled {
+                            theme::BG_PANEL
+                        } else if group.paused {
+                            theme::BG_PANEL // dimmed when paused
+                        } else {
+                            theme::BG_ELEVATED
+                        };
                         egui::Frame::new()
                             .fill(bg)
                             .stroke(egui::Stroke::new(1.0, theme::BORDER_SUBTLE))
@@ -272,6 +281,44 @@ pub fn draw_gangs_tab(
                                         to_toggle = Some((group.id, !group.enabled));
                                     }
 
+                                    // Pause button
+                                    let pause_color = if group.paused {
+                                        theme::ACCENT_ORANGE
+                                    } else {
+                                        theme::BG_ELEVATED
+                                    };
+                                    let pause_label = if group.paused { "PAUSED" } else { "||" };
+                                    let pause_btn = egui::Button::new(
+                                        egui::RichText::new(pause_label)
+                                            .color(theme::TEXT_PRIMARY)
+                                            .small(),
+                                    )
+                                    .fill(pause_color)
+                                    .corner_radius(4.0);
+                                    if ui.add_enabled(group.enabled, pause_btn).clicked() {
+                                        to_pause = Some((group.id, !group.paused));
+                                    }
+
+                                    ui.add_space(4.0);
+
+                                    // Mode toggle (Rel / Abs)
+                                    let rel_btn = egui::Button::new(
+                                        egui::RichText::new("Rel").small(),
+                                    )
+                                    .selected(group.mode == GangMode::Relative)
+                                    .corner_radius(4.0);
+                                    if ui.add_enabled(group.enabled, rel_btn).clicked() {
+                                        to_set_mode = Some((group.id, GangMode::Relative));
+                                    }
+                                    let abs_btn = egui::Button::new(
+                                        egui::RichText::new("Abs").small(),
+                                    )
+                                    .selected(group.mode == GangMode::Absolute)
+                                    .corner_radius(4.0);
+                                    if ui.add_enabled(group.enabled, abs_btn).clicked() {
+                                        to_set_mode = Some((group.id, GangMode::Absolute));
+                                    }
+
                                     ui.add_space(8.0);
 
                                     // Gang name
@@ -285,7 +332,6 @@ pub fn draw_gangs_tab(
 
                                     // Member badge
                                     let member_text = format_members(&group.members);
-                                    // Determine member type color
                                     let member_color = if !group.members.is_empty() {
                                         theme::channel_color(&group.members[0])
                                     } else {
@@ -303,7 +349,7 @@ pub fn draw_gangs_tab(
 
                                 // Action buttons row
                                 ui.horizontal(|ui| {
-                                    ui.add_space(52.0); // align under content
+                                    ui.add_space(52.0);
                                     let edit_btn = theme::action_button("Edit", theme::ACCENT_ORANGE, egui::Vec2::new(60.0, 24.0));
                                     if ui.add(edit_btn).clicked() {
                                         to_edit = Some(group.clone());
@@ -331,6 +377,29 @@ pub fn draw_gangs_tab(
                             let mut mgr = mgr_clone.write().await;
                             if let Some(group) = mgr.groups.get_mut(&id) {
                                 group.enabled = new_enabled;
+                                if !new_enabled {
+                                    group.paused = false;
+                                }
+                            }
+                        });
+                    }
+
+                    if let Some((id, new_paused)) = to_pause {
+                        let mgr_clone = gang_manager.clone();
+                        runtime.spawn(async move {
+                            let mut mgr = mgr_clone.write().await;
+                            if let Some(group) = mgr.groups.get_mut(&id) {
+                                group.paused = new_paused;
+                            }
+                        });
+                    }
+
+                    if let Some((id, new_mode)) = to_set_mode {
+                        let mgr_clone = gang_manager.clone();
+                        runtime.spawn(async move {
+                            let mut mgr = mgr_clone.write().await;
+                            if let Some(group) = mgr.groups.get_mut(&id) {
+                                group.mode = new_mode;
                             }
                         });
                     }
