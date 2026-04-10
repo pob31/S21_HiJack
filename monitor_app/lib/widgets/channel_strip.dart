@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/send_state.dart';
 import 'fader_widget.dart';
+import 'pan_slider.dart';
 
 /// A vertical channel strip (tablet layout): fader + pan + on/off.
 class VerticalChannelStrip extends StatelessWidget {
@@ -26,7 +27,7 @@ class VerticalChannelStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 90,
+      width: 130,
       child: Column(
         children: [
           Expanded(
@@ -38,33 +39,20 @@ class VerticalChannelStrip extends StatelessWidget {
               onChanged: onLevelChanged,
             ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 12),
           // Pan slider (-1.0 L .. 0.0 C .. +1.0 R)
           Text(
             _formatPan(send.pan),
             style: const TextStyle(color: Colors.white54, fontSize: 9),
           ),
-          SizedBox(
-            width: 86,
+          const SizedBox(height: 4),
+          CenterPanSlider(
+            value: send.pan,
+            onChanged: onPanChanged,
+            width: 120,
             height: 40,
-            child: SliderTheme(
-              data: SliderThemeData(
-                trackHeight: 4,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 9),
-                activeTrackColor: Colors.orangeAccent,
-                inactiveTrackColor: Colors.white12,
-                thumbColor: Colors.orange,
-                overlayColor: Colors.orangeAccent.withAlpha(40),
-              ),
-              child: Slider(
-                value: send.pan.clamp(-1.0, 1.0),
-                min: -1.0,
-                max: 1.0,
-                onChanged: onPanChanged,
-              ),
-            ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 12),
           // On/Off toggle
           GestureDetector(
             onTap: onToggle,
@@ -87,7 +75,7 @@ class VerticalChannelStrip extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 24),
         ],
       ),
     );
@@ -154,25 +142,13 @@ class HorizontalChannelStrip extends StatelessWidget {
                 'Pan ${_formatPan(send.pan)}',
                 style: const TextStyle(color: Colors.white38, fontSize: 11),
               ),
+              const SizedBox(width: 8),
               Expanded(
-                child: SizedBox(
-                  height: 32,
-                  child: SliderTheme(
-                    data: SliderThemeData(
-                      trackHeight: 3,
-                      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-                      activeTrackColor: Colors.orangeAccent,
-                      inactiveTrackColor: Colors.white12,
-                      thumbColor: Colors.orange,
-                      overlayColor: Colors.orangeAccent.withAlpha(30),
-                    ),
-                    child: Slider(
-                      value: send.pan.clamp(-1.0, 1.0),
-                      min: -1.0,
-                      max: 1.0,
-                      onChanged: onPanChanged,
-                    ),
-                  ),
+                child: CenterPanSlider(
+                  value: send.pan,
+                  onChanged: onPanChanged,
+                  width: 200,
+                  height: 36,
                 ),
               ),
               GestureDetector(

@@ -312,7 +312,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
       // Tablet: horizontal scroll of vertical channel strips
       return SingleChildScrollView(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.all(8),
+        padding: const EdgeInsets.only(left: 8, right: 8, top: 8, bottom: 40),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: sends.map((send) {
