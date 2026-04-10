@@ -1026,7 +1026,7 @@ fn start_connection(
                         let mut last_send_state = std::collections::HashMap::new();
                         let mut last_aux_state = std::collections::HashMap::new();
                         let mut poll_interval = tokio::time::interval(
-                            std::time::Duration::from_millis(500),
+                            std::time::Duration::from_millis(100),
                         );
                         loop {
                             tokio::select! {

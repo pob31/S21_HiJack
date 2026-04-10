@@ -264,7 +264,7 @@ async fn run_headless(args: Args) {
                 tokio::spawn(async move {
                     let mut last_send_state = std::collections::HashMap::new();
                     let mut last_aux_state = std::collections::HashMap::new();
-                    let mut poll_interval = tokio::time::interval(std::time::Duration::from_millis(500));
+                    let mut poll_interval = tokio::time::interval(std::time::Duration::from_millis(100));
                     loop {
                         tokio::select! {
                             Some(cmd) = monitor_rx.recv() => {

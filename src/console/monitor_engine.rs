@@ -391,7 +391,6 @@ impl MonitorEngine {
                 &format!("/monitor/state/aux/{aux}"),
                 vec![OscType::Float(fader), OscType::Bool(mute)],
             ).await;
-            debug!(aux, fader, mute, "Sent aux state to monitor client");
         }
 
         debug!(
@@ -620,8 +619,6 @@ impl MonitorEngine {
                 }
             }
             last_aux_state.insert(aux, new_aux_state);
-            debug!(aux, fader, mute, has_fader = fader_val.is_some(), has_mute = mute_val.is_some(),
-                "Aux state changed — pushing to clients");
 
             for client in manager.clients.values() {
                 if !client.is_connected() || !client.permitted_auxes.contains(&aux) {
