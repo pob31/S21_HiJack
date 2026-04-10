@@ -1076,6 +1076,9 @@ fn draw_group_matrix(
         .id_salt(("scope_group_hscroll", data.group))
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            // Zero out horizontal item spacing — all spacing is manual via add_space.
+            ui.spacing_mut().item_spacing.x = 0.0;
+
             // ── Header row: corner [All] + per-channel header cells ──
             ui.horizontal(|ui| {
                 // Corner [All] cell — width = row label + spacing.
@@ -1227,8 +1230,36 @@ fn draw_group_matrix(
                             ui.add_space(CELL_SPACING);
                         }
                     } else {
-                        // PreWait / Fade mode: skip section-level cells,
-                        // we'll render per-category timing rows below.
+                        // PreWait / Fade mode: render dimmed placeholder cells
+                        // to keep column alignment with the timing rows.
+                        for ch in &data.channels {
+                            let mut any_available = false;
+                            let mut all_on = true;
+                            let mut any_on = false;
+                            for path in section_paths {
+                                if !cell_available(&data.available, ch, path) {
+                                    continue;
+                                }
+                                any_available = true;
+                                if state.is_cell_selected(ch, path) {
+                                    any_on = true;
+                                } else {
+                                    all_on = false;
+                                }
+                            }
+                            let cell_all = any_available && all_on;
+                            let cell_any = any_on;
+                            matrix_cell(
+                                ui,
+                                CELL_SIZE,
+                                cell_all,
+                                cell_any,
+                                false, // not interactive in timing mode
+                                false,
+                                "",
+                            );
+                            ui.add_space(CELL_SPACING);
+                        }
                     }
                 });
 
@@ -1241,25 +1272,32 @@ fn draw_group_matrix(
                             continue;
                         }
                         ui.horizontal(|ui| {
-                            // Row label: indented, showing category + mode
+                            // Row label: indented, showing category + mode.
+                            // Uses allocate_exact_size + manual paint to match
+                            // path_row_label alignment exactly.
                             let label_text = match state.edit_mode {
                                 ScopeEditMode::PreWait => format!("  {} pre-wait (s)", cat.label()),
                                 ScopeEditMode::Fade => format!("  {} fade (s)", cat.label()),
                                 _ => unreachable!(),
                             };
-                            let label = egui::Label::new(
-                                egui::RichText::new(&label_text)
-                                    .size(theme::FONT_SIZE_BADGE)
-                                    .color(theme::TEXT_SECONDARY)
-                                    .italics(),
-                            );
-                            ui.add_sized(
+                            let (rect, _resp) = ui.allocate_exact_size(
                                 egui::Vec2::new(ROW_LABEL_WIDTH, CELL_SIZE.y),
-                                label,
+                                egui::Sense::hover(),
                             );
+                            let galley = ui.painter().layout_no_wrap(
+                                label_text,
+                                egui::FontId::proportional(theme::FONT_SIZE_BADGE),
+                                theme::TEXT_SECONDARY,
+                            );
+                            let text_pos = egui::pos2(
+                                rect.left() + 4.0,
+                                rect.center().y - galley.size().y / 2.0,
+                            );
+                            ui.painter().galley(text_pos, galley, theme::TEXT_SECONDARY);
                             ui.add_space(CELL_SPACING);
 
-                            // Per-channel timing inputs
+                            // Per-channel timing inputs — paint value text inside
+                            // allocate_exact_size cells to match matrix_cell alignment.
                             for ch in &data.channels {
                                 let key = (ch.clone(), *cat);
                                 let timing = state.channel_timings
@@ -1270,14 +1308,44 @@ fn draw_group_matrix(
                                     ScopeEditMode::Fade => &mut timing.fade_time_secs,
                                     _ => unreachable!(),
                                 };
-                                ui.add_sized(
+
+                                let (rect, resp) = ui.allocate_exact_size(
                                     CELL_SIZE,
-                                    egui::DragValue::new(val)
-                                        .range(0.0..=30.0)
-                                        .speed(0.05)
-                                        .fixed_decimals(1)
-                                        .min_decimals(1),
+                                    egui::Sense::click_and_drag(),
                                 );
+
+                                // Background
+                                let bg = if *val != 0.0 {
+                                    theme::SCOPE_ACTIVE
+                                } else {
+                                    theme::SCOPE_INACTIVE
+                                };
+                                let bg = if resp.hovered() {
+                                    theme::lighten(bg, 25)
+                                } else {
+                                    bg
+                                };
+                                ui.painter().rect_filled(rect, 3.0, bg);
+
+                                // Display value
+                                let text = format!("{:.1}", val);
+                                let galley = ui.painter().layout_no_wrap(
+                                    text,
+                                    egui::FontId::proportional(8.0),
+                                    theme::TEXT_PRIMARY,
+                                );
+                                let text_pos = egui::pos2(
+                                    rect.center().x - galley.size().x / 2.0,
+                                    rect.center().y - galley.size().y / 2.0,
+                                );
+                                ui.painter().galley(text_pos, galley, theme::TEXT_PRIMARY);
+
+                                // Drag interaction
+                                if resp.dragged() {
+                                    let delta = resp.drag_delta().x * 0.05;
+                                    *val = (*val + delta).clamp(0.0, 30.0);
+                                }
+
                                 ui.add_space(CELL_SPACING);
                             }
                         });
@@ -1378,8 +1446,8 @@ fn section_display_name(s: &ParameterSection) -> String {
         ParameterSection::Delay => "Delay".into(),
         ParameterSection::Digitube => "DiGiTube".into(),
         ParameterSection::Eq => "EQ".into(),
-        ParameterSection::Dyn1 => "Dynamics 1 (Compressor)".into(),
-        ParameterSection::Dyn2 => "Dynamics 2 (Gate)".into(),
+        ParameterSection::Dyn1 => "Dynamics 1".into(),
+        ParameterSection::Dyn2 => "Dynamics 2".into(),
         ParameterSection::Sends => "Aux Sends".into(),
         ParameterSection::GroupRouting => "Group Routing".into(),
         ParameterSection::Inserts => "Inserts".into(),
