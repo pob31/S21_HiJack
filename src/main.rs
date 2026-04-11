@@ -492,7 +492,8 @@ fn run_ui(args: Args) {
 
     let mut viewport = eframe::egui::ViewportBuilder::default()
         .with_inner_size([1400.0, 1000.0])
-        .with_title("S21 HiJack");
+        .with_title("S21 HiJack")
+        .with_app_id("s21_hijack");
     if let Some(icon) = icon {
         viewport = viewport.with_icon(icon);
     }
