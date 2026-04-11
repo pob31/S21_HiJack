@@ -684,6 +684,52 @@ pub fn draw_snapshots_tab(
                             }
                         });
 
+                        // ── Undo + pacing ──
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            let engine_ready = snapshot_engine.is_some() && is_connected;
+                            let has_undo = snapshot_engine.as_ref().map(|e| e.has_undo()).unwrap_or(false);
+                            let undo_label = snapshot_engine
+                                .as_ref()
+                                .and_then(|e| e.undo_label())
+                                .unwrap_or_else(|| "Undo".to_string());
+
+                            let undo_btn = theme::action_button(
+                                &undo_label,
+                                theme::ACCENT_AMBER,
+                                egui::Vec2::new(160.0, 28.0),
+                            );
+                            if ui.add_enabled(has_undo && engine_ready, undo_btn).clicked() {
+                                if let Some(engine) = snapshot_engine.clone() {
+                                    let tx = ui_tx.clone();
+                                    runtime.spawn(async move {
+                                        if let Some(result) = engine.undo_recall().await {
+                                            let _ = tx.send(UiEvent::SnapshotCaptured {
+                                                name: format!("Undo complete ({} params sent)", result.parameters_sent),
+                                                param_count: result.parameters_sent,
+                                            });
+                                        }
+                                    });
+                                    snap_state.status_message = Some("Undoing...".into());
+                                }
+                            }
+
+                            ui.add_space(16.0);
+                            ui.label("Pace (μs):");
+                            let mut pace_val = snapshot_engine
+                                .as_ref()
+                                .map(|e| e.pace_us() as f32)
+                                .unwrap_or(0.0);
+                            let slider = egui::Slider::new(&mut pace_val, 0.0..=5000.0)
+                                .step_by(100.0)
+                                .clamping(egui::SliderClamping::Always);
+                            if ui.add_enabled(engine_ready, slider).changed() {
+                                if let Some(engine) = snapshot_engine.as_ref() {
+                                    engine.set_pace_us(pace_val as u64);
+                                }
+                            }
+                        });
+
                         // ── Phase D: QLab export buttons ──
                         // Two flavours mirroring WFS-DIY's snapshot exports:
                         //

@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::RwLock;
+use tokio::time::Duration;
 use tracing::{info, warn, debug};
 use uuid::Uuid;
 
@@ -26,6 +28,14 @@ pub struct RecallResult {
     pub parameters_skipped: usize,
 }
 
+/// Pre-recall live values for one-level undo.
+pub struct UndoState {
+    /// Live values of parameters that were changed, captured before sending.
+    pub previous_values: HashMap<ParameterAddress, ParameterValue>,
+    /// Human-readable label (e.g. "Undo: 'Snapshot Name'").
+    pub label: String,
+}
+
 /// The snapshot recall engine — diffs snapshot data against live state and sends changes.
 pub struct SnapshotEngine {
     state: Arc<RwLock<ConsoleState>>,
@@ -39,6 +49,12 @@ pub struct SnapshotEngine {
     /// dirty set, and clear() the tracker on a successful recall (mirroring
     /// `ParameterDirtyTracker::endSuppressionAndClear` from WFS-DIY).
     dirty_tracker: Option<Arc<RwLock<DirtyTracker>>>,
+    /// Inter-message pacing delay in microseconds. 0 = no pacing.
+    /// Prevents flooding the console's ARM chip during large recalls.
+    pace_us: AtomicU64,
+    /// One-level undo: stores the pre-recall live values so the operator
+    /// can revert if a recall was triggered by mistake.
+    undo: RwLock<Option<UndoState>>,
 }
 
 impl SnapshotEngine {
@@ -50,6 +66,8 @@ impl SnapshotEngine {
             fade_controller: FadeController::new(),
             multi_fade: MultiFadeController::new(),
             dirty_tracker: None,
+            pace_us: AtomicU64::new(0),
+            undo: RwLock::new(None),
         }
     }
 
@@ -61,6 +79,16 @@ impl SnapshotEngine {
     /// Attach a dirty tracker (Phase C). Called once at engine construction.
     pub fn set_dirty_tracker(&mut self, dirty: Arc<RwLock<DirtyTracker>>) {
         self.dirty_tracker = Some(dirty);
+    }
+
+    /// Set the inter-message pacing delay (microseconds). 0 = no pacing.
+    pub fn set_pace_us(&self, us: u64) {
+        self.pace_us.store(us, Ordering::Relaxed);
+    }
+
+    /// Get the current pacing delay in microseconds.
+    pub fn pace_us(&self) -> u64 {
+        self.pace_us.load(Ordering::Relaxed)
     }
 
     /// Helper: bracket an async operation with begin/end suppression on the
@@ -143,8 +171,21 @@ impl SnapshotEngine {
         );
         skipped += all.len() - resolved.len();
 
+        let mut undo_map: HashMap<ParameterAddress, ParameterValue> = HashMap::new();
+        let pace = self.pace_us.load(Ordering::Relaxed);
         for (addr, effective_value) in &resolved {
-            self.send_if_changed(&state, addr, effective_value, &mut sent, &mut skipped).await;
+            let did_send = self.send_if_changed(&state, addr, effective_value, &mut sent, &mut skipped, Some(&mut undo_map)).await;
+            if did_send && pace > 0 {
+                tokio::time::sleep(Duration::from_micros(pace)).await;
+            }
+        }
+
+        // Store undo state (overwrites any previous — one level only)
+        if !undo_map.is_empty() {
+            *self.undo.write().await = Some(UndoState {
+                previous_values: undo_map,
+                label: format!("Undo '{}'", snapshot.name),
+            });
         }
 
         info!(sent, skipped, "Snapshot recall complete");
@@ -155,6 +196,9 @@ impl SnapshotEngine {
     }
 
     /// Send a parameter if it differs from the live state.
+    /// Returns `true` if the parameter was actually sent.
+    /// When `undo_map` is provided, captures the live value before sending
+    /// so the recall can be reverted.
     async fn send_if_changed(
         &self,
         state: &ConsoleState,
@@ -162,13 +206,19 @@ impl SnapshotEngine {
         value: &ParameterValue,
         sent: &mut usize,
         skipped: &mut usize,
-    ) {
+        undo_map: Option<&mut HashMap<ParameterAddress, ParameterValue>>,
+    ) -> bool {
         // Check if the value differs from live state
         let live_value = state.get(addr);
         if live_value == Some(value) {
             *skipped += 1;
             debug!(%addr, "Recall skip: value unchanged");
-            return;
+            return false;
+        }
+
+        // Capture live value for undo before we change it
+        if let (Some(undo), Some(live)) = (undo_map, live_value) {
+            undo.insert(addr.clone(), live.clone());
         }
 
         // Encode to GP OSC
@@ -177,9 +227,11 @@ impl SnapshotEngine {
                 if let Err(e) = self.sender.send(&path, args).await {
                     warn!(%addr, "Failed to send recall: {e}");
                     *skipped += 1;
+                    false
                 } else {
                     debug!(%addr, %value, "Recall: sent parameter");
                     *sent += 1;
+                    true
                 }
             }
             None => {
@@ -190,19 +242,23 @@ impl SnapshotEngine {
                             if let Err(e) = ipad.send(&path, args).await {
                                 warn!(%addr, "Failed to send iPad recall: {e}");
                                 *skipped += 1;
+                                false
                             } else {
                                 debug!(%addr, %value, "Recall: sent via iPad protocol");
                                 *sent += 1;
+                                true
                             }
                         }
                         None => {
                             *skipped += 1;
                             debug!(%addr, "Recall skip: no encoding available");
+                            false
                         }
                     }
                 } else {
                     *skipped += 1;
                     debug!(%addr, "Recall skip: iPad-only parameter (no iPad sender)");
+                    false
                 }
             }
         }
@@ -268,6 +324,7 @@ impl SnapshotEngine {
         let mut sent = 0usize;
         let mut skipped = 0usize;
         let mut fade_targets: Vec<FadeTarget> = Vec::new();
+        let mut undo_map: HashMap<ParameterAddress, ParameterValue> = HashMap::new();
 
         // Track palette params handled via snapshot data
         let mut palette_params_seen: HashMap<(Uuid, ParameterAddress), bool> = HashMap::new();
@@ -296,6 +353,8 @@ impl SnapshotEngine {
             if live_value == Some(effective_value) {
                 skipped += 1;
             } else if addr.parameter.is_continuous() && live_value.is_some() {
+                // Capture live value for undo before changing it
+                undo_map.insert(addr.clone(), live_value.unwrap().clone());
                 // Continuous param with known start → fade
                 fade_targets.push(FadeTarget {
                     address: addr.clone(),
@@ -303,6 +362,10 @@ impl SnapshotEngine {
                     end_value: effective_value.clone(),
                 });
             } else {
+                // Capture live value for undo (if present)
+                if let Some(live) = live_value {
+                    undo_map.insert(addr.clone(), live.clone());
+                }
                 // Discrete, or continuous with unknown live value → send immediately
                 fade_targets.push(FadeTarget {
                     address: addr.clone(),
@@ -340,6 +403,10 @@ impl SnapshotEngine {
                     skipped += 1;
                     continue;
                 }
+                // Capture live value for undo
+                if let Some(live) = live_value {
+                    undo_map.insert(addr.clone(), live.clone());
+                }
                 if addr.parameter.is_continuous() && live_value.is_some() {
                     fade_targets.push(FadeTarget {
                         address: addr,
@@ -369,9 +436,13 @@ impl SnapshotEngine {
             }
         }
 
-        // Send discrete params immediately
+        // Send discrete params immediately (with pacing)
+        let pace = self.pace_us.load(Ordering::Relaxed);
         for target in &discrete_targets {
-            self.send_now(&target.address, &target.end_value, &mut sent, &mut skipped).await;
+            let did_send = self.send_now(&target.address, &target.end_value, &mut sent, &mut skipped).await;
+            if did_send && pace > 0 {
+                tokio::time::sleep(Duration::from_micros(pace)).await;
+            }
         }
 
         // Start continuous fade in background
@@ -385,6 +456,14 @@ impl SnapshotEngine {
                 self.ipad_sender.clone(),
             ).await;
             info!(fade_count, "Fade started for continuous parameters");
+        }
+
+        // Store undo state
+        if !undo_map.is_empty() {
+            *self.undo.write().await = Some(UndoState {
+                previous_values: undo_map,
+                label: format!("Undo '{}'", snapshot.name),
+            });
         }
 
         RecallResult {
@@ -436,12 +515,17 @@ impl SnapshotEngine {
         let mut groups: HashMap<(ChannelId, Option<TimingCategory>), Vec<ParamChange>> =
             HashMap::new();
         let mut total_skipped = 0usize;
+        let mut undo_map: HashMap<ParameterAddress, ParameterValue> = HashMap::new();
 
         for (addr, effective_value) in &resolved {
             let live_value = state.get(addr);
             if live_value == Some(*effective_value) {
                 total_skipped += 1;
                 continue;
+            }
+            // Capture live value for undo
+            if let Some(live) = live_value {
+                undo_map.insert(addr.clone(), live.clone());
             }
             let cat = TimingCategory::from_parameter_path(&addr.parameter);
             groups
@@ -487,6 +571,7 @@ impl SnapshotEngine {
 
         let sender = self.sender.clone();
         let ipad_sender = self.ipad_sender.clone();
+        let pace = self.pace_us.load(Ordering::Relaxed);
 
         // Collect all spawned handles for tracking
         let mut all_handles: Vec<tokio::task::JoinHandle<usize>> = Vec::new();
@@ -579,6 +664,7 @@ impl SnapshotEngine {
                     pre_wait: Duration,
                     fade_time: Duration,
                     changes: Vec<ParamChange>,
+                    pace_us: u64,
                 ) -> usize {
                     let mut sent = 0usize;
 
@@ -605,10 +691,13 @@ impl SnapshotEngine {
                         }
                     }
 
-                    // Send discrete params first
+                    // Send discrete params first (with pacing)
                     for d in &discrete {
                         if send_one(sender, ipad, &d.addr, &d.value).await {
                             sent += 1;
+                            if pace_us > 0 {
+                                sleep(Duration::from_micros(pace_us)).await;
+                            }
                         }
                     }
 
@@ -637,6 +726,7 @@ impl SnapshotEngine {
                     pre_wait: Duration,
                     fade_time: Duration,
                     changes: Vec<ParamChange>,
+                    pace_us: u64,
                 ) -> usize {
                     let mut sent = 0usize;
 
@@ -663,6 +753,9 @@ impl SnapshotEngine {
                     for c in &non_send_changes {
                         if send_one(sender, ipad, &c.addr, &c.value).await {
                             sent += 1;
+                            if pace_us > 0 {
+                                sleep(Duration::from_micros(pace_us)).await;
+                            }
                         }
                     }
 
@@ -672,6 +765,7 @@ impl SnapshotEngine {
                         let s = sender.clone();
                         let i = ipad.clone();
                         let ft = fade_time;
+                        let pu = pace_us;
                         per_send_handles.push(tokio::spawn(async move {
                             let mut sent = 0usize;
 
@@ -698,7 +792,7 @@ impl SnapshotEngine {
                             match enabling {
                                 Some(true) => {
                                     // Enable ON: fade level/pan first, then enable
-                                    sent += exec_group(&s, &i, Duration::ZERO, ft, level_pan).await;
+                                    sent += exec_group(&s, &i, Duration::ZERO, ft, level_pan, pu).await;
                                     if let Some(ec) = &enable_change {
                                         if send_one(&s, &i, &ec.addr, &ec.value).await {
                                             sent += 1;
@@ -712,11 +806,11 @@ impl SnapshotEngine {
                                             sent += 1;
                                         }
                                     }
-                                    sent += exec_group(&s, &i, Duration::ZERO, ft, level_pan).await;
+                                    sent += exec_group(&s, &i, Duration::ZERO, ft, level_pan, pu).await;
                                 }
                                 None => {
                                     // No enable change — just fade level/pan
-                                    sent += exec_group(&s, &i, Duration::ZERO, ft, level_pan).await;
+                                    sent += exec_group(&s, &i, Duration::ZERO, ft, level_pan, pu).await;
                                 }
                             }
 
@@ -750,13 +844,14 @@ impl SnapshotEngine {
                         for (cat, pre_wait, fade_time, changes) in group_tasks {
                             let s = sender_for_channel.clone();
                             let i = ipad_for_channel.clone();
+                            let pu = pace;
                             if cat == Some(TimingCategory::Sends) {
                                 handles.push(tokio::spawn(async move {
-                                    exec_sends_group(&s, &i, pre_wait, fade_time, changes).await
+                                    exec_sends_group(&s, &i, pre_wait, fade_time, changes, pu).await
                                 }));
                             } else {
                                 handles.push(tokio::spawn(async move {
-                                    exec_group(&s, &i, pre_wait, fade_time, changes).await
+                                    exec_group(&s, &i, pre_wait, fade_time, changes, pu).await
                                 }));
                             }
                         }
@@ -772,13 +867,14 @@ impl SnapshotEngine {
                         for (cat, pre_wait, fade_time, changes) in group_tasks {
                             let s = sender_for_channel.clone();
                             let i = ipad_for_channel.clone();
+                            let pu = pace;
                             if cat == Some(TimingCategory::Sends) {
                                 handles.push(tokio::spawn(async move {
-                                    exec_sends_group(&s, &i, pre_wait, fade_time, changes).await
+                                    exec_sends_group(&s, &i, pre_wait, fade_time, changes, pu).await
                                 }));
                             } else {
                                 handles.push(tokio::spawn(async move {
-                                    exec_group(&s, &i, pre_wait, fade_time, changes).await
+                                    exec_group(&s, &i, pre_wait, fade_time, changes, pu).await
                                 }));
                             }
                         }
@@ -803,13 +899,14 @@ impl SnapshotEngine {
                         for (cat, pre_wait, fade_time, changes) in group_tasks {
                             let s = sender_for_channel.clone();
                             let i = ipad_for_channel.clone();
+                            let pu = pace;
                             if cat == Some(TimingCategory::Sends) {
                                 handles.push(tokio::spawn(async move {
-                                    exec_sends_group(&s, &i, pre_wait, fade_time, changes).await
+                                    exec_sends_group(&s, &i, pre_wait, fade_time, changes, pu).await
                                 }));
                             } else {
                                 handles.push(tokio::spawn(async move {
-                                    exec_group(&s, &i, pre_wait, fade_time, changes).await
+                                    exec_group(&s, &i, pre_wait, fade_time, changes, pu).await
                                 }));
                             }
                         }
@@ -835,6 +932,14 @@ impl SnapshotEngine {
             }
         }
 
+        // Store undo state
+        if !undo_map.is_empty() {
+            *self.undo.write().await = Some(UndoState {
+                previous_values: undo_map,
+                label: format!("Undo '{}'", snapshot.name),
+            });
+        }
+
         info!(total_sent, total_skipped, "Timed recall complete");
         RecallResult {
             parameters_sent: total_sent,
@@ -842,22 +947,67 @@ impl SnapshotEngine {
         }
     }
 
+    /// Undo the last recall: cancel any active fades and send the pre-recall
+    /// values back to the console. Consumes the undo state (can't undo an undo).
+    pub async fn undo_recall(&self) -> Option<RecallResult> {
+        // Cancel any in-progress fades first
+        self.fade_controller.cancel_active().await;
+        self.multi_fade.cancel_all().await;
+
+        // Consume undo state
+        let undo = self.undo.write().await.take()?;
+
+        let result = self.with_dirty_suppression(async {
+            let state = self.state.read().await;
+            let mut sent = 0usize;
+            let mut skipped = 0usize;
+            let pace = self.pace_us.load(Ordering::Relaxed);
+
+            for (addr, value) in &undo.previous_values {
+                let did_send = self.send_if_changed(
+                    &state, addr, value, &mut sent, &mut skipped, None,
+                ).await;
+                if did_send && pace > 0 {
+                    tokio::time::sleep(Duration::from_micros(pace)).await;
+                }
+            }
+
+            RecallResult { parameters_sent: sent, parameters_skipped: skipped }
+        }).await;
+
+        info!(sent = result.parameters_sent, "Undo recall complete");
+        Some(result)
+    }
+
+    /// Whether an undo state is available (for UI button enablement).
+    pub fn has_undo(&self) -> bool {
+        self.undo.try_read().map(|g| g.is_some()).unwrap_or(false)
+    }
+
+    /// Label for the undo button (e.g. "Undo 'MySnapshot'").
+    pub fn undo_label(&self) -> Option<String> {
+        self.undo.try_read().ok()?.as_ref().map(|u| u.label.clone())
+    }
+
     /// Send a parameter immediately (no state comparison — already checked).
+    /// Returns `true` if the parameter was actually sent.
     async fn send_now(
         &self,
         addr: &ParameterAddress,
         value: &ParameterValue,
         sent: &mut usize,
         skipped: &mut usize,
-    ) {
+    ) -> bool {
         match encode::encode_parameter(addr, value) {
             Some((path, args)) => {
                 if let Err(e) = self.sender.send(&path, args).await {
                     warn!(%addr, "Failed to send recall: {e}");
                     *skipped += 1;
+                    false
                 } else {
                     debug!(%addr, %value, "Recall: sent discrete param");
                     *sent += 1;
+                    true
                 }
             }
             None => {
@@ -867,17 +1017,21 @@ impl SnapshotEngine {
                             if let Err(e) = ipad.send(&path, args).await {
                                 warn!(%addr, "Failed to send iPad recall: {e}");
                                 *skipped += 1;
+                                false
                             } else {
                                 debug!(%addr, %value, "Recall: sent discrete via iPad");
                                 *sent += 1;
+                                true
                             }
                         }
                         None => {
                             *skipped += 1;
+                            false
                         }
                     }
                 } else {
                     *skipped += 1;
+                    false
                 }
             }
         }

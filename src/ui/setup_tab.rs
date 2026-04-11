@@ -62,6 +62,8 @@ pub struct SetupTabState {
     pub qlab_ip: String,
     /// QLab destination port (default 53000 — QLab's standard OSC listen port).
     pub qlab_port: String,
+    /// Inter-message pacing delay in microseconds during snapshot recall.
+    pub send_pace_us: u64,
 }
 
 impl SetupTabState {
@@ -107,6 +109,7 @@ impl SetupTabState {
             },
             qlab_ip: "127.0.0.1".to_string(),
             qlab_port: "53000".to_string(),
+            send_pace_us: 0,
         }
     }
 }
@@ -732,6 +735,7 @@ fn start_connection(
     let tx = ui_tx.clone();
     let ctx = egui_ctx.clone();
     let console_ip = setup.console_ip.clone();
+    let send_pace_us = setup.send_pace_us;
     let log = osc_log.clone();
     runtime.spawn(async move {
         // Create OscClient manually so we can build GangEngine with the sender
@@ -764,6 +768,7 @@ fn start_connection(
         // Create SnapshotEngine (mut so we can set iPad sender before wrapping in Arc)
         let mut snapshot_engine = SnapshotEngine::new(st.clone(), manager.sender());
         snapshot_engine.set_dirty_tracker(dirty.clone());
+        snapshot_engine.set_pace_us(send_pace_us);
 
         // iPad connection (Mode 2 or 3)
         if operating_mode.uses_ipad_protocol() && ipad_console_port > 0 {
@@ -1144,6 +1149,7 @@ fn save_show_file(
         monitor_port: setup.monitor_port.parse().unwrap_or(0),
         qlab_ip: setup.qlab_ip.clone(),
         qlab_port: setup.qlab_port.parse().unwrap_or(53000),
+        send_pace_us: setup.send_pace_us,
     };
 
     runtime.spawn(async move {

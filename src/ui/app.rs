@@ -236,6 +236,7 @@ impl HiJackApp {
                         if conn.qlab_port > 0 {
                             self.setup.qlab_port = conn.qlab_port.to_string();
                         }
+                        self.setup.send_pace_us = conn.send_pace_us;
                     }
                 }
                 UiEvent::ShowFileSaved(path) => {

@@ -45,6 +45,10 @@ pub struct ConnectionSettings {
     /// QLab destination port. Default 53000 (QLab's standard OSC listen port).
     #[serde(default = "default_qlab_port")]
     pub qlab_port: u16,
+    /// Inter-message pacing delay in microseconds during snapshot recall.
+    /// Prevents flooding the console's ARM chip. 0 = no pacing.
+    #[serde(default)]
+    pub send_pace_us: u64,
 }
 
 fn default_gp_port() -> u16 { 8024 }
@@ -69,6 +73,7 @@ impl Default for ConnectionSettings {
             monitor_port: 0,
             qlab_ip: String::new(),
             qlab_port: default_qlab_port(),
+            send_pace_us: 0,
         }
     }
 }
