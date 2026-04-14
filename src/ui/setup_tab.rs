@@ -13,6 +13,7 @@ use crate::console::palette_manager::PaletteManager;
 use crate::console::gang_engine::GangEngine;
 use crate::console::gang_manager::GangManager;
 use crate::console::ipad_connection;
+use crate::console::pan_link_engine::PanLinkEngine;
 use crate::console::macro_engine::MacroEngine;
 use crate::console::macro_manager::MacroManager;
 use crate::console::monitor_engine::MonitorEngine;
@@ -20,6 +21,8 @@ use crate::console::monitor_manager::MonitorManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::operating_mode::OperatingMode;
+use crate::model::pan_link::PanLinkBindings;
+use crate::model::recall_scope::ConsoleRecallConfig;
 use crate::model::parameter::PROTOCOL_COVERAGE;
 use crate::model::osc_log::OscLog;
 use crate::model::snapshot::CueList;
@@ -125,6 +128,8 @@ pub fn draw_setup_tab(
     monitor_manager: &Arc<RwLock<MonitorManager>>,
     palette_manager: &Arc<RwLock<PaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
+    pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
+    console_recall: &ConsoleRecallConfig,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
     sender: &mut Option<OscSender>,
@@ -298,7 +303,7 @@ pub fn draw_setup_tab(
                     if ui.add(connect_btn).clicked() {
                         start_connection(
                             setup, state, cue_manager, macro_manager, monitor_manager,
-                            palette_manager, gang_manager, dirty_tracker,
+                            palette_manager, gang_manager, pan_link_bindings, dirty_tracker,
                             snapshot_engine, sender,
                             connected, cancel_token, osc_log,
                             runtime, ui_tx, egui_ctx,
@@ -324,6 +329,24 @@ pub fn draw_setup_tab(
                 theme::status_dot(ui, color);
                 ui.colored_label(color, label);
             });
+
+            // Console variant readout (auto-derived from discovery, persisted in show file)
+            if let Ok(s) = state.try_read() {
+                let cfg = &s.config;
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Console: {} ({} inputs, {} mix buses — {} aux / {} group)",
+                        cfg.plus_mode.label(),
+                        cfg.input_channel_count,
+                        cfg.aux_output_count + cfg.group_output_count,
+                        cfg.aux_output_count,
+                        cfg.group_output_count,
+                    ))
+                    .color(theme::TEXT_SECONDARY)
+                    .small(),
+                );
+            }
 
             // Status message
             if let Some(msg) = &setup.status_message {
@@ -538,7 +561,7 @@ pub fn draw_setup_tab(
                     egui::Vec2::new(100.0, 32.0),
                 );
                 if ui.add(load_btn).clicked() {
-                    load_show_file(setup, cue_manager, macro_manager, monitor_manager, palette_manager, gang_manager, runtime, ui_tx);
+                    load_show_file(setup, state, cue_manager, macro_manager, monitor_manager, palette_manager, gang_manager, pan_link_bindings, connected, runtime, ui_tx);
                 }
 
                 let save_btn = theme::action_button(
@@ -558,7 +581,7 @@ pub fn draw_setup_tab(
                         }
                     }
                     if !setup.show_file_path.is_empty() {
-                        save_show_file(setup, state, cue_manager, macro_manager, monitor_manager, palette_manager, gang_manager, runtime, ui_tx);
+                        save_show_file(setup, state, cue_manager, macro_manager, monitor_manager, palette_manager, gang_manager, pan_link_bindings, console_recall.clone(), runtime, ui_tx);
                     }
                 }
 
@@ -615,6 +638,7 @@ fn start_connection(
     monitor_manager: &Arc<RwLock<MonitorManager>>,
     palette_manager: &Arc<RwLock<PaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
+    pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     _snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
     _sender: &mut Option<OscSender>,
@@ -730,6 +754,7 @@ fn start_connection(
     let mon_mgr = monitor_manager.clone();
     let pmgr_arc = palette_manager.clone();
     let gang_mgr = gang_manager.clone();
+    let pl_bindings = pan_link_bindings.clone();
     let dirty = dirty_tracker.clone();
     let conn_flag = connected.clone();
     let tx = ui_tx.clone();
@@ -757,9 +782,17 @@ fn start_connection(
             GangEngine::new(st.clone(), osc_sender.clone()),
         ));
 
+        // Create PanLinkEngine with the same sender + shared bindings.
+        let pan_link_engine = Arc::new(RwLock::new(PanLinkEngine::new(
+            st.clone(),
+            osc_sender.clone(),
+            pl_bindings.clone(),
+            dirty.clone(),
+        )));
+
         let manager = ConnectionManager::connect_from_parts(
             osc_sender, rx, st.clone(), macro_mgr, gang_engine.clone(), gang_mgr,
-            dirty.clone(), token.clone(),
+            pan_link_engine.clone(), dirty.clone(), token.clone(),
         );
 
         info!("Connected to console via UI");
@@ -788,7 +821,8 @@ fn start_connection(
                                 "UI Mode 2: iPad protocol connected"
                             );
                             snapshot_engine.set_ipad_sender(Some(ipad_sender.clone()));
-                            gang_engine.write().await.set_ipad_sender(Some(ipad_sender));
+                            gang_engine.write().await.set_ipad_sender(Some(ipad_sender.clone()));
+                            pan_link_engine.write().await.set_ipad_sender(Some(ipad_sender));
                             let _ = tx.send(UiEvent::IpadConnected);
                         }
                         Err(e) => {
@@ -827,7 +861,8 @@ fn start_connection(
                         Ok(ipad_sender) => {
                             info!("UI Mode 3: iPad proxy started");
                             snapshot_engine.set_ipad_sender(Some(ipad_sender.clone()));
-                            gang_engine.write().await.set_ipad_sender(Some(ipad_sender));
+                            gang_engine.write().await.set_ipad_sender(Some(ipad_sender.clone()));
+                            pan_link_engine.write().await.set_ipad_sender(Some(ipad_sender));
                             let _ = tx.send(UiEvent::IpadConnected);
                         }
                         Err(e) => {
@@ -1019,11 +1054,14 @@ fn start_connection(
 
 fn load_show_file(
     setup: &mut SetupTabState,
+    state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
     monitor_manager: &Arc<RwLock<MonitorManager>>,
     palette_manager: &Arc<RwLock<PaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
+    pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
+    connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
@@ -1041,11 +1079,14 @@ fn load_show_file(
     }
 
     let path = std::path::PathBuf::from(&setup.show_file_path);
+    let st = state.clone();
     let cue_mgr = cue_manager.clone();
     let macro_mgr = macro_manager.clone();
     let mon_mgr = monitor_manager.clone();
     let pmgr_arc = palette_manager.clone();
     let gang_mgr = gang_manager.clone();
+    let pl_bindings = pan_link_bindings.clone();
+    let conn_flag = connected.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
 
@@ -1095,10 +1136,26 @@ fn load_show_file(
                 for group in show.gang_groups {
                     gmgr.groups.insert(group.id, group);
                 }
+                drop(gmgr);
+
+                // Restore pan link bindings
+                {
+                    let mut pl = pl_bindings.write().await;
+                    *pl = show.pan_link;
+                }
+
+                // Restore console config (channel counts, plus_mode, bus
+                // split) so offline editing works. Skip if already
+                // connected — the live console is authoritative.
+                if !conn_flag.load(Ordering::Relaxed) {
+                    let mut s = st.write().await;
+                    s.config = show.console_config.clone();
+                }
 
                 info!("Show file loaded: {path_str}");
                 let conn = show.connection;
-                let _ = tx.send(UiEvent::ShowFileLoaded(path_str, Some(conn)));
+                let recall = show.console_recall;
+                let _ = tx.send(UiEvent::ShowFileLoaded(path_str, Some(conn), recall));
             }
             Err(e) => {
                 let _ = tx.send(UiEvent::ShowFileError(format!("Load failed: {e}")));
@@ -1115,6 +1172,8 @@ fn save_show_file(
     monitor_manager: &Arc<RwLock<MonitorManager>>,
     palette_manager: &Arc<RwLock<PaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
+    pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
+    console_recall: ConsoleRecallConfig,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
@@ -1130,6 +1189,7 @@ fn save_show_file(
     let mon_mgr = monitor_manager.clone();
     let pmgr_arc = palette_manager.clone();
     let gang_mgr = gang_manager.clone();
+    let pl_bindings = pan_link_bindings.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
 
@@ -1159,9 +1219,10 @@ fn save_show_file(
         let monmgr = mon_mgr.read().await;
         let pmgr = pmgr_arc.read().await;
         let gmgr = gang_mgr.read().await;
+        let pl = pl_bindings.read().await;
 
         let show = ShowFile {
-            version: 9,
+            version: 12,
             console_config: state_guard.config.clone(),
             connection: conn_settings,
             scope_templates: mgr.scope_templates.values().cloned().collect(),
@@ -1172,7 +1233,8 @@ fn save_show_file(
             palettes: pmgr.palettes.values().cloned().collect(),
             monitor_clients: monmgr.clients.values().cloned().collect(),
             gang_groups: gmgr.groups.values().cloned().collect(),
-            console_recall: crate::model::recall_scope::ConsoleRecallConfig::default(),
+            console_recall: console_recall.clone(),
+            pan_link: pl.clone(),
         };
 
         drop(state_guard);
@@ -1181,6 +1243,7 @@ fn save_show_file(
         drop(monmgr);
         drop(pmgr);
         drop(gmgr);
+        drop(pl);
 
         match show.save(&path).await {
             Ok(()) => {

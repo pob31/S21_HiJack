@@ -21,6 +21,7 @@ use console::cue_manager::CueManager;
 use console::palette_manager::PaletteManager;
 use console::gang_engine::GangEngine;
 use console::gang_manager::GangManager;
+use console::pan_link_engine::PanLinkEngine;
 use console::ipad_connection;
 use console::macro_engine::MacroEngine;
 use console::macro_manager::MacroManager;
@@ -157,11 +158,19 @@ async fn run_headless(args: Args) {
 
     let gang_engine = Arc::new(RwLock::new(GangEngine::new(state.clone(), sender.clone())));
 
+    let pan_link_bindings = Arc::new(RwLock::new(model::pan_link::PanLinkBindings::default()));
+    let pan_link_engine = Arc::new(RwLock::new(PanLinkEngine::new(
+        state.clone(),
+        sender.clone(),
+        pan_link_bindings.clone(),
+        dirty_tracker.clone(),
+    )));
+
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let manager = ConnectionManager::connect_from_parts(
         sender.clone(), rx, state, macro_manager.clone(),
-        gang_engine.clone(), gang_manager.clone(), dirty_tracker.clone(),
-        cancel_token.clone(),
+        gang_engine.clone(), gang_manager.clone(), pan_link_engine.clone(),
+        dirty_tracker.clone(), cancel_token.clone(),
     );
     info!("Connected successfully");
 
@@ -245,9 +254,10 @@ async fn run_headless(args: Args) {
         }
     }
 
-    // Wire iPad sender into gang engine (for iPad-only parameters)
+    // Wire iPad sender into gang & pan link engines (for iPad-only parameters)
     if let Some(ref ipad) = ipad_sender_for_monitor {
         gang_engine.write().await.set_ipad_sender(Some(ipad.clone()));
+        pan_link_engine.write().await.set_ipad_sender(Some(ipad.clone()));
     }
 
     // Start monitor server (if enabled)

@@ -1,5 +1,52 @@
 use serde::{Deserialize, Serialize};
 
+/// Console hardware variant. Encodes the input count (48 vs 60) and the
+/// total mix output bus count (16 vs 24). The aux-vs-group split inside
+/// those buses is operator-configurable on the console surface and is
+/// not controllable over OSC, so it rides along separately in
+/// `mix_output_types`.
+///
+/// Set automatically by the discovery path from the reported input
+/// channel count — never user-settable. Persisted in the show file so
+/// reloading offline restores the right channel layout.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlusMode {
+    /// 48 input channels, 16 mix output buses.
+    #[default]
+    S21,
+    /// 60 input channels, 24 mix output buses.
+    S21Plus,
+}
+
+impl PlusMode {
+    /// Derive from a discovered input channel count. 60 or more → Plus,
+    /// anything else → standard.
+    pub fn from_input_count(inputs: u8) -> Self {
+        if inputs >= 60 { Self::S21Plus } else { Self::S21 }
+    }
+
+    pub fn input_count(&self) -> u8 {
+        match self {
+            Self::S21 => 48,
+            Self::S21Plus => 60,
+        }
+    }
+
+    pub fn total_mix_buses(&self) -> u8 {
+        match self {
+            Self::S21 => 16,
+            Self::S21Plus => 24,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::S21 => "S21",
+            Self::S21Plus => "S21+",
+        }
+    }
+}
+
 /// Channel stereo mode.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChannelMode {
@@ -47,6 +94,11 @@ pub struct ConsoleConfig {
     pub input_modes: Vec<ChannelMode>,
     /// Per group: Mono or Stereo
     pub group_modes: Vec<ChannelMode>,
+    /// Hardware variant (S21 or S21+). Auto-derived from the discovered
+    /// input channel count and persisted in the show file. Defaults to
+    /// `S21` for legacy show files that pre-date this field.
+    #[serde(default)]
+    pub plus_mode: PlusMode,
 }
 
 impl ConsoleConfig {
@@ -121,6 +173,7 @@ impl Default for ConsoleConfig {
             mix_output_modes: Vec::new(),
             input_modes: Vec::new(),
             group_modes: Vec::new(),
+            plus_mode: PlusMode::default(),
         }
     }
 }
@@ -185,6 +238,17 @@ mod tests {
         config.mix_output_modes = Vec::new();
         assert_eq!(config.bus_label(1), "Bus 1");
         assert_eq!(config.bus_label(16), "Bus 16");
+    }
+
+    #[test]
+    fn plus_mode_from_input_count() {
+        assert_eq!(PlusMode::from_input_count(48), PlusMode::S21);
+        assert_eq!(PlusMode::from_input_count(60), PlusMode::S21Plus);
+        assert_eq!(PlusMode::from_input_count(72), PlusMode::S21Plus);
+        assert_eq!(PlusMode::S21.input_count(), 48);
+        assert_eq!(PlusMode::S21Plus.input_count(), 60);
+        assert_eq!(PlusMode::S21.total_mix_buses(), 16);
+        assert_eq!(PlusMode::S21Plus.total_mix_buses(), 24);
     }
 
     #[test]

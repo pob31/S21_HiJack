@@ -15,6 +15,7 @@ use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::config::ConsoleConfig;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::osc_log::OscLog;
+use crate::model::pan_link::PanLinkBindings;
 use crate::model::snapshot::CueList;
 use crate::model::operating_mode::OperatingMode;
 use crate::model::state::ConsoleState;
@@ -25,6 +26,7 @@ use super::{Tab, UiEvent};
 use super::palettes_ui::PalettesUiState;
 use super::gangs_tab::GangsTabState;
 use super::inspector_tab::InspectorTabState;
+use super::pan_link_tab::PanLinkTabState;
 use super::live_tab::LiveTabState;
 use super::macros_tab::MacrosTabState;
 use super::monitor_tab::MonitorTabState;
@@ -41,6 +43,7 @@ pub struct HiJackApp {
     pub monitor_manager: Arc<RwLock<MonitorManager>>,
     pub palette_manager: Arc<RwLock<PaletteManager>>,
     pub gang_manager: Arc<RwLock<GangManager>>,
+    pub pan_link_bindings: Arc<RwLock<PanLinkBindings>>,
     pub snapshot_engine: Option<Arc<SnapshotEngine>>,
     pub macro_engine: Option<Arc<MacroEngine>>,
     /// Dirty tracker — populated by the OSC dispatcher whenever an inbound
@@ -72,6 +75,7 @@ pub struct HiJackApp {
     pub live: LiveTabState,
     pub palettes_ui: PalettesUiState,
     pub gangs: GangsTabState,
+    pub pan_link: PanLinkTabState,
     pub monitor: MonitorTabState,
     pub osc_log_tab: OscLogTabState,
     pub inspector: InspectorTabState,
@@ -99,6 +103,7 @@ impl HiJackApp {
             monitor_manager: Arc::new(RwLock::new(MonitorManager::new())),
             palette_manager: Arc::new(RwLock::new(PaletteManager::new())),
             gang_manager: Arc::new(RwLock::new(GangManager::new())),
+            pan_link_bindings: Arc::new(RwLock::new(PanLinkBindings::default())),
             snapshot_engine: None,
             macro_engine: None,
             dirty_tracker: Arc::new(RwLock::new(DirtyTracker::new())),
@@ -126,6 +131,7 @@ impl HiJackApp {
             live: LiveTabState::default(),
             palettes_ui: PalettesUiState::default(),
             gangs: GangsTabState::default(),
+            pan_link: PanLinkTabState::default(),
             monitor: MonitorTabState::default(),
             osc_log_tab: OscLogTabState::default(),
             inspector: InspectorTabState::default(),
@@ -193,8 +199,9 @@ impl HiJackApp {
                         format!("Updated '{name}' — {affected_count} snapshots affected"),
                     );
                 }
-                UiEvent::ShowFileLoaded(path, conn) => {
+                UiEvent::ShowFileLoaded(path, conn, recall) => {
                     self.setup.status_message = Some(format!("Loaded: {path}"));
+                    self.snapshots.scope_editor.console_recall = recall;
                     if let Some(conn) = conn {
                         if !conn.local_ip.is_empty() {
                             self.setup.local_ip = conn.local_ip;
@@ -313,6 +320,7 @@ impl eframe::App for HiJackApp {
                         (Tab::Macros, "Macros"),
                         (Tab::Live, "Live"),
                         (Tab::Gangs, "Gangs"),
+                        (Tab::PanLink, "Pan Link"),
                         (Tab::Monitor, "Monitor"),
                         (Tab::OscLog, "OSC Log"),
                         (Tab::Inspector, "Inspector"),
@@ -366,6 +374,8 @@ impl eframe::App for HiJackApp {
                         &self.monitor_manager,
                         &self.palette_manager,
                         &self.gang_manager,
+                        &self.pan_link_bindings,
+                        &self.snapshots.scope_editor.console_recall,
                         &self.dirty_tracker,
                         &mut self.snapshot_engine,
                         &mut self.sender,
@@ -431,6 +441,17 @@ impl eframe::App for HiJackApp {
                         ui,
                         &mut self.gangs,
                         &self.gang_manager,
+                        &self.connected,
+                        &self.runtime,
+                    );
+                }
+                Tab::PanLink => {
+                    super::pan_link_tab::draw_pan_link_tab(
+                        ui,
+                        &mut self.pan_link,
+                        &self.pan_link_bindings,
+                        &self.state,
+                        &self.sender,
                         &self.connected,
                         &self.runtime,
                     );

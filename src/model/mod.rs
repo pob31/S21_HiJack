@@ -7,6 +7,7 @@ pub mod monitor;
 pub mod operating_mode;
 pub mod osc_log;
 pub mod palette;
+pub mod pan_link;
 pub mod parameter;
 pub mod recall_scope;
 pub mod snapshot;

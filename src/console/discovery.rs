@@ -1,6 +1,6 @@
 use rosc::OscType;
 
-use crate::model::config::{ChannelMode, ConsoleConfig};
+use crate::model::config::{ChannelMode, ConsoleConfig, PlusMode};
 
 /// Apply a positional `/console/channel/counts` reply to the config in one shot.
 ///
@@ -23,6 +23,7 @@ pub fn apply_channel_counts(
     config.group_output_count = groups;
     config.control_group_count = control_groups;
     config.matrix_output_count = matrices;
+    config.plus_mode = PlusMode::from_input_count(inputs);
 
     // Generate default mix_output_types if not already populated (e.g. from
     // iPad handshake). First `aux` buses are aux, remaining are group.
@@ -38,7 +39,10 @@ pub fn apply_channel_counts(
 /// Returns true if the type was recognized and applied.
 pub fn apply_channel_count(config: &mut ConsoleConfig, channel_type: &str, count: u8) -> bool {
     match channel_type {
-        "input" => config.input_channel_count = count,
+        "input" => {
+            config.input_channel_count = count;
+            config.plus_mode = PlusMode::from_input_count(count);
+        }
         "aux" => config.aux_output_count = count,
         "group" => config.group_output_count = count,
         "matrix" => config.matrix_output_count = count,

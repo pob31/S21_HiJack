@@ -7,6 +7,7 @@ pub mod monitor_tab;
 pub mod net_interfaces;
 pub mod osc_log_tab;
 pub mod palettes_ui;
+pub mod pan_link_tab;
 pub mod recall_scope_popup;
 pub mod scope_editor;
 pub mod setup_tab;
@@ -21,6 +22,7 @@ pub enum Tab {
     Macros,
     Live,
     Gangs,
+    PanLink,
     Monitor,
     OscLog,
     Inspector,
@@ -59,7 +61,11 @@ pub enum UiEvent {
         name: String,
         affected_count: usize,
     },
-    ShowFileLoaded(String, Option<crate::persistence::show_file::ConnectionSettings>),
+    ShowFileLoaded(
+        String,
+        Option<crate::persistence::show_file::ConnectionSettings>,
+        crate::model::recall_scope::ConsoleRecallConfig,
+    ),
     ShowFileSaved(String),
     ShowFileError(String),
     IpadConnected,

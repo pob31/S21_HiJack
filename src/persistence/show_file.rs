@@ -8,6 +8,7 @@ use crate::model::gang::GangGroup;
 use crate::model::monitor::MonitorClient;
 use crate::model::operating_mode::OperatingMode;
 use crate::model::palette::ChannelPalette;
+use crate::model::pan_link::PanLinkBindings;
 use crate::model::recall_scope::ConsoleRecallConfig;
 use crate::model::snapshot::{CueList, ScopeTemplate, Snapshot};
 
@@ -117,12 +118,15 @@ pub struct ShowFile {
     /// Console recall scope & per-channel recall safe (visual reference).
     #[serde(default)]
     pub console_recall: ConsoleRecallConfig,
+    /// Pan link bindings: aux-send pans that follow an input's main pan.
+    #[serde(default)]
+    pub pan_link: PanLinkBindings,
 }
 
 impl ShowFile {
     pub fn new(config: ConsoleConfig) -> Self {
         Self {
-            version: 11,
+            version: 12,
             console_config: config,
             connection: ConnectionSettings::default(),
             scope_templates: Vec::new(),
@@ -134,6 +138,7 @@ impl ShowFile {
             monitor_clients: Vec::new(),
             gang_groups: Vec::new(),
             console_recall: ConsoleRecallConfig::default(),
+            pan_link: PanLinkBindings::default(),
         }
     }
 
@@ -170,7 +175,7 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 11);
+        assert_eq!(loaded.version, 12);
         assert_eq!(loaded.console_config.input_channel_count, 48);
         assert_eq!(loaded.console_config.control_group_count, 10);
         assert!(loaded.scope_templates.is_empty());

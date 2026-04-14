@@ -11,4 +11,5 @@ pub mod macro_manager;
 pub mod monitor_engine;
 pub mod monitor_manager;
 pub mod palette_manager;
+pub mod pan_link_engine;
 pub mod snapshot_engine;

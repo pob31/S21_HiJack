@@ -10,6 +10,7 @@ use crate::console::discovery::apply_channel_counts;
 use crate::console::gang_engine::GangEngine;
 use crate::console::gang_manager::GangManager;
 use crate::console::macro_manager::MacroManager;
+use crate::console::pan_link_engine::PanLinkEngine;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::state::{ConnectionHealth, ConsoleState};
 use crate::osc::client::{OscSender, ReceivedOscMessage};
@@ -36,6 +37,7 @@ pub struct ConnectionManager {
     macro_manager: Arc<RwLock<MacroManager>>,
     gang_engine: Arc<RwLock<GangEngine>>,
     gang_manager: Arc<RwLock<GangManager>>,
+    pan_link_engine: Arc<RwLock<PanLinkEngine>>,
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
 }
 
@@ -70,6 +72,7 @@ impl ConnectionManager {
         macro_manager: Arc<RwLock<MacroManager>>,
         gang_engine: Arc<RwLock<GangEngine>>,
         gang_manager: Arc<RwLock<GangManager>>,
+        pan_link_engine: Arc<RwLock<PanLinkEngine>>,
         dirty_tracker: Arc<RwLock<DirtyTracker>>,
         cancel: CancellationToken,
     ) -> Self {
@@ -77,8 +80,8 @@ impl ConnectionManager {
 
         tokio::spawn(run_loop(
             sender.clone(), rx, state.clone(), macro_manager.clone(),
-            gang_engine.clone(), gang_manager.clone(), dirty_tracker.clone(),
-            cancel.clone(),
+            gang_engine.clone(), gang_manager.clone(), pan_link_engine.clone(),
+            dirty_tracker.clone(), cancel.clone(),
         ));
 
         Self {
@@ -87,6 +90,7 @@ impl ConnectionManager {
             macro_manager,
             gang_engine,
             gang_manager,
+            pan_link_engine,
             dirty_tracker,
         }
     }
@@ -104,6 +108,11 @@ impl ConnectionManager {
     /// Get a reference to the gang manager.
     pub fn gang_manager(&self) -> Arc<RwLock<GangManager>> {
         self.gang_manager.clone()
+    }
+
+    /// Get a reference to the pan link engine.
+    pub fn pan_link_engine(&self) -> Arc<RwLock<PanLinkEngine>> {
+        self.pan_link_engine.clone()
     }
 }
 
@@ -124,6 +133,7 @@ async fn run_loop(
     macro_manager: Arc<RwLock<MacroManager>>,
     gang_engine: Arc<RwLock<GangEngine>>,
     gang_manager: Arc<RwLock<GangManager>>,
+    pan_link_engine: Arc<RwLock<PanLinkEngine>>,
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
     cancel: CancellationToken,
 ) {
@@ -145,7 +155,7 @@ async fn run_loop(
             }
             Some(msg) = rx.recv() => {
                 let parsed = parse::parse_gp_osc(&msg.path, &msg.args);
-                process_message(&parsed, &state, &macro_manager, &gang_engine, &gang_manager, &dirty_tracker, &sender).await;
+                process_message(&parsed, &state, &macro_manager, &gang_engine, &gang_manager, &pan_link_engine, &dirty_tracker, &sender).await;
                 match &parsed {
                     ParsedOscMessage::ChannelCounts { .. } | ParsedOscMessage::DiscoveryCount { .. } => {
                         counts_received = true;
@@ -187,7 +197,7 @@ async fn run_loop(
                     if s.config.mix_output_types.is_empty() { None } else { Some(s.config.mix_output_types.clone()) }
                 };
                 let parsed = parse::parse_gp_osc_with_config(&msg.path, &msg.args, mix_types.as_deref());
-                process_message(&parsed, &state, &macro_manager, &gang_engine, &gang_manager, &dirty_tracker, &sender).await;
+                process_message(&parsed, &state, &macro_manager, &gang_engine, &gang_manager, &pan_link_engine, &dirty_tracker, &sender).await;
 
                 // Any inbound traffic counts as "alive": reset idle/ping bookkeeping.
                 last_inbound_at = Instant::now();
@@ -277,6 +287,7 @@ async fn process_message(
     macro_manager: &Arc<RwLock<MacroManager>>,
     gang_engine: &Arc<RwLock<GangEngine>>,
     gang_manager: &Arc<RwLock<GangManager>>,
+    pan_link_engine: &Arc<RwLock<PanLinkEngine>>,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     sender: &OscSender,
 ) {
@@ -304,6 +315,13 @@ async fn process_message(
                 engine
                     .process_gang_update(addr, value, old_value.as_ref(), &manager)
                     .await;
+            }
+
+            // Pan link propagation — runs after gangs so a gang-driven
+            // pan change on an input also pushes to its linked aux sends.
+            {
+                let engine = pan_link_engine.read().await;
+                engine.process_pan_update(addr, value).await;
             }
 
             // Feed into macro learn mode if recording

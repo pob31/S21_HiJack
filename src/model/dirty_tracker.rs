@@ -99,6 +99,13 @@ impl DirtyTracker {
         self.suppressed = false;
     }
 
+    /// True while the tracker is suppressing marks. The pan link engine
+    /// uses this as a "recall in progress" guard so it doesn't fight
+    /// snapshot/cue/macro recalls.
+    pub fn is_suppressed(&self) -> bool {
+        self.suppressed
+    }
+
     /// True if any cell is currently dirty.
     pub fn has_any(&self) -> bool {
         self.dirty.values().any(|s| !s.is_empty())
