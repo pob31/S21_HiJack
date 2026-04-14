@@ -37,6 +37,11 @@ pub struct ConsoleState {
     /// Monotonic counter incremented on every parameter update.
     /// Used by the monitor poll to skip scanning when nothing changed.
     generation: u64,
+    /// The console memory row currently active on the desk, as reported
+    /// by `/Snapshots/Current_Snapshot` echoes (iPad protocol). `None`
+    /// until the first echo is seen. Used by the snapshot engine to skip
+    /// re-firing the same row and by follow mode to detect changes.
+    pub current_console_snapshot: Option<i32>,
 }
 
 impl ConsoleState {
@@ -47,6 +52,7 @@ impl ConsoleState {
             last_updated: HashMap::new(),
             health: ConnectionHealth::Connected,
             generation: 0,
+            current_console_snapshot: None,
         }
     }
 

@@ -47,6 +47,20 @@ pub struct SnapshotsTabState {
 
     // Feedback
     pub status_message: Option<String>,
+
+    // Console memory ref editor: text buffer for the selected snapshot's
+    // console_snapshot value (empty = None).
+    pub console_snapshot_input: String,
+    /// UUID of the snapshot whose `console_snapshot_input` is currently
+    /// loaded — used to detect when the selection changed and the buffer
+    /// needs reloading.
+    pub console_snapshot_input_for: Option<Uuid>,
+
+    // Shift console refs modal state.
+    pub shift_modal_open: bool,
+    pub shift_from_row: String,
+    pub shift_delta: String,
+    pub shift_status: Option<String>,
 }
 
 impl Default for SnapshotsTabState {
@@ -68,6 +82,12 @@ impl Default for SnapshotsTabState {
             new_template_name: String::new(),
             selected_scope_template_id: None,
             status_message: None,
+            console_snapshot_input: String::new(),
+            console_snapshot_input_for: None,
+            shift_modal_open: false,
+            shift_from_row: "1".into(),
+            shift_delta: "1".into(),
+            shift_status: None,
         }
     }
 }
@@ -83,6 +103,9 @@ pub fn draw_snapshots_tab(
     palette_manager: &Arc<RwLock<PaletteManager>>,
     snapshot_engine: &Option<Arc<SnapshotEngine>>,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
+    auto_update_on_recall: &Arc<AtomicBool>,
+    console_snapshot_follow: &Arc<AtomicBool>,
+    operating_mode: crate::model::operating_mode::OperatingMode,
     qlab_ip: &str,
     qlab_port: u16,
     connected: &Arc<AtomicBool>,
@@ -473,6 +496,51 @@ pub fn draw_snapshots_tab(
                     theme::card_frame().show(ui, |ui| {
                         theme::section_heading(ui, "Snapshots");
 
+                        // Workflow toggles + console-snapshot tools.
+                        let uses_ipad = operating_mode.uses_ipad_protocol();
+                        ui.horizontal(|ui| {
+                            let mut auto = auto_update_on_recall.load(Ordering::Relaxed);
+                            if ui.checkbox(&mut auto, "Auto-save changes to previous snapshot on recall")
+                                .on_hover_text(
+                                    "When recalling a snapshot, write any dirty parameters \
+                                     within the previous snapshot's scope back into it. \
+                                     Captures mid-show tweaks automatically.",
+                                )
+                                .changed()
+                            {
+                                auto_update_on_recall.store(auto, Ordering::Relaxed);
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            let mut follow = console_snapshot_follow.load(Ordering::Relaxed);
+                            let resp = ui.add_enabled(
+                                uses_ipad,
+                                egui::Checkbox::new(&mut follow, "Follow console snapshot recalls"),
+                            );
+                            if resp.clicked() && uses_ipad {
+                                console_snapshot_follow.store(follow, Ordering::Relaxed);
+                            }
+                            if !uses_ipad {
+                                let _ = resp.on_hover_text(
+                                    "Requires Mode 2 or Mode 3 (iPad protocol) — the console \
+                                     snapshot list is only reachable via that protocol.",
+                                );
+                            }
+                            ui.add_space(8.0);
+                            if ui
+                                .button("Shift console refs…")
+                                .on_hover_text(
+                                    "Bulk-shift every snapshot's console memory row reference \
+                                     when you've inserted or deleted snapshots on the console.",
+                                )
+                                .clicked()
+                            {
+                                snap_state.shift_modal_open = true;
+                                snap_state.shift_status = None;
+                            }
+                        });
+                        ui.add_space(4.0);
+
                         // Snapshot kind picker — controls whether the scope is
                         // applied at SAVE time (only in-scope params stored,
                         // current behaviour) or at RECALL time (all params
@@ -583,6 +651,13 @@ pub fn draw_snapshots_tab(
                                                         .color(theme::TEXT_SECONDARY)
                                                         .small(),
                                                     );
+                                                    if let Some(row) = snap.console_snapshot {
+                                                        theme::colored_badge(
+                                                            ui,
+                                                            &format!("mem {row}"),
+                                                            theme::ACCENT_AMBER,
+                                                        );
+                                                    }
                                                 }).response;
 
                                                 if response.interact(egui::Sense::click()).clicked() {
@@ -683,6 +758,68 @@ pub fn draw_snapshots_tab(
                                 }
                             }
                         });
+
+                        // ── Console memory editor ──
+                        ui.add_space(4.0);
+                        if let Some(snap_id) = snap_state.selected_snapshot_id {
+                            // Reload the input buffer when the selection changes.
+                            if snap_state.console_snapshot_input_for != Some(snap_id) {
+                                let current_value = cue_manager
+                                    .try_read()
+                                    .ok()
+                                    .and_then(|mgr| mgr.snapshots.get(&snap_id).and_then(|s| s.console_snapshot));
+                                snap_state.console_snapshot_input = current_value
+                                    .map(|n| n.to_string())
+                                    .unwrap_or_default();
+                                snap_state.console_snapshot_input_for = Some(snap_id);
+                            }
+                            ui.horizontal(|ui| {
+                                ui.label("Console memory row:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut snap_state.console_snapshot_input)
+                                        .desired_width(60.0)
+                                        .hint_text("none"),
+                                );
+                                if ui.button("Apply").clicked() {
+                                    let new_val: Option<i32> = if snap_state.console_snapshot_input.trim().is_empty() {
+                                        None
+                                    } else {
+                                        snap_state.console_snapshot_input.trim().parse().ok()
+                                    };
+                                    let cue_mgr = cue_manager.clone();
+                                    runtime.spawn(async move {
+                                        let mut mgr = cue_mgr.write().await;
+                                        if let Some(s) = mgr.snapshots.get_mut(&snap_id) {
+                                            s.console_snapshot = new_val;
+                                            s.modified_at = chrono::Utc::now();
+                                        }
+                                    });
+                                    snap_state.status_message = Some(match new_val {
+                                        Some(n) => format!("Linked snapshot to console memory {n}"),
+                                        None => "Cleared console memory link".into(),
+                                    });
+                                }
+                                if ui.button("Clear").clicked() {
+                                    snap_state.console_snapshot_input.clear();
+                                    let cue_mgr = cue_manager.clone();
+                                    runtime.spawn(async move {
+                                        let mut mgr = cue_mgr.write().await;
+                                        if let Some(s) = mgr.snapshots.get_mut(&snap_id) {
+                                            s.console_snapshot = None;
+                                            s.modified_at = chrono::Utc::now();
+                                        }
+                                    });
+                                    snap_state.status_message = Some("Cleared console memory link".into());
+                                }
+                                if !uses_ipad {
+                                    ui.label(
+                                        egui::RichText::new("(Mode 1 — fire on recall is disabled)")
+                                            .color(theme::TEXT_SECONDARY)
+                                            .small(),
+                                    );
+                                }
+                            });
+                        }
 
                         // ── Undo + pacing ──
                         ui.add_space(2.0);
@@ -814,6 +951,109 @@ pub fn draw_snapshots_tab(
                 });
         });
     });
+
+    // ── Shift console refs modal ──
+    if snap_state.shift_modal_open {
+        let mut open = true;
+        egui::Window::new("Shift console memory refs")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_size([420.0, 180.0])
+            .show(ui.ctx(), |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Bulk-shift the console-memory row reference on every snapshot. \
+                         Use this after inserting or deleting a snapshot on the console \
+                         so all linked rows still point to the right place.",
+                    )
+                    .color(theme::TEXT_SECONDARY)
+                    .small(),
+                );
+                ui.add_space(8.0);
+                egui::Grid::new("shift_grid")
+                    .num_columns(2)
+                    .spacing([10.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label("Starting row (inclusive):");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut snap_state.shift_from_row)
+                                .desired_width(60.0),
+                        );
+                        ui.end_row();
+                        ui.label("Delta (e.g. +1 / -1):");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut snap_state.shift_delta)
+                                .desired_width(60.0),
+                        );
+                        ui.end_row();
+                    });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked() {
+                        let from = snap_state.shift_from_row.trim().parse::<i32>();
+                        let delta = snap_state.shift_delta.trim().parse::<i32>();
+                        match (from, delta) {
+                            (Ok(from), Ok(delta)) => {
+                                let cue_mgr = cue_manager.clone();
+                                let (tx_status, rx_status) =
+                                    std::sync::mpsc::sync_channel::<(usize, usize)>(1);
+                                runtime.spawn(async move {
+                                    let mut mgr = cue_mgr.write().await;
+                                    let mut shifted = 0usize;
+                                    let mut cleared = 0usize;
+                                    for snap in mgr.snapshots.values_mut() {
+                                        if let Some(row) = snap.console_snapshot {
+                                            if row >= from {
+                                                let new_row = row + delta;
+                                                if new_row <= 0 {
+                                                    snap.console_snapshot = None;
+                                                    cleared += 1;
+                                                } else {
+                                                    snap.console_snapshot = Some(new_row);
+                                                    shifted += 1;
+                                                }
+                                                snap.modified_at = chrono::Utc::now();
+                                            }
+                                        }
+                                    }
+                                    let _ = tx_status.send((shifted, cleared));
+                                });
+                                if let Ok((shifted, cleared)) = rx_status.recv_timeout(
+                                    std::time::Duration::from_millis(500),
+                                ) {
+                                    snap_state.shift_status = Some(format!(
+                                        "Shifted {shifted} refs ({cleared} cleared)"
+                                    ));
+                                } else {
+                                    snap_state.shift_status =
+                                        Some("Shift in progress…".into());
+                                }
+                            }
+                            _ => {
+                                snap_state.shift_status = Some(
+                                    "Both fields must be valid integers".into(),
+                                );
+                            }
+                        }
+                    }
+                    if ui.button("Close").clicked() {
+                        snap_state.shift_modal_open = false;
+                    }
+                });
+                if let Some(msg) = &snap_state.shift_status {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(msg)
+                            .color(theme::TEXT_WARNING)
+                            .small(),
+                    );
+                }
+            });
+        if !open {
+            snap_state.shift_modal_open = false;
+        }
+    }
 }
 
 fn capture_snapshot(

@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
+use rosc::OscType;
 use tokio::sync::RwLock;
 use tokio::time::Duration;
 use tracing::{info, warn, debug};
 use uuid::Uuid;
 
+use crate::console::cue_manager::CueManager;
 use crate::console::fade_engine::{FadeController, FadeTarget, MultiFadeController};
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::palette::ChannelPalette;
@@ -18,6 +21,21 @@ use crate::osc::client::OscSender;
 use crate::osc::encode;
 use crate::osc::ipad_client::IpadSender;
 use crate::osc::ipad_encode;
+
+/// Settling delay between firing a console memory and writing the app's
+/// parameter overlay on top. Gives the console time to flood its own
+/// parameter echoes from the memory load before our writes start to win.
+const CONSOLE_MEMORY_SETTLE_MS: u64 = 250;
+
+/// How long a `console_snapshot_fire_suppression` entry is valid. After
+/// this window, an inbound `/Snapshots/Current_Snapshot` echo for the
+/// same row is no longer assumed to be ours.
+pub const CONSOLE_FIRE_SUPPRESSION_MS: u128 = 2_000;
+
+/// Map from "console memory row we just fired" → when we fired it. Used
+/// by follow mode to ignore echoes from our own writes. Shared between
+/// the snapshot engine and the follow-mode dispatcher.
+pub type ConsoleFireSuppression = Arc<RwLock<HashMap<i32, Instant>>>;
 
 /// Result of a snapshot recall operation.
 #[derive(Debug)]
@@ -55,6 +73,19 @@ pub struct SnapshotEngine {
     /// One-level undo: stores the pre-recall live values so the operator
     /// can revert if a recall was triggered by mistake.
     undo: RwLock<Option<UndoState>>,
+    /// Optional cue manager handle. When set, the engine can:
+    /// - look up the previous app snapshot for auto-update-on-recall
+    /// - mark the recalled snapshot as the current one via `set_last_recalled`
+    cue_manager: Option<Arc<RwLock<CueManager>>>,
+    /// Optional auto-update flag. When set and `true`, recall() merges
+    /// the current dirty set into the previously-recalled snapshot
+    /// (filtered by that snapshot's scope template) before firing the new
+    /// recall.
+    auto_update_on_recall: Option<Arc<AtomicBool>>,
+    /// Suppression set for console memory fires. Shared with the
+    /// follow-mode dispatcher so it can ignore echoes from our own
+    /// `/Snapshots/Current_Snapshot` writes.
+    console_fire_suppression: ConsoleFireSuppression,
 }
 
 impl SnapshotEngine {
@@ -68,7 +99,28 @@ impl SnapshotEngine {
             dirty_tracker: None,
             pace_us: AtomicU64::new(0),
             undo: RwLock::new(None),
+            cue_manager: None,
+            auto_update_on_recall: None,
+            console_fire_suppression: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Attach a cue manager handle so the engine can read/write the
+    /// "last recalled snapshot" pointer used by auto-update-on-recall.
+    pub fn set_cue_manager(&mut self, cue_manager: Arc<RwLock<CueManager>>) {
+        self.cue_manager = Some(cue_manager);
+    }
+
+    /// Attach the auto-update-on-recall toggle.
+    pub fn set_auto_update_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.auto_update_on_recall = Some(flag);
+    }
+
+    /// Shared handle on the console-memory-fire suppression map. The
+    /// follow-mode dispatcher consults this to ignore echoes that came
+    /// from our own writes.
+    pub fn console_fire_suppression(&self) -> ConsoleFireSuppression {
+        self.console_fire_suppression.clone()
     }
 
     /// Set (or clear) the iPad sender for iPad-only parameter recall.
@@ -89,6 +141,141 @@ impl SnapshotEngine {
     /// Get the current pacing delay in microseconds.
     pub fn pace_us(&self) -> u64 {
         self.pace_us.load(Ordering::Relaxed)
+    }
+
+    /// Auto-save the current dirty parameters into the previously-recalled
+    /// snapshot, filtered by that snapshot's scope template. Only runs
+    /// when the auto_update flag is on, the cue manager is attached, and
+    /// there's a previous snapshot distinct from the new one. MUST be
+    /// called BEFORE entering the dirty-suppression bracket — otherwise
+    /// the dirty set will already have been cleared.
+    async fn auto_save_previous_snapshot(&self, new_snapshot_id: Uuid) -> usize {
+        let auto_on = self
+            .auto_update_on_recall
+            .as_ref()
+            .map(|f| f.load(Ordering::Relaxed))
+            .unwrap_or(false);
+        if !auto_on {
+            return 0;
+        }
+        let Some(cue_arc) = self.cue_manager.as_ref() else {
+            return 0;
+        };
+        let Some(dirty_arc) = self.dirty_tracker.as_ref() else {
+            return 0;
+        };
+
+        // Snapshot the previous-recalled UUID without holding a write lock.
+        let prev_id = {
+            let mgr = cue_arc.read().await;
+            mgr.last_recalled()
+        };
+        let Some(prev_id) = prev_id else {
+            return 0;
+        };
+        if prev_id == new_snapshot_id {
+            return 0;
+        }
+
+        // Snapshot the dirty set into a Vec we can drop the read lock for.
+        let dirty_pairs: Vec<(ChannelId, crate::model::parameter::ParameterPath)> = {
+            let dirty = dirty_arc.read().await;
+            dirty
+                .dirty_set()
+                .iter()
+                .flat_map(|(ch, paths)| paths.iter().map(move |p| (ch.clone(), p.clone())))
+                .collect()
+        };
+        if dirty_pairs.is_empty() {
+            return 0;
+        }
+
+        let state = self.state.read().await;
+        let mut mgr = cue_arc.write().await;
+        let Some(prev_snap) = mgr.snapshots.get_mut(&prev_id) else {
+            return 0;
+        };
+        let mut count = 0usize;
+        for (channel, parameter) in dirty_pairs {
+            let addr = ParameterAddress { channel, parameter };
+            if !prev_snap.scope.contains(&addr) {
+                continue;
+            }
+            let Some(live) = state.get(&addr).cloned() else {
+                continue;
+            };
+            prev_snap.data.values.insert(addr, live);
+            count += 1;
+        }
+        if count > 0 {
+            prev_snap.modified_at = chrono::Utc::now();
+            info!(
+                snapshot = %prev_snap.name,
+                count,
+                "Auto-saved dirty params into previous snapshot"
+            );
+        }
+        count
+    }
+
+    /// Fire the console memory referenced by the snapshot, if any. Skips
+    /// when the live `current_console_snapshot` already matches (dedup),
+    /// and waits for a settling period after firing so the console's
+    /// echo flood lands before we start writing the parameter overlay.
+    /// Records the fired row in the suppression set so follow mode
+    /// ignores the resulting echo.
+    async fn fire_console_memory_if_needed(&self, snapshot: &Snapshot) {
+        let Some(row) = snapshot.console_snapshot else {
+            return;
+        };
+        // Dedup against live state.
+        let already = {
+            let s = self.state.read().await;
+            s.current_console_snapshot == Some(row)
+        };
+        if already {
+            debug!(row, "Console memory already active — skipping fire");
+            return;
+        }
+
+        let Some(ipad) = self.ipad_sender.as_ref() else {
+            warn!(
+                row,
+                "Snapshot has console memory ref but no iPad sender — \
+                 fire skipped (Mode 1?). Parameter overlay will still recall."
+            );
+            return;
+        };
+
+        // Mark suppression BEFORE sending so the echo dispatcher sees it.
+        {
+            let mut sup = self.console_fire_suppression.write().await;
+            sup.insert(row, Instant::now());
+        }
+        info!(row, "Firing console memory");
+        if let Err(e) = ipad
+            .send("/Snapshots/Current_Snapshot", vec![OscType::Int(row)])
+            .await
+        {
+            warn!(row, "Failed to fire console memory: {e}");
+            return;
+        }
+
+        // Optimistically reflect into our own state mirror so a quick
+        // re-recall hits the dedup path immediately even before the
+        // console echoes back.
+        self.state.write().await.current_console_snapshot = Some(row);
+
+        // Wait for the console to settle after the memory load.
+        tokio::time::sleep(Duration::from_millis(CONSOLE_MEMORY_SETTLE_MS)).await;
+    }
+
+    /// Update the cue manager's "last recalled" pointer after a successful
+    /// recall. No-op if the cue manager isn't attached.
+    async fn mark_last_recalled(&self, snapshot_id: Uuid) {
+        if let Some(cue_arc) = self.cue_manager.as_ref() {
+            cue_arc.write().await.set_last_recalled(snapshot_id);
+        }
     }
 
     /// Helper: bracket an async operation with begin/end suppression on the
@@ -143,8 +330,21 @@ impl SnapshotEngine {
         palettes: &HashMap<Uuid, ChannelPalette>,
         ignore_scope: bool,
     ) -> RecallResult {
-        self.with_dirty_suppression(self.recall_inner(snapshot, scope, palettes, ignore_scope))
-            .await
+        // Auto-update: must run BEFORE dirty suppression bracket clears
+        // the tracker. Filtered by the previous snapshot's scope template.
+        self.auto_save_previous_snapshot(snapshot.id).await;
+
+        let result = self
+            .with_dirty_suppression(async {
+                // Fire console memory inside the suppression bracket so
+                // its echo flood doesn't pollute the dirty tracker.
+                self.fire_console_memory_if_needed(snapshot).await;
+                self.recall_inner(snapshot, scope, palettes, ignore_scope).await
+            })
+            .await;
+
+        self.mark_last_recalled(snapshot.id).await;
+        result
     }
 
     /// Recall body without dirty-tracker suppression. Used by `recall` (which
@@ -279,12 +479,25 @@ impl SnapshotEngine {
         palettes: &HashMap<Uuid, ChannelPalette>,
         ignore_scope: bool,
     ) -> RecallResult {
+        // Auto-update: must run BEFORE dirty suppression bracket clears
+        // the tracker. Filtered by the previous snapshot's scope template.
+        self.auto_save_previous_snapshot(snapshot.id).await;
+
         // Phase C: bracket the whole cue recall in dirty suppression so
         // BOTH the no-fade path (which calls recall_inner) AND the fade
         // path's discrete-target writes are suppressed and the dirty set
         // is cleared on success.
-        self.with_dirty_suppression(self.recall_cue_inner(cue, snapshot, palettes, ignore_scope))
-            .await
+        let result = self
+            .with_dirty_suppression(async {
+                // Fire console memory inside the suppression bracket so
+                // its echo flood doesn't pollute the dirty tracker.
+                self.fire_console_memory_if_needed(snapshot).await;
+                self.recall_cue_inner(cue, snapshot, palettes, ignore_scope).await
+            })
+            .await;
+
+        self.mark_last_recalled(snapshot.id).await;
+        result
     }
 
     async fn recall_cue_inner(

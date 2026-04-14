@@ -167,10 +167,11 @@ async fn run_headless(args: Args) {
     )));
 
     let cancel_token = tokio_util::sync::CancellationToken::new();
+    let offline_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let manager = ConnectionManager::connect_from_parts(
         sender.clone(), rx, state, macro_manager.clone(),
         gang_engine.clone(), gang_manager.clone(), pan_link_engine.clone(),
-        dirty_tracker.clone(), cancel_token.clone(),
+        dirty_tracker.clone(), offline_mode.clone(), cancel_token.clone(),
     );
     info!("Connected successfully");
 
@@ -203,7 +204,7 @@ async fn run_headless(args: Args) {
                 } else {
                     "0.0.0.0:0".parse().unwrap()
                 };
-                match ipad_connection::connect_mode2(console_ipad_addr, ipad_local, manager.state(), dirty_tracker.clone(), None).await {
+                match ipad_connection::connect_mode2(console_ipad_addr, ipad_local, manager.state(), dirty_tracker.clone(), offline_mode.clone(), None, None).await {
                     Ok((ipad_sender, result, _handle)) => {
                         info!(
                             name = %result.config.console_name,
@@ -235,7 +236,7 @@ async fn run_headless(args: Args) {
                 match ipad_connection::connect_mode3_proxy(
                     console_ipad_addr, local_console_addr, ipad_listen_addr,
                     ipad_target, ipad_reply_port,
-                    manager.state(), dirty_tracker.clone(), cancel_token.clone(), None,
+                    manager.state(), dirty_tracker.clone(), offline_mode.clone(), None, cancel_token.clone(), None,
                 ).await {
                     Ok(ipad_sender) => {
                         info!(

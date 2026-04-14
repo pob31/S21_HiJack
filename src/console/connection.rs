@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
@@ -39,6 +40,7 @@ pub struct ConnectionManager {
     gang_manager: Arc<RwLock<GangManager>>,
     pan_link_engine: Arc<RwLock<PanLinkEngine>>,
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
+    offline_mode: Arc<AtomicBool>,
 }
 
 impl ConnectionManager {
@@ -74,6 +76,7 @@ impl ConnectionManager {
         gang_manager: Arc<RwLock<GangManager>>,
         pan_link_engine: Arc<RwLock<PanLinkEngine>>,
         dirty_tracker: Arc<RwLock<DirtyTracker>>,
+        offline_mode: Arc<AtomicBool>,
         cancel: CancellationToken,
     ) -> Self {
         info!("ConnectionManager created from parts");
@@ -81,7 +84,7 @@ impl ConnectionManager {
         tokio::spawn(run_loop(
             sender.clone(), rx, state.clone(), macro_manager.clone(),
             gang_engine.clone(), gang_manager.clone(), pan_link_engine.clone(),
-            dirty_tracker.clone(), cancel.clone(),
+            dirty_tracker.clone(), offline_mode.clone(), cancel.clone(),
         ));
 
         Self {
@@ -92,6 +95,7 @@ impl ConnectionManager {
             gang_manager,
             pan_link_engine,
             dirty_tracker,
+            offline_mode,
         }
     }
 
@@ -135,6 +139,7 @@ async fn run_loop(
     gang_manager: Arc<RwLock<GangManager>>,
     pan_link_engine: Arc<RwLock<PanLinkEngine>>,
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
+    offline_mode: Arc<AtomicBool>,
     cancel: CancellationToken,
 ) {
     info!("GP OSC state mirror started — querying channel counts before full dump");
@@ -154,6 +159,10 @@ async fn run_loop(
                 return;
             }
             Some(msg) = rx.recv() => {
+                if offline_mode.load(Ordering::Relaxed) {
+                    debug!(path = %msg.path, "Inbound OSC dropped (offline mode)");
+                    continue;
+                }
                 let parsed = parse::parse_gp_osc(&msg.path, &msg.args);
                 process_message(&parsed, &state, &macro_manager, &gang_engine, &gang_manager, &pan_link_engine, &dirty_tracker, &sender).await;
                 match &parsed {
@@ -192,6 +201,10 @@ async fn run_loop(
 
             // Process incoming OSC messages
             Some(msg) = rx.recv() => {
+                if offline_mode.load(Ordering::Relaxed) {
+                    debug!(path = %msg.path, "Inbound OSC dropped (offline mode)");
+                    continue;
+                }
                 let mix_types = {
                     let s = state.read().await;
                     if s.config.mix_output_types.is_empty() { None } else { Some(s.config.mix_output_types.clone()) }

@@ -200,6 +200,12 @@ pub struct Snapshot {
     /// a palette ripple to every linked snapshot automatically.
     #[serde(with = "palette_refs_serde")]
     pub palette_refs: HashMap<(ChannelId, PaletteKind), Uuid>,
+    /// Optional 1-based row number of the linked console memory snapshot.
+    /// When set, recall first fires `/Snapshots/Current_Snapshot <n>` via
+    /// the iPad protocol, then writes the captured parameter overlay on top.
+    /// `None` = the snapshot manages parameters only.
+    #[serde(default)]
+    pub console_snapshot: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
 }
@@ -220,6 +226,7 @@ impl Snapshot {
             kind,
             data,
             palette_refs: HashMap::new(),
+            console_snapshot: None,
             created_at: now,
             modified_at: now,
         }
@@ -325,6 +332,9 @@ impl<'de> serde::Deserialize<'de> for Snapshot {
             /// v8 legacy field — present on older show files.
             #[serde(default)]
             eq_palette_refs: Vec<LegacyEqRefEntry>,
+            /// v13+ — optional console memory row reference.
+            #[serde(default)]
+            console_snapshot: Option<i32>,
             created_at: DateTime<Utc>,
             modified_at: DateTime<Utc>,
         }
@@ -343,6 +353,7 @@ impl<'de> serde::Deserialize<'de> for Snapshot {
             kind: shadow.kind,
             data: shadow.data,
             palette_refs: shadow.palette_refs,
+            console_snapshot: shadow.console_snapshot,
             created_at: shadow.created_at,
             modified_at: shadow.modified_at,
         })

@@ -1,5 +1,7 @@
 use rosc::{OscMessage, OscPacket, OscType};
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
@@ -43,6 +45,7 @@ impl IpadClient {
         let sender = IpadSender {
             socket: socket.clone(),
             console_addr: self.console_addr,
+            offline_mode: None,
         };
 
         tokio::spawn(receive_loop(socket, tx));
@@ -56,16 +59,35 @@ impl IpadClient {
 pub struct IpadSender {
     socket: std::sync::Arc<UdpSocket>,
     console_addr: SocketAddr,
+    /// When set and `true`, all sends become no-ops (offline mode).
+    offline_mode: Option<Arc<AtomicBool>>,
 }
 
 impl IpadSender {
     /// Create a sender from an existing socket (for Mode 3 where we manage the socket directly).
     pub fn from_socket(socket: std::sync::Arc<UdpSocket>, console_addr: SocketAddr) -> Self {
-        Self { socket, console_addr }
+        Self { socket, console_addr, offline_mode: None }
+    }
+
+    /// Attach the shared offline-mode flag. When `true`, both `send` and
+    /// `send_raw` become no-ops without touching the socket.
+    pub fn set_offline_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.offline_mode = Some(flag);
+    }
+
+    fn is_offline(&self) -> bool {
+        self.offline_mode
+            .as_ref()
+            .map(|f| f.load(Ordering::Relaxed))
+            .unwrap_or(false)
     }
 
     /// Send raw bytes to the console (for forwarding non-standard packets as-is).
     pub async fn send_raw(&self, data: &[u8]) -> std::io::Result<()> {
+        if self.is_offline() {
+            trace!("iPad raw send dropped (offline mode)");
+            return Ok(());
+        }
         self.socket.send_to(data, self.console_addr).await?;
         debug!("Sent raw iPad packet ({} bytes)", data.len());
         Ok(())
@@ -78,6 +100,10 @@ impl IpadSender {
 
     /// Send an OSC message via the iPad protocol.
     pub async fn send(&self, path: &str, args: Vec<OscType>) -> std::io::Result<()> {
+        if self.is_offline() {
+            trace!(path, "iPad send dropped (offline mode)");
+            return Ok(());
+        }
         let msg = OscMessage {
             addr: path.to_string(),
             args,

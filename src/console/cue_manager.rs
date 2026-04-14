@@ -11,6 +11,10 @@ pub struct CueManager {
     pub snapshots: HashMap<Uuid, Snapshot>,
     pub scope_templates: HashMap<Uuid, ScopeTemplate>,
     current_cue_index: Option<usize>,
+    /// UUID of the most recently successfully recalled snapshot. Used by
+    /// the auto-update-on-recall feature to know which snapshot to merge
+    /// the dirty parameters into when the next recall fires.
+    last_recalled_snapshot_id: Option<Uuid>,
 }
 
 impl CueManager {
@@ -20,7 +24,18 @@ impl CueManager {
             snapshots: HashMap::new(),
             scope_templates: HashMap::new(),
             current_cue_index: None,
+            last_recalled_snapshot_id: None,
         }
+    }
+
+    /// Record that this snapshot was just recalled successfully.
+    pub fn set_last_recalled(&mut self, id: Uuid) {
+        self.last_recalled_snapshot_id = Some(id);
+    }
+
+    /// UUID of the most recently recalled snapshot, if any.
+    pub fn last_recalled(&self) -> Option<Uuid> {
+        self.last_recalled_snapshot_id
     }
 
     /// Advance to the next cue and return it.

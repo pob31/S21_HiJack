@@ -44,6 +44,16 @@ pub struct HiJackApp {
     pub palette_manager: Arc<RwLock<PaletteManager>>,
     pub gang_manager: Arc<RwLock<GangManager>>,
     pub pan_link_bindings: Arc<RwLock<PanLinkBindings>>,
+    /// Offline mode — when true, all OSC sends become no-ops AND inbound
+    /// messages are dropped. Frozen state mirror, no side effects. Lets
+    /// the operator edit show data safely without touching the desk.
+    /// Defaults to OFF on every startup; not persisted.
+    pub offline_mode: Arc<AtomicBool>,
+    /// Auto-save dirty parameters into the previously-recalled snapshot
+    /// when firing a new one. Mirrored from `ConnectionSettings`.
+    pub auto_update_on_recall: Arc<AtomicBool>,
+    /// Follow console snapshot recalls. Mirrored from `ConnectionSettings`.
+    pub console_snapshot_follow: Arc<AtomicBool>,
     pub snapshot_engine: Option<Arc<SnapshotEngine>>,
     pub macro_engine: Option<Arc<MacroEngine>>,
     /// Dirty tracker — populated by the OSC dispatcher whenever an inbound
@@ -104,6 +114,9 @@ impl HiJackApp {
             palette_manager: Arc::new(RwLock::new(PaletteManager::new())),
             gang_manager: Arc::new(RwLock::new(GangManager::new())),
             pan_link_bindings: Arc::new(RwLock::new(PanLinkBindings::default())),
+            offline_mode: Arc::new(AtomicBool::new(false)),
+            auto_update_on_recall: Arc::new(AtomicBool::new(false)),
+            console_snapshot_follow: Arc::new(AtomicBool::new(false)),
             snapshot_engine: None,
             macro_engine: None,
             dirty_tracker: Arc::new(RwLock::new(DirtyTracker::new())),
@@ -202,6 +215,10 @@ impl HiJackApp {
                 UiEvent::ShowFileLoaded(path, conn, recall) => {
                     self.setup.status_message = Some(format!("Loaded: {path}"));
                     self.snapshots.scope_editor.console_recall = recall;
+                    if let Some(c) = &conn {
+                        self.auto_update_on_recall.store(c.auto_update_on_recall, Ordering::Relaxed);
+                        self.console_snapshot_follow.store(c.console_snapshot_follow, Ordering::Relaxed);
+                    }
                     if let Some(conn) = conn {
                         if !conn.local_ip.is_empty() {
                             self.setup.local_ip = conn.local_ip;
@@ -347,7 +364,7 @@ impl eframe::App for HiJackApp {
                         }
                     }
 
-                    // Connection status (right-aligned)
+                    // Connection status + offline toggle (right-aligned)
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let is_connected = self.connected.load(std::sync::atomic::Ordering::Relaxed);
                         let (color, text) = if is_connected {
@@ -357,12 +374,66 @@ impl eframe::App for HiJackApp {
                         };
                         ui.colored_label(color, text);
                         super::theme::status_dot(ui, color);
+
+                        ui.add_space(12.0);
+                        // Offline mode toggle — freezes all OSC traffic both ways.
+                        let mut is_offline = self.offline_mode.load(Ordering::Relaxed);
+                        let label = if is_offline { "OFFLINE" } else { "Online" };
+                        let fill = if is_offline {
+                            super::theme::ACCENT_AMBER
+                        } else {
+                            super::theme::BG_ELEVATED
+                        };
+                        let text_color = if is_offline {
+                            super::theme::BG_DARK
+                        } else {
+                            super::theme::TEXT_SECONDARY
+                        };
+                        let btn = egui::Button::new(
+                            egui::RichText::new(label).color(text_color).strong(),
+                        )
+                        .fill(fill)
+                        .corner_radius(4.0);
+                        if ui.add(btn).on_hover_text(
+                            "Offline mode: drops every inbound and outbound OSC message. \
+                             Lets you edit show data without affecting the desk. \
+                             Toggle back to Online to resume — the state mirror will be \
+                             stale until you click Refresh on the Setup tab.",
+                        ).clicked() {
+                            is_offline = !is_offline;
+                            self.offline_mode.store(is_offline, Ordering::Relaxed);
+                        }
                     });
                 });
             });
 
         // Main content
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Offline mode banner — visible on every tab while offline.
+            if self.offline_mode.load(Ordering::Relaxed) {
+                egui::Frame::new()
+                    .fill(super::theme::ACCENT_AMBER)
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .corner_radius(4.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("⚠ OFFLINE MODE")
+                                    .strong()
+                                    .color(super::theme::BG_DARK),
+                            );
+                            ui.label(
+                                egui::RichText::new(
+                                    "— no OSC in/out. State mirror is frozen. \
+                                     Edits will not affect the console.",
+                                )
+                                .color(super::theme::BG_DARK),
+                            );
+                        });
+                    });
+                ui.add_space(4.0);
+            }
+
             match self.active_tab {
                 Tab::Setup => {
                     super::setup_tab::draw_setup_tab(
@@ -375,6 +446,9 @@ impl eframe::App for HiJackApp {
                         &self.palette_manager,
                         &self.gang_manager,
                         &self.pan_link_bindings,
+                        &self.offline_mode,
+                        &self.auto_update_on_recall,
+                        &self.console_snapshot_follow,
                         &self.snapshots.scope_editor.console_recall,
                         &self.dirty_tracker,
                         &mut self.snapshot_engine,
@@ -404,6 +478,9 @@ impl eframe::App for HiJackApp {
                         &self.palette_manager,
                         &self.snapshot_engine,
                         &self.dirty_tracker,
+                        &self.auto_update_on_recall,
+                        &self.console_snapshot_follow,
+                        self.setup.operating_mode,
                         qlab_ip,
                         qlab_port,
                         &self.connected,

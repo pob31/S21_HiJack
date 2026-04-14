@@ -13,6 +13,16 @@ Communicates with the console over **GP OSC** (the documented open protocol) and
 - Fade interpolation — continuous parameters (faders, gains, EQ) crossfade over a configurable time; discrete parameters (mute, solo) fire instantly at the start
 - One-level undo — every recall stashes the prior live values so an accidental fire can be rolled back
 - Inter-message pacing — configurable microsecond delay between sends during large recalls to avoid flooding the console's ARM chip
+- **Auto-save on recall** — optional: when advancing to a new snapshot, dirty parameters within the previous snapshot's scope template are automatically written back into it. Mid-show tweaks ride along without manual re-capture
+- **Console memory link** — each app snapshot can optionally reference a console memory row. On recall, the daemon fires the console's native memory load via the iPad protocol, waits for the console echo flood to settle (~250 ms), then writes the app's captured parameters on top. State-aware dedup means re-recalling the same snapshot does not re-fire the console memory
+- **Follow mode** — when the operator drives the console's own snapshot list, the daemon mirrors the change by recalling the first matching app snapshot in cue order. Self-fired echoes are suppressed so there is no feedback loop
+- **Renumbering helper** — bulk-shift every snapshot's console memory reference after inserting or deleting a row on the console (rows are positional; inserts shift everything below)
+
+### Offline Mode
+- Top-bar toggle that suspends **all** OSC traffic in both directions: outbound sends are dropped before they hit the socket, inbound packets are dropped before parsing, the state mirror freezes, gangs and pan link stop propagating
+- Lets the operator edit show data — snapshots, scopes, palettes, gangs, pan links, console memory refs — without touching the live desk
+- A persistent banner across every tab makes the state unmistakable
+- Defaults to OFF on every startup; not persisted
 
 ### Scope Editor & Recall Safes
 - Per-cell parameter scope editor with channel × parameter matrix, grouped by signal-flow section
@@ -67,7 +77,7 @@ Communicates with the console over **GP OSC** (the documented open protocol) and
 - **Inspector tab**: searchable view of the full state mirror — every (channel, parameter) → value the daemon currently knows about
 
 ### Show File Persistence
-- Save/load the entire show (snapshots, cue list, macros, palettes, monitor clients, gang groups, pan links, recall safes, console layout) as a single JSON file
+- Save/load the entire show (snapshots, cue list, macros, palettes, monitor clients, gang groups, pan links, recall safes, console memory refs, workflow toggles, console layout) as a single JSON file
 - Console variant (S21 / S21+) and channel layout are restored on load, so offline editing reflects the saved console shape until you reconnect
 - Backward-compatible — older show files load cleanly with sensible defaults
 

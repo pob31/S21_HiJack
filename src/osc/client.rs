@@ -1,5 +1,7 @@
 use rosc::{OscMessage, OscPacket, OscType};
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -70,6 +72,7 @@ impl OscClient {
             socket: socket.clone(),
             console_addr: self.console_addr,
             log: log.clone(),
+            offline_mode: None,
         };
 
         // Spawn the receive loop with cancellation support
@@ -85,6 +88,10 @@ pub struct OscSender {
     socket: std::sync::Arc<UdpSocket>,
     console_addr: SocketAddr,
     log: Option<OscLog>,
+    /// When set and `true`, all sends become no-ops (offline mode).
+    /// Shared with the inbound dispatcher and the iPad sender so the
+    /// app can freeze all OSC traffic in both directions.
+    offline_mode: Option<Arc<AtomicBool>>,
 }
 
 impl OscSender {
@@ -94,6 +101,7 @@ impl OscSender {
             socket,
             console_addr,
             log: None,
+            offline_mode: None,
         }
     }
 
@@ -103,11 +111,26 @@ impl OscSender {
             socket,
             console_addr,
             log: Some(log),
+            offline_mode: None,
         }
+    }
+
+    /// Attach the shared offline-mode flag. When the flag is `true`,
+    /// `send` becomes a no-op without touching the socket or logging.
+    pub fn set_offline_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.offline_mode = Some(flag);
     }
 
     /// Send an OSC message to the console.
     pub async fn send(&self, path: &str, args: Vec<OscType>) -> std::io::Result<()> {
+        // Offline gate: drop without touching the socket or the OSC log.
+        if let Some(ref flag) = self.offline_mode {
+            if flag.load(Ordering::Relaxed) {
+                trace!(path, "OSC send dropped (offline mode)");
+                return Ok(());
+            }
+        }
+
         // Log outgoing message
         if let Some(ref log) = self.log {
             log.log_out(path, &format_osc_args(&args));

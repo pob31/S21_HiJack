@@ -50,6 +50,16 @@ pub struct ConnectionSettings {
     /// Prevents flooding the console's ARM chip. 0 = no pacing.
     #[serde(default)]
     pub send_pace_us: u64,
+    /// Auto-save dirty parameters into the previously-recalled snapshot
+    /// when firing a new one. Filtered by the previous snapshot's scope
+    /// template. Per-show workflow toggle.
+    #[serde(default)]
+    pub auto_update_on_recall: bool,
+    /// Follow the console's snapshot list — when the desk fires a memory,
+    /// auto-recall the first matching app snapshot in cue-list order.
+    /// iPad-protocol-only (Modes 2/3). Per-show workflow toggle.
+    #[serde(default)]
+    pub console_snapshot_follow: bool,
 }
 
 fn default_gp_port() -> u16 { 8024 }
@@ -75,6 +85,8 @@ impl Default for ConnectionSettings {
             qlab_ip: String::new(),
             qlab_port: default_qlab_port(),
             send_pace_us: 0,
+            auto_update_on_recall: false,
+            console_snapshot_follow: false,
         }
     }
 }
@@ -126,7 +138,7 @@ pub struct ShowFile {
 impl ShowFile {
     pub fn new(config: ConsoleConfig) -> Self {
         Self {
-            version: 12,
+            version: 13,
             console_config: config,
             connection: ConnectionSettings::default(),
             scope_templates: Vec::new(),
@@ -175,7 +187,7 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 12);
+        assert_eq!(loaded.version, 13);
         assert_eq!(loaded.console_config.input_channel_count, 48);
         assert_eq!(loaded.console_config.control_group_count, 10);
         assert!(loaded.scope_templates.is_empty());

@@ -1,8 +1,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{info, warn, debug};
 
@@ -52,11 +53,14 @@ impl From<ipad_handshake::HandshakeError> for IpadConnectionError {
 /// Connects to the console's iPad remote port, performs the handshake,
 /// and returns a sender for sending iPad-only commands.
 /// Also starts a background loop to mirror iPad protocol state.
+#[allow(clippy::too_many_arguments)]
 pub async fn connect_mode2(
     console_ipad_addr: SocketAddr,
     local_addr: SocketAddr,
     state: Arc<RwLock<ConsoleState>>,
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
+    offline_mode: Arc<AtomicBool>,
+    snapshot_event_tx: Option<mpsc::Sender<i32>>,
     interface_name: Option<&str>,
 ) -> Result<(IpadSender, HandshakeResult, JoinHandle<()>), IpadConnectionError> {
     info!(%console_ipad_addr, "Mode 2: connecting to console iPad port...");
@@ -77,11 +81,18 @@ pub async fn connect_mode2(
         "Mode 2: handshake complete"
     );
 
+    // Seed current_console_snapshot from the handshake reply if present.
+    if let Some(n) = handshake_result.current_snapshot {
+        state.write().await.current_console_snapshot = Some(n);
+    }
+
     // Start background state mirror loop
     let state_clone = state.clone();
     let dirty_clone = dirty_tracker.clone();
+    let offline_clone = offline_mode.clone();
+    let snap_tx = snapshot_event_tx.clone();
     let handle = tokio::spawn(async move {
-        ipad_state_mirror_loop(rx, state_clone, dirty_clone).await;
+        ipad_state_mirror_loop(rx, state_clone, dirty_clone, offline_clone, snap_tx).await;
     });
 
     Ok((sender, handshake_result, handle))
@@ -103,6 +114,8 @@ pub async fn connect_mode3_proxy(
     ipad_reply_port: u16,
     state: Arc<RwLock<ConsoleState>>,
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
+    offline_mode: Arc<AtomicBool>,
+    snapshot_event_tx: Option<mpsc::Sender<i32>>,
     cancel: tokio_util::sync::CancellationToken,
     interface_name: Option<String>,
 ) -> Result<IpadSender, IpadConnectionError> {
@@ -136,6 +149,8 @@ pub async fn connect_mode3_proxy(
     // Start the bidirectional proxy loop immediately (no handshake)
     let state_clone = state.clone();
     let dirty_clone = dirty_tracker.clone();
+    let offline_clone = offline_mode.clone();
+    let snap_tx = snapshot_event_tx.clone();
 
     tokio::spawn(async move {
         raw_proxy_loop(
@@ -146,6 +161,8 @@ pub async fn connect_mode3_proxy(
             ipad_reply_port,
             state_clone,
             dirty_clone,
+            offline_clone,
+            snap_tx,
             cancel,
         ).await;
     });
@@ -158,9 +175,15 @@ async fn ipad_state_mirror_loop(
     mut rx: tokio::sync::mpsc::Receiver<ReceivedOscMessage>,
     state: Arc<RwLock<ConsoleState>>,
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
+    offline_mode: Arc<AtomicBool>,
+    snapshot_event_tx: Option<mpsc::Sender<i32>>,
 ) {
     info!("iPad state mirror loop started");
     while let Some(msg) = rx.recv().await {
+        if offline_mode.load(Ordering::Relaxed) {
+            debug!(path = %msg.path, "iPad mirror: dropped (offline mode)");
+            continue;
+        }
         let parsed = ipad_parse::parse_ipad_message(&msg.path, &msg.args);
         match parsed {
             ParsedIpadMessage::ParameterUpdate(addr, value) => {
@@ -172,11 +195,26 @@ async fn ipad_state_mirror_loop(
                     }
                 }
             }
+            ParsedIpadMessage::SnapshotInfo { current } => {
+                debug!(current, "iPad mirror: console snapshot is now {current}");
+                let prev = {
+                    let mut s = state.write().await;
+                    let p = s.current_console_snapshot;
+                    s.current_console_snapshot = Some(current);
+                    p
+                };
+                // Notify the follow-mode dispatcher only on actual changes.
+                if prev != Some(current) {
+                    if let Some(tx) = &snapshot_event_tx {
+                        let _ = tx.try_send(current);
+                    }
+                }
+            }
             ParsedIpadMessage::MeterValues(_) => {
                 // Meters are high-frequency — skip state updates
             }
             _ => {
-                // Config/layout/snapshot messages during mirror phase
+                // Config/layout messages during mirror phase
                 debug!(path = msg.path, "iPad mirror: non-parameter message");
             }
         }
@@ -197,6 +235,8 @@ async fn raw_proxy_loop(
     ipad_reply_port: u16,
     state: Arc<RwLock<ConsoleState>>,
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
+    offline_mode: Arc<AtomicBool>,
+    snapshot_event_tx: Option<mpsc::Sender<i32>>,
     cancel: tokio_util::sync::CancellationToken,
 ) {
     info!("Mode 3 raw proxy started");
@@ -218,7 +258,11 @@ async fn raw_proxy_loop(
             result = console_socket.recv_from(&mut console_buf) => {
                 match result {
                     Ok((size, _src)) => {
-                        log_and_capture_packet(&console_buf[..size], "C→I", &state, &dirty_tracker).await;
+                        if offline_mode.load(Ordering::Relaxed) {
+                            debug!("Mode 3 C→I dropped (offline mode)");
+                            continue;
+                        }
+                        log_and_capture_packet(&console_buf[..size], "C→I", &state, &dirty_tracker, &snapshot_event_tx).await;
 
                         if let Some(dest) = ipad_addr {
                             match ipad_socket.send_to(&console_buf[..size], dest).await {
@@ -245,6 +289,10 @@ async fn raw_proxy_loop(
             result = ipad_socket.recv_from(&mut ipad_buf) => {
                 match result {
                     Ok((size, src)) => {
+                        if offline_mode.load(Ordering::Relaxed) {
+                            debug!("Mode 3 I→C dropped (offline mode)");
+                            continue;
+                        }
                         // Use the iPad's IP from the first packet, but reply to the
                         // configured receive port (not the ephemeral send port).
                         // The iPad listens on its configured "Receive Port" for responses.
@@ -254,7 +302,7 @@ async fn raw_proxy_loop(
                             ipad_addr = Some(detected);
                         }
 
-                        log_and_capture_packet(&ipad_buf[..size], "I→C", &state, &dirty_tracker).await;
+                        log_and_capture_packet(&ipad_buf[..size], "I→C", &state, &dirty_tracker, &snapshot_event_tx).await;
 
                         match console_socket.send_to(&ipad_buf[..size], console_addr).await {
                             Ok(sent) => {
@@ -287,6 +335,7 @@ async fn log_and_capture_packet(
     direction: &str,
     state: &Arc<RwLock<ConsoleState>>,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
+    snapshot_event_tx: &Option<mpsc::Sender<i32>>,
 ) {
     // Try standard OSC first
     if let Ok((_, packet)) = rosc::decoder::decode_udp(data) {
@@ -300,6 +349,20 @@ async fn log_and_capture_packet(
                     if let Some(prev) = &old {
                         if prev != value {
                             dirty_tracker.write().await.mark(addr);
+                        }
+                    }
+                }
+                ParsedIpadMessage::SnapshotInfo { current } => {
+                    debug!(current, "Proxy {direction}: console snapshot is now {current}");
+                    let prev = {
+                        let mut s = state.write().await;
+                        let p = s.current_console_snapshot;
+                        s.current_console_snapshot = Some(*current);
+                        p
+                    };
+                    if prev != Some(*current) {
+                        if let Some(tx) = snapshot_event_tx {
+                            let _ = tx.try_send(*current);
                         }
                     }
                 }

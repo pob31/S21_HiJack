@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use eframe::egui;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, error};
+use tracing::{info, error, debug};
 
 use crate::console::connection::ConnectionManager;
 use crate::console::cue_manager::CueManager;
@@ -129,6 +129,9 @@ pub fn draw_setup_tab(
     palette_manager: &Arc<RwLock<PaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
     pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
+    offline_mode: &Arc<AtomicBool>,
+    auto_update_on_recall: &Arc<AtomicBool>,
+    console_snapshot_follow: &Arc<AtomicBool>,
     console_recall: &ConsoleRecallConfig,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
@@ -303,7 +306,8 @@ pub fn draw_setup_tab(
                     if ui.add(connect_btn).clicked() {
                         start_connection(
                             setup, state, cue_manager, macro_manager, monitor_manager,
-                            palette_manager, gang_manager, pan_link_bindings, dirty_tracker,
+                            palette_manager, gang_manager, pan_link_bindings, offline_mode,
+                            auto_update_on_recall, console_snapshot_follow, dirty_tracker,
                             snapshot_engine, sender,
                             connected, cancel_token, osc_log,
                             runtime, ui_tx, egui_ctx,
@@ -581,7 +585,14 @@ pub fn draw_setup_tab(
                         }
                     }
                     if !setup.show_file_path.is_empty() {
-                        save_show_file(setup, state, cue_manager, macro_manager, monitor_manager, palette_manager, gang_manager, pan_link_bindings, console_recall.clone(), runtime, ui_tx);
+                        save_show_file(
+                            setup, state, cue_manager, macro_manager, monitor_manager,
+                            palette_manager, gang_manager, pan_link_bindings,
+                            auto_update_on_recall.load(Ordering::Relaxed),
+                            console_snapshot_follow.load(Ordering::Relaxed),
+                            console_recall.clone(),
+                            runtime, ui_tx,
+                        );
                     }
                 }
 
@@ -639,6 +650,9 @@ fn start_connection(
     palette_manager: &Arc<RwLock<PaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
     pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
+    offline_mode: &Arc<AtomicBool>,
+    auto_update_on_recall: &Arc<AtomicBool>,
+    console_snapshot_follow: &Arc<AtomicBool>,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     _snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
     _sender: &mut Option<OscSender>,
@@ -755,6 +769,9 @@ fn start_connection(
     let pmgr_arc = palette_manager.clone();
     let gang_mgr = gang_manager.clone();
     let pl_bindings = pan_link_bindings.clone();
+    let offline = offline_mode.clone();
+    let auto_update_flag = auto_update_on_recall.clone();
+    let follow_flag = console_snapshot_follow.clone();
     let dirty = dirty_tracker.clone();
     let conn_flag = connected.clone();
     let tx = ui_tx.clone();
@@ -775,7 +792,10 @@ fn start_connection(
                 return;
             }
         };
-        let (osc_sender, rx) = client.into_parts_with_log(Some(log), token.clone());
+        let (mut osc_sender, rx) = client.into_parts_with_log(Some(log), token.clone());
+        // Wire the offline gate into the sender so outbound writes are
+        // dropped when offline mode is on.
+        osc_sender.set_offline_flag(offline.clone());
 
         // Create GangEngine with the sender
         let gang_engine = Arc::new(RwLock::new(
@@ -792,7 +812,7 @@ fn start_connection(
 
         let manager = ConnectionManager::connect_from_parts(
             osc_sender, rx, st.clone(), macro_mgr, gang_engine.clone(), gang_mgr,
-            pan_link_engine.clone(), dirty.clone(), token.clone(),
+            pan_link_engine.clone(), dirty.clone(), offline.clone(), token.clone(),
         );
 
         info!("Connected to console via UI");
@@ -802,8 +822,17 @@ fn start_connection(
         let mut snapshot_engine = SnapshotEngine::new(st.clone(), manager.sender());
         snapshot_engine.set_dirty_tracker(dirty.clone());
         snapshot_engine.set_pace_us(send_pace_us);
+        snapshot_engine.set_cue_manager(cue_mgr.clone());
+        snapshot_engine.set_auto_update_flag(auto_update_flag.clone());
+        let console_fire_suppression = snapshot_engine.console_fire_suppression();
 
         // iPad connection (Mode 2 or 3)
+        // Channel for console snapshot recall events from the iPad inbound
+        // dispatch. The follow-mode dispatcher consumes from the receiver
+        // (spawned below after the snapshot engine exists).
+        let (snap_event_tx, snap_event_rx) = tokio::sync::mpsc::channel::<i32>(16);
+        let mut snap_event_rx = Some(snap_event_rx);
+
         if operating_mode.uses_ipad_protocol() && ipad_console_port > 0 {
             let console_ipad_addr: SocketAddr = format!("{}:{}", console_ip, ipad_console_port)
                 .parse()
@@ -814,12 +843,14 @@ fn start_connection(
 
             match operating_mode {
                 OperatingMode::Mode2 => {
-                    match ipad_connection::connect_mode2(console_ipad_addr, local_ipad_addr, st.clone(), dirty.clone(), iface_name.as_deref()).await {
+                    match ipad_connection::connect_mode2(console_ipad_addr, local_ipad_addr, st.clone(), dirty.clone(), offline.clone(), Some(snap_event_tx.clone()), iface_name.as_deref()).await {
                         Ok((ipad_sender, result, _handle)) => {
                             info!(
                                 name = %result.config.console_name,
                                 "UI Mode 2: iPad protocol connected"
                             );
+                            let mut ipad_sender = ipad_sender;
+                            ipad_sender.set_offline_flag(offline.clone());
                             snapshot_engine.set_ipad_sender(Some(ipad_sender.clone()));
                             gang_engine.write().await.set_ipad_sender(Some(ipad_sender.clone()));
                             pan_link_engine.write().await.set_ipad_sender(Some(ipad_sender));
@@ -855,11 +886,15 @@ fn start_connection(
                         ipad_reply_port,
                         st.clone(),
                         dirty.clone(),
+                        offline.clone(),
+                        Some(snap_event_tx.clone()),
                         token.clone(),
                         iface_name.clone(),
                     ).await {
                         Ok(ipad_sender) => {
                             info!("UI Mode 3: iPad proxy started");
+                            let mut ipad_sender = ipad_sender;
+                            ipad_sender.set_offline_flag(offline.clone());
                             snapshot_engine.set_ipad_sender(Some(ipad_sender.clone()));
                             gang_engine.write().await.set_ipad_sender(Some(ipad_sender.clone()));
                             pan_link_engine.write().await.set_ipad_sender(Some(ipad_sender));
@@ -876,6 +911,80 @@ fn start_connection(
         }
 
         let engine = Arc::new(snapshot_engine);
+
+        // Spawn the follow-mode dispatcher: when the iPad inbound dispatch
+        // sees a `/Snapshots/Current_Snapshot` echo and forwards it via
+        // `snap_event_tx`, this task looks up the first matching app
+        // snapshot in cue-list order and fires its recall. Echoes from
+        // our own console-memory writes are filtered via the suppression
+        // map populated by `SnapshotEngine::fire_console_memory_if_needed`.
+        if let Some(rx) = snap_event_rx.take() {
+            let follow_engine = engine.clone();
+            let follow_cue_mgr = cue_mgr.clone();
+            let follow_palette_mgr = pmgr_arc.clone();
+            let follow_flag_clone = follow_flag.clone();
+            let suppression = console_fire_suppression.clone();
+            tokio::spawn(async move {
+                let mut rx = rx;
+                while let Some(row) = rx.recv().await {
+                    if !follow_flag_clone.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    // Was this echo caused by our own fire? Drop it.
+                    let suppressed = {
+                        let mut sup = suppression.write().await;
+                        if let Some(when) = sup.get(&row).copied() {
+                            // Expire stale entries.
+                            if when.elapsed().as_millis()
+                                >= crate::console::snapshot_engine::CONSOLE_FIRE_SUPPRESSION_MS
+                            {
+                                sup.remove(&row);
+                                false
+                            } else {
+                                sup.remove(&row);
+                                true
+                            }
+                        } else {
+                            false
+                        }
+                    };
+                    if suppressed {
+                        debug!(row, "Follow: suppressed (our own fire)");
+                        continue;
+                    }
+
+                    // Look up the first matching cue-list snapshot.
+                    let target = {
+                        let mgr = follow_cue_mgr.read().await;
+                        let mut hit = None;
+                        for cue in &mgr.cue_list.cues {
+                            if let Some(snap) = mgr.snapshots.get(&cue.snapshot_id) {
+                                if snap.console_snapshot == Some(row) {
+                                    hit = Some(snap.clone());
+                                    break;
+                                }
+                            }
+                        }
+                        hit
+                    };
+                    let Some(snapshot) = target else {
+                        debug!(row, "Follow: no matching app snapshot");
+                        continue;
+                    };
+                    info!(row, name = %snapshot.name, "Follow: recalling app snapshot");
+                    let palettes = follow_palette_mgr.read().await;
+                    let scope = snapshot.scope.clone();
+                    let result = follow_engine
+                        .recall(&snapshot, &scope, &palettes.palettes, false)
+                        .await;
+                    info!(
+                        sent = result.parameters_sent,
+                        skipped = result.parameters_skipped,
+                        "Follow recall complete"
+                    );
+                }
+            });
+        }
 
         // Start trigger listener (with cancellation so port is freed on disconnect)
         match TriggerListener::start_with_cancel(trigger_addr, token.clone(), iface_name.as_deref()).await {
@@ -1173,6 +1282,8 @@ fn save_show_file(
     palette_manager: &Arc<RwLock<PaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
     pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
+    auto_update_on_recall: bool,
+    console_snapshot_follow: bool,
     console_recall: ConsoleRecallConfig,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -1210,6 +1321,8 @@ fn save_show_file(
         qlab_ip: setup.qlab_ip.clone(),
         qlab_port: setup.qlab_port.parse().unwrap_or(53000),
         send_pace_us: setup.send_pace_us,
+        auto_update_on_recall,
+        console_snapshot_follow,
     };
 
     runtime.spawn(async move {
@@ -1222,7 +1335,7 @@ fn save_show_file(
         let pl = pl_bindings.read().await;
 
         let show = ShowFile {
-            version: 12,
+            version: 13,
             console_config: state_guard.config.clone(),
             connection: conn_settings,
             scope_templates: mgr.scope_templates.values().cloned().collect(),
