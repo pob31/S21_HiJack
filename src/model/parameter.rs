@@ -2409,7 +2409,7 @@ mod tests {
     #[test]
     fn parameter_path_orders_via_derived_ord() {
         // Smoke test for the new PartialOrd/Ord derive on ParameterPath.
-        let mut paths = vec![
+        let mut paths = [
             ParameterPath::Solo,
             ParameterPath::Fader,
             ParameterPath::Mute,

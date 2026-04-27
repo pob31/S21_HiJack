@@ -675,14 +675,12 @@ fn draw_step_editor(
 
                         // Reorder + delete buttons
                         ui.horizontal(|ui| {
-                            if i > 0
-                                && ui.small_button("▲").clicked() {
-                                    action = Some(StepAction::MoveUp(i));
-                                }
-                            if i < step_count - 1
-                                && ui.small_button("▼").clicked() {
-                                    action = Some(StepAction::MoveDown(i));
-                                }
+                            if i > 0 && ui.small_button("▲").clicked() {
+                                action = Some(StepAction::MoveUp(i));
+                            }
+                            if i < step_count - 1 && ui.small_button("▼").clicked() {
+                                action = Some(StepAction::MoveDown(i));
+                            }
                             if ui.small_button("✕").clicked() {
                                 action = Some(StepAction::Delete(i));
                             }

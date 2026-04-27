@@ -1329,10 +1329,7 @@ fn draw_group_matrix(ui: &mut egui::Ui, state: &mut ScopeEditorState, data: &Gro
                             // allocate_exact_size cells to match matrix_cell alignment.
                             for ch in &data.channels {
                                 let key = (ch.clone(), *cat);
-                                let timing = state
-                                    .channel_timings
-                                    .entry(key.clone())
-                                    .or_default();
+                                let timing = state.channel_timings.entry(key.clone()).or_default();
                                 let val = match state.edit_mode {
                                     ScopeEditMode::PreWait => &mut timing.pre_wait_secs,
                                     ScopeEditMode::Fade => &mut timing.fade_time_secs,

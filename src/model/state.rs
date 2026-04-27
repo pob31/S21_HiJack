@@ -7,9 +7,10 @@ use super::parameter::{ParameterAddress, ParameterPath, ParameterSection, Parame
 use super::snapshot::{ScopeTemplate, SnapshotData, SnapshotKind};
 
 /// GP OSC link health, derived from inbound traffic and ping/pong activity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ConnectionHealth {
     /// Recent inbound traffic — link is healthy.
+    #[default]
     Connected,
     /// No traffic for a while; ping(s) sent but not yet missed.
     Idle,
@@ -17,12 +18,6 @@ pub enum ConnectionHealth {
     Stale,
     /// Recovery resend was issued and pings still unanswered. Link is presumed lost.
     Lost,
-}
-
-impl Default for ConnectionHealth {
-    fn default() -> Self {
-        ConnectionHealth::Connected
-    }
 }
 
 /// Live mirror of the full console state.

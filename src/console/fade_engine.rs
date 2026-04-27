@@ -221,7 +221,20 @@ async fn run_fade(
             break;
         }
 
-        time::sleep(FADE_INTERVAL).await;
+        // Cancellable sleep — exit the loop promptly if cancelled mid-tick
+        // instead of waiting up to FADE_INTERVAL for the next is_cancelled
+        // poll. In-flight `send_parameter().await` calls are not interrupted
+        // (avoids leaving parameters in a partially-set state).
+        tokio::select! {
+            () = cancel.cancelled() => {
+                info!(cue_number, steps_sent, "Fade cancelled mid-tick");
+                return FadeResult {
+                    total_steps_sent: steps_sent,
+                    cancelled: true,
+                };
+            }
+            () = time::sleep(FADE_INTERVAL) => {}
+        }
     }
 
     info!(cue_number, steps_sent, "Fade complete");

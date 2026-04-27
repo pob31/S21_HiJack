@@ -28,9 +28,8 @@ pub fn apply_channel_counts(
     // Generate default mix_output_types if not already populated (e.g. from
     // iPad handshake). First `aux` buses are aux, remaining are group.
     if config.mix_output_types.is_empty() {
-        config.mix_output_types = std::iter::repeat(true)
-            .take(aux as usize)
-            .chain(std::iter::repeat(false).take(groups as usize))
+        config.mix_output_types = std::iter::repeat_n(true, aux as usize)
+            .chain(std::iter::repeat_n(false, groups as usize))
             .collect();
     }
 }

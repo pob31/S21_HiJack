@@ -13,18 +13,10 @@ use crate::console::palette_manager::PaletteManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 
 /// State for the Live tab.
+#[derive(Default)]
 pub struct LiveTabState {
     pub last_recall_info: Option<String>,
     pub fade_progress: Option<(f32, f32)>, // (cue_number, progress 0.0..1.0)
-}
-
-impl Default for LiveTabState {
-    fn default() -> Self {
-        Self {
-            last_recall_info: None,
-            fade_progress: None,
-        }
-    }
 }
 
 /// Draw the Live tab.

@@ -6,17 +6,12 @@ use std::fmt;
 /// - Mode 1: GP OSC only (default, always active).
 /// - Mode 2: GP OSC + direct iPad protocol (spoofed handshake).
 /// - Mode 3: GP OSC + full iPad proxy (bidirectional forwarding).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum OperatingMode {
+    #[default]
     Mode1,
     Mode2,
     Mode3,
-}
-
-impl Default for OperatingMode {
-    fn default() -> Self {
-        Self::Mode1
-    }
 }
 
 impl OperatingMode {
