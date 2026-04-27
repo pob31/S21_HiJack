@@ -6,6 +6,18 @@ rust-version = "1.85"
 description = "DiGiCo S21/S31 snapshot manager daemon"
 license = "MIT OR Apache-2.0"
 
+[lints.clippy]
+# The daemon's wiring naturally takes 8–13 Arc<RwLock<…>> arguments through
+# the engine constructors. Refactoring into struct-of-handles is tracked as
+# audit M10 and is a separate cleanup pass.
+too_many_arguments = "allow"
+# A handful of typed enums (BankData, MacroStep, etc.) carry tuple data that
+# clippy thinks is "too complex". Type aliases would help but aren't urgent.
+type_complexity = "allow"
+# `field_reassign_with_default` flags clear, deliberate per-test config builds
+# where the struct-init form would obscure which field the test cares about.
+field_reassign_with_default = "allow"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 rosc = "0.10"

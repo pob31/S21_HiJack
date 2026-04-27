@@ -42,6 +42,7 @@ impl ChannelTypeChoice {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)] // Copy enum; &self/self equivalent here.
     fn to_channel_id(&self, num: u8) -> ChannelId {
         match self {
             Self::Input => ChannelId::Input(num),

@@ -628,14 +628,18 @@ impl SnapshotEngine {
                     skipped += 1;
                     continue;
                 }
-                // Capture live value for undo
+                // Capture live value for undo. `Option<&ParameterValue>` is
+                // `Copy` (the inner is a reference), so both `if let` arms
+                // consume independently without needing to clone or borrow.
                 if let Some(live) = live_value {
                     undo_map.insert(addr.clone(), live.clone());
                 }
-                if addr.parameter.is_continuous() && live_value.is_some() {
+                if let Some(live) = live_value
+                    && addr.parameter.is_continuous()
+                {
                     fade_targets.push(FadeTarget {
                         address: addr,
-                        start_value: live_value.unwrap().clone(),
+                        start_value: live.clone(),
                         end_value: value.clone(),
                     });
                 } else {
@@ -910,13 +914,16 @@ impl SnapshotEngine {
                     let mut continuous_targets = Vec::new();
 
                     for change in changes {
-                        if change.addr.parameter.is_continuous()
-                            && change.start_value.is_some()
+                        // Clone start_value so the else branch can still push
+                        // `change` whole. The pattern check and `is_continuous`
+                        // / fade_time guards are short-circuit-evaluated.
+                        if let Some(start_value) = change.start_value.clone()
+                            && change.addr.parameter.is_continuous()
                             && !fade_time.is_zero()
                         {
                             continuous_targets.push(FadeTarget {
                                 address: change.addr,
-                                start_value: change.start_value.unwrap(),
+                                start_value,
                                 end_value: change.value,
                             });
                         } else {

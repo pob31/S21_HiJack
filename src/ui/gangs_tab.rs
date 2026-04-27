@@ -270,10 +270,8 @@ pub fn draw_gangs_tab(
                     let mut to_set_mode: Option<(Uuid, GangMode)> = None;
 
                     for group in &groups {
-                        let bg = if !group.enabled {
-                            theme::BG_PANEL
-                        } else if group.paused {
-                            theme::BG_PANEL // dimmed when paused
+                        let bg = if !group.enabled || group.paused {
+                            theme::BG_PANEL // dimmed when disabled or paused
                         } else {
                             theme::BG_ELEVATED
                         };
@@ -605,7 +603,7 @@ fn parse_mixed_members(input: &str) -> Vec<ChannelId> {
 fn parse_number_ranges(input: &str) -> Vec<u8> {
     let mut result = Vec::new();
 
-    for part in input.split(|c: char| c == ',' || c == ' ') {
+    for part in input.split([',', ' ']) {
         let part = part.trim();
         if part.is_empty() {
             continue;

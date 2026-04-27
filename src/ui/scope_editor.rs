@@ -249,7 +249,7 @@ impl ScopeEditorState {
                 all_channels.insert(ch.clone());
             }
         }
-        for ((ch, _), _) in &self.channel_timings {
+        for (ch, _) in self.channel_timings.keys() {
             all_channels.insert(ch.clone());
         }
 
@@ -1332,7 +1332,7 @@ fn draw_group_matrix(ui: &mut egui::Ui, state: &mut ScopeEditorState, data: &Gro
                                 let timing = state
                                     .channel_timings
                                     .entry(key.clone())
-                                    .or_insert_with(CategoryTiming::default);
+                                    .or_default();
                                 let val = match state.edit_mode {
                                     ScopeEditMode::PreWait => &mut timing.pre_wait_secs,
                                     ScopeEditMode::Fade => &mut timing.fade_time_secs,
@@ -1705,10 +1705,11 @@ fn matrix_cell_ex(
         let earmark_size = (size.x.min(size.y) * 0.35).max(4.0);
         let cx = rect.right() - 1.0;
         let cy = rect.top() + 1.0;
-        let mut points = Vec::with_capacity(3);
-        points.push(egui::pos2(cx - earmark_size, cy));
-        points.push(egui::pos2(cx, cy));
-        points.push(egui::pos2(cx, cy + earmark_size));
+        let points = vec![
+            egui::pos2(cx - earmark_size, cy),
+            egui::pos2(cx, cy),
+            egui::pos2(cx, cy + earmark_size),
+        ];
         ui.painter().add(egui::Shape::convex_polygon(
             points,
             theme::SCOPE_DIRTY,

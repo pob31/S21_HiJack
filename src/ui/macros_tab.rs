@@ -93,6 +93,7 @@ impl ChannelTypeChoice {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)] // Copy enum; &self/self equivalent here.
     fn to_channel_id(&self, num: u8) -> ChannelId {
         match self {
             Self::Input => ChannelId::Input(num),
@@ -142,6 +143,7 @@ impl ParameterChoice {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)] // Copy enum; &self/self equivalent here.
     fn to_parameter_path(&self) -> ParameterPath {
         match self {
             Self::Fader => ParameterPath::Fader,
@@ -673,16 +675,14 @@ fn draw_step_editor(
 
                         // Reorder + delete buttons
                         ui.horizontal(|ui| {
-                            if i > 0 {
-                                if ui.small_button("▲").clicked() {
+                            if i > 0
+                                && ui.small_button("▲").clicked() {
                                     action = Some(StepAction::MoveUp(i));
                                 }
-                            }
-                            if i < step_count - 1 {
-                                if ui.small_button("▼").clicked() {
+                            if i < step_count - 1
+                                && ui.small_button("▼").clicked() {
                                     action = Some(StepAction::MoveDown(i));
                                 }
-                            }
                             if ui.small_button("✕").clicked() {
                                 action = Some(StepAction::Delete(i));
                             }

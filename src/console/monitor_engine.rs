@@ -358,35 +358,31 @@ impl MonitorEngine {
 
         // Send channel names for inputs and permitted auxes
         for &input in &inputs {
-            if let Some(name) = state.get(&ParameterAddress {
+            if let Some(ParameterValue::String(s)) = state.get(&ParameterAddress {
                 channel: ChannelId::Input(input),
                 parameter: ParameterPath::Name,
             }) {
-                if let ParameterValue::String(s) = name {
-                    let _ = monitor_sender
-                        .send_to(
-                            addr,
-                            &format!("/monitor/state/name/input/{input}"),
-                            vec![OscType::String(s.clone())],
-                        )
-                        .await;
-                }
+                let _ = monitor_sender
+                    .send_to(
+                        addr,
+                        &format!("/monitor/state/name/input/{input}"),
+                        vec![OscType::String(s.clone())],
+                    )
+                    .await;
             }
         }
         for &aux in &client.permitted_auxes {
-            if let Some(name) = state.get(&ParameterAddress {
+            if let Some(ParameterValue::String(s)) = state.get(&ParameterAddress {
                 channel: ChannelId::Aux(aux),
                 parameter: ParameterPath::Name,
             }) {
-                if let ParameterValue::String(s) = name {
-                    let _ = monitor_sender
-                        .send_to(
-                            addr,
-                            &format!("/monitor/state/name/aux/{aux}"),
-                            vec![OscType::String(s.clone())],
-                        )
-                        .await;
-                }
+                let _ = monitor_sender
+                    .send_to(
+                        addr,
+                        &format!("/monitor/state/name/aux/{aux}"),
+                        vec![OscType::String(s.clone())],
+                    )
+                    .await;
             }
         }
 
