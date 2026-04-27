@@ -3,6 +3,7 @@ name = "s21_hijack"
 version = "0.1.0"
 edition = "2024"
 description = "DiGiCo S21/S31 snapshot manager daemon"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
