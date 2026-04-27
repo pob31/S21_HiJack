@@ -60,6 +60,32 @@ pub struct ConnectionSettings {
     /// iPad-protocol-only (Modes 2/3). Per-show workflow toggle.
     #[serde(default)]
     pub console_snapshot_follow: bool,
+    /// Source-IP CIDR allowlist for the **monitor** server (audit C2). Empty
+    /// = accept all (current behavior). Each entry is a string in CIDR
+    /// form, e.g. `"192.168.10.0/24"` or `"10.0.0.5"` (bare IP = `/32`).
+    /// Invalid entries are logged and skipped at startup.
+    #[serde(default)]
+    pub monitor_allow_cidrs: Vec<String>,
+    /// Source-IP CIDR allowlist for the **trigger** listener (audit H5).
+    /// Same semantics as `monitor_allow_cidrs`.
+    #[serde(default)]
+    pub trigger_allow_cidrs: Vec<String>,
+}
+
+/// Parse a list of CIDR strings into `Ipv4Cidr`s, logging and discarding
+/// any invalid entries. Used at startup to materialize the allowlist from
+/// `ConnectionSettings` strings into the typed form the listeners want.
+pub fn parse_cidr_allowlist(raw: &[String]) -> Vec<crate::model::cidr::Ipv4Cidr> {
+    use std::str::FromStr;
+    raw.iter()
+        .filter_map(|s| match crate::model::cidr::Ipv4Cidr::from_str(s) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                tracing::warn!(entry = %s, "Skipping invalid CIDR in allowlist: {e}");
+                None
+            }
+        })
+        .collect()
 }
 
 fn default_gp_port() -> u16 {
@@ -95,6 +121,8 @@ impl Default for ConnectionSettings {
             send_pace_us: 0,
             auto_update_on_recall: false,
             console_snapshot_follow: false,
+            monitor_allow_cidrs: Vec::new(),
+            trigger_allow_cidrs: Vec::new(),
         }
     }
 }

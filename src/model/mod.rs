@@ -1,4 +1,5 @@
 pub mod channel;
+pub mod cidr;
 pub mod config;
 pub mod dirty_tracker;
 pub mod gang;

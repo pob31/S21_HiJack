@@ -276,6 +276,8 @@ impl HiJackApp {
                             self.setup.qlab_port = conn.qlab_port.to_string();
                         }
                         self.setup.send_pace_us = conn.send_pace_us;
+                        self.setup.monitor_allow_cidrs = conn.monitor_allow_cidrs;
+                        self.setup.trigger_allow_cidrs = conn.trigger_allow_cidrs;
                     }
                 }
                 UiEvent::ShowFileSaved(path) => {

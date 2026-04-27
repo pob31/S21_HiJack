@@ -61,9 +61,12 @@ pub enum UiEvent {
         name: String,
         affected_count: usize,
     },
+    /// `ConnectionSettings` is boxed to keep the enum's largest variant
+    /// small enough not to trip `clippy::large_enum_variant` — the struct
+    /// has many `String`/`Vec<String>` fields and grows over time.
     ShowFileLoaded(
         String,
-        Option<crate::persistence::show_file::ConnectionSettings>,
+        Option<Box<crate::persistence::show_file::ConnectionSettings>>,
         crate::model::recall_scope::ConsoleRecallConfig,
     ),
     ShowFileSaved(String),

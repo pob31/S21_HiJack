@@ -7,6 +7,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use crate::model::cidr::{self, Ipv4Cidr};
+
 /// Commands parsed from incoming monitoring client OSC messages.
 #[derive(Debug)]
 pub enum MonitorCommand {
@@ -75,27 +77,40 @@ impl MonitorServer {
     pub async fn start(
         listen_addr: SocketAddr,
     ) -> std::io::Result<(MonitorSender, mpsc::Receiver<MonitorCommand>)> {
-        Self::start_with_cancel(listen_addr, CancellationToken::new(), None).await
+        Self::start_with_cancel(listen_addr, CancellationToken::new(), None, Vec::new()).await
     }
 
-    /// Start the monitor server with a CancellationToken for clean shutdown.
+    /// Start the monitor server with a CancellationToken for clean shutdown
+    /// and an optional source-IP CIDR allowlist. An empty allowlist accepts
+    /// all sources (current behavior); a non-empty list drops packets from
+    /// any source not matching at least one CIDR — see audit C2 for the
+    /// closed-LAN deployment rationale.
     pub async fn start_with_cancel(
         listen_addr: SocketAddr,
         cancel: CancellationToken,
         interface_name: Option<&str>,
+        allowlist: Vec<Ipv4Cidr>,
     ) -> std::io::Result<(MonitorSender, mpsc::Receiver<MonitorCommand>)> {
         let socket = Arc::new(
             crate::ui::net_interfaces::create_bound_udp_socket(listen_addr, interface_name).await?,
         );
         let (tx, rx) = mpsc::channel(256);
 
-        info!(%listen_addr, "Monitor server started");
+        if allowlist.is_empty() {
+            info!(%listen_addr, "Monitor server started (no source allowlist)");
+        } else {
+            info!(
+                %listen_addr,
+                allowlist_size = allowlist.len(),
+                "Monitor server started with CIDR allowlist"
+            );
+        }
 
         let sender = MonitorSender {
             socket: socket.clone(),
         };
 
-        tokio::spawn(listen_loop(socket, tx, cancel));
+        tokio::spawn(listen_loop(socket, tx, cancel, allowlist));
 
         Ok((sender, rx))
     }
@@ -158,8 +173,10 @@ async fn listen_loop(
     socket: Arc<UdpSocket>,
     tx: mpsc::Sender<MonitorCommand>,
     cancel: CancellationToken,
+    allowlist: Vec<Ipv4Cidr>,
 ) {
     let mut buf = vec![0u8; 4096];
+    let mut blocked = 0u64;
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
@@ -168,14 +185,25 @@ async fn listen_loop(
             }
             result = socket.recv_from(&mut buf) => {
                 match result {
-                    Ok((size, src)) => match rosc::decoder::decode_udp(&buf[..size]) {
-                        Ok((_, packet)) => {
-                            process_packet(packet, src, &tx).await;
+                    Ok((size, src)) => {
+                        if !cidr::ip_allowed(src.ip(), &allowlist) {
+                            blocked = blocked.saturating_add(1);
+                            // Surface at exponentially-spaced thresholds so a
+                            // chatty mis-configured peer doesn't flood logs.
+                            if blocked.is_power_of_two() {
+                                warn!(%src, blocked, "Monitor server: dropped packet (source not in CIDR allowlist)");
+                            }
+                            continue;
                         }
-                        Err(e) => {
-                            warn!("Monitor server: failed to decode OSC from {src}: {e}");
+                        match rosc::decoder::decode_udp(&buf[..size]) {
+                            Ok((_, packet)) => {
+                                process_packet(packet, src, &tx).await;
+                            }
+                            Err(e) => {
+                                warn!("Monitor server: failed to decode OSC from {src}: {e}");
+                            }
                         }
-                    },
+                    }
                     Err(e) => {
                         error!("Monitor server: UDP receive error: {e}");
                         break;

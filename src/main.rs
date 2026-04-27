@@ -82,6 +82,17 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     monitor_port: u16,
 
+    /// Repeatable: source-IP CIDR allowed to talk to the monitor server
+    /// (e.g. `192.168.10.0/24`). Empty = accept all (current behavior).
+    /// See audit C2 for the closed-LAN deployment rationale.
+    #[arg(long = "monitor-allow-cidr")]
+    monitor_allow_cidrs: Vec<String>,
+
+    /// Repeatable: source-IP CIDR allowed to talk to the trigger listener.
+    /// Empty = accept all. See audit H5.
+    #[arg(long = "trigger-allow-cidr")]
+    trigger_allow_cidrs: Vec<String>,
+
     /// Run in headless mode (no UI, daemon only)
     #[arg(long)]
     headless: bool,
@@ -312,7 +323,16 @@ async fn run_headless(args: Args) {
         let monitor_addr: SocketAddr = format!("0.0.0.0:{}", args.monitor_port)
             .parse()
             .expect("Invalid monitor address");
-        match MonitorServer::start(monitor_addr).await {
+        let monitor_allowlist =
+            persistence::show_file::parse_cidr_allowlist(&args.monitor_allow_cidrs);
+        match MonitorServer::start_with_cancel(
+            monitor_addr,
+            cancel_token.clone(),
+            None,
+            monitor_allowlist,
+        )
+        .await
+        {
             Ok((monitor_sender, mut monitor_rx)) => {
                 info!(port = args.monitor_port, "Monitor server started");
                 let mut monitor_engine = MonitorEngine::new(manager.state(), manager.sender());
@@ -359,7 +379,15 @@ async fn run_headless(args: Args) {
         .parse()
         .expect("Invalid trigger address");
 
-    let mut trigger_rx = match TriggerListener::start(trigger_addr).await {
+    let trigger_allowlist = persistence::show_file::parse_cidr_allowlist(&args.trigger_allow_cidrs);
+    let mut trigger_rx = match TriggerListener::start_with_cancel(
+        trigger_addr,
+        cancel_token.clone(),
+        None,
+        trigger_allowlist,
+    )
+    .await
+    {
         Ok(rx) => rx,
         Err(e) => {
             error!("Failed to start trigger listener: {e}");

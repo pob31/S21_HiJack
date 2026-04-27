@@ -67,6 +67,13 @@ pub struct SetupTabState {
     pub qlab_port: String,
     /// Inter-message pacing delay in microseconds during snapshot recall.
     pub send_pace_us: u64,
+    /// Source-IP CIDR allowlist for the monitor server (audit C2). Round-trips
+    /// through the show file. UI editor is a follow-up; for now operators
+    /// edit the JSON directly or use the `--monitor-allow-cidr` CLI flag.
+    pub monitor_allow_cidrs: Vec<String>,
+    /// Source-IP CIDR allowlist for the trigger listener (audit H5). Same
+    /// semantics as `monitor_allow_cidrs`.
+    pub trigger_allow_cidrs: Vec<String>,
 }
 
 impl SetupTabState {
@@ -113,6 +120,8 @@ impl SetupTabState {
             qlab_ip: "127.0.0.1".to_string(),
             qlab_port: "53000".to_string(),
             send_pace_us: 0,
+            monitor_allow_cidrs: Vec::new(),
+            trigger_allow_cidrs: Vec::new(),
         }
     }
 }
@@ -778,6 +787,8 @@ fn start_connection(
     let ctx = egui_ctx.clone();
     let console_ip = setup.console_ip.clone();
     let send_pace_us = setup.send_pace_us;
+    let monitor_allow_cidrs = setup.monitor_allow_cidrs.clone();
+    let trigger_allow_cidrs = setup.trigger_allow_cidrs.clone();
     let log = osc_log.clone();
     runtime.spawn(async move {
         // Create OscClient manually so we can build GangEngine with the sender
@@ -987,7 +998,16 @@ fn start_connection(
         }
 
         // Start trigger listener (with cancellation so port is freed on disconnect)
-        match TriggerListener::start_with_cancel(trigger_addr, token.clone(), iface_name.as_deref()).await {
+        let trigger_allowlist =
+            crate::persistence::show_file::parse_cidr_allowlist(&trigger_allow_cidrs);
+        match TriggerListener::start_with_cancel(
+            trigger_addr,
+            token.clone(),
+            iface_name.as_deref(),
+            trigger_allowlist,
+        )
+        .await
+        {
             Ok(mut trigger_rx) => {
                 let mut macro_eng = MacroEngine::new(st.clone(), manager.sender());
                 macro_eng.set_dirty_tracker(dirty.clone());
@@ -1102,7 +1122,16 @@ fn start_connection(
             let monitor_addr: SocketAddr = format!("0.0.0.0:{}", monitor_port)
                 .parse()
                 .expect("Invalid monitor address");
-            match MonitorServer::start_with_cancel(monitor_addr, token.clone(), iface_name.as_deref()).await {
+            let monitor_allowlist =
+                crate::persistence::show_file::parse_cidr_allowlist(&monitor_allow_cidrs);
+            match MonitorServer::start_with_cancel(
+                monitor_addr,
+                token.clone(),
+                iface_name.as_deref(),
+                monitor_allowlist,
+            )
+            .await
+            {
                 Ok((monitor_sender, mut monitor_rx)) => {
                     info!(port = monitor_port, "Monitor server started via UI");
                     let monitor_engine = MonitorEngine::new(st.clone(), manager.sender());
@@ -1264,7 +1293,11 @@ fn load_show_file(
                 info!("Show file loaded: {path_str}");
                 let conn = show.connection;
                 let recall = show.console_recall;
-                let _ = tx.send(UiEvent::ShowFileLoaded(path_str, Some(conn), recall));
+                let _ = tx.send(UiEvent::ShowFileLoaded(
+                    path_str,
+                    Some(Box::new(conn)),
+                    recall,
+                ));
             }
             Err(e) => {
                 let _ = tx.send(UiEvent::ShowFileError(format!("Load failed: {e}")));
@@ -1323,6 +1356,8 @@ fn save_show_file(
         send_pace_us: setup.send_pace_us,
         auto_update_on_recall,
         console_snapshot_follow,
+        monitor_allow_cidrs: setup.monitor_allow_cidrs.clone(),
+        trigger_allow_cidrs: setup.trigger_allow_cidrs.clone(),
     };
 
     runtime.spawn(async move {
