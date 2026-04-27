@@ -608,7 +608,7 @@ pub fn draw_snapshots_tab(
                             .show(ui, |ui| {
                                 if let Ok(mgr) = cue_manager.try_read() {
                                     let mut snapshots: Vec<_> = mgr.snapshots.values().collect();
-                                    snapshots.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+                                    snapshots.sort_by_key(|s| std::cmp::Reverse(s.modified_at));
 
                                     for snap in snapshots {
                                         let selected = snap_state.selected_snapshot_id == Some(snap.id);

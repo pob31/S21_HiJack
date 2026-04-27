@@ -44,7 +44,7 @@ impl GangManager {
     /// All groups sorted by name for UI display.
     pub fn sorted_groups(&self) -> Vec<&GangGroup> {
         let mut sorted: Vec<_> = self.groups.values().collect();
-        sorted.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        sorted.sort_by_key(|g| g.name.to_lowercase());
         sorted
     }
 
