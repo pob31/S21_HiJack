@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use clap::Parser;
 use rosc::{OscMessage, OscPacket, OscType};
 use tokio::net::UdpSocket;
-use tracing::{info, warn, debug, error};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 /// Mock DiGiCo S21 Console — GP OSC Simulator
@@ -137,7 +137,8 @@ impl MockConsole {
         // Input channels: OSC 1–N
         for i in 1..=self.config.inputs {
             let ch = i as i32;
-            self.send_channel_state(dest, ch, &format!("Input {i}")).await;
+            self.send_channel_state(dest, ch, &format!("Input {i}"))
+                .await;
             msg_count += 4;
         }
 
@@ -151,14 +152,16 @@ impl MockConsole {
         // Group outputs: OSC 78–(78+N-1)
         for i in 1..=self.config.groups {
             let ch = 77 + i as i32;
-            self.send_channel_state(dest, ch, &format!("Group {i}")).await;
+            self.send_channel_state(dest, ch, &format!("Group {i}"))
+                .await;
             msg_count += 4;
         }
 
         // Matrix outputs: OSC 120–(120+N-1)
         for i in 1..=self.config.matrices {
             let ch = 119 + i as i32;
-            self.send_channel_state(dest, ch, &format!("Matrix {i}")).await;
+            self.send_channel_state(dest, ch, &format!("Matrix {i}"))
+                .await;
             msg_count += 4;
         }
 
@@ -181,28 +184,24 @@ impl MockConsole {
             dest,
             &format!("{prefix}/fader"),
             vec![OscType::Float(-150.0)],
-        ).await;
+        )
+        .await;
 
         // Mute off
-        self.send_osc(
-            dest,
-            &format!("{prefix}/mute"),
-            vec![OscType::Int(0)],
-        ).await;
+        self.send_osc(dest, &format!("{prefix}/mute"), vec![OscType::Int(0)])
+            .await;
 
         // Solo off
-        self.send_osc(
-            dest,
-            &format!("{prefix}/solo"),
-            vec![OscType::Int(0)],
-        ).await;
+        self.send_osc(dest, &format!("{prefix}/solo"), vec![OscType::Int(0)])
+            .await;
 
         // Channel name
         self.send_osc(
             dest,
             &format!("{prefix}/name"),
             vec![OscType::String(name.to_string())],
-        ).await;
+        )
+        .await;
     }
 
     /// Send a single OSC message to the given destination.

@@ -85,7 +85,7 @@ impl MonitorServer {
         interface_name: Option<&str>,
     ) -> std::io::Result<(MonitorSender, mpsc::Receiver<MonitorCommand>)> {
         let socket = Arc::new(
-            crate::ui::net_interfaces::create_bound_udp_socket(listen_addr, interface_name).await?
+            crate::ui::net_interfaces::create_bound_udp_socket(listen_addr, interface_name).await?,
         );
         let (tx, rx) = mpsc::channel(256);
 
@@ -154,7 +154,11 @@ impl MonitorSender {
 }
 
 /// Background receive loop.
-async fn listen_loop(socket: Arc<UdpSocket>, tx: mpsc::Sender<MonitorCommand>, cancel: CancellationToken) {
+async fn listen_loop(
+    socket: Arc<UdpSocket>,
+    tx: mpsc::Sender<MonitorCommand>,
+    cancel: CancellationToken,
+) {
     let mut buf = vec![0u8; 4096];
     loop {
         tokio::select! {
@@ -183,11 +187,7 @@ async fn listen_loop(socket: Arc<UdpSocket>, tx: mpsc::Sender<MonitorCommand>, c
     drop(socket);
 }
 
-async fn process_packet(
-    packet: OscPacket,
-    src: SocketAddr,
-    tx: &mpsc::Sender<MonitorCommand>,
-) {
+async fn process_packet(packet: OscPacket, src: SocketAddr, tx: &mpsc::Sender<MonitorCommand>) {
     match packet {
         OscPacket::Message(msg) => {
             if let Some(cmd) = parse_monitor_message(&msg.addr, &msg.args, src) {
@@ -416,12 +416,9 @@ mod tests {
 
     #[test]
     fn parse_send_pan() {
-        let cmd = parse_monitor_message(
-            "/monitor/bass/send/5/2/pan",
-            &[OscType::Float(-0.5)],
-            src(),
-        )
-        .unwrap();
+        let cmd =
+            parse_monitor_message("/monitor/bass/send/5/2/pan", &[OscType::Float(-0.5)], src())
+                .unwrap();
         match cmd {
             MonitorCommand::SetSendPan {
                 client_name,
@@ -441,12 +438,8 @@ mod tests {
 
     #[test]
     fn parse_send_on() {
-        let cmd = parse_monitor_message(
-            "/monitor/vocals/send/3/1/on",
-            &[OscType::Int(1)],
-            src(),
-        )
-        .unwrap();
+        let cmd = parse_monitor_message("/monitor/vocals/send/3/1/on", &[OscType::Int(1)], src())
+            .unwrap();
         match cmd {
             MonitorCommand::SetSendOn {
                 client_name,
@@ -466,12 +459,8 @@ mod tests {
 
     #[test]
     fn parse_send_on_off() {
-        let cmd = parse_monitor_message(
-            "/monitor/vocals/send/3/1/on",
-            &[OscType::Int(0)],
-            src(),
-        )
-        .unwrap();
+        let cmd = parse_monitor_message("/monitor/vocals/send/3/1/on", &[OscType::Int(0)], src())
+            .unwrap();
         match cmd {
             MonitorCommand::SetSendOn { on, .. } => assert!(!on),
             _ => panic!("Expected SetSendOn"),
@@ -481,19 +470,13 @@ mod tests {
     #[test]
     fn parse_status_console() {
         let cmd = parse_monitor_message("/status/console", &[], src()).unwrap();
-        assert!(matches!(
-            cmd,
-            MonitorCommand::QueryConsoleStatus { .. }
-        ));
+        assert!(matches!(cmd, MonitorCommand::QueryConsoleStatus { .. }));
     }
 
     #[test]
     fn parse_status_clients() {
         let cmd = parse_monitor_message("/status/clients", &[], src()).unwrap();
-        assert!(matches!(
-            cmd,
-            MonitorCommand::QueryClientCount { .. }
-        ));
+        assert!(matches!(cmd, MonitorCommand::QueryClientCount { .. }));
     }
 
     #[test]
@@ -515,8 +498,6 @@ mod tests {
 
     #[test]
     fn parse_send_level_missing_arg_returns_none() {
-        assert!(
-            parse_monitor_message("/monitor/drummer/send/1/1/level", &[], src()).is_none()
-        );
+        assert!(parse_monitor_message("/monitor/drummer/send/1/1/level", &[], src()).is_none());
     }
 }

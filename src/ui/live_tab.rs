@@ -4,13 +4,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use eframe::egui;
 use tokio::sync::RwLock;
 
+use super::UiEvent;
+use super::theme;
 use crate::console::cue_manager::CueManager;
-use crate::console::palette_manager::PaletteManager;
 use crate::console::macro_engine::MacroEngine;
 use crate::console::macro_manager::MacroManager;
+use crate::console::palette_manager::PaletteManager;
 use crate::console::snapshot_engine::SnapshotEngine;
-use super::theme;
-use super::UiEvent;
 
 /// State for the Live tab.
 pub struct LiveTabState {
@@ -123,10 +123,18 @@ pub fn draw_live_tab(
         let buttons_enabled = is_connected && has_cues;
 
         ui.horizontal(|ui| {
-            ui.add_space((ui.available_width() - theme::GO_BUTTON_SIZE.x - theme::PREV_BUTTON_SIZE.x - 20.0).max(0.0) / 2.0);
+            ui.add_space(
+                (ui.available_width() - theme::GO_BUTTON_SIZE.x - theme::PREV_BUTTON_SIZE.x - 20.0)
+                    .max(0.0)
+                    / 2.0,
+            );
 
             // GO button
-            let go_color = if buttons_enabled { theme::COLOR_GO_BUTTON } else { theme::BG_ELEVATED };
+            let go_color = if buttons_enabled {
+                theme::COLOR_GO_BUTTON
+            } else {
+                theme::BG_ELEVATED
+            };
             let go_button = egui::Button::new(
                 egui::RichText::new("GO")
                     .size(theme::FONT_SIZE_GO_BUTTON)
@@ -138,13 +146,23 @@ pub fn draw_live_tab(
             .corner_radius(8.0);
 
             if ui.add_enabled(buttons_enabled, go_button).clicked() {
-                fire_go(cue_manager, palette_manager, snapshot_engine, runtime, ui_tx);
+                fire_go(
+                    cue_manager,
+                    palette_manager,
+                    snapshot_engine,
+                    runtime,
+                    ui_tx,
+                );
             }
 
             ui.add_space(20.0);
 
             // PREV button
-            let prev_color = if buttons_enabled { theme::COLOR_PREV_BUTTON } else { theme::BG_ELEVATED };
+            let prev_color = if buttons_enabled {
+                theme::COLOR_PREV_BUTTON
+            } else {
+                theme::BG_ELEVATED
+            };
             let prev_button = egui::Button::new(
                 egui::RichText::new("PREV")
                     .size(theme::FONT_SIZE_BODY)
@@ -156,7 +174,13 @@ pub fn draw_live_tab(
             .corner_radius(8.0);
 
             if ui.add_enabled(buttons_enabled, prev_button).clicked() {
-                fire_prev(cue_manager, palette_manager, snapshot_engine, runtime, ui_tx);
+                fire_prev(
+                    cue_manager,
+                    palette_manager,
+                    snapshot_engine,
+                    runtime,
+                    ui_tx,
+                );
             }
         });
 
@@ -172,8 +196,7 @@ pub fn draw_live_tab(
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new(format!("Fade {cue_num:.1}:"))
-                        .color(theme::TEXT_SECONDARY),
+                    egui::RichText::new(format!("Fade {cue_num:.1}:")).color(theme::TEXT_SECONDARY),
                 );
                 ui.add(
                     egui::ProgressBar::new(*progress)
@@ -192,14 +215,20 @@ pub fn draw_live_tab(
                     theme::section_heading(ui, "Quick Macros");
 
                     // Collect quick-trigger macro info (id, name)
-                    let qt_macros: Vec<_> = mgr.quick_trigger_ids.iter()
+                    let qt_macros: Vec<_> = mgr
+                        .quick_trigger_ids
+                        .iter()
                         .filter_map(|id| mgr.get_macro(id).map(|m| (m.id, m.name.clone())))
                         .collect();
                     drop(mgr);
 
                     ui.horizontal_wrapped(|ui| {
                         for (id, name) in &qt_macros {
-                            let btn_color = if is_connected { theme::COLOR_MACRO_BUTTON } else { theme::BG_ELEVATED };
+                            let btn_color = if is_connected {
+                                theme::COLOR_MACRO_BUTTON
+                            } else {
+                                theme::BG_ELEVATED
+                            };
                             let button = egui::Button::new(
                                 egui::RichText::new(name)
                                     .color(theme::TEXT_PRIMARY)
@@ -211,7 +240,11 @@ pub fn draw_live_tab(
 
                             if ui.add_enabled(is_connected, button).clicked() {
                                 super::macros_tab::fire_macro_by_id(
-                                    *id, macro_manager, macro_engine, runtime, ui_tx,
+                                    *id,
+                                    macro_manager,
+                                    macro_engine,
+                                    runtime,
+                                    ui_tx,
                                 );
                             }
                         }
@@ -238,7 +271,9 @@ fn fire_go(
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    let Some(engine) = snapshot_engine.clone() else { return };
+    let Some(engine) = snapshot_engine.clone() else {
+        return;
+    };
     let cue_mgr = cue_manager.clone();
     let pmgr_arc = palette_manager.clone();
     let tx = ui_tx.clone();
@@ -250,7 +285,9 @@ fn fire_go(
             if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                 drop(mgr);
                 let pmgr = pmgr_arc.read().await;
-                let result = engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
+                let result = engine
+                    .recall_cue(&cue, &snapshot, &pmgr.palettes, false)
+                    .await;
                 let _ = tx.send(UiEvent::CueRecalled {
                     cue_number: cue.cue_number,
                     params_sent: result.parameters_sent,
@@ -267,7 +304,9 @@ fn fire_prev(
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    let Some(engine) = snapshot_engine.clone() else { return };
+    let Some(engine) = snapshot_engine.clone() else {
+        return;
+    };
     let cue_mgr = cue_manager.clone();
     let pmgr_arc = palette_manager.clone();
     let tx = ui_tx.clone();
@@ -279,7 +318,9 @@ fn fire_prev(
             if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                 drop(mgr);
                 let pmgr = pmgr_arc.read().await;
-                let result = engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
+                let result = engine
+                    .recall_cue(&cue, &snapshot, &pmgr.palettes, false)
+                    .await;
                 let _ = tx.send(UiEvent::CueRecalled {
                     cue_number: cue.cue_number,
                     params_sent: result.parameters_sent,

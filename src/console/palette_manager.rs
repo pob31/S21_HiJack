@@ -65,11 +65,7 @@ impl PaletteManager {
 
     /// Return only the palettes of a specific kind, sorted by name.
     pub fn sorted_palettes_of_kind(&self, kind: PaletteKind) -> Vec<&ChannelPalette> {
-        let mut palettes: Vec<_> = self
-            .palettes
-            .values()
-            .filter(|p| p.kind == kind)
-            .collect();
+        let mut palettes: Vec<_> = self.palettes.values().filter(|p| p.kind == kind).collect();
         palettes.sort_by(|a, b| a.name.cmp(&b.name));
         palettes
     }
@@ -109,7 +105,9 @@ impl PaletteManager {
     /// Remove a snapshot back-reference from a palette.
     pub fn unlink_from_snapshot(&mut self, palette_id: Uuid, snapshot_id: Uuid) {
         if let Some(palette) = self.palettes.get_mut(&palette_id) {
-            palette.referencing_snapshots.retain(|id| *id != snapshot_id);
+            palette
+                .referencing_snapshots
+                .retain(|id| *id != snapshot_id);
             info!(palette = %palette.name, %snapshot_id, "Unlinked palette from snapshot");
         }
     }
@@ -119,7 +117,9 @@ impl PaletteManager {
     /// stays accurate.
     pub fn unlink_all_from_snapshot(&mut self, snapshot_id: Uuid) {
         for palette in self.palettes.values_mut() {
-            palette.referencing_snapshots.retain(|id| *id != snapshot_id);
+            palette
+                .referencing_snapshots
+                .retain(|id| *id != snapshot_id);
         }
     }
 
@@ -136,20 +136,26 @@ impl PaletteManager {
 mod tests {
     use super::*;
     use crate::model::channel::ChannelId;
-    use crate::model::parameter::{ParameterPath, ParameterValue, PaletteKind};
+    use crate::model::parameter::{PaletteKind, ParameterPath, ParameterValue};
     use std::collections::HashMap;
 
     fn make_eq_palette(name: &str, channel: ChannelId) -> ChannelPalette {
         let mut values = HashMap::new();
         values.insert(ParameterPath::EqEnabled, ParameterValue::Bool(true));
-        values.insert(ParameterPath::EqBandFrequency(1), ParameterValue::Float(1000.0));
+        values.insert(
+            ParameterPath::EqBandFrequency(1),
+            ParameterValue::Float(1000.0),
+        );
         ChannelPalette::new(name.into(), PaletteKind::Eq, channel, values)
     }
 
     fn make_dyn1_palette(name: &str, channel: ChannelId) -> ChannelPalette {
         let mut values = HashMap::new();
         values.insert(ParameterPath::Dyn1Enabled, ParameterValue::Bool(true));
-        values.insert(ParameterPath::Dyn1Threshold(1), ParameterValue::Float(-12.0));
+        values.insert(
+            ParameterPath::Dyn1Threshold(1),
+            ParameterValue::Float(-12.0),
+        );
         ChannelPalette::new(name.into(), PaletteKind::Dyn1, channel, values)
     }
 

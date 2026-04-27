@@ -1,8 +1,8 @@
 use rosc::OscType;
 
+use super::ipad_values;
 use crate::model::channel::ChannelId;
 use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
-use super::ipad_values;
 
 /// Encode a parameter address and value into an iPad protocol OSC path and args.
 /// Returns None for parameters with no iPad representation (GP OSC-only).
@@ -23,10 +23,7 @@ pub fn encode_ipad_parameter(
 }
 
 /// Encode an iPad protocol query message (append /? to parameter path).
-pub fn encode_ipad_query(
-    channel: &ChannelId,
-    parameter: &ParameterPath,
-) -> Option<String> {
+pub fn encode_ipad_query(channel: &ChannelId, parameter: &ParameterPath) -> Option<String> {
     let prefix = channel.to_ipad_path_prefix();
     let suffix = parameter.to_ipad_suffix()?;
     Some(format!("{prefix}/{suffix}/?"))

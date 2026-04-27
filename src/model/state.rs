@@ -58,7 +58,11 @@ impl ConsoleState {
 
     /// Apply a parameter change (from incoming OSC).
     /// Returns the previous value if one existed.
-    pub fn update(&mut self, addr: ParameterAddress, value: ParameterValue) -> Option<ParameterValue> {
+    pub fn update(
+        &mut self,
+        addr: ParameterAddress,
+        value: ParameterValue,
+    ) -> Option<ParameterValue> {
         self.last_updated.insert(addr.clone(), Utc::now());
         self.generation += 1;
         self.parameters.insert(addr, value)
@@ -125,9 +129,7 @@ impl ConsoleState {
     ) -> HashMap<ParameterPath, ParameterValue> {
         self.parameters
             .iter()
-            .filter(|(addr, _)| {
-                &addr.channel == channel && addr.parameter.section() == section
-            })
+            .filter(|(addr, _)| &addr.channel == channel && addr.parameter.section() == section)
             .map(|(addr, value)| (addr.parameter.clone(), value.clone()))
             .collect()
     }
@@ -155,10 +157,10 @@ impl ConsoleState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
     use crate::model::channel::ChannelId;
     use crate::model::parameter::{ParameterPath, ParameterSection};
     use crate::model::snapshot::{ChannelScope, ScopeTemplate, SnapshotKind};
+    use std::collections::HashSet;
 
     #[test]
     fn update_and_get() {
@@ -186,31 +188,52 @@ mod tests {
 
         // Add EQ and non-EQ params for Input 1
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqEnabled },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::EqEnabled,
+            },
             ParameterValue::Bool(true),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqBandFrequency(1) },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::EqBandFrequency(1),
+            },
             ParameterValue::Float(1000.0),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqBandGain(1) },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::EqBandGain(1),
+            },
             ParameterValue::Float(3.0),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Fader,
+            },
             ParameterValue::Float(-10.0),
         );
         // EQ for Input 2 — should not appear
         state.update(
-            ParameterAddress { channel: ChannelId::Input(2), parameter: ParameterPath::EqEnabled },
+            ParameterAddress {
+                channel: ChannelId::Input(2),
+                parameter: ParameterPath::EqEnabled,
+            },
             ParameterValue::Bool(false),
         );
 
         let eq = state.capture_section(&ChannelId::Input(1), ParameterSection::Eq);
         assert_eq!(eq.len(), 3);
-        assert_eq!(eq.get(&ParameterPath::EqEnabled), Some(&ParameterValue::Bool(true)));
-        assert_eq!(eq.get(&ParameterPath::EqBandFrequency(1)), Some(&ParameterValue::Float(1000.0)));
+        assert_eq!(
+            eq.get(&ParameterPath::EqEnabled),
+            Some(&ParameterValue::Bool(true))
+        );
+        assert_eq!(
+            eq.get(&ParameterPath::EqBandFrequency(1)),
+            Some(&ParameterValue::Float(1000.0))
+        );
         assert!(!eq.contains_key(&ParameterPath::Fader));
     }
 
@@ -226,23 +249,38 @@ mod tests {
         let mut state = ConsoleState::new(ConsoleConfig::default());
         // Mix of EQ, Dyn1, Dyn2, Fader on Input 1.
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqEnabled },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::EqEnabled,
+            },
             ParameterValue::Bool(true),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Dyn1Enabled },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Dyn1Enabled,
+            },
             ParameterValue::Bool(true),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Dyn1Threshold(1) },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Dyn1Threshold(1),
+            },
             ParameterValue::Float(-12.0),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Dyn2Threshold },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Dyn2Threshold,
+            },
             ParameterValue::Float(-30.0),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Fader,
+            },
             ParameterValue::Float(-10.0),
         );
 
@@ -259,19 +297,31 @@ mod tests {
     fn capture_section_dyn2_filters_to_dyn2_only() {
         let mut state = ConsoleState::new(ConsoleConfig::default());
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Dyn1Enabled },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Dyn1Enabled,
+            },
             ParameterValue::Bool(true),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Dyn2Enabled },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Dyn2Enabled,
+            },
             ParameterValue::Bool(true),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Dyn2Threshold },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Dyn2Threshold,
+            },
             ParameterValue::Float(-30.0),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Dyn2Range },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Dyn2Range,
+            },
             ParameterValue::Float(-40.0),
         );
 
@@ -287,19 +337,31 @@ mod tests {
 
         // Add some parameters
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Fader,
+            },
             ParameterValue::Float(-10.0),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Mute },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Mute,
+            },
             ParameterValue::Bool(false),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqEnabled },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::EqEnabled,
+            },
             ParameterValue::Bool(true),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(2), parameter: ParameterPath::Fader },
+            ParameterAddress {
+                channel: ChannelId::Input(2),
+                parameter: ParameterPath::Fader,
+            },
             ParameterValue::Float(-5.0),
         );
 
@@ -342,15 +404,24 @@ mod tests {
         // live parameter should be captured regardless of scope.
         let mut state = ConsoleState::new(ConsoleConfig::default());
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Fader,
+            },
             ParameterValue::Float(-10.0),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqEnabled },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::EqEnabled,
+            },
             ParameterValue::Bool(true),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(2), parameter: ParameterPath::Fader },
+            ParameterAddress {
+                channel: ChannelId::Input(2),
+                parameter: ParameterPath::Fader,
+            },
             ParameterValue::Float(-5.0),
         );
 
@@ -383,11 +454,17 @@ mod tests {
         // ApplyOnSave behaviour, for symmetry with the ApplyOnRecall test.
         let mut state = ConsoleState::new(ConsoleConfig::default());
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::Fader },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Fader,
+            },
             ParameterValue::Float(-10.0),
         );
         state.update(
-            ParameterAddress { channel: ChannelId::Input(1), parameter: ParameterPath::EqEnabled },
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::EqEnabled,
+            },
             ParameterValue::Bool(true),
         );
 

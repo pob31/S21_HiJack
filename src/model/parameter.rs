@@ -54,7 +54,7 @@ pub enum ParameterPath {
     EqBandFrequency(u8), // band 1–4
     EqBandGain(u8),
     EqBandQ(u8),
-    EqBandCurve(u8),           // iPad protocol only
+    EqBandCurve(u8), // iPad protocol only
     EqBandDynEnabled(u8),
     EqBandDynThreshold(u8),
     EqBandDynRatio(u8),
@@ -551,11 +551,15 @@ impl ParameterPath {
             ParameterPath::EqBandQ(b) => format!("EQ {} Q", eq_band_name(*b)),
             ParameterPath::EqBandCurve(b) => format!("EQ {} Curve", eq_band_name(*b)),
             ParameterPath::EqBandDynEnabled(b) => format!("Dyn EQ {} On/Off", eq_band_name(*b)),
-            ParameterPath::EqBandDynThreshold(b) => format!("Dyn EQ {} Threshold", eq_band_name(*b)),
+            ParameterPath::EqBandDynThreshold(b) => {
+                format!("Dyn EQ {} Threshold", eq_band_name(*b))
+            }
             ParameterPath::EqBandDynRatio(b) => format!("Dyn EQ {} Ratio", eq_band_name(*b)),
             ParameterPath::EqBandDynAttack(b) => format!("Dyn EQ {} Attack", eq_band_name(*b)),
             ParameterPath::EqBandDynRelease(b) => format!("Dyn EQ {} Release", eq_band_name(*b)),
-            ParameterPath::EqBandDynOverUnder(b) => format!("Dyn EQ {} Over/Under", eq_band_name(*b)),
+            ParameterPath::EqBandDynOverUnder(b) => {
+                format!("Dyn EQ {} Over/Under", eq_band_name(*b))
+            }
             ParameterPath::Dyn1Enabled => "Compressor On/Off".into(),
             ParameterPath::Dyn1Mode => "Compressor Mode".into(),
             ParameterPath::Dyn1MultibandDeesser => "Multiband De-esser".into(),
@@ -925,16 +929,11 @@ impl ParameterSection {
                 ParameterSection::Dyn1,
                 ParameterSection::Dyn2,
             ],
-            ChannelId::ControlGroup(_) => vec![
-                ParameterSection::FaderMutePan,
-                ParameterSection::Name,
-            ],
-            ChannelId::GraphicEq(_) => vec![
-                ParameterSection::GraphicEq,
-            ],
-            ChannelId::MatrixInput(_) => vec![
-                ParameterSection::MatrixSends,
-            ],
+            ChannelId::ControlGroup(_) => {
+                vec![ParameterSection::FaderMutePan, ParameterSection::Name]
+            }
+            ChannelId::GraphicEq(_) => vec![ParameterSection::GraphicEq],
+            ChannelId::MatrixInput(_) => vec![ParameterSection::MatrixSends],
         }
     }
 }
@@ -966,9 +965,9 @@ impl ParameterPath {
         match self {
             ParameterPath::Name => ParameterSection::Name,
 
-            ParameterPath::Fader
-            | ParameterPath::Mute
-            | ParameterPath::Pan => ParameterSection::FaderMutePan,
+            ParameterPath::Fader | ParameterPath::Mute | ParameterPath::Pan => {
+                ParameterSection::FaderMutePan
+            }
 
             ParameterPath::Solo => ParameterSection::FaderMutePan,
 
@@ -983,8 +982,7 @@ impl ParameterPath {
             | ParameterPath::MainAltIn
             | ParameterPath::StereoMode => ParameterSection::InputGain,
 
-            ParameterPath::DelayEnabled
-            | ParameterPath::DelayTime => ParameterSection::Delay,
+            ParameterPath::DelayEnabled | ParameterPath::DelayTime => ParameterSection::Delay,
 
             ParameterPath::DigitubeEnabled
             | ParameterPath::DigitubeDrive
@@ -1038,20 +1036,23 @@ impl ParameterPath {
             | ParameterPath::SendLevel(_)
             | ParameterPath::SendPan(_) => ParameterSection::Sends,
 
-            ParameterPath::GroupSendOn(_)
-            | ParameterPath::MasterBusOn => ParameterSection::GroupRouting,
+            ParameterPath::GroupSendOn(_) | ParameterPath::MasterBusOn => {
+                ParameterSection::GroupRouting
+            }
 
-            ParameterPath::InsertAEnabled
-            | ParameterPath::InsertBEnabled => ParameterSection::Inserts,
+            ParameterPath::InsertAEnabled | ParameterPath::InsertBEnabled => {
+                ParameterSection::Inserts
+            }
 
-            ParameterPath::CgLevel
-            | ParameterPath::CgMute => ParameterSection::CgMembership,
+            ParameterPath::CgLevel | ParameterPath::CgMute => ParameterSection::CgMembership,
 
-            ParameterPath::MatrixSendLevel(_)
-            | ParameterPath::MatrixSendOn(_) => ParameterSection::MatrixSends,
+            ParameterPath::MatrixSendLevel(_) | ParameterPath::MatrixSendOn(_) => {
+                ParameterSection::MatrixSends
+            }
 
-            ParameterPath::GeqBandGain(_)
-            | ParameterPath::GeqEnabled => ParameterSection::GraphicEq,
+            ParameterPath::GeqBandGain(_) | ParameterPath::GeqEnabled => {
+                ParameterSection::GraphicEq
+            }
         }
     }
 
@@ -1264,7 +1265,9 @@ impl TimingCategory {
     pub fn for_section(section: &ParameterSection) -> &'static [TimingCategory] {
         match section {
             ParameterSection::FaderMutePan => &[TimingCategory::Fader, TimingCategory::Mute],
-            ParameterSection::InputGain | ParameterSection::Delay => &[TimingCategory::Preprocessing],
+            ParameterSection::InputGain | ParameterSection::Delay => {
+                &[TimingCategory::Preprocessing]
+            }
             ParameterSection::Eq => &[TimingCategory::Eq],
             ParameterSection::Dyn1 => &[TimingCategory::Dyn1],
             ParameterSection::Dyn2 => &[TimingCategory::Dyn2],
@@ -1286,7 +1289,9 @@ impl TimingCategory {
 /// Adding a new kind (e.g. for Sends, Inserts, Graphic EQ) is a one-line
 /// addition here plus a one-line addition to `palette_kind()` and a label
 /// branch on `PaletteKind::label()`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
 pub enum PaletteKind {
     #[default]
     Eq,
@@ -1351,28 +1356,116 @@ pub struct ProtocolCoverageRow {
 /// `to_gp_osc_suffix` / `to_ipad_suffix` mappings on `ParameterPath`.
 /// Keep this in sync when adding/removing parameters from those mappings.
 pub const PROTOCOL_COVERAGE: &[ProtocolCoverageRow] = &[
-    ProtocolCoverageRow { label: "Fader / Mute / Solo / Pan",      gp: true,  ipad: true  },
-    ProtocolCoverageRow { label: "Channel name",                   gp: true,  ipad: true  },
-    ProtocolCoverageRow { label: "Total gain (post-fader sum)",    gp: true,  ipad: false },
-    ProtocolCoverageRow { label: "Analog preamp gain",             gp: false, ipad: true  },
-    ProtocolCoverageRow { label: "+48V phantom power",             gp: false, ipad: true  },
-    ProtocolCoverageRow { label: "Polarity, trim, delay",          gp: true,  ipad: true  },
-    ProtocolCoverageRow { label: "Stereo balance / width",         gp: true,  ipad: false },
-    ProtocolCoverageRow { label: "DiGiTube",                       gp: true,  ipad: false },
-    ProtocolCoverageRow { label: "EQ band freq / gain / Q",        gp: true,  ipad: true  },
-    ProtocolCoverageRow { label: "EQ band curve",                  gp: false, ipad: true  },
-    ProtocolCoverageRow { label: "Dynamic EQ band threshold/ratio/attack/release", gp: true, ipad: true },
-    ProtocolCoverageRow { label: "Dynamic EQ over/under mode",     gp: false, ipad: false },
-    ProtocolCoverageRow { label: "Compressor (single-band + multiband)", gp: true, ipad: true },
-    ProtocolCoverageRow { label: "Multiband de-esser",             gp: false, ipad: true  },
-    ProtocolCoverageRow { label: "Gate / ducker",                  gp: true,  ipad: true  },
-    ProtocolCoverageRow { label: "Gate key solo",                  gp: false, ipad: true  },
-    ProtocolCoverageRow { label: "Inserts A / B",                  gp: false, ipad: true  },
-    ProtocolCoverageRow { label: "Aux sends",                      gp: true,  ipad: true  },
-    ProtocolCoverageRow { label: "Group send routing",             gp: false, ipad: true  },
-    ProtocolCoverageRow { label: "Matrix send levels / on",        gp: false, ipad: true  },
-    ProtocolCoverageRow { label: "Graphic EQ band gains",          gp: false, ipad: true  },
-    ProtocolCoverageRow { label: "Control group level / mute",     gp: false, ipad: true  },
+    ProtocolCoverageRow {
+        label: "Fader / Mute / Solo / Pan",
+        gp: true,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "Channel name",
+        gp: true,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "Total gain (post-fader sum)",
+        gp: true,
+        ipad: false,
+    },
+    ProtocolCoverageRow {
+        label: "Analog preamp gain",
+        gp: false,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "+48V phantom power",
+        gp: false,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "Polarity, trim, delay",
+        gp: true,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "Stereo balance / width",
+        gp: true,
+        ipad: false,
+    },
+    ProtocolCoverageRow {
+        label: "DiGiTube",
+        gp: true,
+        ipad: false,
+    },
+    ProtocolCoverageRow {
+        label: "EQ band freq / gain / Q",
+        gp: true,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "EQ band curve",
+        gp: false,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "Dynamic EQ band threshold/ratio/attack/release",
+        gp: true,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "Dynamic EQ over/under mode",
+        gp: false,
+        ipad: false,
+    },
+    ProtocolCoverageRow {
+        label: "Compressor (single-band + multiband)",
+        gp: true,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "Multiband de-esser",
+        gp: false,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "Gate / ducker",
+        gp: true,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "Gate key solo",
+        gp: false,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "Inserts A / B",
+        gp: false,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "Aux sends",
+        gp: true,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "Group send routing",
+        gp: false,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "Matrix send levels / on",
+        gp: false,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "Graphic EQ band gains",
+        gp: false,
+        ipad: true,
+    },
+    ProtocolCoverageRow {
+        label: "Control group level / mute",
+        gp: false,
+        ipad: true,
+    },
 ];
 
 // ── Band naming helpers ──────────────────────────────────────────────
@@ -1627,30 +1720,84 @@ mod tests {
     #[test]
     fn section_classification() {
         assert_eq!(ParameterPath::Name.section(), ParameterSection::Name);
-        assert_eq!(ParameterPath::Fader.section(), ParameterSection::FaderMutePan);
-        assert_eq!(ParameterPath::Mute.section(), ParameterSection::FaderMutePan);
+        assert_eq!(
+            ParameterPath::Fader.section(),
+            ParameterSection::FaderMutePan
+        );
+        assert_eq!(
+            ParameterPath::Mute.section(),
+            ParameterSection::FaderMutePan
+        );
         assert_eq!(ParameterPath::Pan.section(), ParameterSection::FaderMutePan);
-        assert_eq!(ParameterPath::AnalogGain.section(), ParameterSection::InputGain);
+        assert_eq!(
+            ParameterPath::AnalogGain.section(),
+            ParameterSection::InputGain
+        );
         assert_eq!(ParameterPath::Trim.section(), ParameterSection::InputGain);
-        assert_eq!(ParameterPath::Phantom.section(), ParameterSection::InputGain);
-        assert_eq!(ParameterPath::DelayEnabled.section(), ParameterSection::Delay);
-        assert_eq!(ParameterPath::DigitubeEnabled.section(), ParameterSection::Digitube);
+        assert_eq!(
+            ParameterPath::Phantom.section(),
+            ParameterSection::InputGain
+        );
+        assert_eq!(
+            ParameterPath::DelayEnabled.section(),
+            ParameterSection::Delay
+        );
+        assert_eq!(
+            ParameterPath::DigitubeEnabled.section(),
+            ParameterSection::Digitube
+        );
         assert_eq!(ParameterPath::EqEnabled.section(), ParameterSection::Eq);
-        assert_eq!(ParameterPath::EqBandFrequency(1).section(), ParameterSection::Eq);
-        assert_eq!(ParameterPath::EqBandDynEnabled(2).section(), ParameterSection::Eq);
-        assert_eq!(ParameterPath::HighpassFrequency.section(), ParameterSection::Eq);
+        assert_eq!(
+            ParameterPath::EqBandFrequency(1).section(),
+            ParameterSection::Eq
+        );
+        assert_eq!(
+            ParameterPath::EqBandDynEnabled(2).section(),
+            ParameterSection::Eq
+        );
+        assert_eq!(
+            ParameterPath::HighpassFrequency.section(),
+            ParameterSection::Eq
+        );
         assert_eq!(ParameterPath::Dyn1Enabled.section(), ParameterSection::Dyn1);
-        assert_eq!(ParameterPath::Dyn1Threshold(1).section(), ParameterSection::Dyn1);
+        assert_eq!(
+            ParameterPath::Dyn1Threshold(1).section(),
+            ParameterSection::Dyn1
+        );
         assert_eq!(ParameterPath::Dyn2Enabled.section(), ParameterSection::Dyn2);
         assert_eq!(ParameterPath::Dyn2Range.section(), ParameterSection::Dyn2);
-        assert_eq!(ParameterPath::SendLevel(1).section(), ParameterSection::Sends);
-        assert_eq!(ParameterPath::GroupSendOn(1).section(), ParameterSection::GroupRouting);
-        assert_eq!(ParameterPath::MasterBusOn.section(), ParameterSection::GroupRouting);
-        assert_eq!(ParameterPath::InsertAEnabled.section(), ParameterSection::Inserts);
-        assert_eq!(ParameterPath::CgLevel.section(), ParameterSection::CgMembership);
-        assert_eq!(ParameterPath::MatrixSendLevel(1).section(), ParameterSection::MatrixSends);
-        assert_eq!(ParameterPath::GeqBandGain(1).section(), ParameterSection::GraphicEq);
-        assert_eq!(ParameterPath::GeqEnabled.section(), ParameterSection::GraphicEq);
+        assert_eq!(
+            ParameterPath::SendLevel(1).section(),
+            ParameterSection::Sends
+        );
+        assert_eq!(
+            ParameterPath::GroupSendOn(1).section(),
+            ParameterSection::GroupRouting
+        );
+        assert_eq!(
+            ParameterPath::MasterBusOn.section(),
+            ParameterSection::GroupRouting
+        );
+        assert_eq!(
+            ParameterPath::InsertAEnabled.section(),
+            ParameterSection::Inserts
+        );
+        assert_eq!(
+            ParameterPath::CgLevel.section(),
+            ParameterSection::CgMembership
+        );
+        assert_eq!(
+            ParameterPath::MatrixSendLevel(1).section(),
+            ParameterSection::MatrixSends
+        );
+        assert_eq!(
+            ParameterPath::GeqBandGain(1).section(),
+            ParameterSection::GraphicEq
+        );
+        assert_eq!(
+            ParameterPath::GeqEnabled.section(),
+            ParameterSection::GraphicEq
+        );
     }
 
     #[test]
@@ -1738,7 +1885,8 @@ mod tests {
         ];
 
         for path in paths {
-            let suffix = path.to_ipad_suffix()
+            let suffix = path
+                .to_ipad_suffix()
                 .unwrap_or_else(|| panic!("to_ipad_suffix returned None for {path:?}"));
             // from_ipad_suffix expects leading /
             let parsed = ParameterPath::from_ipad_suffix(&format!("/{suffix}"))
@@ -1764,11 +1912,26 @@ mod tests {
     fn ipad_suffix_specific_values() {
         assert_eq!(ParameterPath::Fader.to_ipad_suffix().unwrap(), "fader");
         assert_eq!(ParameterPath::Pan.to_ipad_suffix().unwrap(), "Panner/pan");
-        assert_eq!(ParameterPath::InsertAEnabled.to_ipad_suffix().unwrap(), "Insert/insert_A_in");
-        assert_eq!(ParameterPath::GeqBandGain(1).to_ipad_suffix().unwrap(), "geq_gain_1");
-        assert_eq!(ParameterPath::SendLevel(3).to_ipad_suffix().unwrap(), "Aux_Send/3/send_level");
-        assert_eq!(ParameterPath::GroupSendOn(4).to_ipad_suffix().unwrap(), "Group_Send/4/send_on");
-        assert_eq!(ParameterPath::MasterBusOn.to_ipad_suffix().unwrap(), "Group_Send/17/send_on");
+        assert_eq!(
+            ParameterPath::InsertAEnabled.to_ipad_suffix().unwrap(),
+            "Insert/insert_A_in"
+        );
+        assert_eq!(
+            ParameterPath::GeqBandGain(1).to_ipad_suffix().unwrap(),
+            "geq_gain_1"
+        );
+        assert_eq!(
+            ParameterPath::SendLevel(3).to_ipad_suffix().unwrap(),
+            "Aux_Send/3/send_level"
+        );
+        assert_eq!(
+            ParameterPath::GroupSendOn(4).to_ipad_suffix().unwrap(),
+            "Group_Send/4/send_on"
+        );
+        assert_eq!(
+            ParameterPath::MasterBusOn.to_ipad_suffix().unwrap(),
+            "Group_Send/17/send_on"
+        );
     }
 
     #[test]
@@ -2023,7 +2186,10 @@ mod tests {
 
     #[test]
     fn total_gain_section_is_input_gain() {
-        assert_eq!(ParameterPath::TotalGain.section(), ParameterSection::InputGain);
+        assert_eq!(
+            ParameterPath::TotalGain.section(),
+            ParameterSection::InputGain
+        );
     }
 
     #[test]
@@ -2043,7 +2209,10 @@ mod tests {
     #[test]
     fn total_gain_has_no_timing_category() {
         // Same instant-recall behavior as AnalogGain.
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::TotalGain), None);
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::TotalGain),
+            None
+        );
     }
 
     #[test]
@@ -2258,52 +2427,115 @@ mod tests {
 
     #[test]
     fn timing_category_fader_and_pan() {
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Fader), Some(TimingCategory::Fader));
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Pan), Some(TimingCategory::Fader));
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::Fader),
+            Some(TimingCategory::Fader)
+        );
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::Pan),
+            Some(TimingCategory::Fader)
+        );
     }
 
     #[test]
     fn timing_category_mute() {
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Mute), Some(TimingCategory::Mute));
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::Mute),
+            Some(TimingCategory::Mute)
+        );
         assert!(!TimingCategory::Mute.supports_fade());
     }
 
     #[test]
     fn timing_category_preprocessing() {
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Trim), Some(TimingCategory::Preprocessing));
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::DelayTime), Some(TimingCategory::Preprocessing));
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Balance), Some(TimingCategory::Preprocessing));
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::Trim),
+            Some(TimingCategory::Preprocessing)
+        );
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::DelayTime),
+            Some(TimingCategory::Preprocessing)
+        );
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::Balance),
+            Some(TimingCategory::Preprocessing)
+        );
     }
 
     #[test]
     fn timing_category_eq() {
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::EqEnabled), Some(TimingCategory::Eq));
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::EqBandFrequency(1)), Some(TimingCategory::Eq));
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::HighpassFrequency), Some(TimingCategory::Eq));
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::EqEnabled),
+            Some(TimingCategory::Eq)
+        );
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::EqBandFrequency(1)),
+            Some(TimingCategory::Eq)
+        );
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::HighpassFrequency),
+            Some(TimingCategory::Eq)
+        );
     }
 
     #[test]
     fn timing_category_dyn1_dyn2() {
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Dyn1Enabled), Some(TimingCategory::Dyn1));
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Dyn1Threshold(1)), Some(TimingCategory::Dyn1));
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Dyn2Enabled), Some(TimingCategory::Dyn2));
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Dyn2Threshold), Some(TimingCategory::Dyn2));
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::Dyn1Enabled),
+            Some(TimingCategory::Dyn1)
+        );
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::Dyn1Threshold(1)),
+            Some(TimingCategory::Dyn1)
+        );
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::Dyn2Enabled),
+            Some(TimingCategory::Dyn2)
+        );
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::Dyn2Threshold),
+            Some(TimingCategory::Dyn2)
+        );
     }
 
     #[test]
     fn timing_category_sends() {
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::SendLevel(1)), Some(TimingCategory::Sends));
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::SendEnabled(1)), Some(TimingCategory::Sends));
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::SendPan(1)), Some(TimingCategory::Sends));
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::SendLevel(1)),
+            Some(TimingCategory::Sends)
+        );
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::SendEnabled(1)),
+            Some(TimingCategory::Sends)
+        );
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::SendPan(1)),
+            Some(TimingCategory::Sends)
+        );
     }
 
     #[test]
     fn timing_category_uncategorized_returns_none() {
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Name), None);
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Solo), None);
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::AnalogGain), None);
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::Phantom), None);
-        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::DigitubeEnabled), None);
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::Name),
+            None
+        );
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::Solo),
+            None
+        );
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::AnalogGain),
+            None
+        );
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::Phantom),
+            None
+        );
+        assert_eq!(
+            TimingCategory::from_parameter_path(&ParameterPath::DigitubeEnabled),
+            None
+        );
     }
 
     #[test]

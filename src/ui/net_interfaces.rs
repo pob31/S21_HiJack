@@ -173,6 +173,9 @@ fn set_interface_binding(socket: &socket2::Socket, interface_name: &str) -> std:
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn set_interface_binding(_socket: &socket2::Socket, interface_name: &str) -> std::io::Result<()> {
-    tracing::warn!(interface_name, "Interface binding not supported on this platform");
+    tracing::warn!(
+        interface_name,
+        "Interface binding not supported on this platform"
+    );
     Ok(())
 }

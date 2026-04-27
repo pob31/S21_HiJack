@@ -4,12 +4,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use eframe::egui;
 use tokio::sync::RwLock;
 
+use super::theme;
 use crate::console::monitor_manager::MonitorManager;
 use crate::model::channel::ChannelId;
 use crate::model::monitor::MonitorClient;
 use crate::model::parameter::{ParameterAddress, ParameterPath};
 use crate::model::state::ConsoleState;
-use super::theme;
 
 /// Per-tab UI state for the Monitor tab.
 #[derive(Default)]
@@ -48,8 +48,12 @@ pub fn draw_monitor_tab(
                     };
                     theme::status_dot(ui, console_color);
                     ui.label(
-                        egui::RichText::new(if is_connected { "Console Connected" } else { "Console Disconnected" })
-                            .color(console_color),
+                        egui::RichText::new(if is_connected {
+                            "Console Connected"
+                        } else {
+                            "Console Disconnected"
+                        })
+                        .color(console_color),
                     );
 
                     ui.add_space(20.0);
@@ -62,8 +66,12 @@ pub fn draw_monitor_tab(
                     };
                     theme::status_dot(ui, monitor_color);
                     ui.label(
-                        egui::RichText::new(if tab.monitor_server_running { "Monitor Server Running" } else { "Monitor Server Off" })
-                            .color(monitor_color),
+                        egui::RichText::new(if tab.monitor_server_running {
+                            "Monitor Server Running"
+                        } else {
+                            "Monitor Server Off"
+                        })
+                        .color(monitor_color),
                     );
                 });
 
@@ -109,9 +117,21 @@ pub fn draw_monitor_tab(
                         .striped(true)
                         .show(ui, |ui| {
                             // Header
-                            ui.label(egui::RichText::new("Ch #").strong().color(theme::TEXT_SECONDARY));
-                            ui.label(egui::RichText::new("Name").strong().color(theme::TEXT_SECONDARY));
-                            ui.label(egui::RichText::new("Send #").strong().color(theme::TEXT_SECONDARY));
+                            ui.label(
+                                egui::RichText::new("Ch #")
+                                    .strong()
+                                    .color(theme::TEXT_SECONDARY),
+                            );
+                            ui.label(
+                                egui::RichText::new("Name")
+                                    .strong()
+                                    .color(theme::TEXT_SECONDARY),
+                            );
+                            ui.label(
+                                egui::RichText::new("Send #")
+                                    .strong()
+                                    .color(theme::TEXT_SECONDARY),
+                            );
                             ui.end_row();
 
                             for aux in 1..=aux_count {
@@ -129,12 +149,15 @@ pub fn draw_monitor_tab(
                                     .unwrap_or_default();
 
                                 ui.label(
-                                    egui::RichText::new(format!("Aux {aux}"))
-                                        .color(theme::CH_AUX),
+                                    egui::RichText::new(format!("Aux {aux}")).color(theme::CH_AUX),
                                 );
                                 ui.label(
-                                    egui::RichText::new(if name.is_empty() { "—" } else { &name })
-                                        .color(theme::TEXT_PRIMARY),
+                                    egui::RichText::new(if name.is_empty() {
+                                        "—"
+                                    } else {
+                                        &name
+                                    })
+                                    .color(theme::TEXT_PRIMARY),
                                 );
                                 ui.label(
                                     egui::RichText::new(format!("{aux}"))
@@ -158,7 +181,10 @@ pub fn draw_monitor_tab(
                     .spacing([10.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("Name:");
-                        ui.add(egui::TextEdit::singleline(&mut tab.new_client_name).desired_width(200.0));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut tab.new_client_name)
+                                .desired_width(200.0),
+                        );
                         ui.end_row();
 
                         ui.label("Permitted Auxes:");
@@ -179,7 +205,11 @@ pub fn draw_monitor_tab(
                     });
 
                 ui.add_space(6.0);
-                let add_btn = theme::action_button("Add Client", theme::ACCENT_GREEN, egui::Vec2::new(100.0, 32.0));
+                let add_btn = theme::action_button(
+                    "Add Client",
+                    theme::ACCENT_GREEN,
+                    egui::Vec2::new(100.0, 32.0),
+                );
                 if ui.add(add_btn).clicked() && !tab.new_client_name.trim().is_empty() {
                     let auxes: Vec<u8> = tab
                         .new_client_auxes
@@ -225,7 +255,10 @@ pub fn draw_monitor_tab(
                 let clients = mgr.sorted_clients();
 
                 if clients.is_empty() {
-                    ui.label(egui::RichText::new("No monitoring clients configured.").color(theme::TEXT_SECONDARY));
+                    ui.label(
+                        egui::RichText::new("No monitoring clients configured.")
+                            .color(theme::TEXT_SECONDARY),
+                    );
                 } else {
                     let mut to_remove = None;
 
@@ -258,7 +291,11 @@ pub fn draw_monitor_tab(
 
                                     // Aux badges (magenta)
                                     for aux in &client.permitted_auxes {
-                                        theme::colored_badge(ui, &format!("Aux {aux}"), theme::CH_AUX);
+                                        theme::colored_badge(
+                                            ui,
+                                            &format!("Aux {aux}"),
+                                            theme::CH_AUX,
+                                        );
                                     }
 
                                     ui.add_space(4.0);
@@ -268,7 +305,11 @@ pub fn draw_monitor_tab(
                                         theme::colored_badge(ui, "All Inputs", theme::CH_INPUT);
                                     } else {
                                         for input in &client.visible_inputs {
-                                            theme::colored_badge(ui, &format!("In {input}"), theme::CH_INPUT);
+                                            theme::colored_badge(
+                                                ui,
+                                                &format!("In {input}"),
+                                                theme::CH_INPUT,
+                                            );
                                         }
                                     }
                                 });
@@ -287,12 +328,19 @@ pub fn draw_monitor_tab(
                                             .small(),
                                     );
 
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        let del_btn = theme::action_button("Delete", theme::ACCENT_RED, egui::Vec2::new(60.0, 24.0));
-                                        if ui.add(del_btn).clicked() {
-                                            to_remove = Some(client.id);
-                                        }
-                                    });
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let del_btn = theme::action_button(
+                                                "Delete",
+                                                theme::ACCENT_RED,
+                                                egui::Vec2::new(60.0, 24.0),
+                                            );
+                                            if ui.add(del_btn).clicked() {
+                                                to_remove = Some(client.id);
+                                            }
+                                        },
+                                    );
                                 });
                             });
                         ui.add_space(4.0);

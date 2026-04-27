@@ -5,35 +5,35 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use eframe::egui;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, error, debug};
+use tracing::{debug, error, info};
 
+use super::UiEvent;
+use super::net_interfaces;
+use super::theme;
 use crate::console::connection::ConnectionManager;
 use crate::console::cue_manager::CueManager;
-use crate::console::palette_manager::PaletteManager;
 use crate::console::gang_engine::GangEngine;
 use crate::console::gang_manager::GangManager;
 use crate::console::ipad_connection;
-use crate::console::pan_link_engine::PanLinkEngine;
 use crate::console::macro_engine::MacroEngine;
 use crate::console::macro_manager::MacroManager;
 use crate::console::monitor_engine::MonitorEngine;
 use crate::console::monitor_manager::MonitorManager;
+use crate::console::palette_manager::PaletteManager;
+use crate::console::pan_link_engine::PanLinkEngine;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::operating_mode::OperatingMode;
-use crate::model::pan_link::PanLinkBindings;
-use crate::model::recall_scope::ConsoleRecallConfig;
-use crate::model::parameter::PROTOCOL_COVERAGE;
 use crate::model::osc_log::OscLog;
+use crate::model::pan_link::PanLinkBindings;
+use crate::model::parameter::PROTOCOL_COVERAGE;
+use crate::model::recall_scope::ConsoleRecallConfig;
 use crate::model::snapshot::CueList;
 use crate::model::state::ConsoleState;
 use crate::osc::client::{OscClient, OscSender};
 use crate::osc::monitor_server::MonitorServer;
 use crate::osc::trigger_listener::TriggerListener;
 use crate::persistence::show_file::{ConnectionSettings, ShowFile};
-use super::UiEvent;
-use super::net_interfaces;
-use super::theme;
 
 /// State for the Setup tab.
 pub struct SetupTabState {

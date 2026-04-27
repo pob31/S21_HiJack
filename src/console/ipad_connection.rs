@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::state::ConsoleState;
@@ -69,11 +69,8 @@ pub async fn connect_mode2(
     let (sender, mut rx) = client.into_parts();
 
     // Perform handshake
-    let handshake_result = ipad_handshake::perform_handshake(
-        &sender,
-        &mut rx,
-        HANDSHAKE_TIMEOUT,
-    ).await?;
+    let handshake_result =
+        ipad_handshake::perform_handshake(&sender, &mut rx, HANDSHAKE_TIMEOUT).await?;
 
     info!(
         name = %handshake_result.config.console_name,
@@ -136,8 +133,10 @@ pub async fn connect_mode3_proxy(
 
     // Socket 1: Console-side (daemon ↔ console) — raw UDP, interface-bound
     let console_socket = crate::ui::net_interfaces::create_bound_udp_socket(
-        local_console_addr, interface_name.as_deref(),
-    ).await?;
+        local_console_addr,
+        interface_name.as_deref(),
+    )
+    .await?;
     let actual_console = console_socket.local_addr()?;
     info!(%actual_console, %console_ipad_addr, "Mode 3: console-side socket bound");
     let console_socket = std::sync::Arc::new(console_socket);
@@ -147,8 +146,10 @@ pub async fn connect_mode3_proxy(
 
     // Socket 2: iPad-side (daemon ↔ iPad) — raw UDP, interface-bound
     let ipad_socket = crate::ui::net_interfaces::create_bound_udp_socket(
-        ipad_listen_addr, interface_name.as_deref(),
-    ).await?;
+        ipad_listen_addr,
+        interface_name.as_deref(),
+    )
+    .await?;
     let actual_listen = ipad_socket.local_addr()?;
     info!(%actual_listen, "Mode 3: iPad-side socket listening");
     let ipad_socket = std::sync::Arc::new(ipad_socket);
@@ -171,7 +172,8 @@ pub async fn connect_mode3_proxy(
             offline_clone,
             snap_tx,
             cancel,
-        ).await;
+        )
+        .await;
     });
 
     Ok(ipad_sender)
@@ -360,7 +362,10 @@ async fn log_and_capture_packet(
                     }
                 }
                 ParsedIpadMessage::SnapshotInfo { current } => {
-                    debug!(current, "Proxy {direction}: console snapshot is now {current}");
+                    debug!(
+                        current,
+                        "Proxy {direction}: console snapshot is now {current}"
+                    );
                     let prev = {
                         let mut s = state.write().await;
                         let p = s.current_console_snapshot;
@@ -385,7 +390,8 @@ async fn log_and_capture_packet(
         // DiGiCo bare-path query
         debug!(path = msg.path, "Proxy {direction}: bare query");
     } else {
-        let hex: String = data[..data.len().min(32)].iter()
+        let hex: String = data[..data.len().min(32)]
+            .iter()
             .map(|b| format!("{b:02x}"))
             .collect::<Vec<_>>()
             .join(" ");
@@ -433,14 +439,15 @@ mod tests {
 
     #[test]
     fn error_display() {
-        let io_err = IpadConnectionError::Io(
-            std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused"),
-        );
+        let io_err = IpadConnectionError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "refused",
+        ));
         assert!(io_err.to_string().contains("refused"));
 
-        let hs_err = IpadConnectionError::Handshake(
-            ipad_handshake::HandshakeError::Timeout { phase: "config".into() },
-        );
+        let hs_err = IpadConnectionError::Handshake(ipad_handshake::HandshakeError::Timeout {
+            phase: "config".into(),
+        });
         assert!(hs_err.to_string().contains("config"));
     }
 }

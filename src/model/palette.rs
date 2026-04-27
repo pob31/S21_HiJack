@@ -112,7 +112,10 @@ mod palette_values_serde {
     {
         let entries: Vec<Entry> = map
             .iter()
-            .map(|(k, v)| Entry { path: k.clone(), value: v.clone() })
+            .map(|(k, v)| Entry {
+                path: k.clone(),
+                value: v.clone(),
+            })
             .collect();
         entries.serialize(serializer)
     }
@@ -137,18 +140,27 @@ mod tests {
     fn sample_eq_values() -> HashMap<ParameterPath, ParameterValue> {
         let mut m = HashMap::new();
         m.insert(ParameterPath::EqEnabled, ParameterValue::Bool(true));
-        m.insert(ParameterPath::EqBandFrequency(1), ParameterValue::Float(1000.0));
+        m.insert(
+            ParameterPath::EqBandFrequency(1),
+            ParameterValue::Float(1000.0),
+        );
         m.insert(ParameterPath::EqBandGain(1), ParameterValue::Float(3.0));
         m.insert(ParameterPath::EqBandQ(1), ParameterValue::Float(2.0));
         m.insert(ParameterPath::HighpassEnabled, ParameterValue::Bool(true));
-        m.insert(ParameterPath::HighpassFrequency, ParameterValue::Float(80.0));
+        m.insert(
+            ParameterPath::HighpassFrequency,
+            ParameterValue::Float(80.0),
+        );
         m
     }
 
     fn sample_dyn1_values() -> HashMap<ParameterPath, ParameterValue> {
         let mut m = HashMap::new();
         m.insert(ParameterPath::Dyn1Enabled, ParameterValue::Bool(true));
-        m.insert(ParameterPath::Dyn1Threshold(1), ParameterValue::Float(-12.0));
+        m.insert(
+            ParameterPath::Dyn1Threshold(1),
+            ParameterValue::Float(-12.0),
+        );
         m.insert(ParameterPath::Dyn1Ratio(1), ParameterValue::Float(4.0));
         m.insert(ParameterPath::Dyn1Attack(1), ParameterValue::Float(0.005));
         m.insert(ParameterPath::Dyn1Release(1), ParameterValue::Float(0.15));
@@ -200,14 +212,14 @@ mod tests {
         assert!(!eq_palette.values.contains_key(&ParameterPath::Dyn1Enabled));
 
         // Dyn1 palette only keeps the Dyn1 values.
-        let dyn1_palette = ChannelPalette::new(
-            "Comp".into(),
-            PaletteKind::Dyn1,
-            ChannelId::Input(1),
-            mixed,
-        );
+        let dyn1_palette =
+            ChannelPalette::new("Comp".into(), PaletteKind::Dyn1, ChannelId::Input(1), mixed);
         assert_eq!(dyn1_palette.parameter_count(), 5);
-        assert!(dyn1_palette.values.contains_key(&ParameterPath::Dyn1Threshold(1)));
+        assert!(
+            dyn1_palette
+                .values
+                .contains_key(&ParameterPath::Dyn1Threshold(1))
+        );
         assert!(!dyn1_palette.values.contains_key(&ParameterPath::EqEnabled));
     }
 

@@ -82,9 +82,16 @@ impl ConnectionManager {
         info!("ConnectionManager created from parts");
 
         tokio::spawn(run_loop(
-            sender.clone(), rx, state.clone(), macro_manager.clone(),
-            gang_engine.clone(), gang_manager.clone(), pan_link_engine.clone(),
-            dirty_tracker.clone(), offline_mode.clone(), cancel.clone(),
+            sender.clone(),
+            rx,
+            state.clone(),
+            macro_manager.clone(),
+            gang_engine.clone(),
+            gang_manager.clone(),
+            pan_link_engine.clone(),
+            dirty_tracker.clone(),
+            offline_mode.clone(),
+            cancel.clone(),
         ));
 
         Self {
@@ -361,7 +368,12 @@ async fn process_message(
             master,
         } => {
             info!(
-                inputs, aux, groups, control_groups, matrices, master,
+                inputs,
+                aux,
+                groups,
+                control_groups,
+                matrices,
+                master,
                 "Received /console/channel/counts — applying to config"
             );
             let mut s = state.write().await;
@@ -375,8 +387,14 @@ async fn process_message(
                 *master,
             );
         }
-        ParsedOscMessage::DiscoveryCount { channel_type, count } => {
-            debug!(channel_type, count, "Per-type channel count (back-compat path)");
+        ParsedOscMessage::DiscoveryCount {
+            channel_type,
+            count,
+        } => {
+            debug!(
+                channel_type,
+                count, "Per-type channel count (back-compat path)"
+            );
             let mut s = state.write().await;
             crate::console::discovery::apply_channel_count(&mut s.config, channel_type, *count);
         }

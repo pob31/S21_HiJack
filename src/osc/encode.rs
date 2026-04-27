@@ -56,7 +56,10 @@ pub fn encode_parameter_query(addr: &ParameterAddress) -> Option<(String, Vec<Os
 
 /// Encode a parameter address and value into a GP OSC path and args.
 /// Returns None for iPad-only parameters.
-pub fn encode_parameter(addr: &ParameterAddress, value: &ParameterValue) -> Option<(String, Vec<OscType>)> {
+pub fn encode_parameter(
+    addr: &ParameterAddress,
+    value: &ParameterValue,
+) -> Option<(String, Vec<OscType>)> {
     let ch_num = addr.channel.to_gp_osc_number()?;
     let suffix = addr.parameter.to_gp_osc_suffix()?;
     let path = format!("/channel/{ch_num}/{suffix}");

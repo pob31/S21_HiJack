@@ -4,11 +4,11 @@
 
 use eframe::egui;
 
+use super::theme;
 use crate::model::channel::ChannelId;
 use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
 use crate::model::recall_scope::{ConsoleRecallConfig, RecallBlock};
 use crate::model::state::ConsoleState;
-use super::theme;
 
 /// UI state for the recall scope/safe popups.
 #[derive(Default)]
@@ -97,7 +97,9 @@ pub fn draw_recall_popup(
     config: &mut ConsoleRecallConfig,
     console_state: &ConsoleState,
 ) {
-    let Some(kind) = state.open.clone() else { return };
+    let Some(kind) = state.open.clone() else {
+        return;
+    };
 
     let input_count = console_state.config.input_channel_count;
     let aux_count = console_state.config.aux_output_count;
@@ -125,25 +127,33 @@ pub fn draw_recall_popup(
 
             // Channel selector: ◀ N ▶ / max  + channel name
             if !kind.is_scope() {
-                let max = kind.max_channels(input_count, aux_count, group_count, matrix_count, cg_count);
+                let max =
+                    kind.max_channels(input_count, aux_count, group_count, matrix_count, cg_count);
                 if max > 0 {
                     ui.horizontal(|ui| {
                         ui.label("Channel:");
-                        if ui.add_enabled(
-                            state.selected_channel > 1,
-                            egui::Button::new("◀").min_size(egui::Vec2::new(28.0, 22.0)),
-                        ).clicked() {
-                            state.selected_channel = state.selected_channel.saturating_sub(1).max(1);
+                        if ui
+                            .add_enabled(
+                                state.selected_channel > 1,
+                                egui::Button::new("◀").min_size(egui::Vec2::new(28.0, 22.0)),
+                            )
+                            .clicked()
+                        {
+                            state.selected_channel =
+                                state.selected_channel.saturating_sub(1).max(1);
                         }
                         ui.label(
                             egui::RichText::new(format!("{}", state.selected_channel))
                                 .strong()
                                 .size(14.0),
                         );
-                        if ui.add_enabled(
-                            state.selected_channel < max,
-                            egui::Button::new("▶").min_size(egui::Vec2::new(28.0, 22.0)),
-                        ).clicked() {
+                        if ui
+                            .add_enabled(
+                                state.selected_channel < max,
+                                egui::Button::new("▶").min_size(egui::Vec2::new(28.0, 22.0)),
+                            )
+                            .clicked()
+                        {
                             state.selected_channel = (state.selected_channel + 1).min(max);
                         }
                         ui.label(
@@ -187,8 +197,11 @@ pub fn draw_recall_popup(
                     for &block in RecallBlock::global_blocks() {
                         let active = config.session_scope.active_blocks.contains(&block);
                         draw_block_button(ui, block, active, true, is_scope, |toggled| {
-                            if toggled { config.session_scope.active_blocks.insert(block); }
-                            else { config.session_scope.active_blocks.remove(&block); }
+                            if toggled {
+                                config.session_scope.active_blocks.insert(block);
+                            } else {
+                                config.session_scope.active_blocks.remove(&block);
+                            }
                         });
                         ui.add_space(4.0);
                     }
@@ -201,37 +214,85 @@ pub fn draw_recall_popup(
             // Signal-flow columns (horizontal layout matching the console)
             ui.horizontal(|ui| {
                 // Sources
-                draw_column(ui, "Sources", RecallBlock::sources_column(), &ref_channel, is_scope, &channel_id, config);
+                draw_column(
+                    ui,
+                    "Sources",
+                    RecallBlock::sources_column(),
+                    &ref_channel,
+                    is_scope,
+                    &channel_id,
+                    config,
+                );
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new("►").color(theme::TEXT_SECONDARY));
                 ui.add_space(4.0);
 
                 // Input Processing
-                draw_column(ui, "Input\nProcessing", RecallBlock::input_processing_column(), &ref_channel, is_scope, &channel_id, config);
+                draw_column(
+                    ui,
+                    "Input\nProcessing",
+                    RecallBlock::input_processing_column(),
+                    &ref_channel,
+                    is_scope,
+                    &channel_id,
+                    config,
+                );
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new("►").color(theme::TEXT_SECONDARY));
                 ui.add_space(4.0);
 
                 // Insert A
-                draw_column(ui, "Insert\n(A)", RecallBlock::insert_a_column(), &ref_channel, is_scope, &channel_id, config);
+                draw_column(
+                    ui,
+                    "Insert\n(A)",
+                    RecallBlock::insert_a_column(),
+                    &ref_channel,
+                    is_scope,
+                    &channel_id,
+                    config,
+                );
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new("►").color(theme::TEXT_SECONDARY));
                 ui.add_space(4.0);
 
                 // Channel Processing
-                draw_column(ui, "Channel\nProcessing", RecallBlock::channel_processing_column(), &ref_channel, is_scope, &channel_id, config);
+                draw_column(
+                    ui,
+                    "Channel\nProcessing",
+                    RecallBlock::channel_processing_column(),
+                    &ref_channel,
+                    is_scope,
+                    &channel_id,
+                    config,
+                );
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new("►").color(theme::TEXT_SECONDARY));
                 ui.add_space(4.0);
 
                 // Insert B
-                draw_column(ui, "Insert\n(B)", RecallBlock::insert_b_column(), &ref_channel, is_scope, &channel_id, config);
+                draw_column(
+                    ui,
+                    "Insert\n(B)",
+                    RecallBlock::insert_b_column(),
+                    &ref_channel,
+                    is_scope,
+                    &channel_id,
+                    config,
+                );
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new("►").color(theme::TEXT_SECONDARY));
                 ui.add_space(4.0);
 
                 // Outputs
-                draw_column(ui, "Outputs", RecallBlock::outputs_column(), &ref_channel, is_scope, &channel_id, config);
+                draw_column(
+                    ui,
+                    "Outputs",
+                    RecallBlock::outputs_column(),
+                    &ref_channel,
+                    is_scope,
+                    &channel_id,
+                    config,
+                );
             });
 
             ui.add_space(12.0);
@@ -249,7 +310,13 @@ pub fn draw_recall_popup(
                             egui::Vec2::new(150.0, 26.0),
                         );
                         if ui.add(copy_btn).clicked() {
-                            let max = kind.max_channels(input_count, aux_count, group_count, matrix_count, cg_count);
+                            let max = kind.max_channels(
+                                input_count,
+                                aux_count,
+                                group_count,
+                                matrix_count,
+                                cg_count,
+                            );
                             if let Some(source_safe) = config.channel_safes.get(ch_id).cloned() {
                                 for i in 1..=max {
                                     if let Some(target) = kind.channel_id(i) {
@@ -262,7 +329,11 @@ pub fn draw_recall_popup(
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let close_btn = theme::action_button("Close", theme::ACCENT_GREEN, egui::Vec2::new(70.0, 26.0));
+                    let close_btn = theme::action_button(
+                        "Close",
+                        theme::ACCENT_GREEN,
+                        egui::Vec2::new(70.0, 26.0),
+                    );
                     if ui.add(close_btn).clicked() {
                         state.open = None;
                     }
@@ -299,19 +370,28 @@ fn draw_column(
             let active = if is_scope {
                 config.session_scope.active_blocks.contains(&block)
             } else if let Some(ch) = channel_id {
-                config.channel_safes.get(ch).is_some_and(|s| s.safe_blocks.contains(&block))
+                config
+                    .channel_safes
+                    .get(ch)
+                    .is_some_and(|s| s.safe_blocks.contains(&block))
             } else {
                 false
             };
 
             draw_block_button(ui, block, active, available, is_scope, |toggled| {
                 if is_scope {
-                    if toggled { config.session_scope.active_blocks.insert(block); }
-                    else { config.session_scope.active_blocks.remove(&block); }
+                    if toggled {
+                        config.session_scope.active_blocks.insert(block);
+                    } else {
+                        config.session_scope.active_blocks.remove(&block);
+                    }
                 } else if let Some(ch) = channel_id {
                     let safe = config.channel_safes.entry(ch.clone()).or_default();
-                    if toggled { safe.safe_blocks.insert(block); }
-                    else { safe.safe_blocks.remove(&block); }
+                    if toggled {
+                        safe.safe_blocks.insert(block);
+                    } else {
+                        safe.safe_blocks.remove(&block);
+                    }
                 }
             });
             ui.add_space(2.0);
@@ -351,14 +431,26 @@ fn draw_block_button(
     };
 
     // Manual paint to avoid egui Button adding checkbox-like decorations
-    let (rect, resp) = ui.allocate_exact_size(size, if available { egui::Sense::click() } else { egui::Sense::hover() });
+    let (rect, resp) = ui.allocate_exact_size(
+        size,
+        if available {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
     let bg = if available && resp.hovered() {
         theme::lighten(fill, 20)
     } else {
         fill
     };
     ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0, theme::BORDER_SUBTLE), egui::StrokeKind::Outside);
+    ui.painter().rect_stroke(
+        rect,
+        4.0,
+        egui::Stroke::new(1.0, theme::BORDER_SUBTLE),
+        egui::StrokeKind::Outside,
+    );
 
     let galley = ui.painter().layout(
         block.label().to_string(),

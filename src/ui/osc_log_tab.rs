@@ -1,7 +1,7 @@
 use eframe::egui;
 
-use crate::model::osc_log::{OscDirection, OscLog};
 use super::theme;
+use crate::model::osc_log::{OscDirection, OscLog};
 
 /// State for the OSC Log tab.
 pub struct OscLogTabState {
@@ -27,11 +27,7 @@ impl Default for OscLogTabState {
 }
 
 /// Draw the OSC Log tab.
-pub fn draw_osc_log_tab(
-    ui: &mut egui::Ui,
-    tab: &mut OscLogTabState,
-    log: &OscLog,
-) {
+pub fn draw_osc_log_tab(ui: &mut egui::Ui, tab: &mut OscLogTabState, log: &OscLog) {
     // ── Toolbar ──
     theme::card_frame().show(ui, |ui| {
         ui.horizontal(|ui| {
@@ -50,12 +46,30 @@ pub fn draw_osc_log_tab(
 
             let paused = log.paused();
             let pause_label = if paused { "Resume" } else { "Pause" };
-            let pause_color = if paused { theme::ACCENT_GREEN } else { theme::ACCENT_AMBER };
-            if ui.add(theme::action_button(pause_label, pause_color, egui::Vec2::new(80.0, 28.0))).clicked() {
+            let pause_color = if paused {
+                theme::ACCENT_GREEN
+            } else {
+                theme::ACCENT_AMBER
+            };
+            if ui
+                .add(theme::action_button(
+                    pause_label,
+                    pause_color,
+                    egui::Vec2::new(80.0, 28.0),
+                ))
+                .clicked()
+            {
                 log.set_paused(!paused);
             }
 
-            if ui.add(theme::action_button("Clear", theme::ACCENT_RED, egui::Vec2::new(70.0, 28.0))).clicked() {
+            if ui
+                .add(theme::action_button(
+                    "Clear",
+                    theme::ACCENT_RED,
+                    egui::Vec2::new(70.0, 28.0),
+                ))
+                .clicked()
+            {
                 log.clear();
             }
 
@@ -103,20 +117,28 @@ pub fn draw_osc_log_tab(
         .auto_shrink([false, false])
         .stick_to_bottom(should_scroll)
         .show(ui, |ui| {
-            use egui_extras::{TableBuilder, Column};
+            use egui_extras::{Column, TableBuilder};
 
             TableBuilder::new(ui)
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::exact(70.0))  // Time
-                .column(Column::exact(40.0))  // Dir
+                .column(Column::exact(70.0)) // Time
+                .column(Column::exact(40.0)) // Dir
                 .column(Column::initial(300.0).at_least(150.0)) // Path
-                .column(Column::remainder())  // Args
+                .column(Column::remainder()) // Args
                 .header(row_height, |mut header| {
-                    header.col(|ui| { ui.strong("Time"); });
-                    header.col(|ui| { ui.strong("Dir"); });
-                    header.col(|ui| { ui.strong("Path"); });
-                    header.col(|ui| { ui.strong("Args"); });
+                    header.col(|ui| {
+                        ui.strong("Time");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Dir");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Path");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Args");
+                    });
                 })
                 .body(|body| {
                     body.rows(row_height, filtered.len(), |mut row| {
@@ -139,10 +161,7 @@ pub fn draw_osc_log_tab(
                             ui.label(&entry.path);
                         });
                         row.col(|ui| {
-                            ui.label(
-                                egui::RichText::new(&entry.args)
-                                    .color(theme::TEXT_SECONDARY),
-                            );
+                            ui.label(egui::RichText::new(&entry.args).color(theme::TEXT_SECONDARY));
                         });
                     });
                 });

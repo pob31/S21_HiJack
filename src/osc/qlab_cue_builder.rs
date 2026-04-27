@@ -88,12 +88,11 @@ pub fn build_snapshot_load_cue(snapshot_name: &str, qlab_patch: i32) -> QLabCueS
     let mut sequence = QLabCueSequence::default();
 
     // ── Group cue ──
-    sequence
-        .group_messages
-        .push(new_cue("group"));
-    sequence
-        .group_messages
-        .push(cue_selected_string("/cue/selected/name", &format!("Snapshot '{snapshot_name}'")));
+    sequence.group_messages.push(new_cue("group"));
+    sequence.group_messages.push(cue_selected_string(
+        "/cue/selected/name",
+        &format!("Snapshot '{snapshot_name}'"),
+    ));
     // Mode 2 = "start first and go to next" (matches WFS-DIY).
     sequence
         .group_messages
@@ -494,19 +493,13 @@ mod tests {
 
     #[test]
     fn format_custom_string_renders_float_with_decimal() {
-        let s = format_custom_string(
-            "/channel/1/fader",
-            &[OscType::Float(-10.0)],
-        );
+        let s = format_custom_string("/channel/1/fader", &[OscType::Float(-10.0)]);
         assert_eq!(s, "/channel/1/fader -10.0");
     }
 
     #[test]
     fn format_custom_string_renders_int_without_decimal() {
-        let s = format_custom_string(
-            "/channel/1/dyn1/0/knee",
-            &[OscType::Int(2)],
-        );
+        let s = format_custom_string("/channel/1/dyn1/0/knee", &[OscType::Int(2)]);
         assert_eq!(s, "/channel/1/dyn1/0/knee 2");
     }
 

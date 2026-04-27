@@ -6,13 +6,13 @@ use tokio::sync::RwLock;
 use tracing::info;
 use uuid::Uuid;
 
+use super::UiEvent;
+use super::theme;
 use crate::console::macro_engine::MacroEngine;
 use crate::console::macro_manager::MacroManager;
 use crate::model::channel::ChannelId;
 use crate::model::macro_def::{MacroDef, MacroStep, MacroStepMode};
 use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
-use super::theme;
-use super::UiEvent;
 
 /// State for the Macros tab.
 pub struct MacrosTabState {
@@ -225,9 +225,17 @@ pub fn draw_macros_tab(
                         // Create new macro
                         ui.horizontal(|ui| {
                             ui.label("Name:");
-                            ui.add(egui::TextEdit::singleline(&mut macros_state.new_macro_name).desired_width(150.0));
-                            let new_btn = theme::action_button("New", theme::ACCENT_GREEN, egui::Vec2::new(60.0, 28.0));
-                            if ui.add(new_btn).clicked() && !macros_state.new_macro_name.is_empty() {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut macros_state.new_macro_name)
+                                    .desired_width(150.0),
+                            );
+                            let new_btn = theme::action_button(
+                                "New",
+                                theme::ACCENT_GREEN,
+                                egui::Vec2::new(60.0, 28.0),
+                            );
+                            if ui.add(new_btn).clicked() && !macros_state.new_macro_name.is_empty()
+                            {
                                 let name = macros_state.new_macro_name.clone();
                                 let mgr_clone = macro_manager.clone();
                                 runtime.spawn(async move {
@@ -248,8 +256,13 @@ pub fn draw_macros_tab(
 
                         // Action buttons
                         draw_action_buttons(
-                            ui, macros_state, macro_manager, macro_engine,
-                            is_connected, runtime, ui_tx,
+                            ui,
+                            macros_state,
+                            macro_manager,
+                            macro_engine,
+                            is_connected,
+                            runtime,
+                            ui_tx,
                         );
                     });
 
@@ -308,8 +321,12 @@ fn draw_learn_section(
                 ui.horizontal(|ui| {
                     ui.colored_label(theme::COLOR_RECORDING, "● REC");
                     ui.label(
-                        egui::RichText::new(format!("{} steps  |  {:.1}s", step_count, elapsed_ms as f64 / 1000.0))
-                            .color(theme::TEXT_PRIMARY),
+                        egui::RichText::new(format!(
+                            "{} steps  |  {:.1}s",
+                            step_count,
+                            elapsed_ms as f64 / 1000.0
+                        ))
+                        .color(theme::TEXT_PRIMARY),
                     );
                 });
 
@@ -319,7 +336,11 @@ fn draw_learn_section(
                 });
 
                 ui.horizontal(|ui| {
-                    let stop_btn = theme::action_button("Stop & Save", theme::ACCENT_GREEN, egui::Vec2::new(100.0, 28.0));
+                    let stop_btn = theme::action_button(
+                        "Stop & Save",
+                        theme::ACCENT_GREEN,
+                        egui::Vec2::new(100.0, 28.0),
+                    );
                     if ui.add(stop_btn).clicked() {
                         let name = if macros_state.learn_name.is_empty() {
                             "Recorded Macro".to_string()
@@ -341,7 +362,11 @@ fn draw_learn_section(
                         macros_state.learn_name.clear();
                     }
 
-                    let discard_btn = theme::action_button("Discard", theme::ACCENT_RED, egui::Vec2::new(80.0, 28.0));
+                    let discard_btn = theme::action_button(
+                        "Discard",
+                        theme::ACCENT_RED,
+                        egui::Vec2::new(80.0, 28.0),
+                    );
                     if ui.add(discard_btn).clicked() {
                         let mgr_clone = macro_manager.clone();
                         runtime.spawn(async move {
@@ -356,7 +381,11 @@ fn draw_learn_section(
         ui.ctx().request_repaint();
     } else {
         // Not recording
-        let learn_btn = theme::action_button("Learn (Record)", theme::ACCENT_RED, egui::Vec2::new(130.0, 32.0));
+        let learn_btn = theme::action_button(
+            "Learn (Record)",
+            theme::ACCENT_RED,
+            egui::Vec2::new(130.0, 32.0),
+        );
         if ui.add(learn_btn).clicked() {
             let mgr_clone = macro_manager.clone();
             runtime.spawn(async move {
@@ -377,7 +406,14 @@ fn draw_macro_list(
         .map(|mgr| {
             mgr.sorted_macros()
                 .into_iter()
-                .map(|m| (m.id, m.name.clone(), mgr.is_quick_trigger(&m.id), m.steps.len()))
+                .map(|m| {
+                    (
+                        m.id,
+                        m.name.clone(),
+                        mgr.is_quick_trigger(&m.id),
+                        m.steps.len(),
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -393,7 +429,11 @@ fn draw_macro_list(
         .show(ui, |ui| {
             for (id, name, is_qt, step_count) in &macros_info {
                 let selected = macros_state.selected_macro_id == Some(*id);
-                let bg = if selected { theme::BG_ELEVATED } else { theme::BG_PANEL };
+                let bg = if selected {
+                    theme::BG_ELEVATED
+                } else {
+                    theme::BG_PANEL
+                };
 
                 egui::Frame::new()
                     .fill(bg)
@@ -405,21 +445,23 @@ fn draw_macro_list(
                     .corner_radius(4.0)
                     .inner_margin(egui::Margin::symmetric(8, 3))
                     .show(ui, |ui| {
-                        let response = ui.horizontal(|ui| {
-                            if *is_qt {
-                                theme::colored_badge(ui, "QT", theme::COLOR_MACRO_BUTTON);
-                            }
-                            ui.label(
-                                egui::RichText::new(name)
-                                    .strong()
-                                    .color(theme::TEXT_PRIMARY),
-                            );
-                            ui.label(
-                                egui::RichText::new(format!("{} steps", step_count))
-                                    .color(theme::TEXT_SECONDARY)
-                                    .small(),
-                            );
-                        }).response;
+                        let response = ui
+                            .horizontal(|ui| {
+                                if *is_qt {
+                                    theme::colored_badge(ui, "QT", theme::COLOR_MACRO_BUTTON);
+                                }
+                                ui.label(
+                                    egui::RichText::new(name)
+                                        .strong()
+                                        .color(theme::TEXT_PRIMARY),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("{} steps", step_count))
+                                        .color(theme::TEXT_SECONDARY)
+                                        .small(),
+                                );
+                            })
+                            .response;
 
                         if response.interact(egui::Sense::click()).clicked() {
                             macros_state.selected_macro_id = Some(*id);
@@ -447,14 +489,21 @@ fn draw_action_buttons(
     ui.horizontal(|ui| {
         // Run Macro
         let run_btn = theme::action_button("Run", theme::ACCENT_GREEN, egui::Vec2::new(70.0, 28.0));
-        if ui.add_enabled(has_selection && is_connected, run_btn).clicked() {
+        if ui
+            .add_enabled(has_selection && is_connected, run_btn)
+            .clicked()
+        {
             if let Some(id) = macros_state.selected_macro_id {
                 fire_macro_by_id(id, macro_manager, macro_engine, runtime, ui_tx);
             }
         }
 
         // Toggle Quick Trigger
-        let qt_btn = theme::action_button("Toggle QT", theme::COLOR_MACRO_BUTTON, egui::Vec2::new(90.0, 28.0));
+        let qt_btn = theme::action_button(
+            "Toggle QT",
+            theme::COLOR_MACRO_BUTTON,
+            egui::Vec2::new(90.0, 28.0),
+        );
         if ui.add_enabled(has_selection, qt_btn).clicked() {
             if let Some(id) = macros_state.selected_macro_id {
                 let mgr_clone = macro_manager.clone();
@@ -466,7 +515,8 @@ fn draw_action_buttons(
         }
 
         // Delete
-        let del_btn = theme::action_button("Delete", theme::ACCENT_RED, egui::Vec2::new(70.0, 28.0));
+        let del_btn =
+            theme::action_button("Delete", theme::ACCENT_RED, egui::Vec2::new(70.0, 28.0));
         if ui.add_enabled(has_selection, del_btn).clicked() {
             if let Some(id) = macros_state.selected_macro_id {
                 let mgr_clone = macro_manager.clone();
@@ -491,15 +541,15 @@ fn draw_step_editor(
 ) {
     let Some(selected_id) = macros_state.selected_macro_id else {
         theme::section_heading(ui, "Step Editor");
-        ui.label(egui::RichText::new("Select a macro to edit its steps").color(theme::TEXT_SECONDARY));
+        ui.label(
+            egui::RichText::new("Select a macro to edit its steps").color(theme::TEXT_SECONDARY),
+        );
         return;
     };
 
     // Read macro data
-    let macro_data: Option<(String, Vec<(ParameterAddress, MacroStepMode, u32)>, bool)> = macro_manager
-        .try_read()
-        .ok()
-        .and_then(|mgr| {
+    let macro_data: Option<(String, Vec<(ParameterAddress, MacroStepMode, u32)>, bool)> =
+        macro_manager.try_read().ok().and_then(|mgr| {
             mgr.get_macro(&selected_id).map(|m| {
                 (
                     m.name.clone(),
@@ -522,7 +572,10 @@ fn draw_step_editor(
 
     // Mark-dirty toggle
     let mut dirty_toggle = mark_dirty;
-    if ui.checkbox(&mut dirty_toggle, "Track as modified parameters").changed() {
+    if ui
+        .checkbox(&mut dirty_toggle, "Track as modified parameters")
+        .changed()
+    {
         let mgr = macro_manager.clone();
         let new_val = dirty_toggle;
         runtime.spawn(async move {
@@ -537,8 +590,12 @@ fn draw_step_editor(
     // Ensure edit buffers match step count
     let step_count = steps.len();
     if macros_state.step_mode_edits.len() != step_count {
-        macros_state.step_mode_edits = steps.iter().map(|(_, m, _)| StepModeChoice::from_mode(m)).collect();
-        macros_state.step_value_edits = steps.iter().map(|(_, m, _)| mode_value_string(m)).collect();
+        macros_state.step_mode_edits = steps
+            .iter()
+            .map(|(_, m, _)| StepModeChoice::from_mode(m))
+            .collect();
+        macros_state.step_value_edits =
+            steps.iter().map(|(_, m, _)| mode_value_string(m)).collect();
         macros_state.step_delay_edits = steps.iter().map(|(_, _, d)| d.to_string()).collect();
     }
 
@@ -546,7 +603,10 @@ fn draw_step_editor(
     let mut action: Option<StepAction> = None;
 
     if steps.is_empty() {
-        ui.label(egui::RichText::new("No steps — add one below or use Learn mode").color(theme::TEXT_SECONDARY));
+        ui.label(
+            egui::RichText::new("No steps — add one below or use Learn mode")
+                .color(theme::TEXT_SECONDARY),
+        );
     } else {
         egui::ScrollArea::vertical()
             .id_salt("step_editor_scroll")
@@ -557,8 +617,7 @@ fn draw_step_editor(
                         ui.horizontal(|ui| {
                             theme::colored_badge(ui, &format!("#{}", i + 1), theme::BG_ELEVATED);
                             ui.label(
-                                egui::RichText::new(format!("{}", addr))
-                                    .color(theme::TEXT_PRIMARY),
+                                egui::RichText::new(format!("{}", addr)).color(theme::TEXT_PRIMARY),
                             );
 
                             ui.separator();
@@ -570,11 +629,14 @@ fn draw_step_editor(
                                 .selected_text(macros_state.step_mode_edits[i].label())
                                 .show_ui(ui, |ui| {
                                     for choice in StepModeChoice::ALL {
-                                        if ui.selectable_value(
-                                            &mut macros_state.step_mode_edits[i],
-                                            choice,
-                                            choice.label(),
-                                        ).changed() {
+                                        if ui
+                                            .selectable_value(
+                                                &mut macros_state.step_mode_edits[i],
+                                                choice,
+                                                choice.label(),
+                                            )
+                                            .changed()
+                                        {
                                             action = Some(StepAction::UpdateMode(i));
                                         }
                                     }
@@ -584,8 +646,10 @@ fn draw_step_editor(
                             match macros_state.step_mode_edits[i] {
                                 StepModeChoice::Fixed | StepModeChoice::Relative => {
                                     let resp = ui.add(
-                                        egui::TextEdit::singleline(&mut macros_state.step_value_edits[i])
-                                            .desired_width(60.0),
+                                        egui::TextEdit::singleline(
+                                            &mut macros_state.step_value_edits[i],
+                                        )
+                                        .desired_width(60.0),
                                     );
                                     if resp.lost_focus() {
                                         action = Some(StepAction::UpdateMode(i));
@@ -650,7 +714,11 @@ fn draw_add_step(
     macro_manager: &Arc<RwLock<MacroManager>>,
     runtime: &tokio::runtime::Handle,
 ) {
-    ui.label(egui::RichText::new("Add Step").strong().color(theme::TEXT_PRIMARY));
+    ui.label(
+        egui::RichText::new("Add Step")
+            .strong()
+            .color(theme::TEXT_PRIMARY),
+    );
 
     ui.horizontal(|ui| {
         // Channel type
@@ -664,7 +732,10 @@ fn draw_add_step(
             });
 
         // Channel number
-        ui.add(egui::TextEdit::singleline(&mut macros_state.add_step_channel_number).desired_width(30.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut macros_state.add_step_channel_number)
+                .desired_width(30.0),
+        );
 
         // Parameter
         egui::ComboBox::from_id_salt("add_param")
@@ -692,7 +763,10 @@ fn draw_add_step(
         match macros_state.add_step_mode {
             StepModeChoice::Fixed | StepModeChoice::Relative => {
                 ui.label("Value:");
-                ui.add(egui::TextEdit::singleline(&mut macros_state.add_step_value).desired_width(60.0));
+                ui.add(
+                    egui::TextEdit::singleline(&mut macros_state.add_step_value)
+                        .desired_width(60.0),
+                );
             }
             StepModeChoice::Toggle => {}
         }
@@ -703,7 +777,8 @@ fn draw_add_step(
         ui.label("ms");
     });
 
-    let add_btn = theme::action_button("Add Step", theme::ACCENT_GREEN, egui::Vec2::new(90.0, 28.0));
+    let add_btn =
+        theme::action_button("Add Step", theme::ACCENT_GREEN, egui::Vec2::new(90.0, 28.0));
     if ui.add(add_btn).clicked() {
         let ch_num: u8 = macros_state.add_step_channel_number.parse().unwrap_or(1);
         let channel = macros_state.add_step_channel_type.to_channel_id(ch_num);
@@ -860,13 +935,17 @@ pub fn fire_macro_by_id(
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    let Some(engine) = macro_engine.clone() else { return };
+    let Some(engine) = macro_engine.clone() else {
+        return;
+    };
     let mgr_clone = macro_manager.clone();
     let tx = ui_tx.clone();
 
     runtime.spawn(async move {
         let mgr = mgr_clone.read().await;
-        let Some(macro_def) = mgr.get_macro(&id).cloned() else { return };
+        let Some(macro_def) = mgr.get_macro(&id).cloned() else {
+            return;
+        };
         drop(mgr);
 
         let result = engine.execute(&macro_def).await;

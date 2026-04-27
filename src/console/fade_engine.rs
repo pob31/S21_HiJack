@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use crate::model::channel::ChannelId;
 use crate::model::parameter::{ParameterAddress, ParameterValue, TimingCategory};
 use crate::osc::client::OscSender;
-use crate::osc::ipad_client::IpadSender;
 use crate::osc::encode;
+use crate::osc::ipad_client::IpadSender;
 use crate::osc::ipad_encode;
 
 /// Update interval for fade interpolation (~20 updates/sec).
@@ -173,19 +173,30 @@ async fn run_fade(
     cancel: CancellationToken,
 ) -> FadeResult {
     if targets.is_empty() {
-        return FadeResult { total_steps_sent: 0, cancelled: false };
+        return FadeResult {
+            total_steps_sent: 0,
+            cancelled: false,
+        };
     }
 
     let total_duration = Duration::from_secs_f32(fade_time_secs);
     let start = time::Instant::now();
     let mut steps_sent = 0usize;
 
-    info!(cue_number, targets = targets.len(), fade_time_secs, "Fade started");
+    info!(
+        cue_number,
+        targets = targets.len(),
+        fade_time_secs,
+        "Fade started"
+    );
 
     loop {
         if cancel.is_cancelled() {
             info!(cue_number, steps_sent, "Fade cancelled");
-            return FadeResult { total_steps_sent: steps_sent, cancelled: true };
+            return FadeResult {
+                total_steps_sent: steps_sent,
+                cancelled: true,
+            };
         }
 
         let elapsed = start.elapsed();
@@ -198,7 +209,8 @@ async fn run_fade(
         // Interpolate and send each target
         for target in &targets {
             if let Some(interpolated) = target.start_value.lerp(&target.end_value, t) {
-                let sent = send_parameter(&sender, &ipad_sender, &target.address, &interpolated).await;
+                let sent =
+                    send_parameter(&sender, &ipad_sender, &target.address, &interpolated).await;
                 if sent {
                     steps_sent += 1;
                 }
@@ -213,7 +225,10 @@ async fn run_fade(
     }
 
     info!(cue_number, steps_sent, "Fade complete");
-    FadeResult { total_steps_sent: steps_sent, cancelled: false }
+    FadeResult {
+        total_steps_sent: steps_sent,
+        cancelled: false,
+    }
 }
 
 /// Send a parameter via GP OSC, falling back to iPad protocol.
@@ -224,9 +239,7 @@ async fn send_parameter(
     value: &ParameterValue,
 ) -> bool {
     match encode::encode_parameter(addr, value) {
-        Some((path, args)) => {
-            sender.send(&path, args).await.is_ok()
-        }
+        Some((path, args)) => sender.send(&path, args).await.is_ok(),
         None => {
             if let Some(ipad) = ipad_sender {
                 match ipad_encode::encode_ipad_parameter(addr, value) {
@@ -243,11 +256,11 @@ async fn send_parameter(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::model::channel::ChannelId;
     use crate::model::parameter::ParameterPath;
     use crate::osc::client::OscClient;
     use std::net::SocketAddr;
+    use std::sync::Arc;
 
     async fn test_sender() -> OscSender {
         let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -281,10 +294,16 @@ mod tests {
             end_value: ParameterValue::Float(1.0),
         }];
 
-        let handle = controller.start_fade(1.0, 0.15, targets, sender, None).await;
+        let handle = controller
+            .start_fade(1.0, 0.15, targets, sender, None)
+            .await;
         let result = handle.await.unwrap();
         // With 50ms interval over 150ms, should get ~3-4 update rounds
-        assert!(result.total_steps_sent >= 2, "Expected at least 2 steps, got {}", result.total_steps_sent);
+        assert!(
+            result.total_steps_sent >= 2,
+            "Expected at least 2 steps, got {}",
+            result.total_steps_sent
+        );
         assert!(!result.cancelled);
     }
 
@@ -333,7 +352,9 @@ mod tests {
             end_value: ParameterValue::Float(1.0),
         }];
 
-        let handle1 = controller.start_fade(1.0, 5.0, targets1, sender, None).await;
+        let handle1 = controller
+            .start_fade(1.0, 5.0, targets1, sender, None)
+            .await;
 
         // Start a second fade — should cancel the first
         time::sleep(Duration::from_millis(80)).await;
@@ -345,7 +366,9 @@ mod tests {
             start_value: ParameterValue::Float(1.0),
             end_value: ParameterValue::Float(0.0),
         }];
-        let handle2 = controller.start_fade(2.0, 0.1, targets2, sender2, None).await;
+        let handle2 = controller
+            .start_fade(2.0, 0.1, targets2, sender2, None)
+            .await;
 
         // First fade should be cancelled
         let result1 = handle1.await.unwrap();
@@ -358,7 +381,10 @@ mod tests {
 
     #[test]
     fn fade_result_debug() {
-        let r = FadeResult { total_steps_sent: 42, cancelled: false };
+        let r = FadeResult {
+            total_steps_sent: 42,
+            cancelled: false,
+        };
         assert!(format!("{r:?}").contains("42"));
     }
 }

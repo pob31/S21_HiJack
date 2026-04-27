@@ -193,10 +193,7 @@ pub fn section_heading(ui: &mut egui::Ui, text: &str) {
     );
     ui.add_space(2.0);
     let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(
-        egui::Vec2::new(width, 1.0),
-        egui::Sense::hover(),
-    );
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(width, 1.0), egui::Sense::hover());
     ui.painter().rect_filled(rect, 0.0, BORDER_SUBTLE);
     ui.add_space(6.0);
 }
@@ -204,10 +201,7 @@ pub fn section_heading(ui: &mut egui::Ui, text: &str) {
 /// Small colored circle status indicator.
 pub fn status_dot(ui: &mut egui::Ui, color: egui::Color32) {
     let size = 10.0;
-    let (rect, _) = ui.allocate_exact_size(
-        egui::Vec2::splat(size),
-        egui::Sense::hover(),
-    );
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), size / 2.0, color);
 }
 
@@ -229,14 +223,10 @@ pub fn colored_badge(ui: &mut egui::Ui, text: &str, bg_color: egui::Color32) {
 
 /// DiGiCo-style action button with colored fill.
 pub fn action_button(text: &str, color: egui::Color32, size: egui::Vec2) -> egui::Button<'_> {
-    egui::Button::new(
-        egui::RichText::new(text)
-            .color(TEXT_PRIMARY)
-            .strong(),
-    )
-    .fill(color)
-    .min_size(size)
-    .corner_radius(6.0)
+    egui::Button::new(egui::RichText::new(text).color(TEXT_PRIMARY).strong())
+        .fill(color)
+        .min_size(size)
+        .corner_radius(6.0)
 }
 
 /// Scope/section toggle block — green when active, grey when inactive.

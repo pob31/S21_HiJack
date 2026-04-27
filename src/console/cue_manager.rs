@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use uuid::Uuid;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 use crate::model::snapshot::{Cue, CueList, ScopeTemplate, Snapshot};
 
@@ -99,9 +99,11 @@ impl CueManager {
 
     /// Fire a specific cue by number. Finds the closest matching cue.
     pub fn fire_cue_number(&mut self, number: f32) -> Option<&Cue> {
-        let idx = self.cue_list.cues.iter().position(|c| {
-            (c.cue_number - number).abs() < 0.001
-        });
+        let idx = self
+            .cue_list
+            .cues
+            .iter()
+            .position(|c| (c.cue_number - number).abs() < 0.001);
 
         match idx {
             Some(i) => {
@@ -160,7 +162,9 @@ impl CueManager {
         self.cue_list.cues.push(cue);
         // Keep cues sorted by cue number
         self.cue_list.cues.sort_by(|a, b| {
-            a.cue_number.partial_cmp(&b.cue_number).unwrap_or(std::cmp::Ordering::Equal)
+            a.cue_number
+                .partial_cmp(&b.cue_number)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
     }
 
@@ -240,7 +244,7 @@ impl CueManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::snapshot::{CueList, Cue};
+    use crate::model::snapshot::{Cue, CueList};
 
     fn make_cue(number: f32, name: &str) -> Cue {
         Cue::new(number, name.into(), Uuid::new_v4())

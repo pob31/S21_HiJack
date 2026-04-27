@@ -30,9 +30,8 @@ impl OscClient {
         console_addr: SocketAddr,
         interface_name: Option<&str>,
     ) -> std::io::Result<Self> {
-        let socket = crate::ui::net_interfaces::create_bound_udp_socket(
-            local_addr, interface_name,
-        ).await?;
+        let socket =
+            crate::ui::net_interfaces::create_bound_udp_socket(local_addr, interface_name).await?;
         Ok(Self {
             socket,
             console_addr,
@@ -47,7 +46,10 @@ impl OscClient {
         };
         let packet = OscPacket::Message(msg);
         let buf = rosc::encoder::encode(&packet).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("OSC encode error: {e}"))
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("OSC encode error: {e}"),
+            )
         })?;
         self.socket.send_to(&buf, self.console_addr).await?;
         debug!(path, "Sent OSC message");
@@ -106,7 +108,11 @@ impl OscSender {
     }
 
     /// Create a sender with logging.
-    pub fn new_with_log(socket: std::sync::Arc<UdpSocket>, console_addr: SocketAddr, log: OscLog) -> Self {
+    pub fn new_with_log(
+        socket: std::sync::Arc<UdpSocket>,
+        console_addr: SocketAddr,
+        log: OscLog,
+    ) -> Self {
         Self {
             socket,
             console_addr,
@@ -142,7 +148,10 @@ impl OscSender {
         };
         let packet = OscPacket::Message(msg);
         let buf = rosc::encoder::encode(&packet).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("OSC encode error: {e}"))
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("OSC encode error: {e}"),
+            )
         })?;
         self.socket.send_to(&buf, self.console_addr).await?;
         debug!(path, "Sent OSC message");

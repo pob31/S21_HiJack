@@ -54,11 +54,7 @@ impl PanLinkEngine {
 
     /// Process an inbound parameter update. Only main pan on input
     /// channels is interesting; everything else is a no-op.
-    pub async fn process_pan_update(
-        &self,
-        addr: &ParameterAddress,
-        new_value: &ParameterValue,
-    ) {
+    pub async fn process_pan_update(&self, addr: &ParameterAddress, new_value: &ParameterValue) {
         // Only react to main pan on input channels.
         let ChannelId::Input(input_n) = addr.channel else {
             return;
@@ -88,10 +84,7 @@ impl PanLinkEngine {
         let mix_types = state.config.mix_output_types.clone();
         for aux in auxes {
             let idx0 = aux.checked_sub(1).map(|i| i as usize);
-            let is_aux_bus = idx0
-                .and_then(|i| mix_types.get(i))
-                .copied()
-                .unwrap_or(true);
+            let is_aux_bus = idx0.and_then(|i| mix_types.get(i)).copied().unwrap_or(true);
             if !is_aux_bus {
                 continue;
             }

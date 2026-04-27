@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
 use rosc::OscType;
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::model::channel::ChannelId;
@@ -149,7 +149,14 @@ impl MonitorEngine {
                 reply_addr,
             } => {
                 manager.update_last_seen(&client_name, reply_addr);
-                self.handle_aux_change(&client_name, aux_ch, "fader", ParameterValue::Float(value), manager).await;
+                self.handle_aux_change(
+                    &client_name,
+                    aux_ch,
+                    "fader",
+                    ParameterValue::Float(value),
+                    manager,
+                )
+                .await;
             }
             MonitorCommand::SetAuxMute {
                 client_name,
@@ -158,7 +165,14 @@ impl MonitorEngine {
                 reply_addr,
             } => {
                 manager.update_last_seen(&client_name, reply_addr);
-                self.handle_aux_change(&client_name, aux_ch, "mute", ParameterValue::Bool(mute), manager).await;
+                self.handle_aux_change(
+                    &client_name,
+                    aux_ch,
+                    "mute",
+                    ParameterValue::Bool(mute),
+                    manager,
+                )
+                .await;
             }
             MonitorCommand::Discover { reply_addr } => {
                 let state = self.state.read().await;
@@ -168,11 +182,13 @@ impl MonitorEngine {
                     state.config.console_name.clone()
                 };
                 drop(state);
-                let _ = monitor_sender.send_to(
-                    reply_addr,
-                    "/monitor/discovered",
-                    vec![OscType::String(name)],
-                ).await;
+                let _ = monitor_sender
+                    .send_to(
+                        reply_addr,
+                        "/monitor/discovered",
+                        vec![OscType::String(name)],
+                    )
+                    .await;
                 info!(%reply_addr, "Monitor discovery reply sent");
             }
             MonitorCommand::QueryConsoleStatus { reply_addr } => {
@@ -347,11 +363,13 @@ impl MonitorEngine {
                 parameter: ParameterPath::Name,
             }) {
                 if let ParameterValue::String(s) = name {
-                    let _ = monitor_sender.send_to(
-                        addr,
-                        &format!("/monitor/state/name/input/{input}"),
-                        vec![OscType::String(s.clone())],
-                    ).await;
+                    let _ = monitor_sender
+                        .send_to(
+                            addr,
+                            &format!("/monitor/state/name/input/{input}"),
+                            vec![OscType::String(s.clone())],
+                        )
+                        .await;
                 }
             }
         }
@@ -361,11 +379,13 @@ impl MonitorEngine {
                 parameter: ParameterPath::Name,
             }) {
                 if let ParameterValue::String(s) = name {
-                    let _ = monitor_sender.send_to(
-                        addr,
-                        &format!("/monitor/state/name/aux/{aux}"),
-                        vec![OscType::String(s.clone())],
-                    ).await;
+                    let _ = monitor_sender
+                        .send_to(
+                            addr,
+                            &format!("/monitor/state/name/aux/{aux}"),
+                            vec![OscType::String(s.clone())],
+                        )
+                        .await;
                 }
             }
         }
@@ -386,11 +406,13 @@ impl MonitorEngine {
                 })
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let _ = monitor_sender.send_to(
-                addr,
-                &format!("/monitor/state/aux/{aux}"),
-                vec![OscType::Float(fader), OscType::Bool(mute)],
-            ).await;
+            let _ = monitor_sender
+                .send_to(
+                    addr,
+                    &format!("/monitor/state/aux/{aux}"),
+                    vec![OscType::Float(fader), OscType::Bool(mute)],
+                )
+                .await;
         }
 
         debug!(
@@ -599,8 +621,8 @@ impl MonitorEngine {
                     if !client.is_connected() || !client.permitted_auxes.contains(&aux) {
                         continue;
                     }
-                    let input_visible = client.visible_inputs.is_empty()
-                        || client.visible_inputs.contains(&input);
+                    let input_visible =
+                        client.visible_inputs.is_empty() || client.visible_inputs.contains(&input);
                     if !input_visible {
                         continue;
                     }
@@ -661,10 +683,7 @@ impl MonitorEngine {
                         .send_to(
                             addr,
                             &format!("/monitor/state/aux/{aux}"),
-                            vec![
-                                rosc::OscType::Float(fader),
-                                rosc::OscType::Bool(mute),
-                            ],
+                            vec![rosc::OscType::Float(fader), rosc::OscType::Bool(mute)],
                         )
                         .await;
                 }

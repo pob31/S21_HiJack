@@ -87,8 +87,7 @@ impl QLabClient {
     /// kernel buffer.
     pub async fn send_message(&self, msg: OscMessage) -> Result<(), QLabError> {
         let packet = OscPacket::Message(msg);
-        let buf = rosc::encoder::encode(&packet)
-            .map_err(|e| QLabError::Encode(format!("{e}")))?;
+        let buf = rosc::encoder::encode(&packet).map_err(|e| QLabError::Encode(format!("{e}")))?;
         self.socket.send_to(&buf, self.dest).await?;
         Ok(())
     }
@@ -126,7 +125,11 @@ impl QLabClient {
         }
 
         info!(sent, dest = %self.dest, "Sent QLab cue sequence");
-        debug!("QLab sequence had {} group messages, {} children", sequence.group_messages.len(), sequence.network_cues.len());
+        debug!(
+            "QLab sequence had {} group messages, {} children",
+            sequence.group_messages.len(),
+            sequence.network_cues.len()
+        );
         Ok(sent)
     }
 }

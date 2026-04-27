@@ -7,8 +7,7 @@ use uuid::Uuid;
 use super::channel::ChannelId;
 use super::palette::ChannelPalette;
 use super::parameter::{
-    ParameterAddress, ParameterPath, ParameterSection, ParameterValue, PaletteKind,
-    TimingCategory,
+    PaletteKind, ParameterAddress, ParameterPath, ParameterSection, ParameterValue, TimingCategory,
 };
 
 /// Reusable scope template — defines which channels and sections to capture/recall.
@@ -48,7 +47,9 @@ impl ScopeTemplate {
     /// Used to decide whether to use the new timed-recall path or the
     /// legacy single-fade-time path.
     pub fn has_any_category_timing(&self) -> bool {
-        self.channel_scopes.iter().any(|cs| !cs.category_timings.is_empty())
+        self.channel_scopes
+            .iter()
+            .any(|cs| !cs.category_timings.is_empty())
     }
 
     /// Look up the timing for a specific channel + category. Returns default
@@ -212,12 +213,7 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// Create a new snapshot with generated ID and current timestamps.
-    pub fn new(
-        name: String,
-        scope: ScopeTemplate,
-        data: SnapshotData,
-        kind: SnapshotKind,
-    ) -> Self {
+    pub fn new(name: String, scope: ScopeTemplate, data: SnapshotData, kind: SnapshotKind) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
@@ -238,7 +234,9 @@ impl Snapshot {
     /// snapshot engine to substitute palette values during recall.
     pub fn palette_ref_for(&self, addr: &ParameterAddress) -> Option<Uuid> {
         let kind = addr.parameter.section().palette_kind()?;
-        self.palette_refs.get(&(addr.channel.clone(), kind)).copied()
+        self.palette_refs
+            .get(&(addr.channel.clone(), kind))
+            .copied()
     }
 }
 
@@ -388,7 +386,10 @@ mod parameter_map {
     {
         let entries: Vec<Entry> = map
             .iter()
-            .map(|(k, v)| Entry { address: k.clone(), value: v.clone() })
+            .map(|(k, v)| Entry {
+                address: k.clone(),
+                value: v.clone(),
+            })
             .collect();
         entries.serialize(serializer)
     }
@@ -539,10 +540,7 @@ mod tests {
             "Test".into(),
             vec![ChannelScope::from_sections(
                 ChannelId::Input(1),
-                HashSet::from([
-                    ParameterSection::FaderMutePan,
-                    ParameterSection::Eq,
-                ]),
+                HashSet::from([ParameterSection::FaderMutePan, ParameterSection::Eq]),
             )],
         );
 
@@ -627,24 +625,36 @@ mod tests {
         let eq_palette_id = Uuid::new_v4();
         let dyn1_palette_id = Uuid::new_v4();
         let dyn2_palette_id = Uuid::new_v4();
-        snapshot.palette_refs.insert((ChannelId::Input(1), PaletteKind::Eq), eq_palette_id);
-        snapshot.palette_refs.insert((ChannelId::Input(1), PaletteKind::Dyn1), dyn1_palette_id);
-        snapshot.palette_refs.insert((ChannelId::Aux(3), PaletteKind::Dyn2), dyn2_palette_id);
+        snapshot
+            .palette_refs
+            .insert((ChannelId::Input(1), PaletteKind::Eq), eq_palette_id);
+        snapshot
+            .palette_refs
+            .insert((ChannelId::Input(1), PaletteKind::Dyn1), dyn1_palette_id);
+        snapshot
+            .palette_refs
+            .insert((ChannelId::Aux(3), PaletteKind::Dyn2), dyn2_palette_id);
 
         let json = serde_json::to_string(&snapshot).unwrap();
         let loaded: Snapshot = serde_json::from_str(&json).unwrap();
 
         assert_eq!(loaded.palette_refs.len(), 3);
         assert_eq!(
-            loaded.palette_refs.get(&(ChannelId::Input(1), PaletteKind::Eq)),
+            loaded
+                .palette_refs
+                .get(&(ChannelId::Input(1), PaletteKind::Eq)),
             Some(&eq_palette_id),
         );
         assert_eq!(
-            loaded.palette_refs.get(&(ChannelId::Input(1), PaletteKind::Dyn1)),
+            loaded
+                .palette_refs
+                .get(&(ChannelId::Input(1), PaletteKind::Dyn1)),
             Some(&dyn1_palette_id),
         );
         assert_eq!(
-            loaded.palette_refs.get(&(ChannelId::Aux(3), PaletteKind::Dyn2)),
+            loaded
+                .palette_refs
+                .get(&(ChannelId::Aux(3), PaletteKind::Dyn2)),
             Some(&dyn2_palette_id),
         );
     }
@@ -688,8 +698,14 @@ mod tests {
         let loaded: Snapshot = serde_json::from_str(json).unwrap();
         // Both legacy entries should be in palette_refs keyed by Eq.
         assert_eq!(loaded.palette_refs.len(), 2);
-        let input1 = loaded.palette_refs.get(&(ChannelId::Input(1), PaletteKind::Eq)).copied();
-        let aux2 = loaded.palette_refs.get(&(ChannelId::Aux(2), PaletteKind::Eq)).copied();
+        let input1 = loaded
+            .palette_refs
+            .get(&(ChannelId::Input(1), PaletteKind::Eq))
+            .copied();
+        let aux2 = loaded
+            .palette_refs
+            .get(&(ChannelId::Aux(2), PaletteKind::Eq))
+            .copied();
         assert_eq!(
             input1,
             Some(Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap()),
@@ -725,8 +741,16 @@ mod tests {
         let loaded: Snapshot = serde_json::from_str(json).unwrap();
         // Two entries: the new Dyn1 + the migrated Eq.
         assert_eq!(loaded.palette_refs.len(), 2);
-        assert!(loaded.palette_refs.contains_key(&(ChannelId::Input(1), PaletteKind::Eq)));
-        assert!(loaded.palette_refs.contains_key(&(ChannelId::Input(1), PaletteKind::Dyn1)));
+        assert!(
+            loaded
+                .palette_refs
+                .contains_key(&(ChannelId::Input(1), PaletteKind::Eq))
+        );
+        assert!(
+            loaded
+                .palette_refs
+                .contains_key(&(ChannelId::Input(1), PaletteKind::Dyn1))
+        );
     }
 
     #[test]
@@ -740,8 +764,12 @@ mod tests {
         );
         let eq_id = Uuid::new_v4();
         let dyn1_id = Uuid::new_v4();
-        snapshot.palette_refs.insert((ChannelId::Input(1), PaletteKind::Eq), eq_id);
-        snapshot.palette_refs.insert((ChannelId::Input(1), PaletteKind::Dyn1), dyn1_id);
+        snapshot
+            .palette_refs
+            .insert((ChannelId::Input(1), PaletteKind::Eq), eq_id);
+        snapshot
+            .palette_refs
+            .insert((ChannelId::Input(1), PaletteKind::Dyn1), dyn1_id);
 
         // EQ-section parameter on Input(1) → eq palette.
         let eq_addr = ParameterAddress {
@@ -834,10 +862,8 @@ mod tests {
 
     #[test]
     fn migrate_sections_to_paths_expands_correctly() {
-        let mut cs = ChannelScope::from_sections(
-            ChannelId::Input(1),
-            HashSet::from([ParameterSection::Eq]),
-        );
+        let mut cs =
+            ChannelScope::from_sections(ChannelId::Input(1), HashSet::from([ParameterSection::Eq]));
         assert!(cs.paths.is_empty());
         assert!(!cs.sections.is_empty());
 
@@ -876,7 +902,11 @@ mod tests {
         );
         cs.migrate_sections_to_paths(8, 8, 8);
         // Sends section produced 0 paths for Aux (sends are input-only).
-        assert!(!cs.paths.iter().any(|p| matches!(p, ParameterPath::SendLevel(_))));
+        assert!(
+            !cs.paths
+                .iter()
+                .any(|p| matches!(p, ParameterPath::SendLevel(_)))
+        );
         // FaderMutePan paths are present, but not Pan (input-only on S21 GP OSC).
         assert!(cs.paths.contains(&ParameterPath::Fader));
         assert!(cs.paths.contains(&ParameterPath::Mute));

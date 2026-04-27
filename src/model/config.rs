@@ -22,7 +22,11 @@ impl PlusMode {
     /// Derive from a discovered input channel count. 60 or more → Plus,
     /// anything else → standard.
     pub fn from_input_count(inputs: u8) -> Self {
-        if inputs >= 60 { Self::S21Plus } else { Self::S21 }
+        if inputs >= 60 {
+            Self::S21Plus
+        } else {
+            Self::S21
+        }
     }
 
     pub fn input_count(&self) -> u8 {
@@ -78,12 +82,12 @@ pub struct ConsoleConfig {
     pub session_filename: Option<String>,
 
     pub input_channel_count: u8,
-    pub aux_output_count: u8,     // depends on aux/group split
+    pub aux_output_count: u8, // depends on aux/group split
     pub group_output_count: u8,
-    pub matrix_output_count: u8,  // 8
-    pub matrix_input_count: u8,   // 10
-    pub control_group_count: u8,  // 10
-    pub graphic_eq_count: u8,     // 16
+    pub matrix_output_count: u8, // 8
+    pub matrix_input_count: u8,  // 10
+    pub control_group_count: u8, // 10
+    pub graphic_eq_count: u8,    // 16
     pub talkback_output_count: u8,
 
     /// Per mix output: true = aux, false = group/bus
@@ -152,7 +156,6 @@ impl ConsoleConfig {
             None => format!("Bus {bus_index_1based}{mode_suffix}"),
         }
     }
-
 }
 
 impl Default for ConsoleConfig {
@@ -207,10 +210,7 @@ mod tests {
         // Buses 1, 2 are auxes; bus 3 is a group; bus 4 is aux; bus 5 is group.
         // Per-type 1-based numbering: Aux 1 = bus 1, Aux 2 = bus 2, Aux 3 = bus 4,
         // Group 1 = bus 3, Group 2 = bus 5.
-        let config = config_with_buses(
-            vec![true, true, false, true, false],
-            vec![],
-        );
+        let config = config_with_buses(vec![true, true, false, true, false], vec![]);
         assert_eq!(config.bus_label(1), "Aux 1");
         assert_eq!(config.bus_label(2), "Aux 2");
         assert_eq!(config.bus_label(3), "Group 1");

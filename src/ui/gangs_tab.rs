@@ -5,12 +5,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use eframe::egui;
 use tokio::sync::RwLock;
 
+use super::theme;
 use crate::console::gang_manager::GangManager;
 use crate::model::channel::ChannelId;
 use crate::model::gang::{GangGroup, GangMode};
-use uuid::Uuid;
 use crate::model::parameter::ParameterSection;
-use super::theme;
+use uuid::Uuid;
 
 /// Channel type selector for the Add Gang form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,7 +104,10 @@ pub fn draw_gangs_tab(
 
             if !is_connected {
                 ui.add_space(4.0);
-                ui.colored_label(theme::TEXT_WARNING, "Connect to console for gang propagation to take effect");
+                ui.colored_label(
+                    theme::TEXT_WARNING,
+                    "Connect to console for gang propagation to take effect",
+                );
             }
 
             ui.add_space(8.0);
@@ -119,7 +122,9 @@ pub fn draw_gangs_tab(
                     .spacing([10.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("Name:");
-                        ui.add(egui::TextEdit::singleline(&mut tab.new_gang_name).desired_width(200.0));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut tab.new_gang_name).desired_width(200.0),
+                        );
                         ui.end_row();
 
                         ui.label("Channel Type:");
@@ -152,7 +157,11 @@ pub fn draw_gangs_tab(
 
                 // Section toggle blocks (instead of checkboxes)
                 ui.add_space(8.0);
-                ui.label(egui::RichText::new("Linked Sections").strong().color(theme::TEXT_PRIMARY));
+                ui.label(
+                    egui::RichText::new("Linked Sections")
+                        .strong()
+                        .color(theme::TEXT_PRIMARY),
+                );
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     for section in ParameterSection::all_variants() {
@@ -170,10 +179,16 @@ pub fn draw_gangs_tab(
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let btn_text = if editing { "Save" } else { "Add Gang" };
-                    let btn_color = if editing { theme::ACCENT_BLUE } else { theme::ACCENT_GREEN };
-                    let save_btn = theme::action_button(btn_text, btn_color, egui::Vec2::new(100.0, 32.0));
+                    let btn_color = if editing {
+                        theme::ACCENT_BLUE
+                    } else {
+                        theme::ACCENT_GREEN
+                    };
+                    let save_btn =
+                        theme::action_button(btn_text, btn_color, egui::Vec2::new(100.0, 32.0));
                     if ui.add(save_btn).clicked() && !tab.new_gang_name.trim().is_empty() {
-                        let members = parse_channel_members(tab.new_gang_channel_type, &tab.new_gang_members);
+                        let members =
+                            parse_channel_members(tab.new_gang_channel_type, &tab.new_gang_members);
 
                         if members.is_empty() {
                             tab.status_message = Some("No valid members parsed".into());
@@ -211,7 +226,11 @@ pub fn draw_gangs_tab(
                     }
 
                     if editing {
-                        let cancel_btn = theme::action_button("Cancel", theme::BG_ELEVATED, egui::Vec2::new(80.0, 32.0));
+                        let cancel_btn = theme::action_button(
+                            "Cancel",
+                            theme::BG_ELEVATED,
+                            egui::Vec2::new(80.0, 32.0),
+                        );
                         if ui.add(cancel_btn).clicked() {
                             tab.editing_gang_id = None;
                             tab.new_gang_name.clear();
@@ -239,7 +258,10 @@ pub fn draw_gangs_tab(
                 drop(mgr);
 
                 if groups.is_empty() {
-                    ui.label(egui::RichText::new("No gang groups configured.").color(theme::TEXT_SECONDARY));
+                    ui.label(
+                        egui::RichText::new("No gang groups configured.")
+                            .color(theme::TEXT_SECONDARY),
+                    );
                 } else {
                     let mut to_remove = None;
                     let mut to_edit = None;
@@ -302,19 +324,17 @@ pub fn draw_gangs_tab(
                                     ui.add_space(4.0);
 
                                     // Mode toggle (Rel / Abs)
-                                    let rel_btn = egui::Button::new(
-                                        egui::RichText::new("Rel").small(),
-                                    )
-                                    .selected(group.mode == GangMode::Relative)
-                                    .corner_radius(4.0);
+                                    let rel_btn =
+                                        egui::Button::new(egui::RichText::new("Rel").small())
+                                            .selected(group.mode == GangMode::Relative)
+                                            .corner_radius(4.0);
                                     if ui.add_enabled(group.enabled, rel_btn).clicked() {
                                         to_set_mode = Some((group.id, GangMode::Relative));
                                     }
-                                    let abs_btn = egui::Button::new(
-                                        egui::RichText::new("Abs").small(),
-                                    )
-                                    .selected(group.mode == GangMode::Absolute)
-                                    .corner_radius(4.0);
+                                    let abs_btn =
+                                        egui::Button::new(egui::RichText::new("Abs").small())
+                                            .selected(group.mode == GangMode::Absolute)
+                                            .corner_radius(4.0);
                                     if ui.add_enabled(group.enabled, abs_btn).clicked() {
                                         to_set_mode = Some((group.id, GangMode::Absolute));
                                     }
@@ -343,18 +363,30 @@ pub fn draw_gangs_tab(
 
                                     // Section badges
                                     for section in &group.linked_sections {
-                                        theme::colored_badge(ui, &section.to_string(), theme::SCOPE_ACTIVE);
+                                        theme::colored_badge(
+                                            ui,
+                                            &section.to_string(),
+                                            theme::SCOPE_ACTIVE,
+                                        );
                                     }
                                 });
 
                                 // Action buttons row
                                 ui.horizontal(|ui| {
                                     ui.add_space(52.0);
-                                    let edit_btn = theme::action_button("Edit", theme::ACCENT_ORANGE, egui::Vec2::new(60.0, 24.0));
+                                    let edit_btn = theme::action_button(
+                                        "Edit",
+                                        theme::ACCENT_ORANGE,
+                                        egui::Vec2::new(60.0, 24.0),
+                                    );
                                     if ui.add(edit_btn).clicked() {
                                         to_edit = Some(group.clone());
                                     }
-                                    let del_btn = theme::action_button("Delete", theme::ACCENT_RED, egui::Vec2::new(60.0, 24.0));
+                                    let del_btn = theme::action_button(
+                                        "Delete",
+                                        theme::ACCENT_RED,
+                                        egui::Vec2::new(60.0, 24.0),
+                                    );
                                     if ui.add(del_btn).clicked() {
                                         to_remove = Some(group.id);
                                     }
@@ -423,9 +455,9 @@ fn format_members(members: &[ChannelId]) -> String {
     }
 
     // Check if all members are the same type
-    let all_same_type = members.windows(2).all(|w| {
-        std::mem::discriminant(&w[0]) == std::mem::discriminant(&w[1])
-    });
+    let all_same_type = members
+        .windows(2)
+        .all(|w| std::mem::discriminant(&w[0]) == std::mem::discriminant(&w[1]));
 
     if all_same_type {
         // Simple format: just the numbers with ranges
@@ -510,10 +542,7 @@ fn format_ranges(numbers: &[u8]) -> String {
 ///
 /// For single-type modes: "1-4,7,12" -> vec of that type.
 /// For Mixed mode: "I1-4,A1-2,G5" -> mixed vec.
-pub fn parse_channel_members(
-    channel_type: ChannelTypeSelection,
-    input: &str,
-) -> Vec<ChannelId> {
+pub fn parse_channel_members(channel_type: ChannelTypeSelection, input: &str) -> Vec<ChannelId> {
     let input = input.trim();
     if input.is_empty() {
         return Vec::new();
@@ -583,10 +612,9 @@ fn parse_number_ranges(input: &str) -> Vec<u8> {
         }
 
         if let Some((start_str, end_str)) = part.split_once('-') {
-            if let (Ok(start), Ok(end)) = (
-                start_str.trim().parse::<u8>(),
-                end_str.trim().parse::<u8>(),
-            ) {
+            if let (Ok(start), Ok(end)) =
+                (start_str.trim().parse::<u8>(), end_str.trim().parse::<u8>())
+            {
                 for n in start..=end {
                     result.push(n);
                 }
@@ -655,11 +683,7 @@ mod tests {
 
     #[test]
     fn format_members_mixed() {
-        let members = vec![
-            ChannelId::Input(1),
-            ChannelId::Aux(2),
-            ChannelId::Group(5),
-        ];
+        let members = vec![ChannelId::Input(1), ChannelId::Aux(2), ChannelId::Group(5)];
         assert_eq!(format_members(&members), "I1,A2,G5");
     }
 

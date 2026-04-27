@@ -13,8 +13,8 @@ use crate::osc::encode;
 use crate::osc::ipad_client::IpadSender;
 use crate::osc::ipad_encode;
 
-use crate::model::gang::GangMode;
 use super::gang_manager::GangManager;
+use crate::model::gang::GangMode;
 
 /// Duration (ms) to suppress echo-back from the console.
 const SUPPRESSION_WINDOW_MS: u64 = 300;
@@ -61,8 +61,9 @@ impl GangEngine {
         let now = Instant::now();
 
         // Clean expired entries
-        self.suppression_set
-            .retain(|_, (_, ts)| now.duration_since(*ts).as_millis() < SUPPRESSION_WINDOW_MS as u128);
+        self.suppression_set.retain(|_, (_, ts)| {
+            now.duration_since(*ts).as_millis() < SUPPRESSION_WINDOW_MS as u128
+        });
 
         // Check for a match
         if let Some((suppressed_value, _)) = self.suppression_set.remove(addr) {
@@ -118,7 +119,9 @@ impl GangEngine {
 
             for target_channel in gang.other_members(&addr.channel) {
                 // Routing section guard: only propagate between same channel type
-                if is_routing && mem::discriminant(&addr.channel) != mem::discriminant(target_channel) {
+                if is_routing
+                    && mem::discriminant(&addr.channel) != mem::discriminant(target_channel)
+                {
                     continue;
                 }
 
@@ -149,10 +152,7 @@ impl GangEngine {
                     self.suppression_set
                         .insert(target_addr.clone(), (target_value.clone(), Instant::now()));
                     // Update local state mirror
-                    self.state
-                        .write()
-                        .await
-                        .update(target_addr, target_value);
+                    self.state.write().await.update(target_addr, target_value);
                 }
             }
         }
@@ -239,10 +239,7 @@ mod tests {
     #[test]
     fn compute_delta_float() {
         assert_eq!(
-            compute_delta(
-                &ParameterValue::Float(0.5),
-                &ParameterValue::Float(1.0),
-            ),
+            compute_delta(&ParameterValue::Float(0.5), &ParameterValue::Float(1.0),),
             Some(0.5)
         );
     }
@@ -250,10 +247,7 @@ mod tests {
     #[test]
     fn compute_delta_int() {
         assert_eq!(
-            compute_delta(
-                &ParameterValue::Int(3),
-                &ParameterValue::Int(7),
-            ),
+            compute_delta(&ParameterValue::Int(3), &ParameterValue::Int(7),),
             Some(4.0)
         );
     }
@@ -261,10 +255,7 @@ mod tests {
     #[test]
     fn compute_delta_mismatched_types() {
         assert_eq!(
-            compute_delta(
-                &ParameterValue::Float(1.0),
-                &ParameterValue::Int(2),
-            ),
+            compute_delta(&ParameterValue::Float(1.0), &ParameterValue::Int(2),),
             None,
         );
     }
@@ -318,9 +309,7 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
         let std_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         std_socket.set_nonblocking(true).unwrap();
-        let socket = std::sync::Arc::new(
-            tokio::net::UdpSocket::from_std(std_socket).unwrap(),
-        );
+        let socket = std::sync::Arc::new(tokio::net::UdpSocket::from_std(std_socket).unwrap());
         let sender = OscSender::new(socket, addr);
         GangEngine::new(state, sender)
     }
@@ -353,10 +342,9 @@ mod tests {
             parameter: ParameterPath::Fader,
         };
 
-        engine.suppression_set.insert(
-            addr.clone(),
-            (ParameterValue::Float(-5.0), Instant::now()),
-        );
+        engine
+            .suppression_set
+            .insert(addr.clone(), (ParameterValue::Float(-5.0), Instant::now()));
 
         // Different value — not suppressed
         assert!(!engine.is_suppressed(&addr, &ParameterValue::Float(0.0)));
@@ -413,12 +401,14 @@ mod tests {
 
         // Input(2) should not have been updated
         let state = engine.state.read().await;
-        assert!(state
-            .get(&ParameterAddress {
-                channel: ChannelId::Input(2),
-                parameter: ParameterPath::EqBandGain(1),
-            })
-            .is_none());
+        assert!(
+            state
+                .get(&ParameterAddress {
+                    channel: ChannelId::Input(2),
+                    parameter: ParameterPath::EqBandGain(1),
+                })
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -492,12 +482,14 @@ mod tests {
 
         // Aux(1) should NOT have SendLevel updated (routing guard blocks it)
         let state = engine.state.read().await;
-        assert!(state
-            .get(&ParameterAddress {
-                channel: ChannelId::Aux(1),
-                parameter: ParameterPath::SendLevel(1),
-            })
-            .is_none());
+        assert!(
+            state
+                .get(&ParameterAddress {
+                    channel: ChannelId::Aux(1),
+                    parameter: ParameterPath::SendLevel(1),
+                })
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -517,10 +509,9 @@ mod tests {
         };
 
         // Simulate: we sent a ganged change to Input(2), it's in suppression set
-        engine.suppression_set.insert(
-            addr.clone(),
-            (ParameterValue::Float(-5.0), Instant::now()),
-        );
+        engine
+            .suppression_set
+            .insert(addr.clone(), (ParameterValue::Float(-5.0), Instant::now()));
 
         // Now the "echo-back" arrives from the console
         engine
@@ -534,11 +525,13 @@ mod tests {
 
         // Should have been suppressed — Input(1) should NOT be updated
         let state = engine.state.read().await;
-        assert!(state
-            .get(&ParameterAddress {
-                channel: ChannelId::Input(1),
-                parameter: ParameterPath::Fader,
-            })
-            .is_none());
+        assert!(
+            state
+                .get(&ParameterAddress {
+                    channel: ChannelId::Input(1),
+                    parameter: ParameterPath::Fader,
+                })
+                .is_none()
+        );
     }
 }

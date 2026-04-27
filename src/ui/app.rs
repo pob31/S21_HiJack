@@ -14,25 +14,25 @@ use crate::console::palette_manager::PaletteManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::config::ConsoleConfig;
 use crate::model::dirty_tracker::DirtyTracker;
+use crate::model::operating_mode::OperatingMode;
 use crate::model::osc_log::OscLog;
 use crate::model::pan_link::PanLinkBindings;
 use crate::model::snapshot::CueList;
-use crate::model::operating_mode::OperatingMode;
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
 use crate::osc::ipad_client::IpadSender;
 
-use super::{Tab, UiEvent};
-use super::palettes_ui::PalettesUiState;
 use super::gangs_tab::GangsTabState;
 use super::inspector_tab::InspectorTabState;
-use super::pan_link_tab::PanLinkTabState;
 use super::live_tab::LiveTabState;
 use super::macros_tab::MacrosTabState;
 use super::monitor_tab::MonitorTabState;
 use super::osc_log_tab::OscLogTabState;
+use super::palettes_ui::PalettesUiState;
+use super::pan_link_tab::PanLinkTabState;
 use super::setup_tab::SetupTabState;
 use super::snapshots_tab::SnapshotsTabState;
+use super::{Tab, UiEvent};
 
 /// Main application struct implementing eframe::App.
 pub struct HiJackApp {
@@ -135,8 +135,14 @@ impl HiJackApp {
 
             active_tab: Tab::Setup,
             setup: SetupTabState::new(
-                console_ip, console_port, local_port, trigger_port,
-                operating_mode, ipad_ip, ipad_send_port, ipad_receive_port,
+                console_ip,
+                console_port,
+                local_port,
+                trigger_port,
+                operating_mode,
+                ipad_ip,
+                ipad_send_port,
+                ipad_receive_port,
                 monitor_port,
             ),
             snapshots: SnapshotsTabState::default(),
@@ -175,49 +181,58 @@ impl HiJackApp {
                     self.monitor.monitor_server_running = false;
                 }
                 UiEvent::SnapshotCaptured { name, param_count } => {
-                    self.snapshots.status_message = Some(
-                        format!("Captured '{name}' ({param_count} params)"),
-                    );
+                    self.snapshots.status_message =
+                        Some(format!("Captured '{name}' ({param_count} params)"));
                 }
-                UiEvent::CueRecalled { cue_number, params_sent } => {
-                    self.live.last_recall_info = Some(
-                        format!("Cue {cue_number:.1} recalled ({params_sent} params sent)"),
-                    );
+                UiEvent::CueRecalled {
+                    cue_number,
+                    params_sent,
+                } => {
+                    self.live.last_recall_info = Some(format!(
+                        "Cue {cue_number:.1} recalled ({params_sent} params sent)"
+                    ));
                 }
-                UiEvent::MacroExecuted { name, steps_executed } => {
-                    self.macros.last_execution_info = Some(
-                        format!("Executed '{name}' ({steps_executed} steps sent)"),
-                    );
-                    self.live.last_recall_info = Some(
-                        format!("Macro '{name}' ({steps_executed} steps)"),
-                    );
+                UiEvent::MacroExecuted {
+                    name,
+                    steps_executed,
+                } => {
+                    self.macros.last_execution_info =
+                        Some(format!("Executed '{name}' ({steps_executed} steps sent)"));
+                    self.live.last_recall_info =
+                        Some(format!("Macro '{name}' ({steps_executed} steps)"));
                 }
                 UiEvent::MacroRecordingStopped { step_count } => {
-                    self.macros.status_message = Some(
-                        format!("Recording stopped: {step_count} steps captured"),
-                    );
+                    self.macros.status_message =
+                        Some(format!("Recording stopped: {step_count} steps captured"));
                 }
                 UiEvent::PaletteCaptured { name, param_count } => {
-                    self.palettes_ui.status_message = Some(
-                        format!("Captured palette '{name}' ({param_count} EQ params)"),
-                    );
+                    self.palettes_ui.status_message = Some(format!(
+                        "Captured palette '{name}' ({param_count} EQ params)"
+                    ));
                 }
-                UiEvent::PaletteLinked { palette_name, snapshot_name } => {
-                    self.palettes_ui.status_message = Some(
-                        format!("Linked '{palette_name}' to '{snapshot_name}'"),
-                    );
+                UiEvent::PaletteLinked {
+                    palette_name,
+                    snapshot_name,
+                } => {
+                    self.palettes_ui.status_message =
+                        Some(format!("Linked '{palette_name}' to '{snapshot_name}'"));
                 }
-                UiEvent::PaletteUpdated { name, affected_count } => {
-                    self.palettes_ui.status_message = Some(
-                        format!("Updated '{name}' — {affected_count} snapshots affected"),
-                    );
+                UiEvent::PaletteUpdated {
+                    name,
+                    affected_count,
+                } => {
+                    self.palettes_ui.status_message = Some(format!(
+                        "Updated '{name}' — {affected_count} snapshots affected"
+                    ));
                 }
                 UiEvent::ShowFileLoaded(path, conn, recall) => {
                     self.setup.status_message = Some(format!("Loaded: {path}"));
                     self.snapshots.scope_editor.console_recall = recall;
                     if let Some(c) = &conn {
-                        self.auto_update_on_recall.store(c.auto_update_on_recall, Ordering::Relaxed);
-                        self.console_snapshot_follow.store(c.console_snapshot_follow, Ordering::Relaxed);
+                        self.auto_update_on_recall
+                            .store(c.auto_update_on_recall, Ordering::Relaxed);
+                        self.console_snapshot_follow
+                            .store(c.console_snapshot_follow, Ordering::Relaxed);
                     }
                     if let Some(conn) = conn {
                         if !conn.local_ip.is_empty() {
@@ -277,7 +292,11 @@ impl HiJackApp {
                     self.setup.ipad_connected = false;
                     self.setup.status_message = Some(format!("iPad connection failed: {msg}"));
                 }
-                UiEvent::FadeProgress { cue_number, progress, done } => {
+                UiEvent::FadeProgress {
+                    cue_number,
+                    progress,
+                    done,
+                } => {
                     if done {
                         self.live.fade_progress = None;
                     } else {
@@ -316,9 +335,11 @@ impl eframe::App for HiJackApp {
 
         // Tab bar
         egui::TopBottomPanel::top("tab_bar")
-            .frame(egui::Frame::new()
-                .fill(super::theme::BG_DARK)
-                .inner_margin(egui::Margin::symmetric(8, 4)))
+            .frame(
+                egui::Frame::new()
+                    .fill(super::theme::BG_DARK)
+                    .inner_margin(egui::Margin::symmetric(8, 4)),
+            )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     // App title
@@ -366,7 +387,8 @@ impl eframe::App for HiJackApp {
 
                     // Connection status + offline toggle (right-aligned)
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let is_connected = self.connected.load(std::sync::atomic::Ordering::Relaxed);
+                        let is_connected =
+                            self.connected.load(std::sync::atomic::Ordering::Relaxed);
                         let (color, text) = if is_connected {
                             (super::theme::COLOR_CONNECTED, "Connected")
                         } else {
@@ -394,12 +416,16 @@ impl eframe::App for HiJackApp {
                         )
                         .fill(fill)
                         .corner_radius(4.0);
-                        if ui.add(btn).on_hover_text(
-                            "Offline mode: drops every inbound and outbound OSC message. \
+                        if ui
+                            .add(btn)
+                            .on_hover_text(
+                                "Offline mode: drops every inbound and outbound OSC message. \
                              Lets you edit show data without affecting the desk. \
                              Toggle back to Online to resume — the state mirror will be \
                              stale until you click Refresh on the Setup tab.",
-                        ).clicked() {
+                            )
+                            .clicked()
+                        {
                             is_offline = !is_offline;
                             self.offline_mode.store(is_offline, Ordering::Relaxed);
                         }
@@ -462,8 +488,7 @@ impl eframe::App for HiJackApp {
                     );
                 }
                 Tab::Snapshots => {
-                    let qlab_port: u16 =
-                        self.setup.qlab_port.parse().unwrap_or(53000);
+                    let qlab_port: u16 = self.setup.qlab_port.parse().unwrap_or(53000);
                     let qlab_ip = if self.setup.qlab_ip.is_empty() {
                         "127.0.0.1"
                     } else {
@@ -544,18 +569,10 @@ impl eframe::App for HiJackApp {
                     );
                 }
                 Tab::OscLog => {
-                    super::osc_log_tab::draw_osc_log_tab(
-                        ui,
-                        &mut self.osc_log_tab,
-                        &self.osc_log,
-                    );
+                    super::osc_log_tab::draw_osc_log_tab(ui, &mut self.osc_log_tab, &self.osc_log);
                 }
                 Tab::Inspector => {
-                    super::inspector_tab::draw_inspector_tab(
-                        ui,
-                        &mut self.inspector,
-                        &self.state,
-                    );
+                    super::inspector_tab::draw_inspector_tab(ui, &mut self.inspector, &self.state);
                 }
             }
         });

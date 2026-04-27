@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::time;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 use crate::model::config::ConsoleConfig;
 use crate::osc::client::ReceivedOscMessage;
@@ -187,7 +187,10 @@ fn apply_config_message(config: &mut ConsoleConfig, msg: &IpadConfigMessage) {
             config.session_filename = filename.clone();
             debug!(filename = ?config.session_filename, "Session filename");
         }
-        IpadConfigMessage::ChannelCount { channel_type, count } => {
+        IpadConfigMessage::ChannelCount {
+            channel_type,
+            count,
+        } => {
             let count = *count;
             match channel_type.as_str() {
                 "Input_Channels" | "Channels" => config.input_channel_count = count,
@@ -204,16 +207,17 @@ fn apply_config_message(config: &mut ConsoleConfig, msg: &IpadConfigMessage) {
                 }
             }
         }
-        IpadConfigMessage::OutputModes { channel_type, modes } => {
-            match channel_type.as_str() {
-                "Input_Channels" => config.input_modes = modes.clone(),
-                "Aux_Outputs" => config.mix_output_modes = modes.clone(),
-                "Group_Outputs" => config.group_modes = modes.clone(),
-                other => {
-                    debug!(other, "Unknown mode channel type");
-                }
+        IpadConfigMessage::OutputModes {
+            channel_type,
+            modes,
+        } => match channel_type.as_str() {
+            "Input_Channels" => config.input_modes = modes.clone(),
+            "Aux_Outputs" => config.mix_output_modes = modes.clone(),
+            "Group_Outputs" => config.group_modes = modes.clone(),
+            other => {
+                debug!(other, "Unknown mode channel type");
             }
-        }
+        },
         IpadConfigMessage::OutputTypes { types } => {
             config.mix_output_types = types.clone();
         }
@@ -225,9 +229,9 @@ mod tests {
     use super::*;
     use crate::model::config::ChannelMode;
     use rosc::OscType;
-    use tokio::net::UdpSocket;
     use std::net::SocketAddr;
     use std::sync::Arc;
+    use tokio::net::UdpSocket;
 
     /// Helper: create a mock sender/receiver pair for testing handshake.
     /// Returns (IpadSender, a handle to inject mock responses, receiver for handshake).
@@ -246,7 +250,9 @@ mod tests {
             "127.0.0.1:0".parse().unwrap(),
             console_addr,
             None,
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
         let (sender, rx) = client.into_parts();
 
         (sender, rx, Arc::new(console_sock), console_addr)
@@ -260,7 +266,10 @@ mod tests {
         args: Vec<OscType>,
     ) {
         use rosc::{OscMessage, OscPacket};
-        let msg = OscMessage { addr: path.to_string(), args };
+        let msg = OscMessage {
+            addr: path.to_string(),
+            args,
+        };
         let packet = OscPacket::Message(msg);
         let buf = rosc::encoder::encode(&packet).unwrap();
         console_sock.send_to(&buf, dest).await.unwrap();
@@ -289,10 +298,9 @@ mod tests {
 
         // Drain remaining queries
         for _ in 0..20 {
-            match tokio::time::timeout(
-                Duration::from_millis(10),
-                console_sock.recv_from(&mut buf),
-            ).await {
+            match tokio::time::timeout(Duration::from_millis(10), console_sock.recv_from(&mut buf))
+                .await
+            {
                 Ok(_) => {}
                 Err(_) => break,
             }
@@ -300,40 +308,52 @@ mod tests {
 
         // Send config responses
         send_mock_response(
-            &console_sock, daemon_addr,
+            &console_sock,
+            daemon_addr,
             "/Snapshots/Current_Snapshot",
             vec![OscType::Int(3)],
-        ).await;
+        )
+        .await;
 
         send_mock_response(
-            &console_sock, daemon_addr,
+            &console_sock,
+            daemon_addr,
             "/Console/Name",
             vec![OscType::String("S21 S21-210385".into())],
-        ).await;
+        )
+        .await;
 
         send_mock_response(
-            &console_sock, daemon_addr,
+            &console_sock,
+            daemon_addr,
             "/Console/Input_Channels",
             vec![OscType::Int(48)],
-        ).await;
+        )
+        .await;
 
         send_mock_response(
-            &console_sock, daemon_addr,
+            &console_sock,
+            daemon_addr,
             "/Console/Aux_Outputs",
             vec![OscType::Int(17)],
-        ).await;
+        )
+        .await;
 
         send_mock_response(
-            &console_sock, daemon_addr,
+            &console_sock,
+            daemon_addr,
             "/Console/Group_Outputs",
             vec![OscType::Int(17)],
-        ).await;
+        )
+        .await;
 
         send_mock_response(
-            &console_sock, daemon_addr,
+            &console_sock,
+            daemon_addr,
             "/Console/Aux_Outputs/modes",
             vec![OscType::Int(1), OscType::Int(2), OscType::Int(1)],
-        ).await;
+        )
+        .await;
 
         // Wait for handshake to complete
         let result = handshake.await.unwrap().unwrap();
@@ -352,11 +372,7 @@ mod tests {
         let (sender, mut rx, _console_sock, _) = mock_ipad_pair().await;
 
         // No responses — should timeout but not error
-        let result = perform_handshake(
-            &sender,
-            &mut rx,
-            Duration::from_millis(100),
-        ).await;
+        let result = perform_handshake(&sender, &mut rx, Duration::from_millis(100)).await;
 
         // Should succeed with default config (no responses received)
         assert!(result.is_ok());
@@ -370,32 +386,44 @@ mod tests {
     fn apply_config_channel_counts() {
         let mut config = ConsoleConfig::default();
 
-        apply_config_message(&mut config, &IpadConfigMessage::ChannelCount {
-            channel_type: "Input_Channels".into(),
-            count: 60,
-        });
+        apply_config_message(
+            &mut config,
+            &IpadConfigMessage::ChannelCount {
+                channel_type: "Input_Channels".into(),
+                count: 60,
+            },
+        );
         assert_eq!(config.input_channel_count, 60);
 
-        apply_config_message(&mut config, &IpadConfigMessage::ChannelCount {
-            channel_type: "Matrix_Outputs".into(),
-            count: 8,
-        });
+        apply_config_message(
+            &mut config,
+            &IpadConfigMessage::ChannelCount {
+                channel_type: "Matrix_Outputs".into(),
+                count: 8,
+            },
+        );
         assert_eq!(config.matrix_output_count, 8);
 
-        apply_config_message(&mut config, &IpadConfigMessage::ChannelCount {
-            channel_type: "Control_Groups".into(),
-            count: 10,
-        });
+        apply_config_message(
+            &mut config,
+            &IpadConfigMessage::ChannelCount {
+                channel_type: "Control_Groups".into(),
+                count: 10,
+            },
+        );
         assert_eq!(config.control_group_count, 10);
     }
 
     #[test]
     fn apply_config_console_name() {
         let mut config = ConsoleConfig::default();
-        apply_config_message(&mut config, &IpadConfigMessage::ConsoleName {
-            name: "S21".into(),
-            serial: "ABC-123".into(),
-        });
+        apply_config_message(
+            &mut config,
+            &IpadConfigMessage::ConsoleName {
+                name: "S21".into(),
+                serial: "ABC-123".into(),
+            },
+        );
         assert_eq!(config.console_name, "S21");
         assert_eq!(config.console_serial, "ABC-123");
     }
@@ -403,10 +431,13 @@ mod tests {
     #[test]
     fn apply_config_output_modes() {
         let mut config = ConsoleConfig::default();
-        apply_config_message(&mut config, &IpadConfigMessage::OutputModes {
-            channel_type: "Aux_Outputs".into(),
-            modes: vec![ChannelMode::Mono, ChannelMode::Stereo],
-        });
+        apply_config_message(
+            &mut config,
+            &IpadConfigMessage::OutputModes {
+                channel_type: "Aux_Outputs".into(),
+                modes: vec![ChannelMode::Mono, ChannelMode::Stereo],
+            },
+        );
         assert_eq!(config.mix_output_modes.len(), 2);
         assert_eq!(config.mix_output_modes[0], ChannelMode::Mono);
         assert_eq!(config.mix_output_modes[1], ChannelMode::Stereo);
@@ -415,9 +446,12 @@ mod tests {
     #[test]
     fn apply_config_output_types() {
         let mut config = ConsoleConfig::default();
-        apply_config_message(&mut config, &IpadConfigMessage::OutputTypes {
-            types: vec![true, true, false, false],
-        });
+        apply_config_message(
+            &mut config,
+            &IpadConfigMessage::OutputTypes {
+                types: vec![true, true, false, false],
+            },
+        );
         assert_eq!(config.mix_output_types, vec![true, true, false, false]);
     }
 }

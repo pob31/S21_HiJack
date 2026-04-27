@@ -3,8 +3,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::model::config::ConsoleConfig;
-use crate::model::macro_def::MacroDef;
 use crate::model::gang::GangGroup;
+use crate::model::macro_def::MacroDef;
 use crate::model::monitor::MonitorClient;
 use crate::model::operating_mode::OperatingMode;
 use crate::model::palette::ChannelPalette;
@@ -62,10 +62,18 @@ pub struct ConnectionSettings {
     pub console_snapshot_follow: bool,
 }
 
-fn default_gp_port() -> u16 { 8024 }
-fn default_local_port() -> u16 { 8023 }
-fn default_trigger_port() -> u16 { 53001 }
-fn default_qlab_port() -> u16 { 53000 }
+fn default_gp_port() -> u16 {
+    8024
+}
+fn default_local_port() -> u16 {
+    8023
+}
+fn default_trigger_port() -> u16 {
+    53001
+}
+fn default_qlab_port() -> u16 {
+    53000
+}
 
 impl Default for ConnectionSettings {
     fn default() -> Self {
@@ -163,7 +171,10 @@ impl ShowFile {
         use tokio::io::AsyncWriteExt;
 
         let json = serde_json::to_string_pretty(self).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Serialize error: {e}"))
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Serialize error: {e}"),
+            )
         })?;
 
         let mut tmp_os = path.as_os_str().to_owned();
@@ -194,7 +205,10 @@ impl ShowFile {
     pub async fn load(path: &Path) -> std::io::Result<Self> {
         let json = tokio::fs::read_to_string(path).await?;
         serde_json::from_str(&json).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Deserialize error: {e}"))
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Deserialize error: {e}"),
+            )
         })
     }
 }
@@ -246,13 +260,19 @@ mod tests {
         show1.connection.console_ip = "10.0.0.1".to_string();
         show1.save(&path).await.unwrap();
         assert!(path.exists(), "destination should exist after save");
-        assert!(!tmp_path.exists(), "no .tmp file should remain after successful save");
+        assert!(
+            !tmp_path.exists(),
+            "no .tmp file should remain after successful save"
+        );
 
         // Second save: replace with different content
         let mut show2 = ShowFile::new(ConsoleConfig::default());
         show2.connection.console_ip = "192.168.1.42".to_string();
         show2.save(&path).await.unwrap();
-        assert!(!tmp_path.exists(), "no .tmp file should remain after replace");
+        assert!(
+            !tmp_path.exists(),
+            "no .tmp file should remain after replace"
+        );
 
         // Verify the file actually contains the second version's content
         let loaded = ShowFile::load(&path).await.unwrap();
@@ -418,9 +438,10 @@ mod tests {
         use crate::model::channel::ChannelId;
         let snap = &loaded.snapshots[0];
         assert_eq!(snap.palette_refs.len(), 1);
-        assert!(snap
-            .palette_refs
-            .contains_key(&(ChannelId::Input(1), PaletteKind::Eq)));
+        assert!(
+            snap.palette_refs
+                .contains_key(&(ChannelId::Input(1), PaletteKind::Eq))
+        );
 
         let _ = tokio::fs::remove_file(&path).await;
     }

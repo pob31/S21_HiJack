@@ -1,9 +1,9 @@
 pub mod connection;
 pub mod cue_manager;
 pub mod discovery;
+pub mod fade_engine;
 pub mod gang_engine;
 pub mod gang_manager;
-pub mod fade_engine;
 pub mod ipad_connection;
 pub mod ipad_handshake;
 pub mod macro_engine;

@@ -89,12 +89,20 @@ impl OscLog {
 
     /// Convenience: log a sent message.
     pub fn log_out(&self, path: &str, args: &str) {
-        self.push(OscLogEntry::new(OscDirection::Out, path.to_string(), args.to_string()));
+        self.push(OscLogEntry::new(
+            OscDirection::Out,
+            path.to_string(),
+            args.to_string(),
+        ));
     }
 
     /// Convenience: log a received message.
     pub fn log_in(&self, path: &str, args: &str) {
-        self.push(OscLogEntry::new(OscDirection::In, path.to_string(), args.to_string()));
+        self.push(OscLogEntry::new(
+            OscDirection::In,
+            path.to_string(),
+            args.to_string(),
+        ));
     }
 
     /// Get a snapshot of all current entries (for UI rendering).

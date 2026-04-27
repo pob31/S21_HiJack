@@ -36,7 +36,9 @@ impl GangManager {
     /// Find a gang group by name (case-insensitive).
     pub fn find_by_name(&self, name: &str) -> Option<&GangGroup> {
         let lower = name.to_lowercase();
-        self.groups.values().find(|g| g.name.to_lowercase() == lower)
+        self.groups
+            .values()
+            .find(|g| g.name.to_lowercase() == lower)
     }
 
     /// All groups sorted by name for UI display.
@@ -55,9 +57,7 @@ impl GangManager {
     ) -> Vec<&GangGroup> {
         self.groups
             .values()
-            .filter(|g| {
-                g.enabled && g.contains_channel(channel) && g.links_section(section)
-            })
+            .filter(|g| g.enabled && g.contains_channel(channel) && g.links_section(section))
             .collect()
     }
 }
@@ -144,20 +144,15 @@ mod tests {
         assert!(found.is_empty());
 
         // Section not linked
-        let found = mgr.find_gangs_for_channel_and_section(
-            &ChannelId::Input(1),
-            &ParameterSection::Sends,
-        );
+        let found =
+            mgr.find_gangs_for_channel_and_section(&ChannelId::Input(1), &ParameterSection::Sends);
         assert!(found.is_empty());
     }
 
     #[test]
     fn disabled_gangs_excluded() {
         let mut mgr = GangManager::new();
-        let mut gang = make_gang(
-            "Drums",
-            vec![ChannelId::Input(1), ChannelId::Input(2)],
-        );
+        let mut gang = make_gang("Drums", vec![ChannelId::Input(1), ChannelId::Input(2)]);
         gang.enabled = false;
         mgr.add_group(gang);
 

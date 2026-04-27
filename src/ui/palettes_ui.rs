@@ -12,14 +12,14 @@ use eframe::egui;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+use super::UiEvent;
+use super::theme;
 use crate::console::cue_manager::CueManager;
 use crate::console::palette_manager::PaletteManager;
 use crate::model::channel::ChannelId;
 use crate::model::palette::ChannelPalette;
 use crate::model::parameter::PaletteKind;
 use crate::model::state::ConsoleState;
-use super::theme;
-use super::UiEvent;
 
 /// Channel type selector reused from macros_tab pattern.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,7 +130,11 @@ pub fn draw_palettes_section(
 
         let can_capture = is_connected && !state.new_palette_name.is_empty();
         let capture_label = format!("Capture {}", state.current_kind.label());
-        let capture_btn = theme::action_button(&capture_label, theme::ACCENT_GREEN, egui::Vec2::new(110.0, 28.0));
+        let capture_btn = theme::action_button(
+            &capture_label,
+            theme::ACCENT_GREEN,
+            egui::Vec2::new(110.0, 28.0),
+        );
         if ui.add_enabled(can_capture, capture_btn).clicked() {
             capture_palette(state, console_state, palette_manager, runtime, ui_tx);
         }
@@ -156,7 +160,11 @@ pub fn draw_palettes_section(
                 }
                 for palette in palettes {
                     let selected = state.selected_palette_id == Some(palette.id);
-                    let bg = if selected { theme::BG_ELEVATED } else { theme::BG_PANEL };
+                    let bg = if selected {
+                        theme::BG_ELEVATED
+                    } else {
+                        theme::BG_PANEL
+                    };
 
                     egui::Frame::new()
                         .fill(bg)
@@ -168,23 +176,25 @@ pub fn draw_palettes_section(
                         .corner_radius(4.0)
                         .inner_margin(egui::Margin::symmetric(8, 3))
                         .show(ui, |ui| {
-                            let response = ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(&palette.name)
-                                        .strong()
-                                        .color(theme::TEXT_PRIMARY),
-                                );
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{} | {} params | {} refs",
-                                        palette.channel,
-                                        palette.parameter_count(),
-                                        palette.referencing_snapshots.len(),
-                                    ))
-                                    .color(theme::TEXT_SECONDARY)
-                                    .small(),
-                                );
-                            }).response;
+                            let response = ui
+                                .horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(&palette.name)
+                                            .strong()
+                                            .color(theme::TEXT_PRIMARY),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} | {} params | {} refs",
+                                            palette.channel,
+                                            palette.parameter_count(),
+                                            palette.referencing_snapshots.len(),
+                                        ))
+                                        .color(theme::TEXT_SECONDARY)
+                                        .small(),
+                                    );
+                                })
+                                .response;
 
                             if response.interact(egui::Sense::click()).clicked() {
                                 state.selected_palette_id = Some(palette.id);
@@ -199,11 +209,19 @@ pub fn draw_palettes_section(
     if let Some(pid) = state.selected_palette_id {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let recapture_btn = theme::action_button("Re-capture", theme::ACCENT_BLUE, egui::Vec2::new(90.0, 28.0));
+            let recapture_btn = theme::action_button(
+                "Re-capture",
+                theme::ACCENT_BLUE,
+                egui::Vec2::new(90.0, 28.0),
+            );
             if ui.add_enabled(is_connected, recapture_btn).clicked() {
                 recapture_palette(pid, console_state, palette_manager, runtime, ui_tx);
             }
-            let del_btn = theme::action_button("Delete Palette", theme::ACCENT_RED, egui::Vec2::new(100.0, 28.0));
+            let del_btn = theme::action_button(
+                "Delete Palette",
+                theme::ACCENT_RED,
+                egui::Vec2::new(100.0, 28.0),
+            );
             if ui.add(del_btn).clicked() {
                 delete_palette(pid, cue_manager, palette_manager, runtime);
                 state.selected_palette_id = None;
@@ -236,14 +254,19 @@ pub fn draw_palettes_section(
                 // Referencing snapshots
                 if !palette.referencing_snapshots.is_empty() {
                     egui::CollapsingHeader::new(
-                        egui::RichText::new(format!("Linked Snapshots ({})", palette.referencing_snapshots.len()))
-                            .color(theme::TEXT_SECONDARY),
+                        egui::RichText::new(format!(
+                            "Linked Snapshots ({})",
+                            palette.referencing_snapshots.len()
+                        ))
+                        .color(theme::TEXT_SECONDARY),
                     )
                     .default_open(false)
                     .show(ui, |ui| {
                         if let Ok(cue_mgr) = cue_manager.try_read() {
                             for snap_id in &palette.referencing_snapshots {
-                                let name = cue_mgr.snapshots.get(snap_id)
+                                let name = cue_mgr
+                                    .snapshots
+                                    .get(snap_id)
                                     .map(|s| s.name.as_str())
                                     .unwrap_or("(unknown)");
                                 ui.label(
@@ -261,16 +284,20 @@ pub fn draw_palettes_section(
     // ── Link / Unlink ───────────────────────────────────────────
     ui.add_space(4.0);
     ui.label(
-        egui::RichText::new(format!("Link {} Palette to Snapshot", state.current_kind.label()))
-            .strong()
-            .color(theme::TEXT_PRIMARY),
+        egui::RichText::new(format!(
+            "Link {} Palette to Snapshot",
+            state.current_kind.label()
+        ))
+        .strong()
+        .color(theme::TEXT_PRIMARY),
     );
 
     ui.horizontal(|ui| {
         // Snapshot dropdown
         ui.label("Snapshot:");
         if let Ok(mgr) = cue_manager.try_read() {
-            let current_name = state.link_snapshot_id
+            let current_name = state
+                .link_snapshot_id
                 .and_then(|id| mgr.snapshots.get(&id))
                 .map(|s| s.name.clone())
                 .unwrap_or_else(|| "(select)".into());
@@ -280,10 +307,10 @@ pub fn draw_palettes_section(
                 .width(140.0)
                 .show_ui(ui, |ui| {
                     for snap in mgr.snapshots.values() {
-                        if ui.selectable_label(
-                            state.link_snapshot_id == Some(snap.id),
-                            &snap.name,
-                        ).clicked() {
+                        if ui
+                            .selectable_label(state.link_snapshot_id == Some(snap.id), &snap.name)
+                            .clicked()
+                        {
                             state.link_snapshot_id = Some(snap.id);
                         }
                     }
@@ -305,9 +332,14 @@ pub fn draw_palettes_section(
 
     ui.horizontal(|ui| {
         // Palette dropdown
-        let selected_palette_name = state.selected_palette_id
-            .and_then(|id| palette_manager.try_read().ok()
-                .and_then(|mgr| mgr.get_palette(&id).map(|p| p.name.clone())))
+        let selected_palette_name = state
+            .selected_palette_id
+            .and_then(|id| {
+                palette_manager
+                    .try_read()
+                    .ok()
+                    .and_then(|mgr| mgr.get_palette(&id).map(|p| p.name.clone()))
+            })
             .unwrap_or_else(|| "(select palette above)".into());
         ui.label(
             egui::RichText::new(format!("Palette: {selected_palette_name}"))
@@ -317,9 +349,12 @@ pub fn draw_palettes_section(
         let can_link = state.selected_palette_id.is_some() && state.link_snapshot_id.is_some();
         let current_kind = state.current_kind;
 
-        let link_btn = theme::action_button("Link", theme::ACCENT_GREEN, egui::Vec2::new(60.0, 28.0));
+        let link_btn =
+            theme::action_button("Link", theme::ACCENT_GREEN, egui::Vec2::new(60.0, 28.0));
         if ui.add_enabled(can_link, link_btn).clicked() {
-            if let (Some(palette_id), Some(snap_id)) = (state.selected_palette_id, state.link_snapshot_id) {
+            if let (Some(palette_id), Some(snap_id)) =
+                (state.selected_palette_id, state.link_snapshot_id)
+            {
                 if let Ok(ch_num) = state.link_channel_number.parse::<u8>() {
                     let channel = state.link_channel_type.to_channel_id(ch_num);
                     link_palette(
@@ -336,9 +371,12 @@ pub fn draw_palettes_section(
             }
         }
 
-        let unlink_btn = theme::action_button("Unlink", theme::ACCENT_RED, egui::Vec2::new(60.0, 28.0));
+        let unlink_btn =
+            theme::action_button("Unlink", theme::ACCENT_RED, egui::Vec2::new(60.0, 28.0));
         if ui.add_enabled(can_link, unlink_btn).clicked() {
-            if let (Some(palette_id), Some(snap_id)) = (state.selected_palette_id, state.link_snapshot_id) {
+            if let (Some(palette_id), Some(snap_id)) =
+                (state.selected_palette_id, state.link_snapshot_id)
+            {
                 if let Ok(ch_num) = state.link_channel_number.parse::<u8>() {
                     let channel = state.link_channel_type.to_channel_id(ch_num);
                     unlink_palette(
@@ -410,7 +448,9 @@ fn recapture_palette(
 
     runtime.spawn(async move {
         let mgr = pmgr.read().await;
-        let Some(palette) = mgr.get_palette(&palette_id) else { return };
+        let Some(palette) = mgr.get_palette(&palette_id) else {
+            return;
+        };
         let channel = palette.channel.clone();
         let name = palette.name.clone();
         let kind = palette.kind;
@@ -433,7 +473,10 @@ fn recapture_palette(
             palette.touch();
         }
 
-        let _ = tx.send(UiEvent::PaletteUpdated { name, affected_count });
+        let _ = tx.send(UiEvent::PaletteUpdated {
+            name,
+            affected_count,
+        });
     });
 }
 
@@ -477,32 +520,38 @@ fn link_palette(
         // Set palette_refs on the snapshot, replacing any prior link for
         // the same (channel, kind).
         let mut mgr = cue_mgr.write().await;
-        let (palette_name, snapshot_name) = if let Some(snapshot) = mgr.snapshots.get_mut(&snapshot_id) {
-            // If there was a previous palette for this (channel, kind),
-            // unlink the old back-reference before inserting the new.
-            let key = (channel.clone(), kind);
-            if let Some(old_pid) = snapshot.palette_refs.insert(key, palette_id) {
-                if old_pid != palette_id {
-                    let mut p = pmgr.write().await;
-                    p.unlink_from_snapshot(old_pid, snapshot_id);
-                    p.link_to_snapshot(palette_id, snapshot_id);
+        let (palette_name, snapshot_name) =
+            if let Some(snapshot) = mgr.snapshots.get_mut(&snapshot_id) {
+                // If there was a previous palette for this (channel, kind),
+                // unlink the old back-reference before inserting the new.
+                let key = (channel.clone(), kind);
+                if let Some(old_pid) = snapshot.palette_refs.insert(key, palette_id) {
+                    if old_pid != palette_id {
+                        let mut p = pmgr.write().await;
+                        p.unlink_from_snapshot(old_pid, snapshot_id);
+                        p.link_to_snapshot(palette_id, snapshot_id);
+                    }
+                } else {
+                    pmgr.write().await.link_to_snapshot(palette_id, snapshot_id);
                 }
-            } else {
-                pmgr.write().await.link_to_snapshot(palette_id, snapshot_id);
-            }
 
-            let sname = snapshot.name.clone();
-            let pname = pmgr.read().await
-                .get_palette(&palette_id)
-                .map(|p| p.name.clone())
-                .unwrap_or_else(|| "?".into());
-            (pname, sname)
-        } else {
-            return;
-        };
+                let sname = snapshot.name.clone();
+                let pname = pmgr
+                    .read()
+                    .await
+                    .get_palette(&palette_id)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| "?".into());
+                (pname, sname)
+            } else {
+                return;
+            };
         drop(mgr);
 
-        let _ = tx.send(UiEvent::PaletteLinked { palette_name, snapshot_name });
+        let _ = tx.send(UiEvent::PaletteLinked {
+            palette_name,
+            snapshot_name,
+        });
     });
 }
 
@@ -525,6 +574,8 @@ fn unlink_palette(
         }
         drop(mgr);
 
-        pmgr.write().await.unlink_from_snapshot(palette_id, snapshot_id);
+        pmgr.write()
+            .await
+            .unlink_from_snapshot(palette_id, snapshot_id);
     });
 }

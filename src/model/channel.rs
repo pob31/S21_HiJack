@@ -19,10 +19,10 @@ impl ChannelId {
     /// Returns None for channel types not in the GP OSC number space.
     pub fn to_gp_osc_number(&self) -> Option<u8> {
         match self {
-            ChannelId::Input(n) => Some(*n),           // 1–60
-            ChannelId::Aux(n) => Some(69 + n),         // Aux 1 → 70
-            ChannelId::Group(n) => Some(77 + n),       // Group 1 → 78
-            ChannelId::Matrix(n) => Some(119 + n),     // Matrix 1 → 120
+            ChannelId::Input(n) => Some(*n),             // 1–60
+            ChannelId::Aux(n) => Some(69 + n),           // Aux 1 → 70
+            ChannelId::Group(n) => Some(77 + n),         // Group 1 → 78
+            ChannelId::Matrix(n) => Some(119 + n),       // Matrix 1 → 120
             ChannelId::ControlGroup(n) => Some(109 + n), // CG 1 → 110
             // GraphicEq and MatrixInput are not in the GP OSC number space
             ChannelId::GraphicEq(_) | ChannelId::MatrixInput(_) => None,
@@ -53,16 +53,12 @@ impl ChannelId {
                     if let Some(&is_aux) = types.get(bus_index_0) {
                         if is_aux {
                             // Count how many auxes come before this bus
-                            let aux_num = types[..=bus_index_0]
-                                .iter()
-                                .filter(|&&t| t)
-                                .count() as u8;
+                            let aux_num =
+                                types[..=bus_index_0].iter().filter(|&&t| t).count() as u8;
                             Some(ChannelId::Aux(aux_num))
                         } else {
-                            let group_num = types[..=bus_index_0]
-                                .iter()
-                                .filter(|&&t| !t)
-                                .count() as u8;
+                            let group_num =
+                                types[..=bus_index_0].iter().filter(|&&t| !t).count() as u8;
                             Some(ChannelId::Group(group_num))
                         }
                     } else {

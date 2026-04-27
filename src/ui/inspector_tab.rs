@@ -3,9 +3,9 @@ use std::sync::Arc;
 use eframe::egui;
 use tokio::sync::RwLock;
 
+use super::theme;
 use crate::model::channel::ChannelId;
 use crate::model::state::ConsoleState;
-use super::theme;
 
 /// State for the Inspector tab.
 pub struct InspectorTabState {
@@ -114,25 +114,47 @@ pub fn draw_inspector_tab(
 
             // "All" button
             let all_active = tab.channel_type_filter.is_none();
-            let fill = if all_active { theme::ACCENT_BLUE } else { theme::BG_ELEVATED };
-            let text_color = if all_active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
-            if ui.add(
-                egui::Button::new(egui::RichText::new("All").color(text_color))
-                    .fill(fill)
-                    .corner_radius(4.0),
-            ).clicked() {
+            let fill = if all_active {
+                theme::ACCENT_BLUE
+            } else {
+                theme::BG_ELEVATED
+            };
+            let text_color = if all_active {
+                theme::TEXT_PRIMARY
+            } else {
+                theme::TEXT_SECONDARY
+            };
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new("All").color(text_color))
+                        .fill(fill)
+                        .corner_radius(4.0),
+                )
+                .clicked()
+            {
                 tab.channel_type_filter = None;
             }
 
             for ct in ChannelTypeFilter::ALL {
                 let is_active = tab.channel_type_filter == Some(*ct);
-                let fill = if is_active { theme::ACCENT_BLUE } else { theme::BG_ELEVATED };
-                let text_color = if is_active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
-                if ui.add(
-                    egui::Button::new(egui::RichText::new(ct.label()).color(text_color))
-                        .fill(fill)
-                        .corner_radius(4.0),
-                ).clicked() {
+                let fill = if is_active {
+                    theme::ACCENT_BLUE
+                } else {
+                    theme::BG_ELEVATED
+                };
+                let text_color = if is_active {
+                    theme::TEXT_PRIMARY
+                } else {
+                    theme::TEXT_SECONDARY
+                };
+                if ui
+                    .add(
+                        egui::Button::new(egui::RichText::new(ct.label()).color(text_color))
+                            .fill(fill)
+                            .corner_radius(4.0),
+                    )
+                    .clicked()
+                {
                     tab.channel_type_filter = Some(*ct);
                 }
             }
@@ -142,9 +164,12 @@ pub fn draw_inspector_tab(
         if let Ok(st) = state.try_read() {
             ui.add_space(2.0);
             ui.label(
-                egui::RichText::new(format!("{} parameters in state mirror", st.parameter_count()))
-                    .color(theme::TEXT_SECONDARY)
-                    .small(),
+                egui::RichText::new(format!(
+                    "{} parameters in state mirror",
+                    st.parameter_count()
+                ))
+                .color(theme::TEXT_SECONDARY)
+                .small(),
             );
         }
     });
@@ -164,13 +189,11 @@ pub fn draw_inspector_tab(
                 }
                 true
             })
-            .map(|(addr, value)| {
-                InspectorRow {
-                    channel: format!("{}", addr.channel),
-                    parameter: format!("{:?}", addr.parameter),
-                    value: format!("{}", value),
-                    channel_color: theme::channel_color(&addr.channel),
-                }
+            .map(|(addr, value)| InspectorRow {
+                channel: format!("{}", addr.channel),
+                parameter: format!("{:?}", addr.parameter),
+                value: format!("{}", value),
+                channel_color: theme::channel_color(&addr.channel),
             })
             .filter(|row| {
                 if filter_lower.is_empty() {
@@ -186,15 +209,27 @@ pub fn draw_inspector_tab(
         match tab.sort_column {
             SortColumn::Channel => rows.sort_by(|a, b| {
                 let cmp = a.channel.cmp(&b.channel);
-                if tab.sort_ascending { cmp } else { cmp.reverse() }
+                if tab.sort_ascending {
+                    cmp
+                } else {
+                    cmp.reverse()
+                }
             }),
             SortColumn::Parameter => rows.sort_by(|a, b| {
                 let cmp = a.parameter.cmp(&b.parameter);
-                if tab.sort_ascending { cmp } else { cmp.reverse() }
+                if tab.sort_ascending {
+                    cmp
+                } else {
+                    cmp.reverse()
+                }
             }),
             SortColumn::Value => rows.sort_by(|a, b| {
                 let cmp = a.value.cmp(&b.value);
-                if tab.sort_ascending { cmp } else { cmp.reverse() }
+                if tab.sort_ascending {
+                    cmp
+                } else {
+                    cmp.reverse()
+                }
             }),
         }
 
@@ -210,17 +245,20 @@ pub fn draw_inspector_tab(
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            use egui_extras::{TableBuilder, Column};
+            use egui_extras::{Column, TableBuilder};
 
             TableBuilder::new(ui)
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .column(Column::initial(150.0).at_least(100.0)) // Channel
                 .column(Column::initial(250.0).at_least(150.0)) // Parameter
-                .column(Column::remainder())                     // Value
+                .column(Column::remainder()) // Value
                 .header(row_height, |mut header| {
                     header.col(|ui| {
-                        if ui.selectable_label(tab.sort_column == SortColumn::Channel, "Channel").clicked() {
+                        if ui
+                            .selectable_label(tab.sort_column == SortColumn::Channel, "Channel")
+                            .clicked()
+                        {
                             if tab.sort_column == SortColumn::Channel {
                                 tab.sort_ascending = !tab.sort_ascending;
                             } else {
@@ -230,7 +268,10 @@ pub fn draw_inspector_tab(
                         }
                     });
                     header.col(|ui| {
-                        if ui.selectable_label(tab.sort_column == SortColumn::Parameter, "Parameter").clicked() {
+                        if ui
+                            .selectable_label(tab.sort_column == SortColumn::Parameter, "Parameter")
+                            .clicked()
+                        {
                             if tab.sort_column == SortColumn::Parameter {
                                 tab.sort_ascending = !tab.sort_ascending;
                             } else {
@@ -240,7 +281,10 @@ pub fn draw_inspector_tab(
                         }
                     });
                     header.col(|ui| {
-                        if ui.selectable_label(tab.sort_column == SortColumn::Value, "Value").clicked() {
+                        if ui
+                            .selectable_label(tab.sort_column == SortColumn::Value, "Value")
+                            .clicked()
+                        {
                             if tab.sort_column == SortColumn::Value {
                                 tab.sort_ascending = !tab.sort_ascending;
                             } else {
@@ -260,10 +304,7 @@ pub fn draw_inspector_tab(
                             ui.label(&entry.parameter);
                         });
                         row.col(|ui| {
-                            ui.label(
-                                egui::RichText::new(&entry.value)
-                                    .color(theme::TEXT_PRIMARY),
-                            );
+                            ui.label(egui::RichText::new(&entry.value).color(theme::TEXT_PRIMARY));
                         });
                     });
                 });

@@ -13,20 +13,20 @@ use std::sync::Arc;
 use clap::Parser;
 use rosc::OscType;
 use tokio::sync::RwLock;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use console::connection::ConnectionManager;
 use console::cue_manager::CueManager;
-use console::palette_manager::PaletteManager;
 use console::gang_engine::GangEngine;
 use console::gang_manager::GangManager;
-use console::pan_link_engine::PanLinkEngine;
 use console::ipad_connection;
 use console::macro_engine::MacroEngine;
 use console::macro_manager::MacroManager;
 use console::monitor_engine::MonitorEngine;
 use console::monitor_manager::MonitorManager;
+use console::palette_manager::PaletteManager;
+use console::pan_link_engine::PanLinkEngine;
 use console::snapshot_engine::SnapshotEngine;
 use model::operating_mode::OperatingMode;
 use model::snapshot::CueList;
@@ -109,9 +109,16 @@ fn main() {
 
     info!(
         "S21 HiJack starting — console {}:{}, local port {}, trigger port {}, mode={}, ipad_send={}, ipad_recv={}, ipad_ip={:?}, monitor_port={}, headless={}",
-        args.console_ip, args.console_port, args.local_port, args.trigger_port,
-        mode, args.effective_ipad_send_port(), args.effective_ipad_receive_port(),
-        args.ipad_ip, args.monitor_port, args.headless
+        args.console_ip,
+        args.console_port,
+        args.local_port,
+        args.trigger_port,
+        mode,
+        args.effective_ipad_send_port(),
+        args.effective_ipad_receive_port(),
+        args.ipad_ip,
+        args.monitor_port,
+        args.headless
     );
 
     if args.headless {
@@ -169,9 +176,16 @@ async fn run_headless(args: Args) {
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let offline_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let manager = ConnectionManager::connect_from_parts(
-        sender.clone(), rx, state, macro_manager.clone(),
-        gang_engine.clone(), gang_manager.clone(), pan_link_engine.clone(),
-        dirty_tracker.clone(), offline_mode.clone(), cancel_token.clone(),
+        sender.clone(),
+        rx,
+        state,
+        macro_manager.clone(),
+        gang_engine.clone(),
+        gang_manager.clone(),
+        pan_link_engine.clone(),
+        dirty_tracker.clone(),
+        offline_mode.clone(),
+        cancel_token.clone(),
     );
     info!("Connected successfully");
 
@@ -204,7 +218,17 @@ async fn run_headless(args: Args) {
                 } else {
                     "0.0.0.0:0".parse().unwrap()
                 };
-                match ipad_connection::connect_mode2(console_ipad_addr, ipad_local, manager.state(), dirty_tracker.clone(), offline_mode.clone(), None, None).await {
+                match ipad_connection::connect_mode2(
+                    console_ipad_addr,
+                    ipad_local,
+                    manager.state(),
+                    dirty_tracker.clone(),
+                    offline_mode.clone(),
+                    None,
+                    None,
+                )
+                .await
+                {
                     Ok((ipad_sender, result, _handle)) => {
                         info!(
                             name = %result.config.console_name,
@@ -229,15 +253,26 @@ async fn run_headless(args: Args) {
                     .parse()
                     .expect("Invalid iPad listen address");
                 let ipad_target = args.ipad_ip.as_ref().map(|ip| {
-                    let addr: SocketAddr = format!("{ip}:{ipad_reply_port}").parse()
+                    let addr: SocketAddr = format!("{ip}:{ipad_reply_port}")
+                        .parse()
                         .expect("Invalid iPad IP");
                     addr
                 });
                 match ipad_connection::connect_mode3_proxy(
-                    console_ipad_addr, local_console_addr, ipad_listen_addr,
-                    ipad_target, ipad_reply_port,
-                    manager.state(), dirty_tracker.clone(), offline_mode.clone(), None, cancel_token.clone(), None,
-                ).await {
+                    console_ipad_addr,
+                    local_console_addr,
+                    ipad_listen_addr,
+                    ipad_target,
+                    ipad_reply_port,
+                    manager.state(),
+                    dirty_tracker.clone(),
+                    offline_mode.clone(),
+                    None,
+                    cancel_token.clone(),
+                    None,
+                )
+                .await
+                {
                     Ok(ipad_sender) => {
                         info!(
                             ipad_ip = ?args.ipad_ip,
@@ -257,8 +292,14 @@ async fn run_headless(args: Args) {
 
     // Wire iPad sender into gang & pan link engines (for iPad-only parameters)
     if let Some(ref ipad) = ipad_sender_for_monitor {
-        gang_engine.write().await.set_ipad_sender(Some(ipad.clone()));
-        pan_link_engine.write().await.set_ipad_sender(Some(ipad.clone()));
+        gang_engine
+            .write()
+            .await
+            .set_ipad_sender(Some(ipad.clone()));
+        pan_link_engine
+            .write()
+            .await
+            .set_ipad_sender(Some(ipad.clone()));
     }
 
     // Start monitor server (if enabled)
@@ -278,7 +319,8 @@ async fn run_headless(args: Args) {
                     let mut last_generation: u64 = 0;
                     let mut last_push_times = std::collections::HashMap::new();
                     let mut last_aux_push_times = std::collections::HashMap::new();
-                    let mut poll_interval = tokio::time::interval(std::time::Duration::from_millis(10));
+                    let mut poll_interval =
+                        tokio::time::interval(std::time::Duration::from_millis(10));
                     loop {
                         tokio::select! {
                             Some(cmd) = monitor_rx.recv() => {
@@ -338,7 +380,9 @@ async fn run_headless(args: Args) {
                         if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                             drop(mgr);
                             let pmgr = trigger_palette_mgr.read().await;
-                            let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
+                            let result = trigger_engine
+                                .recall_cue(&cue, &snapshot, &pmgr.palettes, false)
+                                .await;
                             info!(sent = result.parameters_sent, "Cue GO recall complete");
                         } else {
                             warn!(snapshot_id = %cue.snapshot_id, "Snapshot not found for cue");
@@ -352,8 +396,13 @@ async fn run_headless(args: Args) {
                         if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                             drop(mgr);
                             let pmgr = trigger_palette_mgr.read().await;
-                            let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
-                            info!(sent = result.parameters_sent, "Cue PREVIOUS recall complete");
+                            let result = trigger_engine
+                                .recall_cue(&cue, &snapshot, &pmgr.palettes, false)
+                                .await;
+                            info!(
+                                sent = result.parameters_sent,
+                                "Cue PREVIOUS recall complete"
+                            );
                         } else {
                             warn!(snapshot_id = %cue.snapshot_id, "Snapshot not found for cue");
                         }
@@ -366,8 +415,14 @@ async fn run_headless(args: Args) {
                         if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
                             drop(mgr);
                             let pmgr = trigger_palette_mgr.read().await;
-                            let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
-                            info!(number, sent = result.parameters_sent, "Cue FIRE recall complete");
+                            let result = trigger_engine
+                                .recall_cue(&cue, &snapshot, &pmgr.palettes, false)
+                                .await;
+                            info!(
+                                number,
+                                sent = result.parameters_sent,
+                                "Cue FIRE recall complete"
+                            );
                         } else {
                             warn!(snapshot_id = %cue.snapshot_id, "Snapshot not found for cue");
                         }
@@ -383,7 +438,8 @@ async fn run_headless(args: Args) {
                             reply_addr,
                             "/cue/current",
                             vec![OscType::Float(current)],
-                        ).await;
+                        )
+                        .await;
                     }
                 }
                 TriggerEvent::MacroFire(name) => {
@@ -401,7 +457,10 @@ async fn run_headless(args: Args) {
                         warn!(name, "MacroFire: macro not found");
                     }
                 }
-                TriggerEvent::SnapshotRecall { identifier, ignore_scope } => {
+                TriggerEvent::SnapshotRecall {
+                    identifier,
+                    ignore_scope,
+                } => {
                     let mgr = trigger_cue_mgr.read().await;
                     if let Some(snapshot) = mgr.resolve_snapshot(&identifier).cloned() {
                         drop(mgr);
@@ -469,10 +528,7 @@ async fn run_headless(args: Args) {
     );
 
     let gmgr = gang_manager.read().await;
-    info!(
-        gangs = gmgr.groups.len(),
-        "Final gang system state"
-    );
+    info!(gangs = gmgr.groups.len(), "Final gang system state");
 
     info!("Daemon stopped.");
 }

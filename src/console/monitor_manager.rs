@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Instant;
 
-use tracing::{info, debug};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::model::monitor::MonitorClient;

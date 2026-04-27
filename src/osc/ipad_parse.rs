@@ -1,9 +1,9 @@
 use rosc::OscType;
 
+use super::ipad_values;
 use crate::model::channel::ChannelId;
 use crate::model::config::ChannelMode;
 use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
-use super::ipad_values;
 
 /// Result of parsing an iPad protocol OSC message.
 #[derive(Debug)]
@@ -25,17 +25,28 @@ pub enum ParsedIpadMessage {
 /// Console configuration message from iPad handshake.
 #[derive(Debug)]
 pub enum IpadConfigMessage {
-    ConsoleName { name: String, serial: String },
+    ConsoleName {
+        name: String,
+        serial: String,
+    },
     SessionFilename(Option<String>),
-    ChannelCount { channel_type: String, count: u8 },
-    OutputModes { channel_type: String, modes: Vec<ChannelMode> },
-    OutputTypes { types: Vec<bool> },
+    ChannelCount {
+        channel_type: String,
+        count: u8,
+    },
+    OutputModes {
+        channel_type: String,
+        modes: Vec<ChannelMode>,
+    },
+    OutputTypes {
+        types: Vec<bool>,
+    },
 }
 
 /// Layout bank data from `/Layout/Layout/Banks`.
 #[derive(Debug, Clone)]
 pub struct BankData {
-    pub side: String,      // "Left" or "Right"
+    pub side: String, // "Left" or "Right"
     pub bank_number: u8,
     pub label: String,
     pub channels: Vec<Option<ChannelId>>, // 10 slots, None for empty
@@ -111,9 +122,7 @@ fn try_parse_config(path: &str, args: &[OscType]) -> Option<IpadConfigMessage> {
         }
         p if p.ends_with("/modes") => {
             // Output modes: /Console/{Type}/modes  INT INT INT ...
-            let channel_type = p
-                .strip_prefix("/Console/")?
-                .strip_suffix("/modes")?;
+            let channel_type = p.strip_prefix("/Console/")?.strip_suffix("/modes")?;
             let modes: Vec<ChannelMode> = args
                 .iter()
                 .filter_map(extract_i32)
@@ -336,10 +345,7 @@ mod tests {
 
     #[test]
     fn parse_fader_response() {
-        let result = parse_ipad_message(
-            "/Input_Channels/1/fader",
-            &[OscType::Float(-10.0)],
-        );
+        let result = parse_ipad_message("/Input_Channels/1/fader", &[OscType::Float(-10.0)]);
         match result {
             ParsedIpadMessage::ParameterUpdate(addr, val) => {
                 assert_eq!(addr.channel, ChannelId::Input(1));
@@ -352,10 +358,7 @@ mod tests {
 
     #[test]
     fn parse_pan_with_conversion() {
-        let result = parse_ipad_message(
-            "/Input_Channels/1/Panner/pan",
-            &[OscType::Float(0.5)],
-        );
+        let result = parse_ipad_message("/Input_Channels/1/Panner/pan", &[OscType::Float(0.5)]);
         match result {
             ParsedIpadMessage::ParameterUpdate(addr, val) => {
                 assert_eq!(addr.parameter, ParameterPath::Pan);
@@ -371,10 +374,7 @@ mod tests {
 
     #[test]
     fn parse_ipad_only_insert() {
-        let result = parse_ipad_message(
-            "/Input_Channels/5/Insert/insert_A_in",
-            &[OscType::Int(1)],
-        );
+        let result = parse_ipad_message("/Input_Channels/5/Insert/insert_A_in", &[OscType::Int(1)]);
         match result {
             ParsedIpadMessage::ParameterUpdate(addr, val) => {
                 assert_eq!(addr.channel, ChannelId::Input(5));
@@ -387,10 +387,7 @@ mod tests {
 
     #[test]
     fn parse_graphic_eq() {
-        let result = parse_ipad_message(
-            "/Graphic_EQ/3/geq_gain_12",
-            &[OscType::Float(6.0)],
-        );
+        let result = parse_ipad_message("/Graphic_EQ/3/geq_gain_12", &[OscType::Float(6.0)]);
         match result {
             ParsedIpadMessage::ParameterUpdate(addr, val) => {
                 assert_eq!(addr.channel, ChannelId::GraphicEq(3));
@@ -403,10 +400,7 @@ mod tests {
 
     #[test]
     fn parse_control_group_0_based() {
-        let result = parse_ipad_message(
-            "/Control_Groups/0/fader",
-            &[OscType::Float(-5.0)],
-        );
+        let result = parse_ipad_message("/Control_Groups/0/fader", &[OscType::Float(-5.0)]);
         match result {
             ParsedIpadMessage::ParameterUpdate(addr, _) => {
                 assert_eq!(addr.channel, ChannelId::ControlGroup(1)); // 0→1
@@ -417,10 +411,8 @@ mod tests {
 
     #[test]
     fn parse_config_console_name() {
-        let result = parse_ipad_message(
-            "/Console/Name",
-            &[OscType::String("S21 S21-210385".into())],
-        );
+        let result =
+            parse_ipad_message("/Console/Name", &[OscType::String("S21 S21-210385".into())]);
         match result {
             ParsedIpadMessage::ConfigResponse(IpadConfigMessage::ConsoleName { name, serial }) => {
                 assert_eq!(name, "S21");
@@ -432,10 +424,7 @@ mod tests {
 
     #[test]
     fn parse_config_channel_count() {
-        let result = parse_ipad_message(
-            "/Console/Input_Channels",
-            &[OscType::Int(48)],
-        );
+        let result = parse_ipad_message("/Console/Input_Channels", &[OscType::Int(48)]);
         match result {
             ParsedIpadMessage::ConfigResponse(IpadConfigMessage::ChannelCount {
                 channel_type,
@@ -470,10 +459,7 @@ mod tests {
 
     #[test]
     fn parse_snapshot_info() {
-        let result = parse_ipad_message(
-            "/Snapshots/Current_Snapshot",
-            &[OscType::Int(5)],
-        );
+        let result = parse_ipad_message("/Snapshots/Current_Snapshot", &[OscType::Int(5)]);
         match result {
             ParsedIpadMessage::SnapshotInfo { current } => {
                 assert_eq!(current, 5);
@@ -490,10 +476,7 @@ mod tests {
 
     #[test]
     fn parse_eq_band_param() {
-        let result = parse_ipad_message(
-            "/Input_Channels/3/EQ/eq_gain_2",
-            &[OscType::Float(3.5)],
-        );
+        let result = parse_ipad_message("/Input_Channels/3/EQ/eq_gain_2", &[OscType::Float(3.5)]);
         match result {
             ParsedIpadMessage::ParameterUpdate(addr, val) => {
                 assert_eq!(addr.channel, ChannelId::Input(3));

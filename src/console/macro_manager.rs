@@ -118,18 +118,12 @@ impl MacroManager {
 
     /// Number of steps recorded so far (for UI display during recording).
     pub fn recording_step_count(&self) -> usize {
-        self.recording
-            .as_ref()
-            .map(|r| r.step_count())
-            .unwrap_or(0)
+        self.recording.as_ref().map(|r| r.step_count()).unwrap_or(0)
     }
 
     /// Elapsed recording time in milliseconds (for UI display).
     pub fn recording_elapsed_ms(&self) -> u64 {
-        self.recording
-            .as_ref()
-            .map(|r| r.elapsed_ms())
-            .unwrap_or(0)
+        self.recording.as_ref().map(|r| r.elapsed_ms()).unwrap_or(0)
     }
 
     // ─── Quick Trigger ─────────────────────────────────────────────

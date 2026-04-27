@@ -13,10 +13,7 @@ pub enum ParsedOscMessage {
     /// Console pong (keepalive response).
     Pong,
     /// Discovery response: channel count for a specific type (per-type sub-path form).
-    DiscoveryCount {
-        channel_type: String,
-        count: u8,
-    },
+    DiscoveryCount { channel_type: String, count: u8 },
     /// Discovery response: positional channel counts reply.
     /// `/console/channel/counts <inputs> <aux> <groups> <control_groups> <matrices> <master>`
     /// This is the canonical GP OSC reply form on the real S21+.
@@ -38,7 +35,11 @@ pub fn parse_gp_osc(path: &str, args: &[OscType]) -> ParsedOscMessage {
 }
 
 /// Config-aware GP OSC parser that correctly classifies aux vs group buses.
-pub fn parse_gp_osc_with_config(path: &str, args: &[OscType], mix_output_types: Option<&[bool]>) -> ParsedOscMessage {
+pub fn parse_gp_osc_with_config(
+    path: &str,
+    args: &[OscType],
+    mix_output_types: Option<&[bool]>,
+) -> ParsedOscMessage {
     // System commands
     match path {
         "/console/ping" => return ParsedOscMessage::Ping,
@@ -143,7 +144,7 @@ fn extract_value(parameter: &ParameterPath, args: &[OscType]) -> Option<Paramete
         | ParameterPath::Dyn2Listen
         | ParameterPath::SendEnabled(_) => extract_bool(arg),
         // Integer parameters
-        | ParameterPath::Polarity
+        ParameterPath::Polarity
         | ParameterPath::DigitubeBias
         | ParameterPath::Dyn1Mode
         | ParameterPath::Dyn1Knee(_)
@@ -236,8 +237,8 @@ mod tests {
                 channel: ChannelId::Input(1),
                 parameter: ParameterPath::EqBandGain(b),
             };
-            let (path, args) = encode_parameter(&addr, &ParameterValue::Float(0.0))
-                .expect("encode EQ band");
+            let (path, args) =
+                encode_parameter(&addr, &ParameterValue::Float(0.0)).expect("encode EQ band");
             // Wire path uses (b-1)
             assert_eq!(path, format!("/channel/1/eq/{}/gain", b - 1));
             match parse_gp_osc(&path, &args) {
@@ -257,8 +258,8 @@ mod tests {
                 channel: ChannelId::Input(1),
                 parameter: ParameterPath::Dyn1Threshold(b),
             };
-            let (path, args) = encode_parameter(&addr, &ParameterValue::Float(-20.0))
-                .expect("encode Dyn1 band");
+            let (path, args) =
+                encode_parameter(&addr, &ParameterValue::Float(-20.0)).expect("encode Dyn1 band");
             assert_eq!(path, format!("/channel/1/dyn1/{}/threshold", b - 1));
             match parse_gp_osc(&path, &args) {
                 ParsedOscMessage::ParameterUpdate(parsed_addr, _) => {
@@ -337,10 +338,7 @@ mod tests {
 
     #[test]
     fn parse_name() {
-        let result = parse_gp_osc(
-            "/channel/1/name",
-            &[OscType::String("Kick".to_string())],
-        );
+        let result = parse_gp_osc("/channel/1/name", &[OscType::String("Kick".to_string())]);
         match result {
             ParsedOscMessage::ParameterUpdate(addr, val) => {
                 assert_eq!(addr.parameter, ParameterPath::Name);

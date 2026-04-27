@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 use tokio::time;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::macro_def::{MacroDef, MacroStep, MacroStepMode};
@@ -29,7 +29,11 @@ pub struct MacroEngine {
 
 impl MacroEngine {
     pub fn new(state: Arc<RwLock<ConsoleState>>, sender: OscSender) -> Self {
-        Self { state, sender, dirty_tracker: None }
+        Self {
+            state,
+            sender,
+            dirty_tracker: None,
+        }
     }
 
     /// Attach a dirty tracker so macros can optionally suppress it.

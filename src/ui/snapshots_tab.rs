@@ -5,6 +5,10 @@ use eframe::egui;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+use super::UiEvent;
+use super::palettes_ui::{PalettesUiState, draw_palettes_section};
+use super::scope_editor::ScopeEditorState;
+use super::theme;
 use crate::console::cue_manager::CueManager;
 use crate::console::palette_manager::PaletteManager;
 use crate::console::snapshot_engine::SnapshotEngine;
@@ -13,10 +17,6 @@ use crate::model::snapshot::{Cue, Snapshot, SnapshotKind};
 use crate::model::state::ConsoleState;
 use crate::osc::qlab_client::QLabClient;
 use crate::osc::qlab_cue_builder::{build_snapshot_cues, build_snapshot_load_cue};
-use super::palettes_ui::{PalettesUiState, draw_palettes_section};
-use super::scope_editor::ScopeEditorState;
-use super::theme;
-use super::UiEvent;
 
 /// State for the Snapshots tab.
 pub struct SnapshotsTabState {
@@ -1019,21 +1019,18 @@ pub fn draw_snapshots_tab(
                                     }
                                     let _ = tx_status.send((shifted, cleared));
                                 });
-                                if let Ok((shifted, cleared)) = rx_status.recv_timeout(
-                                    std::time::Duration::from_millis(500),
-                                ) {
-                                    snap_state.shift_status = Some(format!(
-                                        "Shifted {shifted} refs ({cleared} cleared)"
-                                    ));
-                                } else {
+                                if let Ok((shifted, cleared)) =
+                                    rx_status.recv_timeout(std::time::Duration::from_millis(500))
+                                {
                                     snap_state.shift_status =
-                                        Some("Shift in progress…".into());
+                                        Some(format!("Shifted {shifted} refs ({cleared} cleared)"));
+                                } else {
+                                    snap_state.shift_status = Some("Shift in progress…".into());
                                 }
                             }
                             _ => {
-                                snap_state.shift_status = Some(
-                                    "Both fields must be valid integers".into(),
-                                );
+                                snap_state.shift_status =
+                                    Some("Both fields must be valid integers".into());
                             }
                         }
                     }
@@ -1043,11 +1040,7 @@ pub fn draw_snapshots_tab(
                 });
                 if let Some(msg) = &snap_state.shift_status {
                     ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(msg)
-                            .color(theme::TEXT_WARNING)
-                            .small(),
-                    );
+                    ui.label(egui::RichText::new(msg).color(theme::TEXT_WARNING).small());
                 }
             });
         if !open {
@@ -1064,9 +1057,9 @@ fn capture_snapshot(
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    let scope = snap_state.scope_editor.to_scope_template(
-        snap_state.new_snapshot_name.clone(),
-    );
+    let scope = snap_state
+        .scope_editor
+        .to_scope_template(snap_state.new_snapshot_name.clone());
     let name = snap_state.new_snapshot_name.clone();
     let kind = snap_state.pending_kind;
     let st = console_state.clone();
@@ -1088,10 +1081,7 @@ fn capture_snapshot(
         // Mirrors WFS-DIY's clear-on-store behaviour.
         dirty.write().await.clear();
 
-        let _ = tx.send(UiEvent::SnapshotCaptured {
-            name,
-            param_count,
-        });
+        let _ = tx.send(UiEvent::SnapshotCaptured { name, param_count });
     });
 
     snap_state.status_message = Some(format!("Capturing '{}'...", snap_state.new_snapshot_name));
@@ -1106,7 +1096,9 @@ fn recapture_snapshot(
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    let Some(snap_id) = snap_state.selected_snapshot_id else { return };
+    let Some(snap_id) = snap_state.selected_snapshot_id else {
+        return;
+    };
 
     let st = console_state.clone();
     let cue_mgr = cue_manager.clone();
@@ -1117,7 +1109,9 @@ fn recapture_snapshot(
         // Read the existing snapshot's scope AND its kind so re-capture
         // honours the original ApplyOnSave / ApplyOnRecall semantics.
         let mgr = cue_mgr.read().await;
-        let Some(existing) = mgr.snapshots.get(&snap_id) else { return };
+        let Some(existing) = mgr.snapshots.get(&snap_id) else {
+            return;
+        };
         let scope = existing.scope.clone();
         let name = existing.name.clone();
         let kind = existing.kind;
@@ -1135,10 +1129,7 @@ fn recapture_snapshot(
         // Phase C: re-capture also re-anchors the dirty baseline.
         dirty.write().await.clear();
 
-        let _ = tx.send(UiEvent::SnapshotCaptured {
-            name,
-            param_count,
-        });
+        let _ = tx.send(UiEvent::SnapshotCaptured { name, param_count });
     });
 
     snap_state.status_message = Some("Re-capturing...".into());
@@ -1165,8 +1156,12 @@ fn recall_selected_snapshot(
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
     ignore_scope: bool,
 ) {
-    let Some(snap_id) = snap_state.selected_snapshot_id else { return };
-    let Some(engine) = snapshot_engine.clone() else { return };
+    let Some(snap_id) = snap_state.selected_snapshot_id else {
+        return;
+    };
+    let Some(engine) = snapshot_engine.clone() else {
+        return;
+    };
     let cue_mgr = cue_manager.clone();
     let pmgr = palette_manager.clone();
     let tx = ui_tx.clone();
@@ -1174,7 +1169,9 @@ fn recall_selected_snapshot(
     runtime.spawn(async move {
         // Read the snapshot + scope under the cue-manager lock.
         let mgr = cue_mgr.read().await;
-        let Some(snapshot) = mgr.snapshots.get(&snap_id).cloned() else { return };
+        let Some(snapshot) = mgr.snapshots.get(&snap_id).cloned() else {
+            return;
+        };
         let scope = snapshot.scope.clone();
         let name = snapshot.name.clone();
         drop(mgr);
@@ -1187,7 +1184,10 @@ fn recall_selected_snapshot(
         drop(palettes_guard);
 
         let label = if ignore_scope {
-            format!("Recalled '{name}' without scope ({} params sent)", result.parameters_sent)
+            format!(
+                "Recalled '{name}' without scope ({} params sent)",
+                result.parameters_sent
+            )
         } else {
             format!("Recalled '{name}' ({} params sent)", result.parameters_sent)
         };
@@ -1218,7 +1218,9 @@ fn qlab_export_full_snapshot(
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    let Some(snap_id) = snap_state.selected_snapshot_id else { return };
+    let Some(snap_id) = snap_state.selected_snapshot_id else {
+        return;
+    };
     let cue_mgr = cue_manager.clone();
     let pal_mgr = palette_manager.clone();
     let tx = ui_tx.clone();
@@ -1226,7 +1228,9 @@ fn qlab_export_full_snapshot(
     runtime.spawn(async move {
         // Pull the snapshot under the cue-manager lock.
         let mgr = cue_mgr.read().await;
-        let Some(snapshot) = mgr.snapshots.get(&snap_id).cloned() else { return };
+        let Some(snapshot) = mgr.snapshots.get(&snap_id).cloned() else {
+            return;
+        };
         drop(mgr);
 
         let pmgr = pal_mgr.read().await;
@@ -1278,13 +1282,17 @@ fn qlab_create_trigger_cue(
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    let Some(snap_id) = snap_state.selected_snapshot_id else { return };
+    let Some(snap_id) = snap_state.selected_snapshot_id else {
+        return;
+    };
     let cue_mgr = cue_manager.clone();
     let tx = ui_tx.clone();
 
     runtime.spawn(async move {
         let mgr = cue_mgr.read().await;
-        let Some(snapshot) = mgr.snapshots.get(&snap_id).cloned() else { return };
+        let Some(snapshot) = mgr.snapshots.get(&snap_id).cloned() else {
+            return;
+        };
         drop(mgr);
 
         let sequence = build_snapshot_load_cue(&snapshot.name, /* qlab_patch */ 1);

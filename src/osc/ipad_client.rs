@@ -22,9 +22,8 @@ impl IpadClient {
         console_addr: SocketAddr,
         interface_name: Option<&str>,
     ) -> std::io::Result<Self> {
-        let socket = crate::ui::net_interfaces::create_bound_udp_socket(
-            local_addr, interface_name,
-        ).await?;
+        let socket =
+            crate::ui::net_interfaces::create_bound_udp_socket(local_addr, interface_name).await?;
         let actual_local = socket.local_addr()?;
         tracing::info!(
             %actual_local,
@@ -66,7 +65,11 @@ pub struct IpadSender {
 impl IpadSender {
     /// Create a sender from an existing socket (for Mode 3 where we manage the socket directly).
     pub fn from_socket(socket: std::sync::Arc<UdpSocket>, console_addr: SocketAddr) -> Self {
-        Self { socket, console_addr, offline_mode: None }
+        Self {
+            socket,
+            console_addr,
+            offline_mode: None,
+        }
     }
 
     /// Attach the shared offline-mode flag. When `true`, both `send` and
@@ -147,7 +150,8 @@ async fn receive_loop(socket: std::sync::Arc<UdpSocket>, tx: mpsc::Sender<Receiv
                                 error!("iPad OSC receive channel closed");
                             }
                         } else {
-                            let hex: String = buf[..size.min(32)].iter()
+                            let hex: String = buf[..size.min(32)]
+                                .iter()
                                 .map(|b| format!("{b:02x}"))
                                 .collect::<Vec<_>>()
                                 .join(" ");

@@ -163,11 +163,11 @@ impl RecallBlock {
 
             ParameterPath::CgLevel => Some(Self::CgMembers),
 
-            ParameterPath::GeqEnabled
-            | ParameterPath::GeqBandGain(_) => Some(Self::Geqs),
+            ParameterPath::GeqEnabled | ParameterPath::GeqBandGain(_) => Some(Self::Geqs),
 
-            ParameterPath::MatrixSendLevel(_)
-            | ParameterPath::MatrixSendOn(_) => Some(Self::MatrixGlobal),
+            ParameterPath::MatrixSendLevel(_) | ParameterPath::MatrixSendOn(_) => {
+                Some(Self::MatrixGlobal)
+            }
 
             _ => None,
         }
@@ -261,10 +261,9 @@ impl RecallBlock {
                     | Self::Fader
                     | Self::Pan
             ),
-            ChannelId::ControlGroup(_) => matches!(
-                block,
-                Self::ChannelName | Self::Mute | Self::Fader
-            ),
+            ChannelId::ControlGroup(_) => {
+                matches!(block, Self::ChannelName | Self::Mute | Self::Fader)
+            }
             _ => false,
         }
     }
