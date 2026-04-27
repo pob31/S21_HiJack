@@ -64,8 +64,8 @@ Communicates with the console over **GP OSC** (the documented open protocol) and
 - A companion **Flutter monitor app** (`monitor_app/`) ships alongside for Android/iOS performers — see its own README for build instructions
 
 ### QLab / External Trigger Integration
-- OSC trigger listener accepts `/cue/go`, `/cue/previous`, `/cue/fire`, `/cue/current`, `/macro/fire`, `/snapshot/recall`, and `/snapshot/recall_full`
-- Drive cue recall from QLab, companion apps, Stream Deck, or any OSC sender — see the [OSC Trigger Commands](#osc-trigger-commands) table for argument types
+- **Inbound (trigger listener)**: OSC trigger listener accepts `/cue/go`, `/cue/previous`, `/cue/fire`, `/cue/current`, `/macro/fire`, `/snapshot/recall`, and `/snapshot/recall_full`. Drive cue recall from QLab, companion apps, Stream Deck, or any OSC sender — see the [OSC Trigger Commands](#osc-trigger-commands) table for argument types.
+- **Outbound (QLab cue export)**: build QLab cue lists from app snapshots — emits `/new` + `/cue/selected/*` sequences that QLab consumes to create network cues (one per snapshot or per parameter), grouped under a parent cue. Each network cue fires `/snapshot/recall` back at the daemon. Useful for building a QLab show that drives the console mix without re-keying snapshot names.
 
 ### iPad Protocol Support (Modes 2 & 3)
 - **Mode 1**: GP OSC only (default)
@@ -85,7 +85,7 @@ Communicates with the console over **GP OSC** (the documented open protocol) and
 
 ### Prerequisites
 
-- **Rust toolchain** (1.75+ recommended). Install via [rustup](https://rustup.rs/):
+- **Rust toolchain** 1.85 or newer (pinned via `rust-version` in [Cargo.toml](Cargo.toml) — required by edition 2024). Install via [rustup](https://rustup.rs/):
   ```
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   ```
@@ -207,7 +207,7 @@ Documentation/
 cargo test
 ```
 
-330 tests covering the data model, OSC protocol parsing/encoding, engine logic, persistence backward compatibility, and UI parsing utilities.
+346 tests covering the data model, OSC protocol parsing/encoding, engine logic, persistence backward compatibility, and UI parsing utilities. Continuous integration runs `cargo check`, `cargo test`, `cargo fmt --check`, `cargo clippy`, and `cargo audit` on a Linux/macOS/Windows matrix on every push and PR — see [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 ## Target Platforms
 
@@ -218,4 +218,11 @@ cargo test
 
 ## License
 
-See [LICENSE](LICENSE) for details.
+Dual-licensed under either of:
+
+- **MIT License** — see [LICENSE-MIT](LICENSE-MIT)
+- **Apache License, Version 2.0** — see [LICENSE-APACHE](LICENSE-APACHE)
+
+at your option. This is the standard Rust-ecosystem dual-license — pick whichever fits your downstream needs.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this work shall be dual-licensed as above, without any additional terms or conditions.
