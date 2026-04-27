@@ -127,6 +127,13 @@ pub async fn connect_mode3_proxy(
         "Mode 3: setting up two-socket iPad proxy..."
     );
 
+    if ipad_target.is_none() {
+        warn!(
+            "Mode 3: iPad IP not pinned — will auto-detect from first inbound packet. \
+             Set --ipad-ip (or the iPad IP field in setup) for production deployments."
+        );
+    }
+
     // Socket 1: Console-side (daemon ↔ console) — raw UDP, interface-bound
     let console_socket = crate::ui::net_interfaces::create_bound_udp_socket(
         local_console_addr, interface_name.as_deref(),
