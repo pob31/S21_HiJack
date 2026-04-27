@@ -150,3 +150,226 @@ async fn recall_cue_with_label<F>(
         "Trigger {label} recall complete"
     );
 }
+
+#[cfg(test)]
+mod tests {
+    //! End-to-end integration tests for the trigger dispatch chain (audit M7).
+    //!
+    //! Each test wires up real `CueManager` / `MacroManager` /
+    //! `SnapshotEngine` / `MacroEngine` instances and a sink UDP socket that
+    //! plays the role of the console. `SnapshotEngine` sends parameter OSC
+    //! messages to the sink; the test verifies that at least one packet
+    //! arrives within a short timeout — proving the trigger event reached the
+    //! engine and the engine actually ran.
+
+    use super::*;
+    use std::collections::HashSet;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    use crate::console::cue_manager::CueManager;
+    use crate::console::macro_engine::MacroEngine;
+    use crate::console::macro_manager::MacroManager;
+    use crate::console::palette_manager::PaletteManager;
+    use crate::console::snapshot_engine::SnapshotEngine;
+    use crate::model::channel::ChannelId;
+    use crate::model::config::ConsoleConfig;
+    use crate::model::parameter::{
+        ParameterAddress, ParameterPath, ParameterSection, ParameterValue,
+    };
+    use crate::model::snapshot::{
+        ChannelScope, Cue, CueList, ScopeTemplate, Snapshot, SnapshotData, SnapshotKind,
+    };
+    use crate::model::state::ConsoleState;
+    use crate::osc::client::OscClient;
+    use tokio::net::UdpSocket;
+    use tokio::sync::RwLock;
+
+    /// Fixture: bind a sink socket on a random port and build a
+    /// `SnapshotEngine` whose sender targets that sink. Returns the engine,
+    /// the state mirror, and the sink (so the test can recv_from it).
+    async fn setup_engine_with_sink() -> (Arc<SnapshotEngine>, Arc<RwLock<ConsoleState>>, UdpSocket)
+    {
+        // Sink socket — plays the role of the "console". Bind to ephemeral
+        // port so tests don't conflict.
+        let sink = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sink_addr = sink.local_addr().unwrap();
+
+        // Engine sends to the sink.
+        let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let client = OscClient::new(local, sink_addr, None).await.unwrap();
+        let (sender, _rx) = client.into_parts();
+        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
+        let engine = SnapshotEngine::new(state.clone(), sender);
+        (Arc::new(engine), state, sink)
+    }
+
+    /// Drain any pending packets at the sink and report how many arrived.
+    /// 100 ms timeout is plenty for loopback sends with no real network.
+    async fn count_packets_on_sink(sink: &UdpSocket) -> usize {
+        let mut buf = vec![0u8; 65536];
+        let mut count = 0;
+        while let Ok(Ok(_)) =
+            tokio::time::timeout(Duration::from_millis(100), sink.recv_from(&mut buf)).await
+        {
+            count += 1;
+        }
+        count
+    }
+
+    fn empty_palette_manager() -> Arc<RwLock<PaletteManager>> {
+        Arc::new(RwLock::new(PaletteManager::new()))
+    }
+
+    fn empty_macro_manager() -> Arc<RwLock<MacroManager>> {
+        Arc::new(RwLock::new(MacroManager::new()))
+    }
+
+    async fn empty_macro_engine() -> Arc<MacroEngine> {
+        // Macro engine isn't exercised in the snapshot tests below — passing
+        // a real one is fine because handle_trigger_event won't reach it.
+        let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let remote: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let client = OscClient::new(local, remote, None).await.unwrap();
+        let (sender, _rx) = client.into_parts();
+        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
+        Arc::new(MacroEngine::new(state, sender))
+    }
+
+    #[tokio::test]
+    async fn snapshot_recall_via_dispatch_fires_engine() {
+        let (engine, state, sink) = setup_engine_with_sink().await;
+
+        // Live state: Input(1) Fader at 0 dB.
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        state
+            .write()
+            .await
+            .update(addr.clone(), ParameterValue::Float(0.0));
+
+        // Snapshot moves Fader to -10 dB on Input(1).
+        let mut data = SnapshotData::new();
+        data.values.insert(addr, ParameterValue::Float(-10.0));
+        let scope = ScopeTemplate::new(
+            "S".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+        let snapshot = Snapshot::new("Verse 1".into(), scope, data, SnapshotKind::ApplyOnSave);
+
+        let mut mgr_inner = CueManager::new(CueList::default());
+        mgr_inner.add_snapshot(snapshot);
+        let cue_mgr = Arc::new(RwLock::new(mgr_inner));
+
+        // Dispatch a SnapshotRecall trigger by name.
+        handle_trigger_event(
+            TriggerEvent::SnapshotRecall {
+                identifier: "Verse 1".into(),
+                ignore_scope: false,
+            },
+            &cue_mgr,
+            &empty_palette_manager(),
+            &empty_macro_manager(),
+            &empty_macro_engine().await,
+            &engine,
+            None, // no reply socket needed
+        )
+        .await;
+
+        // Engine should have sent at least the one Fader packet to the sink.
+        let received = count_packets_on_sink(&sink).await;
+        assert!(
+            received >= 1,
+            "expected at least 1 OSC packet at sink, got {received}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fire_cue_via_dispatch_fires_engine() {
+        let (engine, state, sink) = setup_engine_with_sink().await;
+
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(2),
+            parameter: ParameterPath::Fader,
+        };
+        state
+            .write()
+            .await
+            .update(addr.clone(), ParameterValue::Float(0.0));
+
+        let mut data = SnapshotData::new();
+        data.values.insert(addr, ParameterValue::Float(-15.0));
+        let scope = ScopeTemplate::new(
+            "S".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(2),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+        let snapshot = Snapshot::new("Chorus".into(), scope, data, SnapshotKind::ApplyOnSave);
+        let snapshot_id = snapshot.id;
+
+        let mut mgr_inner = CueManager::new(CueList::default());
+        mgr_inner.add_snapshot(snapshot);
+        // Add a cue that points at the snapshot, so FireCue(1.0) works.
+        mgr_inner.cue_list.cues.push(Cue {
+            id: uuid::Uuid::new_v4(),
+            cue_number: 1.0,
+            name: "Cue 1".into(),
+            snapshot_id,
+            scope_override: None,
+            fade_time: 0.0,
+            qlab_cue_id: None,
+            notes: String::new(),
+        });
+        let cue_mgr = Arc::new(RwLock::new(mgr_inner));
+
+        handle_trigger_event(
+            TriggerEvent::FireCue(1.0),
+            &cue_mgr,
+            &empty_palette_manager(),
+            &empty_macro_manager(),
+            &empty_macro_engine().await,
+            &engine,
+            None,
+        )
+        .await;
+
+        let received = count_packets_on_sink(&sink).await;
+        assert!(
+            received >= 1,
+            "expected at least 1 OSC packet at sink for FireCue, got {received}"
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_recall_unknown_identifier_is_silent() {
+        // No snapshot named "Bogus" — dispatch should warn and return.
+        // The test passes if it doesn't panic; sink should receive nothing.
+        let (engine, _state, sink) = setup_engine_with_sink().await;
+
+        let cue_mgr = Arc::new(RwLock::new(CueManager::new(CueList::default())));
+
+        handle_trigger_event(
+            TriggerEvent::SnapshotRecall {
+                identifier: "Bogus".into(),
+                ignore_scope: false,
+            },
+            &cue_mgr,
+            &empty_palette_manager(),
+            &empty_macro_manager(),
+            &empty_macro_engine().await,
+            &engine,
+            None,
+        )
+        .await;
+
+        let received = count_packets_on_sink(&sink).await;
+        assert_eq!(received, 0, "no packets expected for unknown snapshot");
+    }
+}
