@@ -1,4 +1,9 @@
-// Public APIs are being built up across phases — suppress dead_code until all wired in.
+// Many of the daemon's public APIs (engine getters, manager helpers,
+// config builders) are deliberately exposed but not yet called from
+// internal code — the UI / CLI surface drives them on demand. Removing
+// this global allow surfaces ~34 warnings across 23 modules; per-item
+// triage is tracked under audit finding M3 in
+// `Documentation/AUDIT_2026-04-27.md` and `Documentation/todo.md` §7.
 #![allow(dead_code)]
 
 mod console;
