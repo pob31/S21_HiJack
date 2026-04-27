@@ -1299,7 +1299,9 @@ mod tests {
 
     async fn setup_test() -> (SnapshotEngine, Arc<RwLock<ConsoleState>>) {
         let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let remote: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        // Port 1 (any non-zero) — Linux's sendto rejects port 0 with
+        // EINVAL while Windows accepts it.
+        let remote: SocketAddr = "127.0.0.1:1".parse().unwrap();
         let client = OscClient::new(local, remote, None).await.unwrap();
         let (sender, _rx) = client.into_parts();
 
@@ -1316,7 +1318,9 @@ mod tests {
         Arc<RwLock<DirtyTracker>>,
     ) {
         let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let remote: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        // Port 1 (any non-zero) — Linux's sendto rejects port 0 with
+        // EINVAL while Windows accepts it.
+        let remote: SocketAddr = "127.0.0.1:1".parse().unwrap();
         let client = OscClient::new(local, remote, None).await.unwrap();
         let (sender, _rx) = client.into_parts();
 
@@ -1581,10 +1585,12 @@ mod tests {
         // When an iPad sender is available, iPad-only params should be sent
         let (mut engine, _state) = setup_test().await;
 
-        // Create an iPad sender (pointing at a dummy socket)
+        // Create an iPad sender (pointing at a dummy socket).
+        // Local port 0 = bind auto-pick; remote port 1 because Linux's
+        // sendto rejects port 0 with EINVAL.
         let ipad_client = crate::osc::ipad_client::IpadClient::new(
             "127.0.0.1:0".parse().unwrap(),
-            "127.0.0.1:0".parse().unwrap(),
+            "127.0.0.1:1".parse().unwrap(),
             None,
         )
         .await

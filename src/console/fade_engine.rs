@@ -264,7 +264,10 @@ mod tests {
 
     async fn test_sender() -> OscSender {
         let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let remote: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        // Port 1 (any non-zero) — Linux's sendto rejects port 0 with
+        // EINVAL while Windows accepts it, so the test sender needs a
+        // valid destination even though no one listens.
+        let remote: SocketAddr = "127.0.0.1:1".parse().unwrap();
         let client = OscClient::new(local, remote, None).await.unwrap();
         let (sender, _rx) = client.into_parts();
         sender
@@ -336,7 +339,10 @@ mod tests {
         let sender = test_sender().await;
         let sender2 = {
             let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
-            let remote: SocketAddr = "127.0.0.1:0".parse().unwrap();
+            // Port 1 (any non-zero) — Linux's sendto rejects port 0 with
+        // EINVAL while Windows accepts it, so the test sender needs a
+        // valid destination even though no one listens.
+        let remote: SocketAddr = "127.0.0.1:1".parse().unwrap();
             let client = OscClient::new(local, remote, None).await.unwrap();
             let (s, _rx) = client.into_parts();
             s
