@@ -154,11 +154,31 @@ pub async fn connect_mode3_proxy(
     info!(%actual_listen, "Mode 3: iPad-side socket listening");
     let ipad_socket = std::sync::Arc::new(ipad_socket);
 
+    // Decouple state-mirror updates from the proxy hot path: the proxy
+    // forwards bytes immediately and `try_send`s captures into a channel;
+    // a dedicated task drains the channel and updates `state` /
+    // `dirty_tracker` independently. Bounded buffer drops captures under
+    // backpressure rather than slowing forwarding (mirror staleness >
+    // forwarding latency for a high-volume Mode 3 stream).
+    let (capture_tx, capture_rx) = mpsc::channel::<ProxyCapture>(256);
+
+    let capture_state = state.clone();
+    let capture_dt = dirty_tracker.clone();
+    let capture_snap_tx = snapshot_event_tx.clone();
+    let capture_cancel = cancel.clone();
+    tokio::spawn(async move {
+        state_capture_loop(
+            capture_rx,
+            capture_state,
+            capture_dt,
+            capture_snap_tx,
+            capture_cancel,
+        )
+        .await;
+    });
+
     // Start the bidirectional proxy loop immediately (no handshake)
-    let state_clone = state.clone();
-    let dirty_clone = dirty_tracker.clone();
     let offline_clone = offline_mode.clone();
-    let snap_tx = snapshot_event_tx.clone();
 
     tokio::spawn(async move {
         raw_proxy_loop(
@@ -167,16 +187,54 @@ pub async fn connect_mode3_proxy(
             ipad_socket,
             ipad_target,
             ipad_reply_port,
-            state_clone,
-            dirty_clone,
+            capture_tx,
             offline_clone,
-            snap_tx,
             cancel,
         )
         .await;
     });
 
     Ok(ipad_sender)
+}
+
+/// One captured packet: raw bytes plus the direction that produced them.
+/// Sent from `raw_proxy_loop` to `state_capture_loop` over a bounded channel.
+struct ProxyCapture {
+    bytes: Vec<u8>,
+    direction: &'static str,
+}
+
+/// Drain captures from the proxy and update the state mirror / dirty tracker /
+/// snapshot-follow channel. Runs as a separate task so that state contention
+/// (snapshot engine writes, UI reads, gang propagation) cannot delay the
+/// raw byte forwarding in `raw_proxy_loop`.
+async fn state_capture_loop(
+    mut rx: mpsc::Receiver<ProxyCapture>,
+    state: Arc<RwLock<ConsoleState>>,
+    dirty_tracker: Arc<RwLock<DirtyTracker>>,
+    snapshot_event_tx: Option<mpsc::Sender<i32>>,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    info!("Mode 3 state-capture loop started");
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => break,
+            msg = rx.recv() => match msg {
+                Some(capture) => {
+                    log_and_capture_packet(
+                        &capture.bytes,
+                        capture.direction,
+                        &state,
+                        &dirty_tracker,
+                        &snapshot_event_tx,
+                    )
+                    .await;
+                }
+                None => break,
+            },
+        }
+    }
+    info!("Mode 3 state-capture loop ended");
 }
 
 /// Background loop for Mode 2: mirrors iPad protocol messages into ConsoleState.
@@ -241,18 +299,17 @@ async fn ipad_state_mirror_loop(
 /// Pure raw bidirectional proxy loop for Mode 3.
 ///
 /// Two raw UDP sockets, no parsing, no wrappers. Just forwards bytes.
-/// Parsing is best-effort for logging only.
-#[allow(clippy::too_many_arguments)]
+/// Parsing is offloaded to `state_capture_loop` via `capture_tx` so that
+/// state-mirror contention (snapshot engine writes, UI reads, gang
+/// propagation) cannot delay the byte forwarding here.
 async fn raw_proxy_loop(
     console_socket: std::sync::Arc<tokio::net::UdpSocket>,
     console_addr: SocketAddr,
     ipad_socket: std::sync::Arc<tokio::net::UdpSocket>,
     ipad_target: Option<SocketAddr>,
     ipad_reply_port: u16,
-    state: Arc<RwLock<ConsoleState>>,
-    dirty_tracker: Arc<RwLock<DirtyTracker>>,
+    capture_tx: mpsc::Sender<ProxyCapture>,
     offline_mode: Arc<AtomicBool>,
-    snapshot_event_tx: Option<mpsc::Sender<i32>>,
     cancel: tokio_util::sync::CancellationToken,
 ) {
     info!("Mode 3 raw proxy started");
@@ -262,11 +319,12 @@ async fn raw_proxy_loop(
     let mut ipad_buf = vec![0u8; 65536];
     let mut c2i: u64 = 0;
     let mut i2c: u64 = 0;
+    let mut capture_drops: u64 = 0;
 
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                info!(c2i, i2c, "Mode 3 proxy cancelled");
+                info!(c2i, i2c, capture_drops, "Mode 3 proxy cancelled");
                 break;
             }
 
@@ -278,8 +336,9 @@ async fn raw_proxy_loop(
                             debug!("Mode 3 C→I dropped (offline mode)");
                             continue;
                         }
-                        log_and_capture_packet(&console_buf[..size], "C→I", &state, &dirty_tracker, &snapshot_event_tx).await;
 
+                        // Forward FIRST so state-mirror contention can't delay
+                        // the byte path — capture happens off the hot path.
                         if let Some(dest) = ipad_addr {
                             match ipad_socket.send_to(&console_buf[..size], dest).await {
                                 Ok(sent) => {
@@ -291,6 +350,22 @@ async fn raw_proxy_loop(
                                 Err(e) => {
                                     warn!(%dest, "Proxy C→I: send failed: {e}");
                                 }
+                            }
+                        }
+
+                        // Best-effort enqueue for state capture. Channel-full
+                        // means the capture task is lagging — drop the capture
+                        // (mirror briefly stale) rather than block the proxy.
+                        if capture_tx
+                            .try_send(ProxyCapture {
+                                bytes: console_buf[..size].to_vec(),
+                                direction: "C→I",
+                            })
+                            .is_err()
+                        {
+                            capture_drops = capture_drops.saturating_add(1);
+                            if capture_drops.is_power_of_two() {
+                                warn!(capture_drops, "Mode 3 capture channel full — state mirror is lagging");
                             }
                         }
                     }
@@ -318,8 +393,7 @@ async fn raw_proxy_loop(
                             ipad_addr = Some(detected);
                         }
 
-                        log_and_capture_packet(&ipad_buf[..size], "I→C", &state, &dirty_tracker, &snapshot_event_tx).await;
-
+                        // Forward FIRST. See C→I branch comment.
                         match console_socket.send_to(&ipad_buf[..size], console_addr).await {
                             Ok(sent) => {
                                 i2c += 1;
@@ -329,6 +403,19 @@ async fn raw_proxy_loop(
                             }
                             Err(e) => {
                                 warn!(%console_addr, "Proxy I→C: send failed: {e}");
+                            }
+                        }
+
+                        if capture_tx
+                            .try_send(ProxyCapture {
+                                bytes: ipad_buf[..size].to_vec(),
+                                direction: "I→C",
+                            })
+                            .is_err()
+                        {
+                            capture_drops = capture_drops.saturating_add(1);
+                            if capture_drops.is_power_of_two() {
+                                warn!(capture_drops, "Mode 3 capture channel full — state mirror is lagging");
                             }
                         }
                     }

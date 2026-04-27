@@ -235,23 +235,28 @@ impl MonitorEngine {
             _ => return,
         };
 
+        // Optimistic mirror update *before* the send, so the 20Hz
+        // poll-and-push loop pushing to other clients sees the operator's
+        // intent without waiting for the network round-trip. UDP sendto
+        // rarely fails in practice; on failure the next echo from the
+        // console (or another operator action) heals any discrepancy.
+        self.state.write().await.update(addr.clone(), value.clone());
+
         // Forward to console via GP OSC (with iPad fallback)
         match encode::encode_parameter(&addr, &value) {
             Some((path, args)) => {
                 if let Err(e) = self.sender.send(&path, args).await {
                     warn!(%addr, "Monitor aux: send failed: {e}");
-                    return;
                 }
             }
             None => {
-                if let Some(ref ipad) = self.ipad_sender {
-                    if let Some((path, args)) = ipad_encode::encode_ipad_parameter(&addr, &value) {
-                        let _ = ipad.send(&path, args).await;
-                    }
+                if let Some(ref ipad) = self.ipad_sender
+                    && let Some((path, args)) = ipad_encode::encode_ipad_parameter(&addr, &value)
+                {
+                    let _ = ipad.send(&path, args).await;
                 }
             }
         }
-        self.state.write().await.update(addr, value);
     }
 
     /// Process a send parameter change: validate, forward, echo.
@@ -419,6 +424,13 @@ impl MonitorEngine {
     }
 
     /// Forward a send parameter change to the console via GP OSC (or iPad fallback).
+    ///
+    /// Optimistically updates the state mirror *before* the network send so
+    /// concurrent readers (notably the 20Hz poll-and-push) reflect the
+    /// operator's intent immediately. The bool return indicates whether
+    /// the send-to-console actually succeeded — used to gate the immediate
+    /// echo to other clients (other clients still see the change via the
+    /// poll-and-push within 50 ms, even if the immediate echo is skipped).
     async fn forward_send_change(
         &self,
         input_ch: u8,
@@ -436,6 +448,9 @@ impl MonitorEngine {
             parameter,
         };
 
+        // Optimistic mirror update — see contract comment above.
+        self.state.write().await.update(addr.clone(), value.clone());
+
         // Try GP OSC first
         match encode::encode_parameter(&addr, value) {
             Some((path, args)) => {
@@ -443,8 +458,6 @@ impl MonitorEngine {
                     warn!(%addr, "Monitor: failed to send to console: {e}");
                     return false;
                 }
-                // Also update local state mirror
-                self.state.write().await.update(addr, value.clone());
                 true
             }
             None => {
@@ -456,7 +469,6 @@ impl MonitorEngine {
                                 warn!(%addr, "Monitor: iPad send failed: {e}");
                                 return false;
                             }
-                            self.state.write().await.update(addr, value.clone());
                             true
                         }
                         None => {
