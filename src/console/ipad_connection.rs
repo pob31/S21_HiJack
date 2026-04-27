@@ -193,7 +193,14 @@ async fn ipad_state_mirror_loop(
             debug!(path = %msg.path, "iPad mirror: dropped (offline mode)");
             continue;
         }
-        let parsed = ipad_parse::parse_ipad_message(&msg.path, &msg.args);
+        // Validate channel numbers against the live config so a buggy /
+        // mis-configured peer can't pollute the mirror with bogus channels.
+        let config_snapshot = state.read().await.config.clone();
+        let parsed = ipad_parse::parse_ipad_message_with_config(
+            &msg.path,
+            &msg.args,
+            Some(&config_snapshot),
+        );
         match parsed {
             ParsedIpadMessage::ParameterUpdate(addr, value) => {
                 debug!(%addr, %value, "iPad mirror: parameter update");
@@ -349,8 +356,14 @@ async fn log_and_capture_packet(
     // Try standard OSC first
     if let Ok((_, packet)) = rosc::decoder::decode_udp(data) {
         let messages = flatten_packet(packet);
+        // Snapshot the config once for this packet's worth of messages.
+        let config_snapshot = state.read().await.config.clone();
         for msg in messages {
-            let parsed = ipad_parse::parse_ipad_message(&msg.path, &msg.args);
+            let parsed = ipad_parse::parse_ipad_message_with_config(
+                &msg.path,
+                &msg.args,
+                Some(&config_snapshot),
+            );
             match &parsed {
                 ParsedIpadMessage::ParameterUpdate(addr, value) => {
                     debug!(%addr, %value, "Proxy {direction}: param");

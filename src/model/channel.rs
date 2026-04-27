@@ -95,7 +95,22 @@ impl ChannelId {
 
     /// Parse from an iPad protocol path.
     /// Expects a path like "/Input_Channels/1/..." and returns (ChannelId, remaining_path).
+    ///
+    /// Performs no per-type bounds checking — accepts any `0..=255` channel
+    /// number. Use [`Self::from_ipad_path_with_config`] when validating
+    /// against a live console config.
     pub fn from_ipad_path(path: &str) -> Option<(Self, &str)> {
+        Self::from_ipad_path_with_config(path, None)
+    }
+
+    /// Parse from an iPad protocol path, optionally validating the channel
+    /// number against the live `ConsoleConfig`. Mirrors the GP OSC parser's
+    /// `from_gp_osc_number_with_config`. Pass `None` to skip validation
+    /// (used during handshake before config is populated, and in tests).
+    pub fn from_ipad_path_with_config<'a>(
+        path: &'a str,
+        config: Option<&crate::model::config::ConsoleConfig>,
+    ) -> Option<(Self, &'a str)> {
         let path = path.strip_prefix('/')?;
 
         let (type_and_num, rest) = split_ipad_prefix(path)?;
@@ -114,7 +129,28 @@ impl ChannelId {
             _ => return None,
         };
 
+        if let Some(cfg) = config
+            && !channel.is_within_bounds(cfg)
+        {
+            return None;
+        }
+
         Some((channel, rest))
+    }
+
+    /// Whether this channel's number is within the documented range for its
+    /// type, given the live console config. Used to drop bogus channel
+    /// numbers received from the iPad/console proxy paths.
+    pub fn is_within_bounds(&self, config: &crate::model::config::ConsoleConfig) -> bool {
+        match self {
+            ChannelId::Input(n) => (1..=config.input_channel_count).contains(n),
+            ChannelId::Aux(n) => (1..=config.aux_output_count).contains(n),
+            ChannelId::Group(n) => (1..=config.group_output_count).contains(n),
+            ChannelId::Matrix(n) => (1..=config.matrix_output_count).contains(n),
+            ChannelId::ControlGroup(n) => (1..=config.control_group_count).contains(n),
+            ChannelId::GraphicEq(n) => (1..=config.graphic_eq_count).contains(n),
+            ChannelId::MatrixInput(n) => (1..=config.matrix_input_count).contains(n),
+        }
     }
 }
 
@@ -227,5 +263,114 @@ mod tests {
         let (ch, rest) = ChannelId::from_ipad_path("/Graphic_EQ/3/geq_gain").unwrap();
         assert_eq!(ch, ChannelId::GraphicEq(3));
         assert_eq!(rest, "/geq_gain");
+    }
+
+    // ─── iPad path bounds checking (audit H6) ──────────────────────────────
+
+    fn s21_default_config() -> crate::model::config::ConsoleConfig {
+        // S21 defaults: 48 inputs, 8 aux, 8 group (default split of 16 buses),
+        // 8 matrix outs, 10 matrix inputs, 10 control groups, 16 GEQ.
+        crate::model::config::ConsoleConfig {
+            console_name: String::new(),
+            console_serial: String::new(),
+            session_filename: None,
+            input_channel_count: 48,
+            aux_output_count: 8,
+            group_output_count: 8,
+            matrix_output_count: 8,
+            matrix_input_count: 10,
+            control_group_count: 10,
+            graphic_eq_count: 16,
+            talkback_output_count: 0,
+            mix_output_types: vec![],
+            mix_output_modes: vec![],
+            input_modes: vec![],
+            group_modes: vec![],
+            plus_mode: crate::model::config::PlusMode::S21,
+        }
+    }
+
+    #[test]
+    fn ipad_path_with_config_accepts_in_range() {
+        let cfg = s21_default_config();
+        let parsed = ChannelId::from_ipad_path_with_config("/Input_Channels/48/fader", Some(&cfg));
+        assert_eq!(parsed, Some((ChannelId::Input(48), "/fader")));
+
+        let parsed = ChannelId::from_ipad_path_with_config("/Aux_Outputs/8/fader", Some(&cfg));
+        assert_eq!(parsed, Some((ChannelId::Aux(8), "/fader")));
+    }
+
+    #[test]
+    fn ipad_path_with_config_rejects_out_of_range_input() {
+        let cfg = s21_default_config();
+        // 48-input config — input 49 is out of range.
+        assert!(
+            ChannelId::from_ipad_path_with_config("/Input_Channels/49/fader", Some(&cfg)).is_none()
+        );
+        // Pathological: 255 (max u8) — must also reject.
+        assert!(
+            ChannelId::from_ipad_path_with_config("/Input_Channels/255/fader", Some(&cfg))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ipad_path_with_config_rejects_out_of_range_aux() {
+        let cfg = s21_default_config();
+        // 8-aux config — aux 9 is out of range.
+        assert!(
+            ChannelId::from_ipad_path_with_config("/Aux_Outputs/9/fader", Some(&cfg)).is_none()
+        );
+    }
+
+    #[test]
+    fn ipad_path_with_config_rejects_zero() {
+        let cfg = s21_default_config();
+        // 1-based numbering — 0 is out of range for everything except
+        // Control_Groups, which is iPad 0-based (0 → ControlGroup(1)).
+        assert!(
+            ChannelId::from_ipad_path_with_config("/Input_Channels/0/fader", Some(&cfg)).is_none()
+        );
+        assert!(
+            ChannelId::from_ipad_path_with_config("/Aux_Outputs/0/fader", Some(&cfg)).is_none()
+        );
+        // Control_Groups/0 is the first CG → ControlGroup(1), valid.
+        assert_eq!(
+            ChannelId::from_ipad_path_with_config("/Control_Groups/0/fader", Some(&cfg)),
+            Some((ChannelId::ControlGroup(1), "/fader")),
+        );
+    }
+
+    #[test]
+    fn ipad_path_with_no_config_skips_validation() {
+        // Backward compat: passing None means accept any number, same as the
+        // legacy `from_ipad_path`. Used during handshake before config is
+        // populated, and in tests.
+        let parsed = ChannelId::from_ipad_path_with_config("/Input_Channels/255/fader", None);
+        assert_eq!(parsed, Some((ChannelId::Input(255), "/fader")));
+    }
+
+    #[test]
+    fn is_within_bounds_per_type() {
+        let cfg = s21_default_config();
+        assert!(ChannelId::Input(1).is_within_bounds(&cfg));
+        assert!(ChannelId::Input(48).is_within_bounds(&cfg));
+        assert!(!ChannelId::Input(49).is_within_bounds(&cfg));
+        assert!(!ChannelId::Input(0).is_within_bounds(&cfg));
+
+        assert!(ChannelId::Aux(8).is_within_bounds(&cfg));
+        assert!(!ChannelId::Aux(9).is_within_bounds(&cfg));
+
+        assert!(ChannelId::Matrix(8).is_within_bounds(&cfg));
+        assert!(!ChannelId::Matrix(9).is_within_bounds(&cfg));
+
+        assert!(ChannelId::ControlGroup(10).is_within_bounds(&cfg));
+        assert!(!ChannelId::ControlGroup(11).is_within_bounds(&cfg));
+
+        assert!(ChannelId::GraphicEq(16).is_within_bounds(&cfg));
+        assert!(!ChannelId::GraphicEq(17).is_within_bounds(&cfg));
+
+        assert!(ChannelId::MatrixInput(10).is_within_bounds(&cfg));
+        assert!(!ChannelId::MatrixInput(11).is_within_bounds(&cfg));
     }
 }

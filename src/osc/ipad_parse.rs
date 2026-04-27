@@ -53,12 +53,30 @@ pub struct BankData {
 }
 
 /// Parse an iPad protocol OSC message.
+///
+/// Performs no per-type channel-number bounds checking — accepts any number
+/// the iPad sends. Production paths should use
+/// [`parse_ipad_message_with_config`] so out-of-range channels from a buggy
+/// or mis-configured peer are dropped against the live `ConsoleConfig`.
 pub fn parse_ipad_message(path: &str, args: &[OscType]) -> ParsedIpadMessage {
+    parse_ipad_message_with_config(path, args, None)
+}
+
+/// Parse an iPad protocol OSC message, optionally validating channel numbers
+/// against the live `ConsoleConfig`. Mirrors the GP OSC parser's
+/// `parse_gp_osc_with_config` pattern. Pass `None` during handshake (before
+/// config is populated) and in tests; pass `Some(&cfg)` on the proxy /
+/// state-mirror hot paths.
+pub fn parse_ipad_message_with_config(
+    path: &str,
+    args: &[OscType],
+    config: Option<&crate::model::config::ConsoleConfig>,
+) -> ParsedIpadMessage {
     // Snapshot info
-    if path == "/Snapshots/Current_Snapshot" {
-        if let Some(n) = args.first().and_then(extract_i32) {
-            return ParsedIpadMessage::SnapshotInfo { current: n };
-        }
+    if path == "/Snapshots/Current_Snapshot"
+        && let Some(n) = args.first().and_then(extract_i32)
+    {
+        return ParsedIpadMessage::SnapshotInfo { current: n };
     }
 
     // Console configuration responses
@@ -67,10 +85,10 @@ pub fn parse_ipad_message(path: &str, args: &[OscType]) -> ParsedIpadMessage {
     }
 
     // Layout banks
-    if path == "/Layout/Layout/Banks" {
-        if let Some(bank) = try_parse_layout_bank(args) {
-            return ParsedIpadMessage::LayoutBank(bank);
-        }
+    if path == "/Layout/Layout/Banks"
+        && let Some(bank) = try_parse_layout_bank(args)
+    {
+        return ParsedIpadMessage::LayoutBank(bank);
     }
 
     // Meter values
@@ -79,13 +97,12 @@ pub fn parse_ipad_message(path: &str, args: &[OscType]) -> ParsedIpadMessage {
     }
 
     // Channel parameter: /{ChannelType}/{number}/{suffix}
-    if let Some((channel, suffix)) = ChannelId::from_ipad_path(path) {
-        if let Some(parameter) = ParameterPath::from_ipad_suffix(suffix) {
-            if let Some(value) = extract_value(&parameter, args) {
-                let addr = ParameterAddress { channel, parameter };
-                return ParsedIpadMessage::ParameterUpdate(addr, value);
-            }
-        }
+    if let Some((channel, suffix)) = ChannelId::from_ipad_path_with_config(path, config)
+        && let Some(parameter) = ParameterPath::from_ipad_suffix(suffix)
+        && let Some(value) = extract_value(&parameter, args)
+    {
+        let addr = ParameterAddress { channel, parameter };
+        return ParsedIpadMessage::ParameterUpdate(addr, value);
     }
 
     ParsedIpadMessage::Unknown(path.to_string())
