@@ -155,11 +155,39 @@ impl ShowFile {
     }
 
     /// Save the show file to disk as JSON.
+    ///
+    /// Atomic-replace: writes to `<path>.tmp`, fsyncs, then renames over the
+    /// destination. A crash mid-save leaves the previous file intact; the
+    /// orphan `.tmp` is best-effort cleaned up on error.
     pub async fn save(&self, path: &Path) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+
         let json = serde_json::to_string_pretty(self).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Serialize error: {e}"))
         })?;
-        tokio::fs::write(path, json).await
+
+        let mut tmp_os = path.as_os_str().to_owned();
+        tmp_os.push(".tmp");
+        let tmp_path = std::path::PathBuf::from(tmp_os);
+
+        let write_result: std::io::Result<()> = async {
+            let mut file = tokio::fs::File::create(&tmp_path).await?;
+            file.write_all(json.as_bytes()).await?;
+            file.sync_all().await?;
+            Ok(())
+        }
+        .await;
+
+        if let Err(e) = write_result {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(e);
+        }
+
+        if let Err(e) = tokio::fs::rename(&tmp_path, path).await {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Load a show file from disk.
@@ -196,6 +224,43 @@ mod tests {
 
         // Cleanup
         let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn save_is_atomic_and_leaves_no_tmp_file() {
+        let dir = std::env::temp_dir().join("s21_hijack_test");
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let path = dir.join("test_atomic_save.json");
+        let tmp_path = {
+            let mut s = path.as_os_str().to_owned();
+            s.push(".tmp");
+            std::path::PathBuf::from(s)
+        };
+
+        // Clean slate
+        let _ = tokio::fs::remove_file(&path).await;
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+
+        // First save: with default config (48 inputs)
+        let mut show1 = ShowFile::new(ConsoleConfig::default());
+        show1.connection.console_ip = "10.0.0.1".to_string();
+        show1.save(&path).await.unwrap();
+        assert!(path.exists(), "destination should exist after save");
+        assert!(!tmp_path.exists(), "no .tmp file should remain after successful save");
+
+        // Second save: replace with different content
+        let mut show2 = ShowFile::new(ConsoleConfig::default());
+        show2.connection.console_ip = "192.168.1.42".to_string();
+        show2.save(&path).await.unwrap();
+        assert!(!tmp_path.exists(), "no .tmp file should remain after replace");
+
+        // Verify the file actually contains the second version's content
+        let loaded = ShowFile::load(&path).await.unwrap();
+        assert_eq!(loaded.connection.console_ip, "192.168.1.42");
+
+        // Cleanup
+        let _ = tokio::fs::remove_file(&path).await;
+        let _ = tokio::fs::remove_file(&tmp_path).await;
     }
 
     #[tokio::test]
