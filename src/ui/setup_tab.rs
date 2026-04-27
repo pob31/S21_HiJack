@@ -819,18 +819,16 @@ fn start_connection(
             dirty.clone(),
         )));
 
-        let manager = ConnectionManager::connect_from_parts(
-            osc_sender,
-            rx,
-            st.clone(),
-            macro_mgr,
-            gang_engine.clone(),
-            gang_mgr,
-            pan_link_engine.clone(),
-            dirty.clone(),
-            offline.clone(),
-            token.clone(),
-        );
+        let daemon = crate::console::connection::DaemonState {
+            state: st.clone(),
+            macro_manager: macro_mgr,
+            gang_engine: gang_engine.clone(),
+            gang_manager: gang_mgr,
+            pan_link_engine: pan_link_engine.clone(),
+            dirty_tracker: dirty.clone(),
+            offline_mode: offline.clone(),
+        };
+        let manager = ConnectionManager::connect_from_parts(osc_sender, rx, daemon, token.clone());
 
         info!("Connected to console via UI");
         conn_flag.store(true, Ordering::Relaxed);

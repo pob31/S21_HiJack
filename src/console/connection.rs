@@ -31,22 +31,34 @@ const MAX_UNANSWERED_PINGS: u8 = 3;
 /// Loop tick rate for the idle/ping check.
 const TICK_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Bundle of daemon-wide handles that travel together through the connection
+/// pipeline (audit M10). Cheap to clone — every field is `Arc<…>`. Replaces
+/// the 9-argument cluster that `connect_from_parts` / `run_loop` /
+/// `process_message` used to take. iPad-protocol setup functions in
+/// [`crate::console::ipad_connection`] only need a 3-field subset (state /
+/// dirty_tracker / offline_mode) and continue to take those individually
+/// rather than carry dead fields.
+#[derive(Clone)]
+pub struct DaemonState {
+    pub state: Arc<RwLock<ConsoleState>>,
+    pub macro_manager: Arc<RwLock<MacroManager>>,
+    pub gang_engine: Arc<RwLock<GangEngine>>,
+    pub gang_manager: Arc<RwLock<GangManager>>,
+    pub pan_link_engine: Arc<RwLock<PanLinkEngine>>,
+    pub dirty_tracker: Arc<RwLock<DirtyTracker>>,
+    pub offline_mode: Arc<AtomicBool>,
+}
+
 /// Connection manager handles the lifecycle of the console connection.
 pub struct ConnectionManager {
-    state: Arc<RwLock<ConsoleState>>,
     sender: OscSender,
-    macro_manager: Arc<RwLock<MacroManager>>,
-    gang_engine: Arc<RwLock<GangEngine>>,
-    gang_manager: Arc<RwLock<GangManager>>,
-    pan_link_engine: Arc<RwLock<PanLinkEngine>>,
-    dirty_tracker: Arc<RwLock<DirtyTracker>>,
-    offline_mode: Arc<AtomicBool>,
+    daemon: DaemonState,
 }
 
 impl ConnectionManager {
     /// Get a reference to the shared console state.
     pub fn state(&self) -> Arc<RwLock<ConsoleState>> {
-        self.state.clone()
+        self.daemon.state.clone()
     }
 
     /// Get a clone of the sender for sending commands.
@@ -56,7 +68,7 @@ impl ConnectionManager {
 
     /// Get a reference to the macro manager.
     pub fn macro_manager(&self) -> Arc<RwLock<MacroManager>> {
-        self.macro_manager.clone()
+        self.daemon.macro_manager.clone()
     }
 
     /// Build a ConnectionManager from pre-created parts (when OscClient was created externally).
@@ -66,64 +78,37 @@ impl ConnectionManager {
     /// populate the parameter database and discover the bus layout. While running, an
     /// idle-triggered ping/pong heartbeat watches link health; if pings go unanswered
     /// for long enough, a recovery `/console/resend` is issued.
-    #[allow(clippy::too_many_arguments)]
     pub fn connect_from_parts(
         sender: OscSender,
         rx: tokio::sync::mpsc::Receiver<ReceivedOscMessage>,
-        state: Arc<RwLock<ConsoleState>>,
-        macro_manager: Arc<RwLock<MacroManager>>,
-        gang_engine: Arc<RwLock<GangEngine>>,
-        gang_manager: Arc<RwLock<GangManager>>,
-        pan_link_engine: Arc<RwLock<PanLinkEngine>>,
-        dirty_tracker: Arc<RwLock<DirtyTracker>>,
-        offline_mode: Arc<AtomicBool>,
+        daemon: DaemonState,
         cancel: CancellationToken,
     ) -> Self {
         info!("ConnectionManager created from parts");
 
-        tokio::spawn(run_loop(
-            sender.clone(),
-            rx,
-            state.clone(),
-            macro_manager.clone(),
-            gang_engine.clone(),
-            gang_manager.clone(),
-            pan_link_engine.clone(),
-            dirty_tracker.clone(),
-            offline_mode.clone(),
-            cancel.clone(),
-        ));
+        tokio::spawn(run_loop(sender.clone(), rx, daemon.clone(), cancel.clone()));
 
-        Self {
-            state,
-            sender,
-            macro_manager,
-            gang_engine,
-            gang_manager,
-            pan_link_engine,
-            dirty_tracker,
-            offline_mode,
-        }
+        Self { sender, daemon }
     }
 
     /// Get a reference to the dirty tracker.
     pub fn dirty_tracker(&self) -> Arc<RwLock<DirtyTracker>> {
-        self.dirty_tracker.clone()
+        self.daemon.dirty_tracker.clone()
     }
 
     /// Get a reference to the gang engine.
     pub fn gang_engine(&self) -> Arc<RwLock<GangEngine>> {
-        self.gang_engine.clone()
+        self.daemon.gang_engine.clone()
     }
 
     /// Get a reference to the gang manager.
     pub fn gang_manager(&self) -> Arc<RwLock<GangManager>> {
-        self.gang_manager.clone()
+        self.daemon.gang_manager.clone()
     }
 
     /// Get a reference to the pan link engine.
     pub fn pan_link_engine(&self) -> Arc<RwLock<PanLinkEngine>> {
-        self.pan_link_engine.clone()
+        self.daemon.pan_link_engine.clone()
     }
 }
 
@@ -136,17 +121,10 @@ impl ConnectionManager {
 ///   - After `MAX_UNANSWERED_PINGS` consecutive pings without a reply, fire one
 ///     `/console/resend` as a recovery refresh; reset the counter and re-arm.
 ///   - If pings still go unanswered after the recovery resend, mark health as `Lost`.
-#[allow(clippy::too_many_arguments)]
 async fn run_loop(
     sender: OscSender,
     mut rx: tokio::sync::mpsc::Receiver<ReceivedOscMessage>,
-    state: Arc<RwLock<ConsoleState>>,
-    macro_manager: Arc<RwLock<MacroManager>>,
-    gang_engine: Arc<RwLock<GangEngine>>,
-    gang_manager: Arc<RwLock<GangManager>>,
-    pan_link_engine: Arc<RwLock<PanLinkEngine>>,
-    dirty_tracker: Arc<RwLock<DirtyTracker>>,
-    offline_mode: Arc<AtomicBool>,
+    daemon: DaemonState,
     cancel: CancellationToken,
 ) {
     info!("GP OSC state mirror started — querying channel counts before full dump");
@@ -166,12 +144,12 @@ async fn run_loop(
                 return;
             }
             Some(msg) = rx.recv() => {
-                if offline_mode.load(Ordering::Relaxed) {
+                if daemon.offline_mode.load(Ordering::Relaxed) {
                     debug!(path = %msg.path, "Inbound OSC dropped (offline mode)");
                     continue;
                 }
                 let parsed = parse::parse_gp_osc(&msg.path, &msg.args);
-                process_message(&parsed, &state, &macro_manager, &gang_engine, &gang_manager, &pan_link_engine, &dirty_tracker, &sender).await;
+                process_message(&parsed, &daemon, &sender).await;
                 match &parsed {
                     ParsedOscMessage::ChannelCounts { .. } | ParsedOscMessage::DiscoveryCount { .. } => {
                         counts_received = true;
@@ -208,23 +186,23 @@ async fn run_loop(
 
             // Process incoming OSC messages
             Some(msg) = rx.recv() => {
-                if offline_mode.load(Ordering::Relaxed) {
+                if daemon.offline_mode.load(Ordering::Relaxed) {
                     debug!(path = %msg.path, "Inbound OSC dropped (offline mode)");
                     continue;
                 }
                 let mix_types = {
-                    let s = state.read().await;
+                    let s = daemon.state.read().await;
                     if s.config.mix_output_types.is_empty() { None } else { Some(s.config.mix_output_types.clone()) }
                 };
                 let parsed = parse::parse_gp_osc_with_config(&msg.path, &msg.args, mix_types.as_deref());
-                process_message(&parsed, &state, &macro_manager, &gang_engine, &gang_manager, &pan_link_engine, &dirty_tracker, &sender).await;
+                process_message(&parsed, &daemon, &sender).await;
 
                 // Any inbound traffic counts as "alive": reset idle/ping bookkeeping.
                 last_inbound_at = Instant::now();
                 last_ping_at = None;
                 unanswered_pings = 0;
                 recovery_attempted = false;
-                set_health(&state, ConnectionHealth::Connected).await;
+                set_health(&daemon.state, ConnectionHealth::Connected).await;
             }
 
             // Idle / ping / recovery tick
@@ -254,14 +232,14 @@ async fn run_loop(
                                 send_system(&sender, SystemCommand::Resend).await;
                                 recovery_attempted = true;
                                 unanswered_pings = 0; // re-arm; new pings count fresh
-                                set_health(&state, ConnectionHealth::Stale).await;
+                                set_health(&daemon.state, ConnectionHealth::Stale).await;
                             } else {
                                 warn!("GP OSC still unresponsive after recovery resend — marking link Lost");
-                                set_health(&state, ConnectionHealth::Lost).await;
+                                set_health(&daemon.state, ConnectionHealth::Lost).await;
                             }
                         } else {
                             // Pinging but threshold not yet hit.
-                            set_health(&state, ConnectionHealth::Idle).await;
+                            set_health(&daemon.state, ConnectionHealth::Idle).await;
                         }
                     }
                 }
@@ -269,7 +247,7 @@ async fn run_loop(
 
             // Periodically log state mirror size
             _ = param_count_log_interval.tick() => {
-                let count = state.read().await.parameter_count();
+                let count = daemon.state.read().await.parameter_count();
                 debug!(count, "State mirror parameter count");
             }
 
@@ -300,38 +278,32 @@ async fn set_health(state: &Arc<RwLock<ConsoleState>>, health: ConnectionHealth)
 }
 
 /// Process a parsed GP OSC message — update state mirror, propagate gangs, record macros.
-#[allow(clippy::too_many_arguments)]
-async fn process_message(
-    parsed: &ParsedOscMessage,
-    state: &Arc<RwLock<ConsoleState>>,
-    macro_manager: &Arc<RwLock<MacroManager>>,
-    gang_engine: &Arc<RwLock<GangEngine>>,
-    gang_manager: &Arc<RwLock<GangManager>>,
-    pan_link_engine: &Arc<RwLock<PanLinkEngine>>,
-    dirty_tracker: &Arc<RwLock<DirtyTracker>>,
-    sender: &OscSender,
-) {
+async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender: &OscSender) {
     match parsed {
         ParsedOscMessage::ParameterUpdate(addr, value) => {
             debug!(%addr, %value, "Parameter update");
-            let old_value = state.write().await.update(addr.clone(), value.clone());
+            let old_value = daemon
+                .state
+                .write()
+                .await
+                .update(addr.clone(), value.clone());
 
             // Mark this cell dirty IF the value actually changed. The dirty
             // tracker is suppression-aware, so echoes from snapshot recall
             // (which set begin_suppression before sending) are ignored. The
             // first sample after a connection comes through old_value=None,
             // which we treat as "this is the baseline" — not a change.
-            if let Some(prev) = &old_value {
-                if prev != value {
-                    dirty_tracker.write().await.mark(addr);
-                }
+            if let Some(prev) = &old_value
+                && prev != value
+            {
+                daemon.dirty_tracker.write().await.mark(addr);
             }
 
             // Gang propagation — before macro recording so the engineer's
             // original change is what gets recorded, not ganged echoes.
             {
-                let mut engine = gang_engine.write().await;
-                let manager = gang_manager.read().await;
+                let mut engine = daemon.gang_engine.write().await;
+                let manager = daemon.gang_manager.read().await;
                 engine
                     .process_gang_update(addr, value, old_value.as_ref(), &manager)
                     .await;
@@ -340,12 +312,12 @@ async fn process_message(
             // Pan link propagation — runs after gangs so a gang-driven
             // pan change on an input also pushes to its linked aux sends.
             {
-                let engine = pan_link_engine.read().await;
+                let engine = daemon.pan_link_engine.read().await;
                 engine.process_pan_update(addr, value).await;
             }
 
             // Feed into macro learn mode if recording
-            let mut mgr = macro_manager.write().await;
+            let mut mgr = daemon.macro_manager.write().await;
             if mgr.is_recording() {
                 mgr.record_change(addr.clone(), value.clone());
             }
@@ -376,7 +348,7 @@ async fn process_message(
                 master,
                 "Received /console/channel/counts — applying to config"
             );
-            let mut s = state.write().await;
+            let mut s = daemon.state.write().await;
             apply_channel_counts(
                 &mut s.config,
                 *inputs,
@@ -395,7 +367,7 @@ async fn process_message(
                 channel_type,
                 count, "Per-type channel count (back-compat path)"
             );
-            let mut s = state.write().await;
+            let mut s = daemon.state.write().await;
             crate::console::discovery::apply_channel_count(&mut s.config, channel_type, *count);
         }
         ParsedOscMessage::Unknown(path) => {

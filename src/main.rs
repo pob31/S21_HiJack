@@ -190,18 +190,17 @@ async fn run_headless(args: Args) {
 
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let offline_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let manager = ConnectionManager::connect_from_parts(
-        sender.clone(),
-        rx,
+    let daemon = console::connection::DaemonState {
         state,
-        macro_manager.clone(),
-        gang_engine.clone(),
-        gang_manager.clone(),
-        pan_link_engine.clone(),
-        dirty_tracker.clone(),
-        offline_mode.clone(),
-        cancel_token.clone(),
-    );
+        macro_manager: macro_manager.clone(),
+        gang_engine: gang_engine.clone(),
+        gang_manager: gang_manager.clone(),
+        pan_link_engine: pan_link_engine.clone(),
+        dirty_tracker: dirty_tracker.clone(),
+        offline_mode: offline_mode.clone(),
+    };
+    let manager =
+        ConnectionManager::connect_from_parts(sender.clone(), rx, daemon, cancel_token.clone());
     info!("Connected successfully");
 
     // Parse operating mode
