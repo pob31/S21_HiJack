@@ -21,8 +21,12 @@ pub enum ParameterPath {
     Pan,
 
     // Input section
-    #[serde(alias = "Gain")]
     AnalogGain,
+    /// Post-fader + CG sum (-20..+60 dB). GP OSC only; no iPad path.
+    /// `serde(alias = "Gain")` migrates pre-Phase-6 snapshot files —
+    /// the old `Gain` variant always meant GP OSC `total/gain`.
+    #[serde(alias = "Gain")]
+    TotalGain,
     GainTracking,
     Trim,
     Balance,
@@ -124,6 +128,7 @@ impl ParameterPath {
             ParameterPath::Mute => Some("mute".into()),
             ParameterPath::Solo => Some("solo".into()),
             ParameterPath::Pan => Some("pan".into()),
+            ParameterPath::TotalGain => Some("total/gain".into()),
             ParameterPath::GainTracking => Some("input/gain_tracking".into()),
             ParameterPath::Trim => Some("input/trim".into()),
             ParameterPath::Balance => Some("input/balance".into()),
@@ -201,7 +206,8 @@ impl ParameterPath {
             ParameterPath::StereoMode => Some("Channel_Input/stereo_mode".into()),
 
             // GP OSC-only input params
-            ParameterPath::GainTracking
+            ParameterPath::TotalGain
+            | ParameterPath::GainTracking
             | ParameterPath::Balance
             | ParameterPath::Width => None,
 
@@ -393,6 +399,7 @@ impl ParameterPath {
             "mute" => return Some(ParameterPath::Mute),
             "solo" => return Some(ParameterPath::Solo),
             "pan" => return Some(ParameterPath::Pan),
+            "total/gain" => return Some(ParameterPath::TotalGain),
             "input/gain_tracking" => return Some(ParameterPath::GainTracking),
             "input/trim" => return Some(ParameterPath::Trim),
             "input/balance" => return Some(ParameterPath::Balance),
@@ -520,6 +527,7 @@ impl ParameterPath {
             ParameterPath::Solo => "Solo".into(),
             ParameterPath::Pan => "Pan".into(),
             ParameterPath::AnalogGain => "Analog Gain".into(),
+            ParameterPath::TotalGain => "Total Gain".into(),
             ParameterPath::GainTracking => "Gain Tracking".into(),
             ParameterPath::Trim => "Trim".into(),
             ParameterPath::Balance => "Balance".into(),
@@ -660,6 +668,7 @@ impl ParameterPath {
         let input_only = matches!(
             self,
             P::AnalogGain
+                | P::TotalGain
                 | P::GainTracking
                 | P::Balance
                 | P::Width
@@ -720,6 +729,7 @@ impl ParameterPath {
 
         // Input
         push(ParameterPath::AnalogGain, &mut out);
+        push(ParameterPath::TotalGain, &mut out);
         push(ParameterPath::GainTracking, &mut out);
         push(ParameterPath::Trim, &mut out);
         push(ParameterPath::Balance, &mut out);
@@ -963,6 +973,7 @@ impl ParameterPath {
             ParameterPath::Solo => ParameterSection::FaderMutePan,
 
             ParameterPath::AnalogGain
+            | ParameterPath::TotalGain
             | ParameterPath::GainTracking
             | ParameterPath::Trim
             | ParameterPath::Balance
@@ -1054,6 +1065,7 @@ impl ParameterPath {
 
             // Input continuous
             ParameterPath::AnalogGain
+            | ParameterPath::TotalGain
             | ParameterPath::Trim
             | ParameterPath::Balance
             | ParameterPath::Width => true,
@@ -1121,8 +1133,8 @@ impl ParameterPath {
 /// and fade). Each category maps to one or more `ParameterSection` values
 /// and defines whether its continuous parameters can be faded.
 ///
-/// Parameters not belonging to any category (Name, Solo, AnalogGain, etc.)
-/// are recalled instantly with no pre-wait.
+/// Parameters not belonging to any category (Name, Solo, AnalogGain,
+/// TotalGain, etc.) are recalled instantly with no pre-wait.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum TimingCategory {
     /// Trim, Balance, Width, Polarity, DelayEnabled, DelayTime.
@@ -1862,6 +1874,7 @@ mod tests {
             ParameterPath::Solo,
             ParameterPath::Pan,
             ParameterPath::AnalogGain,
+            ParameterPath::TotalGain,
             ParameterPath::GainTracking,
             ParameterPath::Trim,
             ParameterPath::Balance,
@@ -1962,6 +1975,75 @@ mod tests {
         assert!(!ParameterPath::AnalogGain.available_for_channel(&ChannelId::Group(1)));
         assert!(!ParameterPath::AnalogGain.available_for_channel(&ChannelId::Matrix(1)));
         assert!(!ParameterPath::AnalogGain.available_for_channel(&ChannelId::ControlGroup(1)));
+    }
+
+    // ─── Gain split (audit H10): TotalGain (GP OSC) vs AnalogGain (iPad) ────
+
+    #[test]
+    fn total_gain_round_trips_through_gp_osc() {
+        // The two physical knobs map to disjoint wire paths, no overlap.
+        assert_eq!(
+            ParameterPath::TotalGain.to_gp_osc_suffix().as_deref(),
+            Some("total/gain"),
+        );
+        assert_eq!(
+            ParameterPath::from_gp_osc_suffix("total/gain"),
+            Some(ParameterPath::TotalGain),
+        );
+    }
+
+    #[test]
+    fn total_gain_has_no_ipad_path() {
+        assert!(ParameterPath::TotalGain.to_ipad_suffix().is_none());
+    }
+
+    #[test]
+    fn analog_gain_has_no_gp_osc_path() {
+        assert!(ParameterPath::AnalogGain.to_gp_osc_suffix().is_none());
+    }
+
+    #[test]
+    fn legacy_gain_serde_alias_migrates_to_total_gain() {
+        // Pre-Phase-6 snapshot files used `"Gain"` for what was always GP OSC
+        // total/gain. The serde alias is now on TotalGain so those legacy
+        // values land on the correct physical knob on load.
+        let path: ParameterPath = serde_json::from_str(r#""Gain""#).unwrap();
+        assert_eq!(path, ParameterPath::TotalGain);
+    }
+
+    #[test]
+    fn analog_gain_round_trips_without_aliasing_legacy_gain() {
+        // After moving the alias off AnalogGain, freshly-serialized
+        // AnalogGain still round-trips by its real name.
+        let json = serde_json::to_string(&ParameterPath::AnalogGain).unwrap();
+        assert_eq!(json, r#""AnalogGain""#);
+        let parsed: ParameterPath = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, ParameterPath::AnalogGain);
+    }
+
+    #[test]
+    fn total_gain_section_is_input_gain() {
+        assert_eq!(ParameterPath::TotalGain.section(), ParameterSection::InputGain);
+    }
+
+    #[test]
+    fn total_gain_is_continuous() {
+        assert!(ParameterPath::TotalGain.is_continuous());
+    }
+
+    #[test]
+    fn total_gain_is_input_only() {
+        assert!(ParameterPath::TotalGain.available_for_channel(&ChannelId::Input(1)));
+        assert!(!ParameterPath::TotalGain.available_for_channel(&ChannelId::Aux(1)));
+        assert!(!ParameterPath::TotalGain.available_for_channel(&ChannelId::Group(1)));
+        assert!(!ParameterPath::TotalGain.available_for_channel(&ChannelId::Matrix(1)));
+        assert!(!ParameterPath::TotalGain.available_for_channel(&ChannelId::ControlGroup(1)));
+    }
+
+    #[test]
+    fn total_gain_has_no_timing_category() {
+        // Same instant-recall behavior as AnalogGain.
+        assert_eq!(TimingCategory::from_parameter_path(&ParameterPath::TotalGain), None);
     }
 
     #[test]
