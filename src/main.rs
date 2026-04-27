@@ -16,7 +16,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use clap::Parser;
-use rosc::OscType;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -36,7 +35,7 @@ use console::snapshot_engine::SnapshotEngine;
 use model::operating_mode::OperatingMode;
 use model::snapshot::CueList;
 use osc::monitor_server::MonitorServer;
-use osc::trigger_listener::{TriggerEvent, TriggerListener};
+use osc::trigger_listener::TriggerListener;
 
 /// DiGiCo S21/S31 Snapshot Manager Daemon
 #[derive(Parser, Debug)]
@@ -405,114 +404,16 @@ async fn run_headless(args: Args) {
 
     tokio::spawn(async move {
         while let Some(event) = trigger_rx.recv().await {
-            match event {
-                TriggerEvent::GoNext => {
-                    let mut mgr = trigger_cue_mgr.write().await;
-                    if let Some(cue) = mgr.go_next() {
-                        let cue = cue.clone();
-                        if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
-                            drop(mgr);
-                            let pmgr = trigger_palette_mgr.read().await;
-                            let result = trigger_engine
-                                .recall_cue(&cue, &snapshot, &pmgr.palettes, false)
-                                .await;
-                            info!(sent = result.parameters_sent, "Cue GO recall complete");
-                        } else {
-                            warn!(snapshot_id = %cue.snapshot_id, "Snapshot not found for cue");
-                        }
-                    }
-                }
-                TriggerEvent::GoPrevious => {
-                    let mut mgr = trigger_cue_mgr.write().await;
-                    if let Some(cue) = mgr.go_previous() {
-                        let cue = cue.clone();
-                        if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
-                            drop(mgr);
-                            let pmgr = trigger_palette_mgr.read().await;
-                            let result = trigger_engine
-                                .recall_cue(&cue, &snapshot, &pmgr.palettes, false)
-                                .await;
-                            info!(
-                                sent = result.parameters_sent,
-                                "Cue PREVIOUS recall complete"
-                            );
-                        } else {
-                            warn!(snapshot_id = %cue.snapshot_id, "Snapshot not found for cue");
-                        }
-                    }
-                }
-                TriggerEvent::FireCue(number) => {
-                    let mut mgr = trigger_cue_mgr.write().await;
-                    if let Some(cue) = mgr.fire_cue_number(number) {
-                        let cue = cue.clone();
-                        if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
-                            drop(mgr);
-                            let pmgr = trigger_palette_mgr.read().await;
-                            let result = trigger_engine
-                                .recall_cue(&cue, &snapshot, &pmgr.palettes, false)
-                                .await;
-                            info!(
-                                number,
-                                sent = result.parameters_sent,
-                                "Cue FIRE recall complete"
-                            );
-                        } else {
-                            warn!(snapshot_id = %cue.snapshot_id, "Snapshot not found for cue");
-                        }
-                    }
-                }
-                TriggerEvent::QueryCurrent { reply_addr } => {
-                    let mgr = trigger_cue_mgr.read().await;
-                    let current = mgr.current_cue_number().unwrap_or(-1.0);
-                    info!(current, %reply_addr, "Responding to /cue/current query");
-                    if let Some(ref sock) = reply_socket {
-                        let _ = osc::trigger_listener::send_reply(
-                            sock,
-                            reply_addr,
-                            "/cue/current",
-                            vec![OscType::Float(current)],
-                        )
-                        .await;
-                    }
-                }
-                TriggerEvent::MacroFire(name) => {
-                    let mgr = trigger_macro_mgr.read().await;
-                    if let Some(macro_def) = mgr.find_by_name_or_id(&name).cloned() {
-                        drop(mgr);
-                        let result = trigger_macro_eng.execute(&macro_def).await;
-                        info!(
-                            name = %result.macro_name,
-                            executed = result.steps_executed,
-                            skipped = result.steps_skipped,
-                            "MacroFire trigger complete"
-                        );
-                    } else {
-                        warn!(name, "MacroFire: macro not found");
-                    }
-                }
-                TriggerEvent::SnapshotRecall {
-                    identifier,
-                    ignore_scope,
-                } => {
-                    let mgr = trigger_cue_mgr.read().await;
-                    if let Some(snapshot) = mgr.resolve_snapshot(&identifier).cloned() {
-                        drop(mgr);
-                        let pmgr = trigger_palette_mgr.read().await;
-                        let scope = snapshot.scope.clone();
-                        let result = trigger_engine
-                            .recall(&snapshot, &scope, &pmgr.palettes, ignore_scope)
-                            .await;
-                        info!(
-                            identifier,
-                            ignore_scope,
-                            sent = result.parameters_sent,
-                            "SnapshotRecall trigger complete"
-                        );
-                    } else {
-                        warn!(identifier, "SnapshotRecall: snapshot not found");
-                    }
-                }
-            }
+            console::trigger_dispatch::handle_trigger_event(
+                event,
+                &trigger_cue_mgr,
+                &trigger_palette_mgr,
+                &trigger_macro_mgr,
+                &trigger_macro_eng,
+                &trigger_engine,
+                reply_socket.as_ref(),
+            )
+            .await;
         }
     });
 

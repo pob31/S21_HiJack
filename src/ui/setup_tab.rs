@@ -809,9 +809,7 @@ fn start_connection(
         osc_sender.set_offline_flag(offline.clone());
 
         // Create GangEngine with the sender
-        let gang_engine = Arc::new(RwLock::new(
-            GangEngine::new(st.clone(), osc_sender.clone()),
-        ));
+        let gang_engine = Arc::new(RwLock::new(GangEngine::new(st.clone(), osc_sender.clone())));
 
         // Create PanLinkEngine with the same sender + shared bindings.
         let pan_link_engine = Arc::new(RwLock::new(PanLinkEngine::new(
@@ -822,8 +820,16 @@ fn start_connection(
         )));
 
         let manager = ConnectionManager::connect_from_parts(
-            osc_sender, rx, st.clone(), macro_mgr, gang_engine.clone(), gang_mgr,
-            pan_link_engine.clone(), dirty.clone(), offline.clone(), token.clone(),
+            osc_sender,
+            rx,
+            st.clone(),
+            macro_mgr,
+            gang_engine.clone(),
+            gang_mgr,
+            pan_link_engine.clone(),
+            dirty.clone(),
+            offline.clone(),
+            token.clone(),
         );
 
         info!("Connected to console via UI");
@@ -854,7 +860,17 @@ fn start_connection(
 
             match operating_mode {
                 OperatingMode::Mode2 => {
-                    match ipad_connection::connect_mode2(console_ipad_addr, local_ipad_addr, st.clone(), dirty.clone(), offline.clone(), Some(snap_event_tx.clone()), iface_name.as_deref()).await {
+                    match ipad_connection::connect_mode2(
+                        console_ipad_addr,
+                        local_ipad_addr,
+                        st.clone(),
+                        dirty.clone(),
+                        offline.clone(),
+                        Some(snap_event_tx.clone()),
+                        iface_name.as_deref(),
+                    )
+                    .await
+                    {
                         Ok((ipad_sender, result, _handle)) => {
                             info!(
                                 name = %result.config.console_name,
@@ -863,8 +879,14 @@ fn start_connection(
                             let mut ipad_sender = ipad_sender;
                             ipad_sender.set_offline_flag(offline.clone());
                             snapshot_engine.set_ipad_sender(Some(ipad_sender.clone()));
-                            gang_engine.write().await.set_ipad_sender(Some(ipad_sender.clone()));
-                            pan_link_engine.write().await.set_ipad_sender(Some(ipad_sender));
+                            gang_engine
+                                .write()
+                                .await
+                                .set_ipad_sender(Some(ipad_sender.clone()));
+                            pan_link_engine
+                                .write()
+                                .await
+                                .set_ipad_sender(Some(ipad_sender));
                             let _ = tx.send(UiEvent::IpadConnected);
                         }
                         Err(e) => {
@@ -877,9 +899,10 @@ fn start_connection(
                     // Two-socket proxy:
                     // Socket 1 (console-side): bind to ipad_local_port, send to console:ipad_console_port
                     // Socket 2 (iPad-side): bind to ipad_listen_port, send to iPad:ipad_reply_port
-                    let ipad_listener_addr: SocketAddr = format!("{bind_ip_str}:{ipad_listen_port}")
-                        .parse()
-                        .expect("Invalid iPad listen address");
+                    let ipad_listener_addr: SocketAddr =
+                        format!("{bind_ip_str}:{ipad_listen_port}")
+                            .parse()
+                            .expect("Invalid iPad listen address");
                     let ipad_target = if !ipad_ip_str.is_empty() {
                         let addr: SocketAddr = format!("{}:{}", ipad_ip_str, ipad_reply_port)
                             .parse()
@@ -901,14 +924,22 @@ fn start_connection(
                         Some(snap_event_tx.clone()),
                         token.clone(),
                         iface_name.clone(),
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(ipad_sender) => {
                             info!("UI Mode 3: iPad proxy started");
                             let mut ipad_sender = ipad_sender;
                             ipad_sender.set_offline_flag(offline.clone());
                             snapshot_engine.set_ipad_sender(Some(ipad_sender.clone()));
-                            gang_engine.write().await.set_ipad_sender(Some(ipad_sender.clone()));
-                            pan_link_engine.write().await.set_ipad_sender(Some(ipad_sender));
+                            gang_engine
+                                .write()
+                                .await
+                                .set_ipad_sender(Some(ipad_sender.clone()));
+                            pan_link_engine
+                                .write()
+                                .await
+                                .set_ipad_sender(Some(ipad_sender));
                             let _ = tx.send(UiEvent::IpadConnected);
                         }
                         Err(e) => {
@@ -1021,7 +1052,7 @@ fn start_connection(
 
                 // Spawn trigger processing
                 tokio::spawn(async move {
-                    use crate::osc::trigger_listener::TriggerEvent;
+                    use crate::console::trigger_dispatch;
                     loop {
                         tokio::select! {
                             _ = trigger_token.cancelled() => {
@@ -1029,83 +1060,16 @@ fn start_connection(
                                 break;
                             }
                             Some(event) = trigger_rx.recv() => {
-                                match event {
-                                    TriggerEvent::GoNext => {
-                                        let mut mgr = trigger_cue_mgr.write().await;
-                                        if let Some(cue) = mgr.go_next() {
-                                            let cue = cue.clone();
-                                            if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
-                                                drop(mgr);
-                                                let pmgr = trigger_palette_mgr.read().await;
-                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
-                                                info!(sent = result.parameters_sent, "Trigger GO recall complete");
-                                            }
-                                        }
-                                    }
-                                    TriggerEvent::GoPrevious => {
-                                        let mut mgr = trigger_cue_mgr.write().await;
-                                        if let Some(cue) = mgr.go_previous() {
-                                            let cue = cue.clone();
-                                            if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
-                                                drop(mgr);
-                                                let pmgr = trigger_palette_mgr.read().await;
-                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
-                                                info!(sent = result.parameters_sent, "Trigger PREV recall complete");
-                                            }
-                                        }
-                                    }
-                                    TriggerEvent::FireCue(number) => {
-                                        let mut mgr = trigger_cue_mgr.write().await;
-                                        if let Some(cue) = mgr.fire_cue_number(number) {
-                                            let cue = cue.clone();
-                                            if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
-                                                drop(mgr);
-                                                let pmgr = trigger_palette_mgr.read().await;
-                                                let result = trigger_engine.recall_cue(&cue, &snapshot, &pmgr.palettes, false).await;
-                                                info!(number, sent = result.parameters_sent, "Trigger FIRE recall complete");
-                                            }
-                                        }
-                                    }
-                                    TriggerEvent::QueryCurrent { reply_addr } => {
-                                        let mgr = trigger_cue_mgr.read().await;
-                                        let current = mgr.current_cue_number().unwrap_or(-1.0);
-                                        info!(current, %reply_addr, "Trigger /cue/current query");
-                                    }
-                                    TriggerEvent::MacroFire(name) => {
-                                        let mgr = trigger_macro_mgr.read().await;
-                                        if let Some(macro_def) = mgr.find_by_name_or_id(&name).cloned() {
-                                            drop(mgr);
-                                            let result = trigger_macro_eng.execute(&macro_def).await;
-                                            info!(
-                                                name = %result.macro_name,
-                                                executed = result.steps_executed,
-                                                skipped = result.steps_skipped,
-                                                "Trigger MacroFire complete"
-                                            );
-                                        } else {
-                                            tracing::warn!(name, "MacroFire: macro not found");
-                                        }
-                                    }
-                                    TriggerEvent::SnapshotRecall { identifier, ignore_scope } => {
-                                        let mgr = trigger_cue_mgr.read().await;
-                                        if let Some(snapshot) = mgr.resolve_snapshot(&identifier).cloned() {
-                                            drop(mgr);
-                                            let pmgr = trigger_palette_mgr.read().await;
-                                            let scope = snapshot.scope.clone();
-                                            let result = trigger_engine
-                                                .recall(&snapshot, &scope, &pmgr.palettes, ignore_scope)
-                                                .await;
-                                            info!(
-                                                identifier,
-                                                ignore_scope,
-                                                sent = result.parameters_sent,
-                                                "Trigger SnapshotRecall complete"
-                                            );
-                                        } else {
-                                            tracing::warn!(identifier, "SnapshotRecall: snapshot not found");
-                                        }
-                                    }
-                                }
+                                trigger_dispatch::handle_trigger_event(
+                                    event,
+                                    &trigger_cue_mgr,
+                                    &trigger_palette_mgr,
+                                    &trigger_macro_mgr,
+                                    &trigger_macro_eng,
+                                    &trigger_engine,
+                                    None, // UI path doesn't bind a reply socket
+                                )
+                                .await;
                             }
                             else => break,
                         }
@@ -1145,9 +1109,8 @@ fn start_connection(
                         let mut last_generation: u64 = 0;
                         let mut last_push_times = std::collections::HashMap::new();
                         let mut last_aux_push_times = std::collections::HashMap::new();
-                        let mut poll_interval = tokio::time::interval(
-                            std::time::Duration::from_millis(10),
-                        );
+                        let mut poll_interval =
+                            tokio::time::interval(std::time::Duration::from_millis(10));
                         loop {
                             tokio::select! {
                                 _ = monitor_token.cancelled() => {
