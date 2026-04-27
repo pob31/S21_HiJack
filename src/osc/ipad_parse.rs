@@ -519,4 +519,49 @@ mod tests {
             _ => panic!("Expected ParameterUpdate"),
         }
     }
+
+    // ─── Audit M6: property-based fuzz coverage ────────────────────────
+    use proptest::prelude::*;
+
+    /// Arbitrary `OscType` strategy covering the variants the parser
+    /// actually inspects. Skips `Blob` / `Time` / `MidiMessage` etc. — those
+    /// are unreachable from the iPad protocol and add noise without
+    /// coverage.
+    fn arb_osc_type() -> impl Strategy<Value = OscType> {
+        prop_oneof![
+            any::<f32>().prop_map(OscType::Float),
+            any::<f64>().prop_map(OscType::Double),
+            any::<i32>().prop_map(OscType::Int),
+            any::<i64>().prop_map(OscType::Long),
+            any::<bool>().prop_map(OscType::Bool),
+            ".*".prop_map(OscType::String),
+        ]
+    }
+
+    proptest! {
+        /// Fully random path + small random arg list. Most paths fall
+        /// through to `Unknown(_)`; the rest exercise the channel/path
+        /// dispatch and the value-extraction switch.
+        #[test]
+        fn parse_ipad_message_no_panic_on_arbitrary(
+            path in ".*",
+            args in proptest::collection::vec(arb_osc_type(), 0..8)
+        ) {
+            let _ = parse_ipad_message(&path, &args);
+        }
+
+        /// Bias toward channel-shaped paths (`/{ChannelType}/{n}/...`) so
+        /// the deeper code path gets exercised more often than fully-random
+        /// strings.
+        #[test]
+        fn parse_ipad_message_no_panic_on_channel_paths(
+            channel_type in "(Input_Channels|Aux_Outputs|Group_Outputs|Matrix_Outputs|Control_Groups|Graphic_EQ|Matrix_Inputs)",
+            num in any::<u8>(),
+            suffix in ".*",
+            args in proptest::collection::vec(arb_osc_type(), 0..4)
+        ) {
+            let path = format!("/{channel_type}/{num}/{suffix}");
+            let _ = parse_ipad_message(&path, &args);
+        }
+    }
 }

@@ -35,3 +35,10 @@ libc = "0.2"
 socket2 = { version = "0.5", features = ["all"] }
 rfd = "0.15"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+[dev-dependencies]
+# Property-based / random-input testing for the network-boundary OSC parsers
+# (audit M6). Stable Rust; runs as part of `cargo test`. For deeper
+# coverage-guided fuzzing, `cargo install cargo-fuzz` separately + nightly
+# toolchain — proptest is the always-on safety net.
+proptest = "1"

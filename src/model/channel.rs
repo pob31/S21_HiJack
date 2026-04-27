@@ -123,7 +123,11 @@ impl ChannelId {
             "Aux_Outputs" => ChannelId::Aux(num),
             "Group_Outputs" => ChannelId::Group(num),
             "Matrix_Outputs" => ChannelId::Matrix(num),
-            "Control_Groups" => ChannelId::ControlGroup(num + 1), // iPad 0-based → 1-based
+            // iPad is 0-based; we store 1-based. `checked_add` rejects num=255
+            // gracefully (would overflow `u8`); `is_within_bounds` below
+            // catches the rest of the out-of-range cases. Found by audit M6
+            // proptest fuzz.
+            "Control_Groups" => ChannelId::ControlGroup(num.checked_add(1)?),
             "Graphic_EQ" => ChannelId::GraphicEq(num),
             "Matrix_Inputs" => ChannelId::MatrixInput(num),
             _ => return None,

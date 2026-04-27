@@ -347,4 +347,54 @@ mod tests {
             _ => panic!("Expected ParameterUpdate"),
         }
     }
+
+    // ─── Audit M6: property-based fuzz coverage ────────────────────────
+    use proptest::prelude::*;
+
+    fn arb_osc_type() -> impl Strategy<Value = OscType> {
+        prop_oneof![
+            any::<f32>().prop_map(OscType::Float),
+            any::<f64>().prop_map(OscType::Double),
+            any::<i32>().prop_map(OscType::Int),
+            any::<i64>().prop_map(OscType::Long),
+            any::<bool>().prop_map(OscType::Bool),
+            ".*".prop_map(OscType::String),
+        ]
+    }
+
+    proptest! {
+        /// Fully arbitrary path + arg list. Most paths fall through to
+        /// `Unknown`; the rest exercise channel-counts parsing,
+        /// channel-parameter parsing, and value extraction.
+        #[test]
+        fn parse_gp_osc_no_panic_on_arbitrary(
+            path in ".*",
+            args in proptest::collection::vec(arb_osc_type(), 0..8)
+        ) {
+            let _ = parse_gp_osc(&path, &args);
+        }
+
+        /// Bias toward `/channel/{n}/...` paths so we exercise the channel
+        /// number → ChannelId mapping with the per-type bounds checks
+        /// (audit H6 territory).
+        #[test]
+        fn parse_gp_osc_no_panic_on_channel_paths(
+            num in any::<u8>(),
+            suffix in ".*",
+            args in proptest::collection::vec(arb_osc_type(), 0..4)
+        ) {
+            let path = format!("/channel/{num}/{suffix}");
+            let _ = parse_gp_osc(&path, &args);
+        }
+
+        /// `/console/channel/counts` with positional args of arbitrary
+        /// type — exercises the `extract_u8` cast path on weird inputs
+        /// (huge ints, NaN floats, signed negatives).
+        #[test]
+        fn parse_gp_osc_no_panic_on_channel_counts(
+            args in proptest::collection::vec(arb_osc_type(), 0..10)
+        ) {
+            let _ = parse_gp_osc("/console/channel/counts", &args);
+        }
+    }
 }

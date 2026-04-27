@@ -239,3 +239,51 @@ async fn process_packet(packet: OscPacket, tx: &mpsc::Sender<ReceivedOscMessage>
         }
     }
 }
+
+#[cfg(test)]
+mod fuzz_tests {
+    //! Property-based fuzz coverage for the manual byte-arithmetic parser
+    //! (audit M6). `parse_digico_packet` walks raw bytes, finds a null
+    //! terminator, slices into a UTF-8 path, and parses inline args after
+    //! a 4-byte alignment — exactly the kind of code that tends to panic
+    //! on edge cases (empty input, null at last byte, unaligned slice end,
+    //! invalid UTF-8). Default 256 cases per `cargo test` run; bump with
+    //! `PROPTEST_CASES=100000 cargo test fuzz_tests` for a deeper run.
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Random bytes of any length. Most return None at the leading-`/`
+        /// check; the rest exercise null-finding, UTF-8 slicing, and the
+        /// bit-aligned padded-end arithmetic.
+        #[test]
+        fn parse_digico_packet_no_panic_on_arbitrary_bytes(
+            data in proptest::collection::vec(any::<u8>(), 0..1024)
+        ) {
+            let _ = parse_digico_packet(&data);
+        }
+
+        /// Bytes that START with `/` so the parser commits past the early
+        /// return. Exercises null-finding + path UTF-8 + arg parsing more
+        /// often than fully-random inputs.
+        #[test]
+        fn parse_digico_packet_no_panic_on_path_like(
+            tail in proptest::collection::vec(any::<u8>(), 0..1024)
+        ) {
+            let mut data = vec![b'/'];
+            data.extend_from_slice(&tail);
+            let _ = parse_digico_packet(&data);
+        }
+
+        /// Pathological case: very long inputs near the buffer size used
+        /// elsewhere in the daemon. Catches overflow / quadratic-time bugs.
+        #[test]
+        fn parse_digico_packet_no_panic_on_large_inputs(
+            tail in proptest::collection::vec(any::<u8>(), 16384..32768)
+        ) {
+            let mut data = vec![b'/'];
+            data.extend_from_slice(&tail);
+            let _ = parse_digico_packet(&data);
+        }
+    }
+}
