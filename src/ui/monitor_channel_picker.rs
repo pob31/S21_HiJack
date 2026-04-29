@@ -533,10 +533,14 @@ fn draw_tile(
         );
     }
 
-    // Order badge: small dark circle in the top-left corner of the tile
+    // Order badge: small dark circle in the bottom-right corner of the tile
     // showing the click order (1, 2, 3, …). Visible only on selected tiles.
+    // Bottom-right placement keeps it clear of the title and name text. When
+    // the tile also has the stereo bar on the right edge, the badge nudges
+    // slightly further left so the two don't fight for the same pixels.
     if let Some(n) = order {
-        let badge_center = egui::pos2(rect.min.x + 11.0, rect.min.y + 11.0);
+        let right_inset = if stereo { 16.0 } else { 11.0 };
+        let badge_center = egui::pos2(rect.max.x - right_inset, rect.max.y - 11.0);
         let badge_radius = 9.0;
         painter.circle_filled(badge_center, badge_radius, theme::BG_DARK);
         painter.circle_stroke(
