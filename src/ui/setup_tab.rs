@@ -178,6 +178,9 @@ pub fn draw_setup_tab(
     }
 
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        ui.columns(2, |cols| {
+        // ── Left column: Display Mode → Connection (→ iPad when active) ──
+        let ui = &mut cols[0];
         // ── Display Mode card ──
         theme::card_frame().show(ui, |ui| {
             theme::section_heading(ui, "Display Mode");
@@ -546,59 +549,8 @@ pub fn draw_setup_tab(
             ui.add_space(8.0);
         }
 
-        // ── Console Info card ──
-        theme::card_frame().show(ui, |ui| {
-            theme::section_heading(ui, "Console");
-
-            if let Ok(st) = state.try_read() {
-                let cfg = &st.config;
-
-                if !cfg.console_name.is_empty() || !cfg.console_serial.is_empty() {
-                    egui::Grid::new("console_info")
-                        .num_columns(2)
-                        .spacing([10.0, 4.0])
-                        .show(ui, |ui| {
-                            if !cfg.console_name.is_empty() {
-                                ui.label("Console:");
-                                ui.label(egui::RichText::new(&cfg.console_name).strong());
-                                ui.end_row();
-                            }
-                            if !cfg.console_serial.is_empty() {
-                                ui.label("Serial:");
-                                ui.label(&cfg.console_serial);
-                                ui.end_row();
-                            }
-                            if let Some(ref session) = cfg.session_filename {
-                                ui.label("Session:");
-                                ui.label(session);
-                                ui.end_row();
-                            }
-                        });
-                    ui.add_space(8.0);
-                }
-
-                // Channel counts as colored badges
-                ui.label(egui::RichText::new("Channel Configuration").strong());
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    theme::colored_badge(ui, &format!("Inputs: {}", cfg.input_channel_count), theme::CH_INPUT);
-                    theme::colored_badge(ui, &format!("Aux: {}", cfg.aux_output_count), theme::CH_AUX);
-                    theme::colored_badge(ui, &format!("Groups: {}", cfg.group_output_count), theme::CH_GROUP);
-                    theme::colored_badge(ui, &format!("Matrix: {}", cfg.matrix_output_count), theme::CH_MATRIX);
-                    theme::colored_badge(ui, &format!("CGs: {}", cfg.control_group_count), theme::CH_CG);
-                });
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    theme::colored_badge(ui, &format!("GEQ: {}", cfg.graphic_eq_count), theme::CH_MATRIX);
-                    theme::colored_badge(ui, &format!("Mtx In: {}", cfg.matrix_input_count), theme::CH_MATRIX);
-                    theme::colored_badge(ui, &format!("Params: {}", st.parameter_count()), theme::ACCENT_BLUE);
-                });
-            } else {
-                ui.label("Loading state...");
-            }
-        });
-
-        ui.add_space(8.0);
+        // ── Right column: Show File → Console Info ──
+        let ui = &mut cols[1];
 
         // ── Show File card ──
         theme::card_frame().show(ui, |ui| {
@@ -686,6 +638,61 @@ pub fn draw_setup_tab(
                 }
             });
         });
+
+        ui.add_space(8.0);
+
+        // ── Console Info card ──
+        theme::card_frame().show(ui, |ui| {
+            theme::section_heading(ui, "Console");
+
+            if let Ok(st) = state.try_read() {
+                let cfg = &st.config;
+
+                if !cfg.console_name.is_empty() || !cfg.console_serial.is_empty() {
+                    egui::Grid::new("console_info")
+                        .num_columns(2)
+                        .spacing([10.0, 4.0])
+                        .show(ui, |ui| {
+                            if !cfg.console_name.is_empty() {
+                                ui.label("Console:");
+                                ui.label(egui::RichText::new(&cfg.console_name).strong());
+                                ui.end_row();
+                            }
+                            if !cfg.console_serial.is_empty() {
+                                ui.label("Serial:");
+                                ui.label(&cfg.console_serial);
+                                ui.end_row();
+                            }
+                            if let Some(ref session) = cfg.session_filename {
+                                ui.label("Session:");
+                                ui.label(session);
+                                ui.end_row();
+                            }
+                        });
+                    ui.add_space(8.0);
+                }
+
+                // Channel counts as colored badges
+                ui.label(egui::RichText::new("Channel Configuration").strong());
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    theme::colored_badge(ui, &format!("Inputs: {}", cfg.input_channel_count), theme::CH_INPUT);
+                    theme::colored_badge(ui, &format!("Aux: {}", cfg.aux_output_count), theme::CH_AUX);
+                    theme::colored_badge(ui, &format!("Groups: {}", cfg.group_output_count), theme::CH_GROUP);
+                    theme::colored_badge(ui, &format!("Matrix: {}", cfg.matrix_output_count), theme::CH_MATRIX);
+                    theme::colored_badge(ui, &format!("CGs: {}", cfg.control_group_count), theme::CH_CG);
+                });
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    theme::colored_badge(ui, &format!("GEQ: {}", cfg.graphic_eq_count), theme::CH_MATRIX);
+                    theme::colored_badge(ui, &format!("Mtx In: {}", cfg.matrix_input_count), theme::CH_MATRIX);
+                    theme::colored_badge(ui, &format!("Params: {}", st.parameter_count()), theme::ACCENT_BLUE);
+                });
+            } else {
+                ui.label("Loading state...");
+            }
+        });
+        });  // end ui.columns
     });
 }
 
