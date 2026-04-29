@@ -232,6 +232,7 @@ fn draw_group_matrix(ui: &mut egui::Ui, state: &mut ScopeEditorState, data: &Gro
                             let mut any_available = false;
                             let mut all_on = true;
                             let mut any_on = false;
+                            let mut all_recalled = true;
                             for path in section_paths {
                                 if !cell_available(&data.available, ch, path) {
                                     continue;
@@ -242,9 +243,13 @@ fn draw_group_matrix(ui: &mut egui::Ui, state: &mut ScopeEditorState, data: &Gro
                                 } else {
                                     all_on = false;
                                 }
+                                if !state.console_recall.is_console_recalled(ch, path) {
+                                    all_recalled = false;
+                                }
                             }
                             let cell_all = any_available && all_on;
                             let cell_any = any_on;
+                            let cell_recalled = any_available && all_recalled;
                             let cell_dirty = data
                                 .dirty
                                 .get(ch)
@@ -259,13 +264,14 @@ fn draw_group_matrix(ui: &mut egui::Ui, state: &mut ScopeEditorState, data: &Gro
                                         .unwrap_or_default();
                                     t.pre_wait_secs != 0.0 || t.fade_time_secs != 0.0
                                 });
-                            let resp = matrix_cell(
+                            let resp = matrix_cell_ex(
                                 ui,
                                 CELL_SIZE,
                                 cell_all,
                                 cell_any,
                                 any_available,
                                 cell_dirty || has_timing, // show timing indicator via earmark
+                                cell_recalled,
                                 "",
                             );
                             if resp.clicked() && any_available {
@@ -417,7 +423,7 @@ fn draw_group_matrix(ui: &mut egui::Ui, state: &mut ScopeEditorState, data: &Gro
                                     data.dirty.get(ch).is_some_and(|s| s.contains(path));
                                 if state.edit_mode == ScopeEditMode::Scope {
                                     let conflict =
-                                        sel && state.console_recall.is_console_recalled(ch, path);
+                                        state.console_recall.is_console_recalled(ch, path);
                                     let resp = matrix_cell_ex(
                                         ui, CELL_SIZE, sel, sel, avail, cell_dirty, conflict, "",
                                     );
@@ -426,6 +432,10 @@ fn draw_group_matrix(ui: &mut egui::Ui, state: &mut ScopeEditorState, data: &Gro
                                     }
                                     if !avail {
                                         let _ = resp.on_hover_text("no live parameter");
+                                    } else if conflict {
+                                        let _ = resp.on_hover_text(
+                                            "In console session scope, not safed for this channel",
+                                        );
                                     }
                                 } else {
                                     // In timing modes, path cells are dimmed/read-only
@@ -654,6 +664,8 @@ fn matrix_cell_ex(
         theme::SCOPE_ACTIVE
     } else if any_selected {
         theme::SCOPE_PARTIAL
+    } else if conflict {
+        theme::SCOPE_INACTIVE_RECALLED
     } else {
         theme::SCOPE_INACTIVE
     };

@@ -68,6 +68,10 @@ pub const SCOPE_PARTIAL: egui::Color32 = egui::Color32::from_rgb(0x00, 0x5A, 0x0
 /// console — they cannot be captured, so the editor renders them as
 /// non-interactive grey outlines.
 pub const SCOPE_UNAVAILABLE: egui::Color32 = egui::Color32::from_rgb(0x22, 0x22, 0x24);
+/// Slightly lighter grey for unselected cells the console will already recall
+/// (in session scope AND not channel-safed). Earmark, not a warning — the
+/// user can still add these to the app's scope template.
+pub const SCOPE_INACTIVE_RECALLED: egui::Color32 = egui::Color32::from_rgb(0x52, 0x52, 0x58);
 /// Earmark color used by Phase C's dirty tracker (golden triangle in cell corner).
 pub const SCOPE_DIRTY: egui::Color32 = egui::Color32::from_rgb(0xE6, 0xB8, 0x00);
 
