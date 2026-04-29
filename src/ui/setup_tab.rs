@@ -1454,17 +1454,21 @@ fn draw_first_run_popup(ui: &mut egui::Ui, setup: &mut SetupTabState) {
             );
             ui.add_space(4.0);
             ui.label(
-                egui::RichText::new(
-                    "You can change this any time on the Setup tab.",
-                )
-                .color(theme::TEXT_SECONDARY),
+                egui::RichText::new("You can change this any time on the Setup tab.")
+                    .color(theme::TEXT_SECONDARY),
             );
             ui.add_space(10.0);
 
             let descriptions = [
                 (UiMode::Full, "All tabs visible — every feature available."),
-                (UiMode::LiveMusic, "Macros, gangs, and personal monitoring. Hides the cueing tab."),
-                (UiMode::Theatre, "Macros, gangs, cueing, and palettes. Hides the monitoring tab."),
+                (
+                    UiMode::LiveMusic,
+                    "Macros, gangs, and personal monitoring. Hides the cueing tab.",
+                ),
+                (
+                    UiMode::Theatre,
+                    "Macros, gangs, cueing, and palettes. Hides the monitoring tab.",
+                ),
             ];
 
             for (mode, desc) in descriptions {
@@ -1473,9 +1477,7 @@ fn draw_first_run_popup(ui: &mut egui::Ui, setup: &mut SetupTabState) {
                     if ui
                         .add_sized(
                             [120.0, 32.0],
-                            egui::Button::new(
-                                egui::RichText::new(mode.label()).strong(),
-                            ),
+                            egui::Button::new(egui::RichText::new(mode.label()).strong()),
                         )
                         .clicked()
                     {

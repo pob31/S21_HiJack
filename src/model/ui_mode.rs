@@ -22,11 +22,7 @@ impl UiMode {
     /// setting).
     pub fn tab_visible(self, tab: Tab, show_diagnostics: bool) -> bool {
         match tab {
-            Tab::Setup
-            | Tab::Macros
-            | Tab::Live
-            | Tab::Gangs
-            | Tab::PanLink => true,
+            Tab::Setup | Tab::Macros | Tab::Live | Tab::Gangs | Tab::PanLink => true,
             Tab::Snapshots => self != UiMode::LiveMusic,
             Tab::Monitor => self != UiMode::Theatre,
             Tab::OscLog | Tab::Inspector => show_diagnostics,
