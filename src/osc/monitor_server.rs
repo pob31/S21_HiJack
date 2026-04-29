@@ -123,6 +123,16 @@ pub struct MonitorSender {
 }
 
 impl MonitorSender {
+    /// Local UDP port the monitor server is bound to. Returned in the
+    /// `/monitor/discovered` reply so clients can autodiscover both the
+    /// daemon's IP (from the datagram source) and its monitor port.
+    pub fn local_port(&self) -> u16 {
+        self.socket
+            .local_addr()
+            .map(|a| a.port())
+            .unwrap_or(0)
+    }
+
     /// Send an OSC message to a monitoring client.
     pub async fn send_to(
         &self,

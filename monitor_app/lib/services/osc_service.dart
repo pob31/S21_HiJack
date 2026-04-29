@@ -25,7 +25,14 @@ class OscService {
         final dg = _socket!.receive();
         if (dg != null) {
           final msg = _decode(dg.data);
-          if (msg != null && !_incoming.isClosed) _incoming.add(msg);
+          if (msg != null && !_incoming.isClosed) {
+            _incoming.add(OscMessage(
+              address: msg.address,
+              args: msg.args,
+              sourceHost: dg.address.address,
+              sourcePort: dg.port,
+            ));
+          }
         }
       }
     });
@@ -215,5 +222,14 @@ class OscBool extends OscArg {
 class OscMessage {
   final String address;
   final List<OscArg> args;
-  OscMessage({required this.address, required this.args});
+  /// Source IP of the datagram, if this message was received over the wire.
+  final String? sourceHost;
+  /// Source UDP port of the datagram, if received over the wire.
+  final int? sourcePort;
+  OscMessage({
+    required this.address,
+    required this.args,
+    this.sourceHost,
+    this.sourcePort,
+  });
 }

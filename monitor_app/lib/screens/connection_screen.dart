@@ -210,12 +210,31 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
 
       if (msg.args.isNotEmpty && msg.args[0] is OscString) {
         final consoleName = (msg.args[0] as OscString).value;
-        // We got a reply — but we need the source IP.
-        // For now, user still needs to enter the IP manually.
-        setState(() {
-          _error = 'Found "$consoleName" — enter its IP above';
-          _discovering = false;
-        });
+
+        // Prefer the explicit port from the reply payload (arg[1]);
+        // fall back to the datagram's source port.
+        int? payloadPort;
+        if (msg.args.length >= 2 && msg.args[1] is OscInt) {
+          payloadPort = (msg.args[1] as OscInt).value;
+        }
+        final host = msg.sourceHost;
+        final port = payloadPort ?? msg.sourcePort;
+
+        if (host != null && port != null) {
+          setState(() {
+            _hostController.text = host;
+            _portController.text = port.toString();
+            _lastHost = host;
+            _lastPort = port.toString();
+            _error = 'Found "$consoleName" at $host:$port';
+            _discovering = false;
+          });
+        } else {
+          setState(() {
+            _error = 'Found "$consoleName" — please enter IP manually';
+            _discovering = false;
+          });
+        }
       }
     } on TimeoutException {
       setState(() {

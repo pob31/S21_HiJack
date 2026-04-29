@@ -182,14 +182,18 @@ impl MonitorEngine {
                     state.config.console_name.clone()
                 };
                 drop(state);
+                let monitor_port = monitor_sender.local_port();
                 let _ = monitor_sender
                     .send_to(
                         reply_addr,
                         "/monitor/discovered",
-                        vec![OscType::String(name)],
+                        vec![
+                            OscType::String(name),
+                            OscType::Int(monitor_port as i32),
+                        ],
                     )
                     .await;
-                info!(%reply_addr, "Monitor discovery reply sent");
+                info!(%reply_addr, monitor_port, "Monitor discovery reply sent");
             }
             MonitorCommand::QueryConsoleStatus { reply_addr } => {
                 self.handle_status_console(reply_addr, console_connected, monitor_sender)

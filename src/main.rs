@@ -78,8 +78,8 @@ struct Args {
     #[arg(long, default_value = "mode1")]
     mode: String,
 
-    /// Monitor server port (0 = disabled)
-    #[arg(long, default_value_t = 0)]
+    /// Monitor server port (0 = disabled, default 8025 for autodiscovery)
+    #[arg(long, default_value_t = 8025)]
     monitor_port: u16,
 
     /// Repeatable: source-IP CIDR allowed to talk to the monitor server

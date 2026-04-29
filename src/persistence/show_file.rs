@@ -38,7 +38,7 @@ pub struct ConnectionSettings {
     pub ipad_listen_port: u16,
     #[serde(default)]
     pub ipad_reply_port: u16,
-    #[serde(default)]
+    #[serde(default = "default_monitor_port")]
     pub monitor_port: u16,
     /// QLab destination IP (for outbound OSC — e.g. building network cues in QLab).
     /// Empty string falls back to localhost in the UI.
@@ -106,6 +106,9 @@ fn default_trigger_port() -> u16 {
 fn default_qlab_port() -> u16 {
     53000
 }
+fn default_monitor_port() -> u16 {
+    8025
+}
 
 impl Default for ConnectionSettings {
     fn default() -> Self {
@@ -121,7 +124,7 @@ impl Default for ConnectionSettings {
             ipad_receive_port: 0,
             ipad_listen_port: 0,
             ipad_reply_port: 0,
-            monitor_port: 0,
+            monitor_port: 8025,
             qlab_ip: String::new(),
             qlab_port: default_qlab_port(),
             send_pace_us: 0,
