@@ -31,7 +31,8 @@ use crate::model::recall_scope::ConsoleRecallConfig;
 use crate::model::snapshot::CueList;
 use crate::model::state::ConsoleState;
 use crate::model::ui_mode::UiMode;
-use crate::osc::client::{OscClient, OscSender};
+use crate::osc::client::OscClient;
+use crate::osc::ipad_client::IpadSender;
 use crate::osc::monitor_server::MonitorServer;
 use crate::osc::trigger_listener::TriggerListener;
 use crate::persistence::preferences::AppPreferences;
@@ -161,8 +162,7 @@ pub fn draw_setup_tab(
     console_snapshot_follow: &Arc<AtomicBool>,
     console_recall: &ConsoleRecallConfig,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
-    snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
-    sender: &mut Option<OscSender>,
+    pending_engines: &Arc<std::sync::Mutex<Option<crate::ui::PendingEngines>>>,
     connected: &Arc<AtomicBool>,
     cancel_token: &mut Option<CancellationToken>,
     osc_log: &OscLog,
@@ -371,7 +371,7 @@ pub fn draw_setup_tab(
                             setup, state, cue_manager, macro_manager, monitor_manager,
                             palette_manager, gang_manager, pan_link_bindings, offline_mode,
                             auto_update_on_recall, console_snapshot_follow, dirty_tracker,
-                            snapshot_engine, sender,
+                            pending_engines,
                             connected, cancel_token, osc_log,
                             runtime, ui_tx, egui_ctx,
                         );
@@ -717,8 +717,7 @@ fn start_connection(
     auto_update_on_recall: &Arc<AtomicBool>,
     console_snapshot_follow: &Arc<AtomicBool>,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
-    _snapshot_engine: &mut Option<Arc<SnapshotEngine>>,
-    _sender: &mut Option<OscSender>,
+    pending_engines: &Arc<std::sync::Mutex<Option<crate::ui::PendingEngines>>>,
     connected: &Arc<AtomicBool>,
     cancel_token: &mut Option<CancellationToken>,
     osc_log: &OscLog,
@@ -844,6 +843,7 @@ fn start_connection(
     let monitor_allow_cidrs = setup.monitor_allow_cidrs.clone();
     let trigger_allow_cidrs = setup.trigger_allow_cidrs.clone();
     let log = osc_log.clone();
+    let pending = pending_engines.clone();
     runtime.spawn(async move {
         // Create OscClient manually so we can build GangEngine with the sender
         let client = match OscClient::new(local_addr, console_addr, iface_name.as_deref()).await {
@@ -902,6 +902,9 @@ fn start_connection(
         let (snap_event_tx, snap_event_rx) = tokio::sync::mpsc::channel::<i32>(16);
         let mut snap_event_rx = Some(snap_event_rx);
 
+        // Captured iPad sender to hand back to the App alongside the engines.
+        let mut app_ipad_sender: Option<IpadSender> = None;
+
         if operating_mode.uses_ipad_protocol() && ipad_console_port > 0 {
             let console_ipad_addr: SocketAddr = format!("{}:{}", console_ip, ipad_console_port)
                 .parse()
@@ -938,7 +941,8 @@ fn start_connection(
                             pan_link_engine
                                 .write()
                                 .await
-                                .set_ipad_sender(Some(ipad_sender));
+                                .set_ipad_sender(Some(ipad_sender.clone()));
+                            app_ipad_sender = Some(ipad_sender);
                             let _ = tx.send(UiEvent::IpadConnected);
                         }
                         Err(e) => {
@@ -991,7 +995,8 @@ fn start_connection(
                             pan_link_engine
                                 .write()
                                 .await
-                                .set_ipad_sender(Some(ipad_sender));
+                                .set_ipad_sender(Some(ipad_sender.clone()));
+                            app_ipad_sender = Some(ipad_sender);
                             let _ = tx.send(UiEvent::IpadConnected);
                         }
                         Err(e) => {
@@ -1005,6 +1010,29 @@ fn start_connection(
         }
 
         let engine = Arc::new(snapshot_engine);
+
+        // Construct MacroEngine here, BEFORE the trigger-listener branch, so
+        // that even when the trigger port can't be bound (already in use by
+        // another instance, blocked by the OS, etc.) the UI Run-macro button
+        // still has an engine to work with. Previously this lived inside the
+        // trigger-listener `Ok` arm and was lost on bind failure, leaving
+        // `App.macro_engine` permanently `None`.
+        let mut macro_eng = MacroEngine::new(st.clone(), manager.sender());
+        macro_eng.set_dirty_tracker(dirty.clone());
+        let macro_eng = Arc::new(macro_eng);
+
+        // Hand the freshly-built engines back to the App so UI buttons can
+        // use them. This is the missing wire-up: the App fields used to be
+        // initialised to `None` and never populated, so Run / Recall buttons
+        // looked enabled but silently no-oped at runtime.
+        if let Ok(mut slot) = pending.lock() {
+            *slot = Some(crate::ui::PendingEngines {
+                sender: manager.sender(),
+                snapshot_engine: engine.clone(),
+                macro_engine: macro_eng.clone(),
+                ipad_sender: app_ipad_sender.clone(),
+            });
+        }
 
         // Spawn the follow-mode dispatcher: when the iPad inbound dispatch
         // sees a `/Snapshots/Current_Snapshot` echo and forwards it via
@@ -1092,9 +1120,6 @@ fn start_connection(
         .await
         {
             Ok(mut trigger_rx) => {
-                let mut macro_eng = MacroEngine::new(st.clone(), manager.sender());
-                macro_eng.set_dirty_tracker(dirty.clone());
-                let macro_eng = Arc::new(macro_eng);
                 let trigger_cue_mgr = cue_mgr.clone();
                 let trigger_macro_mgr = manager.macro_manager();
                 let trigger_palette_mgr = pmgr_arc.clone();

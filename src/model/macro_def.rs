@@ -46,6 +46,33 @@ impl MacroDef {
     pub fn touch(&mut self) {
         self.modified_at = Utc::now();
     }
+
+    /// Remove every other step that targets the same `(channel, parameter)`
+    /// as the step at `idx`. The kept step's index may shift downward as
+    /// earlier duplicates are removed; the new kept index is returned along
+    /// with the number of removed steps.
+    pub fn keep_only_step(&mut self, idx: usize) -> Option<(usize, usize)> {
+        let target_addr = self.steps.get(idx)?.address.clone();
+        let mut new_idx = idx;
+        let mut removed = 0usize;
+        let mut i = 0;
+        self.steps.retain(|step| {
+            let same = step.address == target_addr;
+            let kept = !same || i == idx;
+            if !kept && i < idx {
+                new_idx -= 1;
+            }
+            if !kept {
+                removed += 1;
+            }
+            i += 1;
+            kept
+        });
+        if removed > 0 {
+            self.touch();
+        }
+        Some((new_idx, removed))
+    }
 }
 
 /// A single step within a macro.
@@ -284,6 +311,74 @@ mod tests {
         assert_eq!(loaded.steps[0].mode, MacroStepMode::Toggle);
         assert_eq!(loaded.steps[1].delay_ms, 100);
         assert_eq!(loaded.steps[2].mode, MacroStepMode::Relative(3.5));
+    }
+
+    #[test]
+    fn keep_only_step_removes_duplicates_of_same_address() {
+        let addr_fader_1 = make_addr(1, ParameterPath::Fader);
+        let addr_mute_1 = make_addr(1, ParameterPath::Mute);
+        let mk = |addr: ParameterAddress, val: f32| MacroStep {
+            address: addr,
+            mode: MacroStepMode::Fixed(ParameterValue::Float(val)),
+            delay_ms: 0,
+        };
+        let mut m = MacroDef::new(
+            "Test".into(),
+            vec![
+                mk(addr_fader_1.clone(), -10.0), // 0
+                mk(addr_mute_1.clone(), 1.0),    // 1 — different param, keep
+                mk(addr_fader_1.clone(), -5.0),  // 2 ← keep
+                mk(addr_fader_1.clone(), 0.0),   // 3
+                mk(addr_mute_1.clone(), 0.0),    // 4 — different param, keep
+            ],
+        );
+
+        let (new_idx, removed) = m.keep_only_step(2).unwrap();
+        assert_eq!(removed, 2, "two duplicate fader-1 steps removed");
+        assert_eq!(new_idx, 1, "kept index shifts from 2 to 1 after the earlier duplicate is removed");
+        assert_eq!(m.steps.len(), 3);
+        assert_eq!(m.steps[0].address, addr_mute_1);
+        assert_eq!(m.steps[1].address, addr_fader_1);
+        assert_eq!(m.steps[2].address, addr_mute_1);
+
+        // Verify the kept step is the one we asked for (-5.0)
+        assert_eq!(
+            m.steps[1].mode,
+            MacroStepMode::Fixed(ParameterValue::Float(-5.0))
+        );
+    }
+
+    #[test]
+    fn keep_only_step_no_duplicates_is_noop() {
+        let mut m = MacroDef::new(
+            "Test".into(),
+            vec![
+                MacroStep {
+                    address: make_addr(1, ParameterPath::Fader),
+                    mode: MacroStepMode::Toggle,
+                    delay_ms: 0,
+                },
+                MacroStep {
+                    address: make_addr(2, ParameterPath::Fader),
+                    mode: MacroStepMode::Toggle,
+                    delay_ms: 0,
+                },
+            ],
+        );
+        let modified_before = m.modified_at;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let (new_idx, removed) = m.keep_only_step(0).unwrap();
+        assert_eq!(removed, 0);
+        assert_eq!(new_idx, 0);
+        assert_eq!(m.steps.len(), 2);
+        assert_eq!(m.modified_at, modified_before, "no-op should not touch");
+    }
+
+    #[test]
+    fn keep_only_step_invalid_index_returns_none() {
+        let mut m = MacroDef::new("Test".into(), vec![]);
+        assert!(m.keep_only_step(0).is_none());
     }
 
     #[test]

@@ -28,6 +28,21 @@ pub enum Tab {
     Inspector,
 }
 
+/// Engine handles produced by the connect-console async task.
+///
+/// The task that establishes the console connection constructs the OSC sender
+/// and the snapshot/macro engines, then drops them into a shared
+/// `Arc<Mutex<Option<PendingEngines>>>`. The egui `update()` loop polls that
+/// slot each frame and moves the handles into `HiJackApp` so UI buttons (Run
+/// macro, Recall snapshot) can use them. Without this hand-off, the App
+/// fields stay `None` and UI-driven actions silently no-op.
+pub struct PendingEngines {
+    pub sender: crate::osc::client::OscSender,
+    pub snapshot_engine: std::sync::Arc<crate::console::snapshot_engine::SnapshotEngine>,
+    pub macro_engine: std::sync::Arc<crate::console::macro_engine::MacroEngine>,
+    pub ipad_sender: Option<crate::osc::ipad_client::IpadSender>,
+}
+
 /// Events sent from async tasks back to the UI thread.
 #[derive(Debug)]
 pub enum UiEvent {
@@ -45,7 +60,12 @@ pub enum UiEvent {
     MacroExecuted {
         name: String,
         steps_executed: usize,
+        steps_skipped: usize,
     },
+    /// Macro could not be executed (engine missing, macro not found, etc.).
+    /// Surfaces the reason in the Macros tab status area so the operator
+    /// gets feedback instead of a silent no-op when the Run button is clicked.
+    MacroExecutionFailed(String),
     MacroRecordingStopped {
         step_count: usize,
     },

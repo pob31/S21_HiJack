@@ -41,6 +41,25 @@ pub struct MacrosTabState {
     // Feedback
     pub status_message: Option<String>,
     pub last_execution_info: Option<String>,
+
+    // Cached snapshots of the macro list and the selected macro's steps.
+    // Refreshed only when `try_read()` succeeds; otherwise the previous
+    // values are reused so a contended lock (recording session, gang
+    // propagation, etc.) doesn't blank the list mid-frame and make
+    // selection feel sticky/unresponsive.
+    pub cached_list: Vec<(Uuid, String, bool, usize)>,
+    pub cached_steps: Option<CachedSteps>,
+}
+
+/// Cached step data for the currently-selected macro. Read once when the
+/// `MacroManager` lock is available, then displayed across subsequent frames
+/// even if the lock is contended.
+#[derive(Clone)]
+pub struct CachedSteps {
+    pub macro_id: Uuid,
+    pub name: String,
+    pub steps: Vec<(ParameterAddress, MacroStepMode, u32)>,
+    pub mark_dirty: bool,
 }
 
 impl Default for MacrosTabState {
@@ -58,6 +77,8 @@ impl Default for MacrosTabState {
             step_mode_edits: Vec::new(),
             step_value_edits: Vec::new(),
             step_delay_edits: Vec::new(),
+            cached_list: Vec::new(),
+            cached_steps: None,
             status_message: None,
             last_execution_info: None,
         }
@@ -403,33 +424,37 @@ fn draw_macro_list(
     macros_state: &mut MacrosTabState,
     macro_manager: &Arc<RwLock<MacroManager>>,
 ) {
-    let macros_info: Vec<(Uuid, String, bool, usize)> = macro_manager
-        .try_read()
-        .map(|mgr| {
-            mgr.sorted_macros()
-                .into_iter()
-                .map(|m| {
-                    (
-                        m.id,
-                        m.name.clone(),
-                        mgr.is_quick_trigger(&m.id),
-                        m.steps.len(),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // Refresh the cached list opportunistically. When the manager lock is
+    // contended (e.g. recording is on, or a load/save is in flight)
+    // `try_read()` returns None and we render the cache from the previous
+    // frame instead of an empty list — that prevents row flicker which made
+    // selection feel sticky during the demo.
+    if let Ok(mgr) = macro_manager.try_read() {
+        macros_state.cached_list = mgr
+            .sorted_macros()
+            .into_iter()
+            .map(|m| {
+                (
+                    m.id,
+                    m.name.clone(),
+                    mgr.is_quick_trigger(&m.id),
+                    m.steps.len(),
+                )
+            })
+            .collect();
+    }
 
-    if macros_info.is_empty() {
+    if macros_state.cached_list.is_empty() {
         ui.label(egui::RichText::new("No macros defined").color(theme::TEXT_SECONDARY));
         return;
     }
 
+    let list = macros_state.cached_list.clone();
     egui::ScrollArea::vertical()
         .id_salt("macro_list_scroll")
         .max_height(200.0)
         .show(ui, |ui| {
-            for (id, name, is_qt, step_count) in &macros_info {
+            for (id, name, is_qt, step_count) in list.iter() {
                 let selected = macros_state.selected_macro_id == Some(*id);
                 let bg = if selected {
                     theme::BG_ELEVATED
@@ -549,26 +574,53 @@ fn draw_step_editor(
         return;
     };
 
-    // Read macro data
-    let macro_data: Option<(String, Vec<(ParameterAddress, MacroStepMode, u32)>, bool)> =
-        macro_manager.try_read().ok().and_then(|mgr| {
-            mgr.get_macro(&selected_id).map(|m| {
-                (
-                    m.name.clone(),
-                    m.steps
+    // Refresh the cached step view when the lock is available; otherwise
+    // fall back to whatever we cached on the last successful read. Same
+    // reason as `draw_macro_list`: a contended manager lock should not blank
+    // out the editor mid-frame.
+    if let Ok(mgr) = macro_manager.try_read() {
+        match mgr.get_macro(&selected_id) {
+            Some(m) => {
+                macros_state.cached_steps = Some(CachedSteps {
+                    macro_id: m.id,
+                    name: m.name.clone(),
+                    steps: m
+                        .steps
                         .iter()
                         .map(|s| (s.address.clone(), s.mode.clone(), s.delay_ms))
                         .collect(),
-                    m.mark_dirty,
-                )
-            })
-        });
+                    mark_dirty: m.mark_dirty,
+                });
+            }
+            None => {
+                // Macro was actually deleted while we held the lock — clear cache.
+                if macros_state
+                    .cached_steps
+                    .as_ref()
+                    .is_some_and(|c| c.macro_id == selected_id)
+                {
+                    macros_state.cached_steps = None;
+                }
+            }
+        }
+    }
 
-    let Some((macro_name, steps, mark_dirty)) = macro_data else {
-        ui.label(egui::RichText::new("Macro not found").color(theme::TEXT_SECONDARY));
-        macros_state.selected_macro_id = None;
+    // If our cached steps don't match the current selection, treat as not
+    // yet loaded (don't show stale data from a previously-selected macro).
+    let cache_matches = macros_state
+        .cached_steps
+        .as_ref()
+        .is_some_and(|c| c.macro_id == selected_id);
+
+    let Some(cached) = macros_state.cached_steps.clone().filter(|_| cache_matches) else {
+        ui.label(
+            egui::RichText::new("Loading macro…").color(theme::TEXT_SECONDARY),
+        );
         return;
     };
+    let macro_name = cached.name;
+    let steps = cached.steps;
+    let mark_dirty = cached.mark_dirty;
 
     theme::section_heading(ui, &format!("Steps: {macro_name}"));
 
@@ -673,7 +725,7 @@ fn draw_step_editor(
                             }
                         });
 
-                        // Reorder + delete buttons
+                        // Reorder + delete + keep-only buttons
                         ui.horizontal(|ui| {
                             if i > 0 && ui.small_button("▲").clicked() {
                                 action = Some(StepAction::MoveUp(i));
@@ -683,6 +735,18 @@ fn draw_step_editor(
                             }
                             if ui.small_button("✕").clicked() {
                                 action = Some(StepAction::Delete(i));
+                            }
+                            // Keep only this step's value for its (channel,
+                            // parameter) — drops every other step in the
+                            // macro that targets the same address. Useful
+                            // when a Learn-mode recording captured several
+                            // intermediate fader positions and the operator
+                            // only wants to keep the final one.
+                            let keep_btn = ui.small_button("⊙").on_hover_text(
+                                "Keep only this step for its (channel, parameter); remove the rest",
+                            );
+                            if keep_btn.clicked() {
+                                action = Some(StepAction::KeepOnly(i));
                             }
                         });
                     });
@@ -824,6 +888,9 @@ enum StepAction {
     Delete(usize),
     UpdateMode(usize),
     UpdateDelay(usize),
+    /// Keep only the step at this index; remove every other step targeting
+    /// the same `(channel, parameter)` address.
+    KeepOnly(usize),
 }
 
 fn apply_step_action(
@@ -922,6 +989,25 @@ fn apply_step_action(
                 }
             });
         }
+        StepAction::KeepOnly(i) => {
+            let mgr_clone = macro_manager.clone();
+            runtime.spawn(async move {
+                let mut mgr = mgr_clone.write().await;
+                if let Some(m) = mgr.get_macro_mut(&macro_id) {
+                    if let Some((_new_idx, removed)) = m.keep_only_step(i) {
+                        info!(
+                            macro_id = %macro_id,
+                            removed,
+                            "Macro: kept step #{i}, removed {removed} duplicates",
+                        );
+                    }
+                }
+            });
+            // Invalidate the edit buffers so they rebuild from the new step list.
+            macros_state.step_mode_edits.clear();
+            macros_state.step_value_edits.clear();
+            macros_state.step_delay_edits.clear();
+        }
     }
 }
 
@@ -934,6 +1020,10 @@ pub fn fire_macro_by_id(
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
     let Some(engine) = macro_engine.clone() else {
+        tracing::error!(macro_id = %id, "Macro Run clicked but macro_engine is None");
+        let _ = ui_tx.send(UiEvent::MacroExecutionFailed(
+            "macro engine not initialised — reconnect to console".into(),
+        ));
         return;
     };
     let mgr_clone = macro_manager.clone();
@@ -942,6 +1032,9 @@ pub fn fire_macro_by_id(
     runtime.spawn(async move {
         let mgr = mgr_clone.read().await;
         let Some(macro_def) = mgr.get_macro(&id).cloned() else {
+            let _ = tx.send(UiEvent::MacroExecutionFailed(
+                "macro no longer exists".into(),
+            ));
             return;
         };
         drop(mgr);
@@ -956,6 +1049,7 @@ pub fn fire_macro_by_id(
         let _ = tx.send(UiEvent::MacroExecuted {
             name: result.macro_name,
             steps_executed: result.steps_executed,
+            steps_skipped: result.steps_skipped,
         });
     });
 }

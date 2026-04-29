@@ -33,7 +33,7 @@ use super::palettes_ui::PalettesUiState;
 use super::pan_link_tab::PanLinkTabState;
 use super::setup_tab::SetupTabState;
 use super::snapshots_tab::SnapshotsTabState;
-use super::{Tab, UiEvent};
+use super::{PendingEngines, Tab, UiEvent};
 
 /// Main application struct implementing eframe::App.
 pub struct HiJackApp {
@@ -57,6 +57,11 @@ pub struct HiJackApp {
     pub console_snapshot_follow: Arc<AtomicBool>,
     pub snapshot_engine: Option<Arc<SnapshotEngine>>,
     pub macro_engine: Option<Arc<MacroEngine>>,
+    /// Hand-off slot the connect-console async task uses to deliver the OSC
+    /// sender and freshly-constructed engines back to the UI thread. Polled
+    /// each frame; when populated, the contents are moved into the
+    /// `sender` / `snapshot_engine` / `macro_engine` / `ipad_sender` fields.
+    pub pending_engines: Arc<std::sync::Mutex<Option<PendingEngines>>>,
     /// Dirty tracker — populated by the OSC dispatcher whenever an inbound
     /// parameter update changes the live state. The scope editor reads it to
     /// power "select modified" / "auto-preselect modified" / "clear changes".
@@ -121,6 +126,7 @@ impl HiJackApp {
             console_snapshot_follow: Arc::new(AtomicBool::new(false)),
             snapshot_engine: None,
             macro_engine: None,
+            pending_engines: Arc::new(std::sync::Mutex::new(None)),
             dirty_tracker: Arc::new(RwLock::new(DirtyTracker::new())),
 
             osc_log: OscLog::new(),
@@ -160,8 +166,29 @@ impl HiJackApp {
         }
     }
 
+    /// Move any engine handles produced by the connect-console task into the
+    /// per-tab fields. Called each frame before draining UI events so that a
+    /// `ConnectionEstablished` event arriving in the same frame finds the
+    /// engines already in place.
+    fn pickup_pending_engines(&mut self) {
+        let pending = self
+            .pending_engines
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Some(p) = pending {
+            self.sender = Some(p.sender);
+            self.snapshot_engine = Some(p.snapshot_engine);
+            self.macro_engine = Some(p.macro_engine);
+            if p.ipad_sender.is_some() {
+                self.ipad_sender = p.ipad_sender;
+            }
+        }
+    }
+
     /// Process UI events from async tasks.
     fn drain_events(&mut self) {
+        self.pickup_pending_engines();
         while let Ok(event) = self.ui_rx.try_recv() {
             match event {
                 UiEvent::ConnectionEstablished => {
@@ -179,6 +206,9 @@ impl HiJackApp {
                     self.snapshot_engine = None;
                     self.macro_engine = None;
                     self.cancel_token = None;
+                    if let Ok(mut slot) = self.pending_engines.lock() {
+                        slot.take();
+                    }
                     self.setup.ipad_connected = false;
                     self.setup.status_message = Some("Disconnected".into());
                     self.monitor.monitor_server_running = false;
@@ -198,11 +228,21 @@ impl HiJackApp {
                 UiEvent::MacroExecuted {
                     name,
                     steps_executed,
+                    steps_skipped,
                 } => {
-                    self.macros.last_execution_info =
-                        Some(format!("Executed '{name}' ({steps_executed} steps sent)"));
+                    let suffix = if steps_skipped > 0 {
+                        format!(", {steps_skipped} skipped")
+                    } else {
+                        String::new()
+                    };
+                    self.macros.last_execution_info = Some(format!(
+                        "Executed '{name}' ({steps_executed} sent{suffix})"
+                    ));
                     self.live.last_recall_info =
-                        Some(format!("Macro '{name}' ({steps_executed} steps)"));
+                        Some(format!("Macro '{name}' ({steps_executed} steps{suffix})"));
+                }
+                UiEvent::MacroExecutionFailed(msg) => {
+                    self.macros.status_message = Some(format!("Run failed: {msg}"));
                 }
                 UiEvent::MacroRecordingStopped { step_count } => {
                     self.macros.status_message =
@@ -506,8 +546,7 @@ impl eframe::App for HiJackApp {
                         &self.console_snapshot_follow,
                         &self.snapshots.scope_editor.console_recall,
                         &self.dirty_tracker,
-                        &mut self.snapshot_engine,
-                        &mut self.sender,
+                        &self.pending_engines,
                         &self.connected,
                         &mut self.cancel_token,
                         &self.osc_log,
