@@ -335,7 +335,10 @@ mod tests {
 
         let (new_idx, removed) = m.keep_only_step(2).unwrap();
         assert_eq!(removed, 2, "two duplicate fader-1 steps removed");
-        assert_eq!(new_idx, 1, "kept index shifts from 2 to 1 after the earlier duplicate is removed");
+        assert_eq!(
+            new_idx, 1,
+            "kept index shifts from 2 to 1 after the earlier duplicate is removed"
+        );
         assert_eq!(m.steps.len(), 3);
         assert_eq!(m.steps[0].address, addr_mute_1);
         assert_eq!(m.steps[1].address, addr_fader_1);

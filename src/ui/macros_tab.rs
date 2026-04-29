@@ -613,9 +613,7 @@ fn draw_step_editor(
         .is_some_and(|c| c.macro_id == selected_id);
 
     let Some(cached) = macros_state.cached_steps.clone().filter(|_| cache_matches) else {
-        ui.label(
-            egui::RichText::new("Loading macro…").color(theme::TEXT_SECONDARY),
-        );
+        ui.label(egui::RichText::new("Loading macro…").color(theme::TEXT_SECONDARY));
         return;
     };
     let macro_name = cached.name;

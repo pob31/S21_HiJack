@@ -235,9 +235,8 @@ impl HiJackApp {
                     } else {
                         String::new()
                     };
-                    self.macros.last_execution_info = Some(format!(
-                        "Executed '{name}' ({steps_executed} sent{suffix})"
-                    ));
+                    self.macros.last_execution_info =
+                        Some(format!("Executed '{name}' ({steps_executed} sent{suffix})"));
                     self.live.last_recall_info =
                         Some(format!("Macro '{name}' ({steps_executed} steps{suffix})"));
                 }
