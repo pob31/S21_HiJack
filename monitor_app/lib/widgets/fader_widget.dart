@@ -1,4 +1,3 @@
-import 'dart:math';
 import 'package:flutter/material.dart';
 
 // ── dB ↔ slider position conversion ──
@@ -59,6 +58,10 @@ String formatDb(double db, double dbMin) {
   return '${db.toStringAsFixed(1)}';
 }
 
+const double _kFaderTrackHeight = 16.0;
+const double _kFaderThumbThickness = 4.0;
+const double _kFaderThumbWidthFraction = 0.8;
+
 /// A vertical fader slider for mixing levels (dB scale with log curve).
 class VerticalFader extends StatelessWidget {
   final double value; // dB
@@ -84,20 +87,27 @@ class VerticalFader extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Text(
-          label,
-          style: TextStyle(
-            color: active ? Colors.white70 : Colors.white30,
-            fontSize: 10,
-            fontWeight: FontWeight.w500,
-          ),
-          overflow: TextOverflow.ellipsis,
-        ),
-        const SizedBox(height: 2),
-        Text(
           formatDb(value, dbMin),
           style: TextStyle(
-            color: active ? Colors.white54 : Colors.white24,
+            color: active ? Colors.white70 : Colors.white30,
             fontSize: 12,
+          ),
+        ),
+        const SizedBox(height: 4),
+        SizedBox(
+          height: 90,
+          child: RotatedBox(
+            quarterTurns: -1,
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: active ? Colors.white : Colors.white38,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
         ),
         const SizedBox(height: 4),
@@ -106,8 +116,12 @@ class VerticalFader extends StatelessWidget {
             quarterTurns: -1,
             child: SliderTheme(
               data: SliderThemeData(
-                trackHeight: 4,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+                trackHeight: _kFaderTrackHeight,
+                thumbShape: const _LineThumbShape(
+                  widthFraction: _kFaderThumbWidthFraction,
+                  thickness: _kFaderThumbThickness,
+                ),
+                overlayShape: SliderComponentShape.noOverlay,
                 activeTrackColor: active ? Colors.blueAccent : Colors.grey[700]!,
                 inactiveTrackColor: Colors.white12,
                 thumbColor: active ? Colors.white : Colors.grey[600]!,
@@ -148,8 +162,12 @@ class HorizontalFader extends StatelessWidget {
   Widget build(BuildContext context) {
     return SliderTheme(
       data: SliderThemeData(
-        trackHeight: 4,
-        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+        trackHeight: _kFaderTrackHeight,
+        thumbShape: const _LineThumbShape(
+          widthFraction: _kFaderThumbWidthFraction,
+          thickness: _kFaderThumbThickness,
+        ),
+        overlayShape: SliderComponentShape.noOverlay,
         activeTrackColor: active ? Colors.blueAccent : Colors.grey[700]!,
         inactiveTrackColor: Colors.white12,
         thumbColor: active ? Colors.white : Colors.grey[600]!,
@@ -161,6 +179,49 @@ class HorizontalFader extends StatelessWidget {
         max: 1.0,
         onChanged: (pos) => onChanged(positionToDb(pos, dbMin, dbMax)),
       ),
+    );
+  }
+}
+
+/// Thumb that draws a thick line spanning [widthFraction] of the track's
+/// perpendicular extent, replacing the default round thumb.
+class _LineThumbShape extends SliderComponentShape {
+  final double widthFraction;
+  final double thickness;
+  const _LineThumbShape({required this.widthFraction, required this.thickness});
+
+  @override
+  Size getPreferredSize(bool isEnabled, bool isDiscrete) =>
+      Size(thickness * 4, thickness * 4);
+
+  @override
+  void paint(
+    PaintingContext context,
+    Offset center, {
+    required Animation<double> activationAnimation,
+    required Animation<double> enableAnimation,
+    required bool isDiscrete,
+    required TextPainter labelPainter,
+    required RenderBox parentBox,
+    required SliderThemeData sliderTheme,
+    required TextDirection textDirection,
+    required double value,
+    required double textScaleFactor,
+    required Size sizeWithOverflow,
+  }) {
+    final trackHeight = sliderTheme.trackHeight ?? _kFaderTrackHeight;
+    final lineLen = trackHeight * widthFraction;
+    final rect = Rect.fromCenter(
+      center: center,
+      width: thickness,
+      height: lineLen,
+    );
+    final paint = Paint()
+      ..color = sliderTheme.thumbColor ?? Colors.white
+      ..style = PaintingStyle.fill;
+    context.canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(1.5)),
+      paint,
     );
   }
 }
