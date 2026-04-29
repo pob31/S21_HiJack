@@ -30,9 +30,11 @@ use crate::model::parameter::PROTOCOL_COVERAGE;
 use crate::model::recall_scope::ConsoleRecallConfig;
 use crate::model::snapshot::CueList;
 use crate::model::state::ConsoleState;
+use crate::model::ui_mode::UiMode;
 use crate::osc::client::{OscClient, OscSender};
 use crate::osc::monitor_server::MonitorServer;
 use crate::osc::trigger_listener::TriggerListener;
+use crate::persistence::preferences::AppPreferences;
 use crate::persistence::show_file::{ConnectionSettings, ShowFile};
 
 /// State for the Setup tab.
@@ -74,6 +76,18 @@ pub struct SetupTabState {
     /// Source-IP CIDR allowlist for the trigger listener (audit H5). Same
     /// semantics as `monitor_allow_cidrs`.
     pub trigger_allow_cidrs: Vec<String>,
+    /// UI display mode — selects which tabs are visible. Persisted both
+    /// per-show (in `ConnectionSettings`) and as an app-level default
+    /// (in `AppPreferences`) so new sessions resume the operator's last
+    /// choice.
+    pub ui_mode: UiMode,
+    /// Whether the diagnostic tabs (OSC Log, Inspector) are visible.
+    /// Operator preference — not persisted per-show.
+    pub show_diagnostics: bool,
+    /// First-run popup is shown when the app starts with no
+    /// `AppPreferences.ui_mode` on disk. Asks the operator to pick a
+    /// mode; once dismissed, the choice is saved and this stays false.
+    pub show_first_run_popup: bool,
 }
 
 impl SetupTabState {
@@ -87,6 +101,7 @@ impl SetupTabState {
         ipad_send_port: u16,
         ipad_receive_port: u16,
         monitor_port: u16,
+        prefs: &AppPreferences,
     ) -> Self {
         Self {
             local_ip: String::new(),
@@ -122,6 +137,9 @@ impl SetupTabState {
             send_pace_us: 0,
             monitor_allow_cidrs: Vec::new(),
             trigger_allow_cidrs: Vec::new(),
+            ui_mode: prefs.ui_mode.unwrap_or_default(),
+            show_diagnostics: prefs.show_diagnostics,
+            show_first_run_popup: prefs.ui_mode.is_none(),
         }
     }
 }
@@ -154,7 +172,43 @@ pub fn draw_setup_tab(
 ) {
     let is_connected = connected.load(Ordering::Relaxed);
 
+    // First-run popup — shown once per machine until the operator picks a mode.
+    if setup.show_first_run_popup {
+        draw_first_run_popup(ui, setup);
+    }
+
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        // ── Display Mode card ──
+        theme::card_frame().show(ui, |ui| {
+            theme::section_heading(ui, "Display Mode");
+            ui.label(
+                egui::RichText::new(
+                    "Streamline the UI by hiding tabs that aren't relevant for the current show.",
+                )
+                .color(theme::TEXT_SECONDARY)
+                .size(theme::FONT_SIZE_BADGE),
+            );
+            ui.add_space(6.0);
+
+            let mode_before = setup.ui_mode;
+            let diag_before = setup.show_diagnostics;
+
+            ui.horizontal(|ui| {
+                for mode in UiMode::ALL {
+                    ui.radio_value(&mut setup.ui_mode, mode, mode.label());
+                }
+            });
+            ui.add_space(2.0);
+            ui.checkbox(
+                &mut setup.show_diagnostics,
+                "Show diagnostic tabs (OSC Log, Inspector)",
+            );
+
+            if setup.ui_mode != mode_before || setup.show_diagnostics != diag_before {
+                save_app_preferences(setup);
+            }
+        });
+
         // ── Connection card ──
         theme::card_frame().show(ui, |ui| {
             theme::section_heading(ui, "Connection");
@@ -1261,6 +1315,7 @@ fn load_show_file(
                 ));
             }
             Err(e) => {
+                error!("Load failed for {path_str}: {e}");
                 let _ = tx.send(UiEvent::ShowFileError(format!("Load failed: {e}")));
             }
         }
@@ -1319,6 +1374,7 @@ fn save_show_file(
         console_snapshot_follow,
         monitor_allow_cidrs: setup.monitor_allow_cidrs.clone(),
         trigger_allow_cidrs: setup.trigger_allow_cidrs.clone(),
+        ui_mode: setup.ui_mode,
     };
 
     runtime.spawn(async move {
@@ -1331,7 +1387,7 @@ fn save_show_file(
         let pl = pl_bindings.read().await;
 
         let show = ShowFile {
-            version: 13,
+            version: 14,
             console_config: state_guard.config.clone(),
             connection: conn_settings,
             scope_templates: mgr.scope_templates.values().cloned().collect(),
@@ -1360,8 +1416,75 @@ fn save_show_file(
                 let _ = tx.send(UiEvent::ShowFileSaved(path_str));
             }
             Err(e) => {
+                error!("Save failed for {path_str}: {e}");
                 let _ = tx.send(UiEvent::ShowFileError(format!("Save failed: {e}")));
             }
         }
     });
+}
+
+/// Persist the current UI mode + diagnostic toggle as the application
+/// default. Failure is logged at warn level — the in-memory state still
+/// applies for the session.
+fn save_app_preferences(setup: &SetupTabState) {
+    let prefs = AppPreferences {
+        ui_mode: Some(setup.ui_mode),
+        show_diagnostics: setup.show_diagnostics,
+    };
+    if let Err(e) = prefs.save() {
+        tracing::warn!(error = %e, "Failed to save app preferences");
+    }
+}
+
+/// Modal welcome popup shown on first launch (no `AppPreferences` on
+/// disk yet). Asks the operator to pick a display mode and remembers
+/// the choice for next time.
+fn draw_first_run_popup(ui: &mut egui::Ui, setup: &mut SetupTabState) {
+    let ctx = ui.ctx().clone();
+    egui::Window::new("Welcome to S21 HiJack")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(&ctx, |ui| {
+            ui.set_min_width(360.0);
+            ui.label(
+                egui::RichText::new("Choose a display mode to get started.")
+                    .strong()
+                    .size(theme::FONT_SIZE_BODY),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(
+                    "You can change this any time on the Setup tab.",
+                )
+                .color(theme::TEXT_SECONDARY),
+            );
+            ui.add_space(10.0);
+
+            let descriptions = [
+                (UiMode::Full, "All tabs visible — every feature available."),
+                (UiMode::LiveMusic, "Macros, gangs, and personal monitoring. Hides the cueing tab."),
+                (UiMode::Theatre, "Macros, gangs, cueing, and palettes. Hides the monitoring tab."),
+            ];
+
+            for (mode, desc) in descriptions {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_sized(
+                            [120.0, 32.0],
+                            egui::Button::new(
+                                egui::RichText::new(mode.label()).strong(),
+                            ),
+                        )
+                        .clicked()
+                    {
+                        setup.ui_mode = mode;
+                        setup.show_first_run_popup = false;
+                        save_app_preferences(setup);
+                    }
+                    ui.label(egui::RichText::new(desc).color(theme::TEXT_SECONDARY));
+                });
+            }
+        });
 }

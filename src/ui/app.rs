@@ -21,6 +21,7 @@ use crate::model::snapshot::CueList;
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
 use crate::osc::ipad_client::IpadSender;
+use crate::persistence::preferences::AppPreferences;
 
 use super::gangs_tab::GangsTabState;
 use super::inspector_tab::InspectorTabState;
@@ -102,6 +103,7 @@ impl HiJackApp {
         ipad_send_port: u16,
         ipad_receive_port: u16,
         monitor_port: u16,
+        prefs: AppPreferences,
         runtime: tokio::runtime::Handle,
     ) -> Self {
         let (ui_tx, ui_rx) = std::sync::mpsc::channel();
@@ -144,6 +146,7 @@ impl HiJackApp {
                 ipad_send_port,
                 ipad_receive_port,
                 monitor_port,
+                &prefs,
             ),
             snapshots: SnapshotsTabState::default(),
             macros: MacrosTabState::default(),
@@ -278,6 +281,16 @@ impl HiJackApp {
                         self.setup.send_pace_us = conn.send_pace_us;
                         self.setup.monitor_allow_cidrs = conn.monitor_allow_cidrs;
                         self.setup.trigger_allow_cidrs = conn.trigger_allow_cidrs;
+                        self.setup.ui_mode = conn.ui_mode;
+                        // Mirror the loaded mode to app preferences so a later
+                        // launch (without a show file) starts in this mode.
+                        let prefs = AppPreferences {
+                            ui_mode: Some(self.setup.ui_mode),
+                            show_diagnostics: self.setup.show_diagnostics,
+                        };
+                        if let Err(e) = prefs.save() {
+                            tracing::warn!(error = %e, "Failed to save app preferences after show load");
+                        }
                     }
                 }
                 UiEvent::ShowFileSaved(path) => {
@@ -353,19 +366,33 @@ impl eframe::App for HiJackApp {
                     );
                     ui.add_space(16.0);
 
-                    // Tab buttons
-                    let tabs = [
+                    // Tab buttons — filtered by current display mode.
+                    // Order: stable tabs first (always visible), then the
+                    // two mode-toggleable tabs (Snapshots, Monitor), then
+                    // the diagnostic tabs. Keeps Macros..Pan Link in
+                    // fixed positions when modes change.
+                    let all_tabs = [
                         (Tab::Setup, "Setup"),
-                        (Tab::Snapshots, "Snapshots"),
                         (Tab::Macros, "Macros"),
                         (Tab::Live, "Live"),
                         (Tab::Gangs, "Gangs"),
                         (Tab::PanLink, "Pan Link"),
+                        (Tab::Snapshots, "Snapshots"),
                         (Tab::Monitor, "Monitor"),
                         (Tab::OscLog, "OSC Log"),
                         (Tab::Inspector, "Inspector"),
                     ];
-                    for (tab, label) in tabs {
+                    let mode = self.setup.ui_mode;
+                    let diag = self.setup.show_diagnostics;
+                    // If the active tab just got hidden by a mode change,
+                    // fall back to Setup so the central panel stays valid.
+                    if !mode.tab_visible(self.active_tab, diag) {
+                        self.active_tab = Tab::Setup;
+                    }
+                    for (tab, label) in all_tabs
+                        .into_iter()
+                        .filter(|(t, _)| mode.tab_visible(*t, diag))
+                    {
                         let is_active = self.active_tab == tab;
                         let fill = if is_active {
                             super::theme::ACCENT_BLUE

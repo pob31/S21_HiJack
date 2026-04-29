@@ -36,6 +36,7 @@ use model::operating_mode::OperatingMode;
 use model::snapshot::CueList;
 use osc::monitor_server::MonitorServer;
 use osc::trigger_listener::TriggerListener;
+use persistence::preferences::AppPreferences;
 
 /// DiGiCo S21/S31 Snapshot Manager Daemon
 #[derive(Parser, Debug)]
@@ -471,6 +472,7 @@ fn run_ui(args: Args) {
     let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
 
     let mode = OperatingMode::from_cli(&args.mode).unwrap_or_default();
+    let prefs = AppPreferences::load();
 
     let app = ui::app::HiJackApp::new(
         &args.console_ip,
@@ -482,6 +484,7 @@ fn run_ui(args: Args) {
         args.effective_ipad_send_port(),
         args.effective_ipad_receive_port(),
         args.monitor_port,
+        prefs,
         runtime.handle().clone(),
     );
 

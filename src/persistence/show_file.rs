@@ -11,6 +11,7 @@ use crate::model::palette::ChannelPalette;
 use crate::model::pan_link::PanLinkBindings;
 use crate::model::recall_scope::ConsoleRecallConfig;
 use crate::model::snapshot::{CueList, ScopeTemplate, Snapshot};
+use crate::model::ui_mode::UiMode;
 
 /// Connection settings persisted in the show file.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -70,6 +71,11 @@ pub struct ConnectionSettings {
     /// Same semantics as `monitor_allow_cidrs`.
     #[serde(default)]
     pub trigger_allow_cidrs: Vec<String>,
+    /// UI display mode — determines which tabs are visible. Saved per-show
+    /// so different shows can prefer different streamlined views. Older
+    /// show files (pre-v14) get `UiMode::Full` (all tabs visible).
+    #[serde(default)]
+    pub ui_mode: UiMode,
 }
 
 /// Parse a list of CIDR strings into `Ipv4Cidr`s, logging and discarding
@@ -123,6 +129,7 @@ impl Default for ConnectionSettings {
             console_snapshot_follow: false,
             monitor_allow_cidrs: Vec::new(),
             trigger_allow_cidrs: Vec::new(),
+            ui_mode: UiMode::default(),
         }
     }
 }
@@ -174,7 +181,7 @@ pub struct ShowFile {
 impl ShowFile {
     pub fn new(config: ConsoleConfig) -> Self {
         Self {
-            version: 13,
+            version: 14,
             console_config: config,
             connection: ConnectionSettings::default(),
             scope_templates: Vec::new(),
@@ -257,7 +264,7 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 13);
+        assert_eq!(loaded.version, 14);
         assert_eq!(loaded.console_config.input_channel_count, 48);
         assert_eq!(loaded.console_config.control_group_count, 10);
         assert!(loaded.scope_templates.is_empty());

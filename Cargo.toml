@@ -35,6 +35,7 @@ libc = "0.2"
 socket2 = { version = "0.5", features = ["all"] }
 rfd = "0.15"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+dirs = "5"
 
 [dev-dependencies]
 # Property-based / random-input testing for the network-boundary OSC parsers
