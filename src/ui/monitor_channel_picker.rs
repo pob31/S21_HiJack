@@ -30,8 +30,11 @@ pub struct ChannelPickerState {
 
     pub input_count: u8,
     pub aux_count: u8,
-    pub selected_inputs: HashSet<u8>,
-    pub selected_auxes: HashSet<u8>,
+    /// Selected channels in the order the operator clicked them. Used as the
+    /// channel order saved into the profile. A small order badge (1, 2, 3, …)
+    /// is rendered on each selected tile to make this order visible.
+    pub selected_inputs: Vec<u8>,
+    pub selected_auxes: Vec<u8>,
 
     /// Operator-given names for each channel. Empty entries fall back to the
     /// numeric label at render time.
@@ -63,8 +66,11 @@ impl ChannelPickerState {
         let input_count = cfg.input_channel_count;
         let aux_count = cfg.aux_output_count;
 
-        let selected_inputs: HashSet<u8> = (1..=input_count).collect();
-        let selected_auxes: HashSet<u8> = HashSet::new();
+        // Default ordering = ascending. If the operator never deselects an
+        // input, save will collapse this back to an empty `Vec` to preserve
+        // the "all (and any future inputs)" sentinel.
+        let selected_inputs: Vec<u8> = (1..=input_count).collect();
+        let selected_auxes: Vec<u8> = Vec::new();
 
         let input_names = collect_input_names(state, input_count);
         let aux_names = collect_aux_names(state, aux_count);
@@ -92,12 +98,15 @@ impl ChannelPickerState {
         let input_count = cfg.input_channel_count;
         let aux_count = cfg.aux_output_count;
 
-        let selected_inputs: HashSet<u8> = if client.visible_inputs.is_empty() {
+        // Preserve the saved order. Empty `visible_inputs` (the "all inputs"
+        // sentinel) is rendered as the canonical 1..=N order so toggling /
+        // reordering works the same way as for a new profile.
+        let selected_inputs: Vec<u8> = if client.visible_inputs.is_empty() {
             (1..=input_count).collect()
         } else {
-            client.visible_inputs.iter().copied().collect()
+            client.visible_inputs.clone()
         };
-        let selected_auxes: HashSet<u8> = client.permitted_auxes.iter().copied().collect();
+        let selected_auxes: Vec<u8> = client.permitted_auxes.clone();
 
         Self {
             editing: Some(client.id),
@@ -112,23 +121,46 @@ impl ChannelPickerState {
         }
     }
 
+    /// Toggle a channel in `selected_inputs`. Removing preserves the order of
+    /// the remaining items; adding pushes to the end so the click order is
+    /// visible in the order badges.
+    fn toggle_input(&mut self, ch: u8) {
+        if let Some(pos) = self.selected_inputs.iter().position(|&v| v == ch) {
+            self.selected_inputs.remove(pos);
+        } else {
+            self.selected_inputs.push(ch);
+        }
+    }
+
+    fn toggle_aux(&mut self, ch: u8) {
+        if let Some(pos) = self.selected_auxes.iter().position(|&v| v == ch) {
+            self.selected_auxes.remove(pos);
+        } else {
+            self.selected_auxes.push(ch);
+        }
+    }
+
     fn to_save_outcome(&self) -> PickerOutcome {
-        // Collapse "all inputs selected" back to an empty Vec so the saved
-        // profile keeps the future-proof "any input is permitted" semantic.
-        let visible_inputs = if self.selected_inputs.len() as u8 == self.input_count {
+        // Collapse "all inputs selected in canonical 1..=N order" back to an
+        // empty Vec so the profile keeps the future-proof "any input is
+        // permitted" semantic. Any reordering away from canonical means the
+        // operator cares about order — save the explicit list.
+        let inputs_canonical = self.selected_inputs.len() as u8 == self.input_count
+            && self
+                .selected_inputs
+                .iter()
+                .enumerate()
+                .all(|(i, &v)| v as usize == i + 1);
+        let visible_inputs = if inputs_canonical {
             Vec::new()
         } else {
-            let mut v: Vec<u8> = self.selected_inputs.iter().copied().collect();
-            v.sort_unstable();
-            v
+            self.selected_inputs.clone()
         };
-        let mut permitted_auxes: Vec<u8> = self.selected_auxes.iter().copied().collect();
-        permitted_auxes.sort_unstable();
 
         PickerOutcome::Save {
             editing: self.editing,
             name: self.name.trim().to_string(),
-            permitted_auxes,
+            permitted_auxes: self.selected_auxes.clone(),
             visible_inputs,
         }
     }
@@ -244,18 +276,6 @@ pub fn draw_channel_picker(
             });
 
             ui.add_space(6.0);
-
-            // Hint when Save is disabled — explains why.
-            if !state.save_enabled() {
-                let reason = if state.name.trim().is_empty() {
-                    "Enter a profile name."
-                } else {
-                    "Select at least one aux."
-                };
-                ui.colored_label(theme::TEXT_SECONDARY, reason);
-                ui.add_space(2.0);
-            }
-
             ui.separator();
 
             // Two-column grid: inputs on the left, auxes on the right.
@@ -264,6 +284,37 @@ pub fn draw_channel_picker(
                 ui.add_space(16.0);
                 draw_auxes_panel(ui, state);
             });
+
+            ui.add_space(6.0);
+            ui.separator();
+
+            // Status row pinned to the bottom of the window. We always
+            // reserve the same vertical space so the layout doesn't jump
+            // when the warning appears or disappears as the operator
+            // selects/deselects channels.
+            ui.allocate_ui_with_layout(
+                egui::Vec2::new(ui.available_width(), 18.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    if state.save_enabled() {
+                        ui.colored_label(
+                            theme::TEXT_SECONDARY,
+                            format!(
+                                "Ready to save — {} input(s), {} aux(es) selected.",
+                                state.selected_inputs.len(),
+                                state.selected_auxes.len(),
+                            ),
+                        );
+                    } else {
+                        let reason = if state.name.trim().is_empty() {
+                            "Enter a profile name."
+                        } else {
+                            "Select at least one aux."
+                        };
+                        ui.colored_label(theme::TEXT_WARNING, reason);
+                    }
+                },
+            );
         });
 
     if !still_open && outcome.is_none() {
@@ -329,23 +380,23 @@ fn draw_inputs_panel(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
             ui.horizontal(|ui| {
                 let row_end = (n + TILES_PER_INPUT_ROW - 1).min(state.input_count);
                 for ch in n..=row_end {
-                    let selected = state.selected_inputs.contains(&ch);
+                    let order = state
+                        .selected_inputs
+                        .iter()
+                        .position(|&v| v == ch)
+                        .map(|i| i + 1);
                     let name = state.input_names.get(&ch).map(String::as_str).unwrap_or("");
                     if draw_tile(
                         ui,
                         &format!("Input {ch}"),
                         name,
                         theme::CH_INPUT,
-                        selected,
+                        order,
                         false,
                     )
                     .clicked()
                     {
-                        if selected {
-                            state.selected_inputs.remove(&ch);
-                        } else {
-                            state.selected_inputs.insert(ch);
-                        }
+                        state.toggle_input(ch);
                     }
                 }
             });
@@ -391,24 +442,17 @@ fn draw_auxes_panel(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
             ui.horizontal(|ui| {
                 let row_end = (n + TILES_PER_AUX_ROW - 1).min(state.aux_count);
                 for ch in n..=row_end {
-                    let selected = state.selected_auxes.contains(&ch);
+                    let order = state
+                        .selected_auxes
+                        .iter()
+                        .position(|&v| v == ch)
+                        .map(|i| i + 1);
                     let stereo = state.stereo_auxes.contains(&ch);
                     let name = state.aux_names.get(&ch).map(String::as_str).unwrap_or("");
-                    if draw_tile(
-                        ui,
-                        &format!("Aux {ch}"),
-                        name,
-                        theme::CH_AUX,
-                        selected,
-                        stereo,
-                    )
-                    .clicked()
+                    if draw_tile(ui, &format!("Aux {ch}"), name, theme::CH_AUX, order, stereo)
+                        .clicked()
                     {
-                        if selected {
-                            state.selected_auxes.remove(&ch);
-                        } else {
-                            state.selected_auxes.insert(ch);
-                        }
+                        state.toggle_aux(ch);
                     }
                 }
             });
@@ -418,19 +462,22 @@ fn draw_auxes_panel(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
 }
 
 /// One coloured channel tile. Returns the click response so the caller can
-/// toggle selection state. When `stereo` is true a darker vertical bar is
-/// painted along the right edge — the convention used by the desk's picker.
+/// toggle selection state. `order` is the 1-based position of this channel
+/// in the picker's selection list (`None` = not currently selected). When
+/// `stereo` is true a darker vertical bar is painted along the right edge —
+/// the convention used by the desk's picker.
 fn draw_tile(
     ui: &mut egui::Ui,
     title: &str,
     name: &str,
     base_color: egui::Color32,
-    selected: bool,
+    order: Option<usize>,
     stereo: bool,
 ) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(TILE_SIZE, egui::Sense::click());
 
     let painter = ui.painter_at(rect);
+    let selected = order.is_some();
 
     // Tile fill: full-saturation when selected, dimmed when not. Hover gets a
     // slight tint so the operator sees what's about to be clicked.
@@ -486,6 +533,26 @@ fn draw_tile(
         );
     }
 
+    // Order badge: small dark circle in the top-left corner of the tile
+    // showing the click order (1, 2, 3, …). Visible only on selected tiles.
+    if let Some(n) = order {
+        let badge_center = egui::pos2(rect.min.x + 11.0, rect.min.y + 11.0);
+        let badge_radius = 9.0;
+        painter.circle_filled(badge_center, badge_radius, theme::BG_DARK);
+        painter.circle_stroke(
+            badge_center,
+            badge_radius,
+            egui::Stroke::new(1.0, theme::TEXT_PRIMARY),
+        );
+        painter.text(
+            badge_center,
+            egui::Align2::CENTER_CENTER,
+            n.to_string(),
+            egui::FontId::proportional(10.0),
+            theme::TEXT_PRIMARY,
+        );
+    }
+
     response.on_hover_text(if name.is_empty() {
         title.to_string()
     } else {
@@ -526,11 +593,11 @@ mod tests {
     }
 
     #[test]
-    fn save_collapses_full_input_selection_to_empty_vec() {
+    fn save_collapses_canonical_input_selection_to_empty_vec() {
         let state = ConsoleState::new(config_with_inputs_and_auxes(48, 8));
         let mut picker = ChannelPickerState::for_new_client(&state);
         picker.name = "Drummer".into();
-        picker.selected_auxes.insert(1);
+        picker.toggle_aux(1);
 
         match picker.to_save_outcome() {
             PickerOutcome::Save {
@@ -541,7 +608,7 @@ mod tests {
             } => {
                 assert!(
                     visible_inputs.is_empty(),
-                    "all-selected must save as empty Vec"
+                    "1..=N in canonical order must save as empty Vec",
                 );
                 assert_eq!(permitted_auxes, vec![1]);
                 assert_eq!(name, "Drummer");
@@ -552,24 +619,111 @@ mod tests {
     }
 
     #[test]
-    fn save_keeps_partial_input_selection() {
+    fn save_preserves_partial_input_selection_in_click_order() {
         let state = ConsoleState::new(config_with_inputs_and_auxes(48, 8));
         let mut picker = ChannelPickerState::for_new_client(&state);
         picker.name = "Bass".into();
-        picker.selected_auxes.insert(2);
-        picker.selected_inputs.remove(&5);
-        picker.selected_inputs.remove(&10);
+        picker.toggle_aux(2);
+        // Deselect 5 and 10 — leaves 46 inputs in 1..=N order minus 5,10.
+        picker.toggle_input(5);
+        picker.toggle_input(10);
 
         match picker.to_save_outcome() {
             PickerOutcome::Save { visible_inputs, .. } => {
                 assert_eq!(visible_inputs.len(), 46);
                 assert!(!visible_inputs.contains(&5));
                 assert!(!visible_inputs.contains(&10));
-                // Sorted output for stable show-file diffs
+                // The remaining 46 inputs are still in canonical order
+                // because we never reordered, just removed two.
                 assert!(visible_inputs.windows(2).all(|w| w[0] < w[1]));
             }
             PickerOutcome::Cancel => panic!("expected Save"),
         }
+    }
+
+    #[test]
+    fn save_preserves_click_order_when_reselected() {
+        // Operator deselects everything, then clicks 7, 1, 12 in that order.
+        // Save must preserve that exact order.
+        let state = ConsoleState::new(config_with_inputs_and_auxes(48, 8));
+        let mut picker = ChannelPickerState::for_new_client(&state);
+        picker.name = "Keys".into();
+        picker.toggle_aux(3);
+        picker.selected_inputs.clear();
+        picker.toggle_input(7);
+        picker.toggle_input(1);
+        picker.toggle_input(12);
+
+        match picker.to_save_outcome() {
+            PickerOutcome::Save {
+                visible_inputs,
+                permitted_auxes,
+                ..
+            } => {
+                assert_eq!(visible_inputs, vec![7, 1, 12]);
+                assert_eq!(permitted_auxes, vec![3]);
+            }
+            PickerOutcome::Cancel => panic!("expected Save"),
+        }
+    }
+
+    #[test]
+    fn save_preserves_aux_click_order() {
+        let state = ConsoleState::new(config_with_inputs_and_auxes(48, 8));
+        let mut picker = ChannelPickerState::for_new_client(&state);
+        picker.name = "FOH".into();
+        // Click order: 4, 2, 7
+        picker.toggle_aux(4);
+        picker.toggle_aux(2);
+        picker.toggle_aux(7);
+
+        match picker.to_save_outcome() {
+            PickerOutcome::Save {
+                permitted_auxes, ..
+            } => {
+                assert_eq!(permitted_auxes, vec![4, 2, 7]);
+            }
+            PickerOutcome::Cancel => panic!("expected Save"),
+        }
+    }
+
+    #[test]
+    fn save_preserves_full_selection_in_custom_order() {
+        // Operator wants all inputs but in a custom order — must NOT collapse
+        // to the empty-Vec sentinel because the order is meaningful.
+        let state = ConsoleState::new(config_with_inputs_and_auxes(4, 8));
+        let mut picker = ChannelPickerState::for_new_client(&state);
+        picker.name = "Custom".into();
+        picker.toggle_aux(1);
+        picker.selected_inputs = vec![3, 1, 4, 2];
+
+        match picker.to_save_outcome() {
+            PickerOutcome::Save { visible_inputs, .. } => {
+                assert_eq!(visible_inputs, vec![3, 1, 4, 2]);
+            }
+            PickerOutcome::Cancel => panic!("expected Save"),
+        }
+    }
+
+    #[test]
+    fn toggle_input_removes_then_re_adds_at_end() {
+        let state = ConsoleState::new(config_with_inputs_and_auxes(8, 4));
+        let mut picker = ChannelPickerState::for_new_client(&state);
+        // Starts as [1..=8].
+        picker.toggle_input(3); // removes 3 → [1, 2, 4, 5, 6, 7, 8]
+        assert_eq!(picker.selected_inputs, vec![1, 2, 4, 5, 6, 7, 8]);
+        picker.toggle_input(3); // re-adds at end → [1, 2, 4, 5, 6, 7, 8, 3]
+        assert_eq!(picker.selected_inputs, vec![1, 2, 4, 5, 6, 7, 8, 3]);
+    }
+
+    #[test]
+    fn edit_picker_loads_existing_order_verbatim() {
+        let state = ConsoleState::new(config_with_inputs_and_auxes(60, 8));
+        let client = MonitorClient::new("Custom".into(), vec![5, 1, 3], vec![10, 4, 7]);
+        let picker = ChannelPickerState::for_edit(&client, &state);
+        assert_eq!(picker.selected_auxes, vec![5, 1, 3]);
+        assert_eq!(picker.selected_inputs, vec![10, 4, 7]);
+        assert_eq!(picker.editing, Some(client.id));
     }
 
     #[test]
@@ -591,7 +745,7 @@ mod tests {
         picker.name = "Keys".into();
         assert!(!picker.save_enabled(), "name without auxes");
 
-        picker.selected_auxes.insert(1);
+        picker.toggle_aux(1);
         assert!(picker.save_enabled());
 
         picker.name = "   ".into();

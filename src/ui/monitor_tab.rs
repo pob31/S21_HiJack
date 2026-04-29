@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use super::monitor_channel_picker::{self, ChannelPickerState, PickerOutcome};
 use super::theme;
@@ -20,6 +21,10 @@ pub struct MonitorTabState {
     /// `Some` while the channel picker is open (either adding a new profile
     /// or editing an existing one); `None` when the picker is closed.
     pub picker: Option<ChannelPickerState>,
+    /// `Some(client_id)` when that profile's row is in drag-to-reorder mode.
+    /// The badges in that row become drag sources; drop them onto each other
+    /// to rearrange the saved channel order without opening the picker.
+    pub reorder_for: Option<Uuid>,
 }
 
 /// Draw the Monitor tab.
@@ -212,15 +217,27 @@ pub fn draw_monitor_tab(
                 } else {
                     let mut to_remove = None;
                     let mut to_edit: Option<MonitorClient> = None;
+                    // Per-row reorder result staged for after the loop, so we
+                    // can release the read lock before calling update_client.
+                    let mut to_update_order: Option<(Uuid, Vec<u8>, Vec<u8>)> = None;
 
                     for client in &clients {
+                        let in_reorder = tab.reorder_for == Some(client.id);
+                        let stroke_color = if in_reorder {
+                            theme::ACCENT_BLUE
+                        } else {
+                            theme::BORDER_SUBTLE
+                        };
                         egui::Frame::new()
                             .fill(theme::BG_ELEVATED)
-                            .stroke(egui::Stroke::new(1.0, theme::BORDER_SUBTLE))
+                            .stroke(egui::Stroke::new(
+                                if in_reorder { 2.0 } else { 1.0 },
+                                stroke_color,
+                            ))
                             .corner_radius(6.0)
                             .inner_margin(egui::Margin::same(8))
                             .show(ui, |ui| {
-                                ui.horizontal(|ui| {
+                                ui.horizontal_wrapped(|ui| {
                                     // Connection status dot
                                     let status_color = if client.is_connected() {
                                         theme::COLOR_CONNECTED
@@ -240,20 +257,46 @@ pub fn draw_monitor_tab(
 
                                     ui.add_space(8.0);
 
-                                    // Aux badges (magenta)
-                                    for aux in &client.permitted_auxes {
-                                        theme::colored_badge(
+                                    // Aux badges (magenta) — drag-reorderable in reorder mode.
+                                    let mut new_aux_order: Option<Vec<u8>> = None;
+                                    if in_reorder {
+                                        if let Some(reordered) = draw_reorderable_badges(
                                             ui,
-                                            &format!("Aux {aux}"),
+                                            &client.permitted_auxes,
+                                            |v| format!("Aux {v}"),
                                             theme::CH_AUX,
-                                        );
+                                            (client.id, "aux"),
+                                        ) {
+                                            new_aux_order = Some(reordered);
+                                        }
+                                    } else {
+                                        for aux in &client.permitted_auxes {
+                                            theme::colored_badge(
+                                                ui,
+                                                &format!("Aux {aux}"),
+                                                theme::CH_AUX,
+                                            );
+                                        }
                                     }
 
                                     ui.add_space(4.0);
 
-                                    // Input badges (blue) — only show if restricted
+                                    // Input badges (blue) — drag-reorderable when visible_inputs
+                                    // is a specific list. The "All Inputs" sentinel is shown as
+                                    // a single non-draggable badge.
+                                    let mut new_input_order: Option<Vec<u8>> = None;
                                     if client.visible_inputs.is_empty() {
                                         theme::colored_badge(ui, "All Inputs", theme::CH_INPUT);
+                                    } else if in_reorder {
+                                        if let Some(reordered) = draw_reorderable_badges(
+                                            ui,
+                                            &client.visible_inputs,
+                                            |v| format!("In {v}"),
+                                            theme::CH_INPUT,
+                                            (client.id, "input"),
+                                        ) {
+                                            new_input_order = Some(reordered);
+                                        }
                                     } else {
                                         for input in &client.visible_inputs {
                                             theme::colored_badge(
@@ -263,19 +306,37 @@ pub fn draw_monitor_tab(
                                             );
                                         }
                                     }
+
+                                    // Stage the reorder result. Either auxes or inputs (not
+                                    // both in one frame) since each drop happens once.
+                                    if new_aux_order.is_some() || new_input_order.is_some() {
+                                        to_update_order = Some((
+                                            client.id,
+                                            new_aux_order
+                                                .unwrap_or_else(|| client.permitted_auxes.clone()),
+                                            new_input_order
+                                                .unwrap_or_else(|| client.visible_inputs.clone()),
+                                        ));
+                                    }
                                 });
 
-                                // Status + delete row
+                                // Status + action-button row
                                 ui.horizontal(|ui| {
                                     ui.add_space(18.0); // align under dot
-                                    let status_text = if client.is_connected() {
+                                    let status_text = if in_reorder {
+                                        "Reorder mode — drag badges to rearrange"
+                                    } else if client.is_connected() {
                                         "Connected"
                                     } else {
                                         "Offline"
                                     };
                                     ui.label(
                                         egui::RichText::new(status_text)
-                                            .color(theme::TEXT_SECONDARY)
+                                            .color(if in_reorder {
+                                                theme::ACCENT_BLUE
+                                            } else {
+                                                theme::TEXT_SECONDARY
+                                            })
                                             .small(),
                                     );
 
@@ -287,7 +348,7 @@ pub fn draw_monitor_tab(
                                                 theme::ACCENT_RED,
                                                 egui::Vec2::new(60.0, 24.0),
                                             );
-                                            if ui.add(del_btn).clicked() {
+                                            if ui.add_enabled(!in_reorder, del_btn).clicked() {
                                                 to_remove = Some(client.id);
                                             }
 
@@ -296,8 +357,23 @@ pub fn draw_monitor_tab(
                                                 theme::ACCENT_BLUE,
                                                 egui::Vec2::new(60.0, 24.0),
                                             );
-                                            if ui.add(edit_btn).clicked() {
+                                            if ui.add_enabled(!in_reorder, edit_btn).clicked() {
                                                 to_edit = Some((*client).clone());
+                                            }
+
+                                            let (label, color) = if in_reorder {
+                                                ("Done", theme::ACCENT_GREEN)
+                                            } else {
+                                                ("Reorder", theme::ACCENT_ORANGE)
+                                            };
+                                            let reorder_btn = theme::action_button(
+                                                label,
+                                                color,
+                                                egui::Vec2::new(70.0, 24.0),
+                                            );
+                                            if ui.add(reorder_btn).clicked() {
+                                                tab.reorder_for =
+                                                    if in_reorder { None } else { Some(client.id) };
                                             }
                                         },
                                     );
@@ -319,6 +395,20 @@ pub fn draw_monitor_tab(
                             let st = runtime.block_on(console_state.read());
                             tab.picker = Some(ChannelPickerState::for_edit(&client, &st));
                         }
+                    }
+                    if let Some((id, auxes, inputs)) = to_update_order {
+                        // Read the existing client to keep its name (the
+                        // Reorder UI doesn't expose name editing) and skip
+                        // the update if nothing actually changed (paranoia
+                        // against frame races where the same drop fires twice).
+                        let mgr_clone = monitor_manager.clone();
+                        runtime.spawn(async move {
+                            let mut mgr = mgr_clone.write().await;
+                            if let Some(existing) = mgr.clients.get(&id) {
+                                let name = existing.name.clone();
+                                mgr.update_client(id, name, auxes, inputs);
+                            }
+                        });
                     }
                 }
             });
@@ -366,5 +456,92 @@ pub fn draw_monitor_tab(
                 tab.picker = None;
             }
         }
+    }
+}
+
+/// Render a horizontal row of channel badges that the operator can drag onto
+/// each other to rearrange. Returns `Some(new_order)` on the frame the drop
+/// completes; the caller is responsible for committing the new order to the
+/// `MonitorManager`.
+///
+/// `id_prefix` namespaces the drag-source IDs so two reorderable rows on the
+/// same screen (e.g. auxes and inputs of the same profile, or two different
+/// profiles) don't collide.
+fn draw_reorderable_badges(
+    ui: &mut egui::Ui,
+    items: &[u8],
+    label_fn: impl Fn(u8) -> String,
+    color: egui::Color32,
+    id_prefix: (Uuid, &'static str),
+) -> Option<Vec<u8>> {
+    let mut reorder: Option<(usize, usize)> = None;
+
+    for (i, &v) in items.iter().enumerate() {
+        let drag_id = egui::Id::new((id_prefix.0, id_prefix.1, i));
+        // Each badge is wrapped in BOTH a drop zone and a drag source so a
+        // dropped badge can land on any other badge to reposition itself.
+        // egui 0.33's `dnd_drop_zone` returns `(InnerResponse<R>, Option<Arc<P>>)`;
+        // the Option is `Some` on the frame a drag is released over this zone.
+        let (_inner, dropped) = ui.dnd_drop_zone::<usize, _>(egui::Frame::default(), |ui| {
+            ui.dnd_drag_source(drag_id, i, |ui| {
+                theme::colored_badge(ui, &label_fn(v), color);
+            });
+        });
+        if let Some(payload) = dropped {
+            let src = *payload;
+            if src != i {
+                reorder = Some((src, i));
+            }
+        }
+    }
+
+    reorder.map(|(src, dst)| reorder_vec(items, src, dst))
+}
+
+/// Move the item at `src` to position `dst`, returning the new order.
+/// "Drop on dst" means the dragged item lands at the dst's current visual
+/// position — items between src and dst shift to make room.
+fn reorder_vec(items: &[u8], src: usize, dst: usize) -> Vec<u8> {
+    let mut out: Vec<u8> = items.to_vec();
+    if src >= out.len() || dst >= out.len() || src == dst {
+        return out;
+    }
+    let item = out.remove(src);
+    let insert_at = if dst > src { dst - 1 } else { dst };
+    out.insert(insert_at, item);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reorder_vec;
+
+    #[test]
+    fn reorder_drag_forward() {
+        // Drag A (idx 0) onto D (idx 3) → A lands at D's old position,
+        // intermediate items shift left to make room. Final: [B, C, A, D, E].
+        let result = reorder_vec(&[1, 2, 3, 4, 5], 0, 3);
+        assert_eq!(result, vec![2, 3, 1, 4, 5]);
+    }
+
+    #[test]
+    fn reorder_drag_backward() {
+        // Drag E (idx 4) onto B (idx 1) → E lands at idx 1, others shift right.
+        let result = reorder_vec(&[1, 2, 3, 4, 5], 4, 1);
+        assert_eq!(result, vec![1, 5, 2, 3, 4]);
+    }
+
+    #[test]
+    fn reorder_drag_to_self_is_noop() {
+        let original = [1, 2, 3];
+        let result = reorder_vec(&original, 1, 1);
+        assert_eq!(result, original.to_vec());
+    }
+
+    #[test]
+    fn reorder_out_of_range_is_noop() {
+        let original = [1, 2, 3];
+        assert_eq!(reorder_vec(&original, 5, 1), original.to_vec());
+        assert_eq!(reorder_vec(&original, 1, 5), original.to_vec());
     }
 }
