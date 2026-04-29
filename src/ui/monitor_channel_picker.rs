@@ -333,30 +333,67 @@ pub fn draw_channel_picker(
             ui.add_space(6.0);
             ui.separator();
 
-            // Status row pinned to the bottom of the window. We always
-            // reserve the same vertical space so the layout doesn't jump
-            // when the warning appears or disappears as the operator
-            // selects/deselects channels.
+            // Status row pinned to the bottom of the window. Always reserves
+            // the same vertical space so the layout doesn't jump when the
+            // message changes. While a ripple is in progress the status
+            // doubles as the prompt that tells the operator what to click
+            // next; otherwise it shows save-readiness.
             ui.allocate_ui_with_layout(
                 egui::Vec2::new(ui.available_width(), 18.0),
                 egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    if state.save_enabled() {
+                |ui| match state.ripple {
+                    RippleState::Pending => {
                         ui.colored_label(
-                            theme::TEXT_SECONDARY,
+                            theme::ACCENT_ORANGE,
+                            "Ripple: click the FIRST channel of the range.",
+                        );
+                    }
+                    RippleState::GotFirst { first } => {
+                        ui.colored_label(
+                            theme::ACCENT_ORANGE,
                             format!(
-                                "Ready to save — {} input(s), {} aux(es) selected.",
-                                state.selected_inputs.len(),
-                                state.selected_auxes.len(),
+                                "Ripple: first = {first}. Click the LAST channel of the range."
                             ),
                         );
-                    } else {
-                        let reason = if state.name.trim().is_empty() {
-                            "Enter a profile name."
+                    }
+                    RippleState::Confirming { first, last } => {
+                        let count = if first <= last {
+                            (last - first + 1) as usize
                         } else {
-                            "Select at least one aux."
+                            (first - last + 1) as usize
                         };
-                        ui.colored_label(theme::TEXT_WARNING, reason);
+                        let plural = if count == 1 { "" } else { "s" };
+                        let msg = if first <= last {
+                            format!(
+                                "Ripple: add channels {first} to {last} ({count} channel{plural}) \
+                                 to the selection?"
+                            )
+                        } else {
+                            format!(
+                                "Ripple: add channels {first} down to {last} ({count} channel\
+                                 {plural}, reverse order) to the selection?"
+                            )
+                        };
+                        ui.colored_label(theme::ACCENT_ORANGE, msg);
+                    }
+                    RippleState::Off => {
+                        if state.save_enabled() {
+                            ui.colored_label(
+                                theme::TEXT_SECONDARY,
+                                format!(
+                                    "Ready to save — {} input(s), {} aux(es) selected.",
+                                    state.selected_inputs.len(),
+                                    state.selected_auxes.len(),
+                                ),
+                            );
+                        } else {
+                            let reason = if state.name.trim().is_empty() {
+                                "Enter a profile name."
+                            } else {
+                                "Select at least one aux."
+                            };
+                            ui.colored_label(theme::TEXT_WARNING, reason);
+                        }
                     }
                 },
             );
@@ -393,19 +430,22 @@ fn draw_inputs_panel(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
                 match state.ripple {
                     RippleState::Confirming { first, last } => {
                         // Confirmation pair replaces the normal header buttons.
-                        // Order in right-to-left layout: ✕ on the right, ✓ to its left.
+                        // Order in right-to-left layout: Cancel on the right,
+                        // Confirm to its left. Plain text labels because the
+                        // bundled egui font doesn't render check-mark / X
+                        // dingbats.
                         let cancel_btn = theme::action_button(
-                            "✕",
+                            "Cancel",
                             theme::ACCENT_RED,
-                            egui::Vec2::new(40.0, 24.0),
+                            egui::Vec2::new(70.0, 24.0),
                         );
                         if ui.add(cancel_btn).clicked() {
                             state.ripple = RippleState::Off;
                         }
                         let confirm_btn = theme::action_button(
-                            "✓",
+                            "Confirm",
                             theme::ACCENT_GREEN,
-                            egui::Vec2::new(40.0, 24.0),
+                            egui::Vec2::new(80.0, 24.0),
                         );
                         if ui.add(confirm_btn).clicked() {
                             state.apply_ripple(first, last);
@@ -456,39 +496,6 @@ fn draw_inputs_panel(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
                 }
             });
         });
-
-        // Ripple instruction line — tells the operator what to click next.
-        match state.ripple {
-            RippleState::Pending => {
-                ui.colored_label(
-                    theme::ACCENT_ORANGE,
-                    "Ripple: click the FIRST channel of the range",
-                );
-            }
-            RippleState::GotFirst { first } => {
-                ui.colored_label(
-                    theme::ACCENT_ORANGE,
-                    format!("Ripple: first = {first}. Click the LAST channel of the range"),
-                );
-            }
-            RippleState::Confirming { first, last } => {
-                let count = if first <= last {
-                    (last - first + 1) as usize
-                } else {
-                    (first - last + 1) as usize
-                };
-                let direction = if first <= last { "→" } else { "←" };
-                ui.colored_label(
-                    theme::ACCENT_ORANGE,
-                    format!(
-                        "Ripple: add channels {first} {direction} {last} ({count} channel\
-                         {plural}) to the selection?",
-                        plural = if count == 1 { "" } else { "s" },
-                    ),
-                );
-            }
-            RippleState::Off => {}
-        }
 
         ui.add_space(4.0);
 
