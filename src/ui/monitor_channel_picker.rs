@@ -42,6 +42,32 @@ pub struct ChannelPickerState {
     pub aux_names: HashMap<u8, String>,
     /// Stereo aux numbers (1-based). Mono auxes are simply absent from the set.
     pub stereo_auxes: HashSet<u8>,
+
+    /// Ripple-select state machine for the Inputs grid. While ripple is
+    /// armed, tile clicks pick range endpoints instead of toggling the
+    /// channel; the operator confirms or cancels the ripple before the
+    /// range is appended to `selected_inputs`.
+    pub ripple: RippleState,
+}
+
+/// State machine for the Ripple range-select flow on the Inputs grid.
+///
+/// The flow is: `Off` → click `Ripple` toggle → `Pending` → click first
+/// channel → `GotFirst` → click last channel → `Confirming` → click ✓ →
+/// `Off` (range applied) or click ✕ → `Off` (discarded). Re-clicking the
+/// `Ripple` toggle in any non-`Confirming` state cancels back to `Off`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum RippleState {
+    /// Normal mode: tile clicks toggle selection.
+    #[default]
+    Off,
+    /// Operator armed Ripple — next tile click sets the first endpoint.
+    Pending,
+    /// First endpoint chosen — next tile click sets the last endpoint.
+    GotFirst { first: u8 },
+    /// Both endpoints chosen — operator must confirm or cancel before the
+    /// range is committed.
+    Confirming { first: u8, last: u8 },
 }
 
 /// Result of one frame of the picker window.
@@ -86,6 +112,7 @@ impl ChannelPickerState {
             input_names,
             aux_names,
             stereo_auxes,
+            ripple: RippleState::Off,
         }
     }
 
@@ -118,6 +145,24 @@ impl ChannelPickerState {
             input_names: collect_input_names(state, input_count),
             aux_names: collect_aux_names(state, aux_count),
             stereo_auxes: collect_stereo_auxes(cfg, aux_count),
+            ripple: RippleState::Off,
+        }
+    }
+
+    /// Apply a confirmed ripple range to `selected_inputs`. Channels are
+    /// appended in click direction (`first`→`last` ascending, or in reverse
+    /// when `first > last`), skipping any channel already in the selection
+    /// to preserve its existing position in the order list.
+    fn apply_ripple(&mut self, first: u8, last: u8) {
+        let range: Vec<u8> = if first <= last {
+            (first..=last).collect()
+        } else {
+            (last..=first).rev().collect()
+        };
+        for ch in range {
+            if !self.selected_inputs.contains(&ch) {
+                self.selected_inputs.push(ch);
+            }
         }
     }
 
@@ -345,24 +390,105 @@ fn draw_inputs_panel(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
             );
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let deselect = theme::action_button(
-                    "Deselect all",
-                    theme::BG_ELEVATED,
-                    egui::Vec2::new(95.0, 24.0),
-                );
-                if ui.add(deselect).clicked() {
-                    state.selected_inputs.clear();
-                }
-                let select_all = theme::action_button(
-                    "Select all",
-                    theme::BG_ELEVATED,
-                    egui::Vec2::new(85.0, 24.0),
-                );
-                if ui.add(select_all).clicked() {
-                    state.selected_inputs = (1..=state.input_count).collect();
+                match state.ripple {
+                    RippleState::Confirming { first, last } => {
+                        // Confirmation pair replaces the normal header buttons.
+                        // Order in right-to-left layout: ✕ on the right, ✓ to its left.
+                        let cancel_btn = theme::action_button(
+                            "✕",
+                            theme::ACCENT_RED,
+                            egui::Vec2::new(40.0, 24.0),
+                        );
+                        if ui.add(cancel_btn).clicked() {
+                            state.ripple = RippleState::Off;
+                        }
+                        let confirm_btn = theme::action_button(
+                            "✓",
+                            theme::ACCENT_GREEN,
+                            egui::Vec2::new(40.0, 24.0),
+                        );
+                        if ui.add(confirm_btn).clicked() {
+                            state.apply_ripple(first, last);
+                            state.ripple = RippleState::Off;
+                        }
+                    }
+                    _ => {
+                        // Ripple toggle button — orange when armed, neutral otherwise.
+                        // Clicking while armed (Pending / GotFirst) cancels back to Off.
+                        let ripple_armed = matches!(
+                            state.ripple,
+                            RippleState::Pending | RippleState::GotFirst { .. }
+                        );
+                        let ripple_btn = theme::action_button(
+                            "Ripple",
+                            if ripple_armed {
+                                theme::ACCENT_ORANGE
+                            } else {
+                                theme::BG_ELEVATED
+                            },
+                            egui::Vec2::new(70.0, 24.0),
+                        );
+                        if ui.add(ripple_btn).clicked() {
+                            state.ripple = if ripple_armed {
+                                RippleState::Off
+                            } else {
+                                RippleState::Pending
+                            };
+                        }
+
+                        let deselect = theme::action_button(
+                            "Deselect all",
+                            theme::BG_ELEVATED,
+                            egui::Vec2::new(95.0, 24.0),
+                        );
+                        if ui.add(deselect).clicked() {
+                            state.selected_inputs.clear();
+                        }
+                        let select_all = theme::action_button(
+                            "Select all",
+                            theme::BG_ELEVATED,
+                            egui::Vec2::new(85.0, 24.0),
+                        );
+                        if ui.add(select_all).clicked() {
+                            state.selected_inputs = (1..=state.input_count).collect();
+                        }
+                    }
                 }
             });
         });
+
+        // Ripple instruction line — tells the operator what to click next.
+        match state.ripple {
+            RippleState::Pending => {
+                ui.colored_label(
+                    theme::ACCENT_ORANGE,
+                    "Ripple: click the FIRST channel of the range",
+                );
+            }
+            RippleState::GotFirst { first } => {
+                ui.colored_label(
+                    theme::ACCENT_ORANGE,
+                    format!("Ripple: first = {first}. Click the LAST channel of the range"),
+                );
+            }
+            RippleState::Confirming { first, last } => {
+                let count = if first <= last {
+                    (last - first + 1) as usize
+                } else {
+                    (first - last + 1) as usize
+                };
+                let direction = if first <= last { "→" } else { "←" };
+                ui.colored_label(
+                    theme::ACCENT_ORANGE,
+                    format!(
+                        "Ripple: add channels {first} {direction} {last} ({count} channel\
+                         {plural}) to the selection?",
+                        plural = if count == 1 { "" } else { "s" },
+                    ),
+                );
+            }
+            RippleState::Off => {}
+        }
 
         ui.add_space(4.0);
 
@@ -374,7 +500,11 @@ fn draw_inputs_panel(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
             return;
         }
 
-        // Render the input tiles row by row.
+        // Render the input tiles row by row. During ripple, tile clicks
+        // pick range endpoints instead of toggling selection. Endpoints
+        // get an orange outline overlay; tiles between endpoints during
+        // Confirming get a translucent orange tint to preview the range.
+        let mut next_ripple: Option<RippleState> = None;
         let mut n: u8 = 1;
         while n <= state.input_count {
             ui.horizontal(|ui| {
@@ -386,23 +516,84 @@ fn draw_inputs_panel(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
                         .position(|&v| v == ch)
                         .map(|i| i + 1);
                     let name = state.input_names.get(&ch).map(String::as_str).unwrap_or("");
-                    if draw_tile(
+                    let highlight = ripple_highlight_for(state.ripple, ch);
+                    let tile_resp = draw_tile(
                         ui,
                         &format!("Input {ch}"),
                         name,
                         theme::CH_INPUT,
                         order,
                         false,
-                    )
-                    .clicked()
-                    {
-                        state.toggle_input(ch);
+                        highlight,
+                    );
+                    if tile_resp.clicked() {
+                        match state.ripple {
+                            RippleState::Off => state.toggle_input(ch),
+                            RippleState::Pending => {
+                                next_ripple = Some(RippleState::GotFirst { first: ch });
+                            }
+                            RippleState::GotFirst { first } => {
+                                next_ripple = Some(RippleState::Confirming { first, last: ch });
+                            }
+                            // While the operator is staring at the
+                            // confirm/cancel buttons, tile clicks are no-ops
+                            // — they have to commit one way or the other.
+                            RippleState::Confirming { .. } => {}
+                        }
                     }
                 }
             });
             n += TILES_PER_INPUT_ROW;
         }
+        if let Some(r) = next_ripple {
+            state.ripple = r;
+        }
     });
+}
+
+/// Decide what kind of ripple-mode highlight (if any) a tile should get.
+fn ripple_highlight_for(ripple: RippleState, ch: u8) -> RippleHighlight {
+    match ripple {
+        RippleState::Off | RippleState::Pending => RippleHighlight::None,
+        RippleState::GotFirst { first } => {
+            if ch == first {
+                RippleHighlight::Endpoint
+            } else {
+                RippleHighlight::None
+            }
+        }
+        RippleState::Confirming { first, last } => {
+            if ch == first || ch == last {
+                RippleHighlight::Endpoint
+            } else {
+                let (lo, hi) = if first <= last {
+                    (first, last)
+                } else {
+                    (last, first)
+                };
+                if ch > lo && ch < hi {
+                    RippleHighlight::InRange
+                } else {
+                    RippleHighlight::None
+                }
+            }
+        }
+    }
+}
+
+/// What kind of ripple-mode visual marker a tile should carry. Layered on
+/// top of the standard tile fill / selected outline so existing selection
+/// state is still visible while the operator picks a ripple range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RippleHighlight {
+    /// No ripple decoration.
+    None,
+    /// One of the two range endpoints — bright orange outline on top of the
+    /// tile so the operator can see which two tiles they've picked.
+    Endpoint,
+    /// Sits between the two endpoints during `Confirming` — translucent
+    /// orange overlay previewing what's about to be added.
+    InRange,
 }
 
 fn draw_auxes_panel(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
@@ -449,8 +640,16 @@ fn draw_auxes_panel(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
                         .map(|i| i + 1);
                     let stereo = state.stereo_auxes.contains(&ch);
                     let name = state.aux_names.get(&ch).map(String::as_str).unwrap_or("");
-                    if draw_tile(ui, &format!("Aux {ch}"), name, theme::CH_AUX, order, stereo)
-                        .clicked()
+                    if draw_tile(
+                        ui,
+                        &format!("Aux {ch}"),
+                        name,
+                        theme::CH_AUX,
+                        order,
+                        stereo,
+                        RippleHighlight::None,
+                    )
+                    .clicked()
                     {
                         state.toggle_aux(ch);
                     }
@@ -465,7 +664,9 @@ fn draw_auxes_panel(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
 /// toggle selection state. `order` is the 1-based position of this channel
 /// in the picker's selection list (`None` = not currently selected). When
 /// `stereo` is true a darker vertical bar is painted along the right edge —
-/// the convention used by the desk's picker.
+/// the convention used by the desk's picker. `ripple_highlight` overlays
+/// an orange marker for endpoints / range-preview when a ripple is in
+/// progress.
 fn draw_tile(
     ui: &mut egui::Ui,
     title: &str,
@@ -473,6 +674,7 @@ fn draw_tile(
     base_color: egui::Color32,
     order: Option<usize>,
     stereo: bool,
+    ripple_highlight: RippleHighlight,
 ) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(TILE_SIZE, egui::Sense::click());
 
@@ -510,6 +712,31 @@ fn draw_tile(
         );
         let bar_fill = blend(fill, egui::Color32::BLACK, 0.55);
         painter.rect_filled(bar_rect, 2.0, bar_fill);
+    }
+
+    // Ripple decoration — drawn on top of the standard tile so existing
+    // selection state (the white outline + order badge) is still visible
+    // while the operator picks a range.
+    match ripple_highlight {
+        RippleHighlight::None => {}
+        RippleHighlight::Endpoint => {
+            painter.rect_stroke(
+                rect,
+                4.0,
+                egui::Stroke::new(3.0, theme::ACCENT_ORANGE),
+                egui::StrokeKind::Inside,
+            );
+        }
+        RippleHighlight::InRange => {
+            // Translucent orange wash over the tile to preview the range.
+            let overlay = egui::Color32::from_rgba_premultiplied(
+                theme::ACCENT_ORANGE.r() / 3,
+                theme::ACCENT_ORANGE.g() / 3,
+                theme::ACCENT_ORANGE.b() / 3,
+                90,
+            );
+            painter.rect_filled(rect, 4.0, overlay);
+        }
     }
 
     // Title (top line) and name (bottom line). Name falls back to nothing
@@ -738,6 +965,62 @@ mod tests {
         assert_eq!(picker.selected_inputs.len(), 60);
         assert_eq!(picker.selected_auxes.len(), 2);
         assert_eq!(picker.editing, Some(client.id));
+    }
+
+    #[test]
+    fn ripple_ascending_appends_in_order_skipping_duplicates() {
+        let state = ConsoleState::new(config_with_inputs_and_auxes(20, 4));
+        let mut picker = ChannelPickerState::for_new_client(&state);
+        // Start clean: deselect all and pre-select a couple of channels
+        // so we can verify `apply_ripple` skips them in place.
+        picker.selected_inputs.clear();
+        picker.selected_inputs.push(15);
+        picker.selected_inputs.push(5);
+
+        picker.apply_ripple(3, 7);
+        // 3, 4 added; 5 already selected (kept at original position 1);
+        // 6, 7 added.
+        assert_eq!(picker.selected_inputs, vec![15, 5, 3, 4, 6, 7]);
+    }
+
+    #[test]
+    fn ripple_descending_appends_in_reverse() {
+        let state = ConsoleState::new(config_with_inputs_and_auxes(20, 4));
+        let mut picker = ChannelPickerState::for_new_client(&state);
+        picker.selected_inputs.clear();
+
+        // first > last: append in reverse direction.
+        picker.apply_ripple(10, 5);
+        assert_eq!(picker.selected_inputs, vec![10, 9, 8, 7, 6, 5]);
+    }
+
+    #[test]
+    fn ripple_single_channel_when_endpoints_equal() {
+        let state = ConsoleState::new(config_with_inputs_and_auxes(20, 4));
+        let mut picker = ChannelPickerState::for_new_client(&state);
+        picker.selected_inputs.clear();
+
+        picker.apply_ripple(7, 7);
+        assert_eq!(picker.selected_inputs, vec![7]);
+    }
+
+    #[test]
+    fn ripple_state_default_is_off() {
+        let state = ConsoleState::new(config_with_inputs_and_auxes(20, 4));
+        let picker = ChannelPickerState::for_new_client(&state);
+        assert_eq!(picker.ripple, RippleState::Off);
+    }
+
+    #[test]
+    fn ripple_descending_skips_already_selected_in_reverse_walk() {
+        let state = ConsoleState::new(config_with_inputs_and_auxes(20, 4));
+        let mut picker = ChannelPickerState::for_new_client(&state);
+        picker.selected_inputs.clear();
+        picker.selected_inputs.push(8);
+
+        // Descending 10 → 5: 10, 9 added, 8 skipped (already there), 7, 6, 5 added.
+        picker.apply_ripple(10, 5);
+        assert_eq!(picker.selected_inputs, vec![8, 10, 9, 7, 6, 5]);
     }
 
     #[test]
