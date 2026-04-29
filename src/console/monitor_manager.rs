@@ -32,6 +32,27 @@ impl MonitorManager {
         removed
     }
 
+    /// Mutate an existing client's name, permitted auxes, and visible inputs.
+    /// Returns `true` if a client with that id existed and was updated.
+    /// Connection-tracking fields (`connected_addr`, `last_seen`) are preserved.
+    pub fn update_client(
+        &mut self,
+        id: Uuid,
+        name: String,
+        permitted_auxes: Vec<u8>,
+        visible_inputs: Vec<u8>,
+    ) -> bool {
+        if let Some(client) = self.clients.get_mut(&id) {
+            info!(%id, name = %name, "Updated monitor client");
+            client.name = name;
+            client.permitted_auxes = permitted_auxes;
+            client.visible_inputs = visible_inputs;
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn find_by_name(&self, name: &str) -> Option<&MonitorClient> {
         self.clients
             .values()
@@ -102,6 +123,32 @@ mod tests {
         assert!(!mgr.clients.contains_key(&id));
         // Removing again returns false
         assert!(!mgr.remove_client(id));
+    }
+
+    #[test]
+    fn update_client_preserves_connection_state() {
+        let mut mgr = MonitorManager::new();
+        let mut client = make_client("Keys");
+        client.last_seen = Some(Instant::now());
+        let id = client.id;
+        let original_seen = client.last_seen;
+        mgr.add_client(client);
+
+        // Update auxes + inputs + name
+        let updated = mgr.update_client(id, "Keys 2".into(), vec![3, 4, 5], vec![10, 11]);
+        assert!(updated);
+
+        let c = mgr.clients.get(&id).unwrap();
+        assert_eq!(c.name, "Keys 2");
+        assert_eq!(c.permitted_auxes, vec![3, 4, 5]);
+        assert_eq!(c.visible_inputs, vec![10, 11]);
+        // The connection-tracking fields must survive an edit so a connected
+        // musician doesn't appear to disconnect mid-show when their profile
+        // is tweaked.
+        assert_eq!(c.last_seen, original_seen);
+
+        // Unknown id is a no-op
+        assert!(!mgr.update_client(Uuid::new_v4(), "x".into(), vec![1], vec![]));
     }
 
     #[test]

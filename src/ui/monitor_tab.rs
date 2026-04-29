@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use eframe::egui;
 use tokio::sync::RwLock;
 
+use super::monitor_channel_picker::{self, ChannelPickerState, PickerOutcome};
 use super::theme;
 use crate::console::monitor_manager::MonitorManager;
 use crate::model::channel::ChannelId;
@@ -14,11 +15,11 @@ use crate::model::state::ConsoleState;
 /// Per-tab UI state for the Monitor tab.
 #[derive(Default)]
 pub struct MonitorTabState {
-    pub new_client_name: String,
-    pub new_client_auxes: String,
-    pub new_client_inputs: String,
     pub status_message: Option<String>,
     pub monitor_server_running: bool,
+    /// `Some` while the channel picker is open (either adding a new profile
+    /// or editing an existing one); `None` when the picker is closed.
+    pub picker: Option<ChannelPickerState>,
 }
 
 /// Draw the Monitor tab.
@@ -172,77 +173,26 @@ pub fn draw_monitor_tab(
 
             ui.add_space(8.0);
 
-            // ── Add Client card ──
+            // ── Add-profile button + status row ──
             theme::card_frame().show(ui, |ui| {
-                theme::section_heading(ui, "Add Client");
+                theme::section_heading(ui, "Profiles");
 
-                egui::Grid::new("add_client_grid")
-                    .num_columns(2)
-                    .spacing([10.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label("Name:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut tab.new_client_name)
-                                .desired_width(200.0),
-                        );
-                        ui.end_row();
-
-                        ui.label("Permitted Auxes:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut tab.new_client_auxes)
-                                .desired_width(200.0)
-                                .hint_text("1,2,3"),
-                        );
-                        ui.end_row();
-
-                        ui.label("Visible Inputs:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut tab.new_client_inputs)
-                                .desired_width(200.0)
-                                .hint_text("empty = all"),
-                        );
-                        ui.end_row();
-                    });
-
-                ui.add_space(6.0);
-                let add_btn = theme::action_button(
-                    "Add Client",
-                    theme::ACCENT_GREEN,
-                    egui::Vec2::new(100.0, 32.0),
-                );
-                if ui.add(add_btn).clicked() && !tab.new_client_name.trim().is_empty() {
-                    let auxes: Vec<u8> = tab
-                        .new_client_auxes
-                        .split(',')
-                        .filter_map(|s| s.trim().parse().ok())
-                        .collect();
-                    let inputs: Vec<u8> = tab
-                        .new_client_inputs
-                        .split(',')
-                        .filter_map(|s| s.trim().parse().ok())
-                        .collect();
-
-                    if auxes.is_empty() {
-                        tab.status_message = Some("At least one aux is required".into());
-                    } else {
-                        let name = tab.new_client_name.trim().to_string();
-                        let client = MonitorClient::new(name.clone(), auxes, inputs);
-                        let mgr_clone = monitor_manager.clone();
-                        runtime.spawn(async move {
-                            mgr_clone.write().await.add_client(client);
-                        });
-                        tab.new_client_name.clear();
-                        tab.new_client_auxes.clear();
-                        tab.new_client_inputs.clear();
-                        tab.status_message = Some(format!("Added client '{name}'"));
+                ui.horizontal(|ui| {
+                    let add_btn = theme::action_button(
+                        "Add profile…",
+                        theme::ACCENT_GREEN,
+                        egui::Vec2::new(120.0, 32.0),
+                    );
+                    if ui.add(add_btn).clicked() && tab.picker.is_none() {
+                        let st = runtime.block_on(console_state.read());
+                        tab.picker = Some(ChannelPickerState::for_new_client(&st));
                     }
-                }
 
-                // Status message
-                if let Some(ref msg) = tab.status_message {
-                    ui.add_space(4.0);
-                    ui.colored_label(theme::TEXT_WARNING, msg.as_str());
-                }
+                    if let Some(ref msg) = tab.status_message {
+                        ui.add_space(8.0);
+                        ui.colored_label(theme::TEXT_WARNING, msg.as_str());
+                    }
+                });
             });
 
             ui.add_space(8.0);
@@ -261,6 +211,7 @@ pub fn draw_monitor_tab(
                     );
                 } else {
                     let mut to_remove = None;
+                    let mut to_edit: Option<MonitorClient> = None;
 
                     for client in &clients {
                         egui::Frame::new()
@@ -339,6 +290,15 @@ pub fn draw_monitor_tab(
                                             if ui.add(del_btn).clicked() {
                                                 to_remove = Some(client.id);
                                             }
+
+                                            let edit_btn = theme::action_button(
+                                                "Edit",
+                                                theme::ACCENT_BLUE,
+                                                egui::Vec2::new(60.0, 24.0),
+                                            );
+                                            if ui.add(edit_btn).clicked() {
+                                                to_edit = Some((*client).clone());
+                                            }
                                         },
                                     );
                                 });
@@ -354,7 +314,57 @@ pub fn draw_monitor_tab(
                         });
                         tab.status_message = Some("Client removed".into());
                     }
+                    if let Some(client) = to_edit {
+                        if tab.picker.is_none() {
+                            let st = runtime.block_on(console_state.read());
+                            tab.picker = Some(ChannelPickerState::for_edit(&client, &st));
+                        }
+                    }
                 }
             });
         });
+
+    // ── Channel picker window (modal-style; not actually modal, just floats) ──
+    let picker_outcome = if let Some(picker_state) = tab.picker.as_mut() {
+        monitor_channel_picker::draw_channel_picker(ui.ctx(), picker_state)
+    } else {
+        None
+    };
+    if let Some(outcome) = picker_outcome {
+        match outcome {
+            PickerOutcome::Save {
+                editing,
+                name,
+                permitted_auxes,
+                visible_inputs,
+            } => {
+                let mgr_clone = monitor_manager.clone();
+                let name_for_status = name.clone();
+                runtime.spawn(async move {
+                    let mut mgr = mgr_clone.write().await;
+                    match editing {
+                        Some(id) => {
+                            mgr.update_client(id, name, permitted_auxes, visible_inputs);
+                        }
+                        None => {
+                            mgr.add_client(MonitorClient::new(
+                                name,
+                                permitted_auxes,
+                                visible_inputs,
+                            ));
+                        }
+                    }
+                });
+                tab.status_message = Some(if editing.is_some() {
+                    format!("Updated profile '{name_for_status}'")
+                } else {
+                    format!("Added profile '{name_for_status}'")
+                });
+                tab.picker = None;
+            }
+            PickerOutcome::Cancel => {
+                tab.picker = None;
+            }
+        }
+    }
 }

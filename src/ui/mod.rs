@@ -3,6 +3,7 @@ pub mod gangs_tab;
 pub mod inspector_tab;
 pub mod live_tab;
 pub mod macros_tab;
+pub mod monitor_channel_picker;
 pub mod monitor_tab;
 pub mod net_interfaces;
 pub mod osc_log_tab;

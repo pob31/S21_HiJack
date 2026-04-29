@@ -115,6 +115,27 @@ impl ConsoleConfig {
         self.aux_output_count + self.group_output_count
     }
 
+    /// Mode of the Nth aux bus (1-based). Walks `mix_output_types` looking for
+    /// the Nth `true` entry and returns the corresponding `mix_output_modes`
+    /// value. Returns `None` when the configuration hasn't been discovered yet
+    /// (e.g. offline before a show file has loaded) or `aux_1based` is out of
+    /// range.
+    pub fn aux_mode(&self, aux_1based: u8) -> Option<ChannelMode> {
+        if aux_1based == 0 {
+            return None;
+        }
+        let mut count: u8 = 0;
+        for (idx, is_aux) in self.mix_output_types.iter().enumerate() {
+            if *is_aux {
+                count += 1;
+                if count == aux_1based {
+                    return self.mix_output_modes.get(idx).cloned();
+                }
+            }
+        }
+        None
+    }
+
     /// Display label for a 1-based bus index, derived from the live console
     /// config. Examples: "Aux 3", "Group 5 (Stereo)", "Bus 14" (fallback when
     /// the bus type isn't yet known). Used by the scope editor to label the
@@ -238,6 +259,32 @@ mod tests {
         config.mix_output_modes = Vec::new();
         assert_eq!(config.bus_label(1), "Bus 1");
         assert_eq!(config.bus_label(16), "Bus 16");
+    }
+
+    #[test]
+    fn aux_mode_walks_mix_output_types() {
+        // Buses 1=aux mono, 2=group stereo, 3=aux stereo, 4=group mono, 5=aux mono.
+        let config = config_with_buses(
+            vec![true, false, true, false, true],
+            vec![
+                ChannelMode::Mono,
+                ChannelMode::Stereo,
+                ChannelMode::Stereo,
+                ChannelMode::Mono,
+                ChannelMode::Mono,
+            ],
+        );
+        assert_eq!(config.aux_mode(1), Some(ChannelMode::Mono));
+        assert_eq!(config.aux_mode(2), Some(ChannelMode::Stereo));
+        assert_eq!(config.aux_mode(3), Some(ChannelMode::Mono));
+        assert_eq!(config.aux_mode(4), None);
+        assert_eq!(config.aux_mode(0), None);
+    }
+
+    #[test]
+    fn aux_mode_returns_none_pre_discovery() {
+        let config = ConsoleConfig::default();
+        assert_eq!(config.aux_mode(1), None);
     }
 
     #[test]
