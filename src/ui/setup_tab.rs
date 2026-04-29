@@ -361,15 +361,20 @@ pub fn draw_setup_tab(
 
             ui.add_space(8.0);
 
-            // Connect / Disconnect buttons + status
+            // Connect / Disconnect buttons + status. Both are wrapped as
+            // long-press buttons because firing them mid-show by mistake is
+            // disruptive: a stray Connect re-runs discovery on a live desk;
+            // a stray Disconnect drops every running OSC task.
             ui.horizontal(|ui| {
                 if !is_connected {
-                    let connect_btn = theme::action_button(
+                    if theme::long_press_button(
+                        ui,
                         "Connect",
                         theme::ACCENT_GREEN,
                         egui::Vec2::new(100.0, 36.0),
-                    );
-                    if ui.add(connect_btn).clicked() {
+                        true,
+                        theme::LONG_PRESS_DURATION_MS,
+                    ) {
                         start_connection(
                             setup, state, cue_manager, macro_manager, monitor_manager,
                             palette_manager, gang_manager, pan_link_bindings, offline_mode,
@@ -379,15 +384,15 @@ pub fn draw_setup_tab(
                             runtime, ui_tx, egui_ctx,
                         );
                     }
-                } else {
-                    let disconnect_btn = theme::action_button(
-                        "Disconnect",
-                        theme::ACCENT_RED,
-                        egui::Vec2::new(120.0, 36.0),
-                    );
-                    if ui.add(disconnect_btn).clicked() {
-                        do_disconnect(connected, cancel_token, ui_tx);
-                    }
+                } else if theme::long_press_button(
+                    ui,
+                    "Disconnect",
+                    theme::ACCENT_RED,
+                    egui::Vec2::new(120.0, 36.0),
+                    true,
+                    theme::LONG_PRESS_DURATION_MS,
+                ) {
+                    do_disconnect(connected, cancel_token, ui_tx);
                 }
 
                 ui.add_space(12.0);

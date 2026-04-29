@@ -343,12 +343,16 @@ pub fn draw_monitor_tab(
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            let del_btn = theme::action_button(
+                                            // Long-press: deleting a profile mid-show by accident
+                                            // would silently drop a musician's IEM control.
+                                            if theme::long_press_button(
+                                                ui,
                                                 "Delete",
                                                 theme::ACCENT_RED,
                                                 egui::Vec2::new(60.0, 24.0),
-                                            );
-                                            if ui.add_enabled(!in_reorder, del_btn).clicked() {
+                                                !in_reorder,
+                                                theme::LONG_PRESS_DURATION_MS,
+                                            ) {
                                                 to_remove = Some(client.id);
                                             }
 

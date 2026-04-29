@@ -330,3 +330,151 @@ pub fn lighten(color: egui::Color32, amount: u8) -> egui::Color32 {
         color.b().saturating_add(amount),
     )
 }
+
+// ─── Long-press button ─────────────────────────────────────────────────
+
+/// Standard long-press duration for "are you sure?" actions: hold for half
+/// a second to confirm, release early or move off the button to cancel.
+pub const LONG_PRESS_DURATION_MS: u64 = 500;
+
+/// Per-button press tracking saved in egui's temporary data store. Keyed by
+/// the button's auto-generated `Response::id` so each long-press button on
+/// screen has its own independent timer state.
+#[derive(Clone, Copy)]
+struct LongPressData {
+    /// `egui` input time (seconds) when the press began.
+    start: f64,
+    /// True if the pointer has left the button rect at any point during the
+    /// press. Once cancelled, the press cannot trigger even if the operator
+    /// drags back onto the button — they must release and start over.
+    cancelled: bool,
+}
+
+/// A button that requires a sustained press to activate. The action only
+/// fires when the operator releases the pointer **while still over the
+/// button** AND the press has lasted at least `duration_ms`. Releasing
+/// early or letting the pointer escape the button rect cancels the press
+/// silently.
+///
+/// Returns `true` on the single frame the long-press completes — the
+/// caller should treat it the same way they treat `Button::clicked()`.
+///
+/// While held with the pointer over the button, a thin progress bar fills
+/// across the bottom edge of the button to show how close the press is to
+/// triggering. The bar disappears (and the timer is marked cancelled) the
+/// moment the pointer escapes the rect — the operator can still see the
+/// dimmed armed state but releasing now is a no-op.
+pub fn long_press_button(
+    ui: &mut egui::Ui,
+    text: &str,
+    color: egui::Color32,
+    size: egui::Vec2,
+    enabled: bool,
+    duration_ms: u64,
+) -> bool {
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    let id = response.id;
+    let now = ui.input(|i| i.time);
+    let pointer_down = enabled && response.is_pointer_button_down_on();
+    let on_button = response.contains_pointer();
+
+    let mut state: Option<LongPressData> = ui.data(|d| d.get_temp(id));
+
+    // Press-down event: pointer was just put down on the button.
+    if pointer_down && state.is_none() {
+        state = Some(LongPressData {
+            start: now,
+            cancelled: false,
+        });
+    }
+
+    // Escape: pointer left the rect while held → cancel for the rest of
+    // this press. The state stays around so we don't fire on release; the
+    // operator must let go and re-press to try again.
+    if pointer_down && !on_button {
+        if let Some(s) = state.as_mut() {
+            s.cancelled = true;
+        }
+    }
+
+    // Release: pointer button just came up.
+    let mut triggered = false;
+    if !pointer_down {
+        if let Some(s) = state.take() {
+            let elapsed_ms = ((now - s.start) * 1000.0) as u64;
+            if !s.cancelled && on_button && elapsed_ms >= duration_ms {
+                triggered = true;
+            }
+        }
+    }
+
+    // Persist (or clear) per-button state.
+    match state {
+        Some(s) => ui.data_mut(|d| d.insert_temp(id, s)),
+        None => ui.data_mut(|d| d.remove::<LongPressData>(id)),
+    }
+
+    // While the press is active, request a repaint each frame so the
+    // progress bar animates smoothly.
+    if state.is_some() {
+        ui.ctx().request_repaint();
+    }
+
+    // ── Render ──
+    let painter = ui.painter_at(rect);
+
+    // Background: dimmed if disabled, slightly darkened while armed
+    // (gives a "pressed-in" feel), brightened on hover, plain otherwise.
+    let armed = state.map(|s| !s.cancelled).unwrap_or(false) && on_button;
+    let bg = if !enabled {
+        // Match the look of egui's add_enabled(false, ...) action button
+        egui::Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), 80)
+    } else if armed {
+        // Darken ~15% to signal "pressed in".
+        egui::Color32::from_rgb(
+            ((color.r() as f32) * 0.85) as u8,
+            ((color.g() as f32) * 0.85) as u8,
+            ((color.b() as f32) * 0.85) as u8,
+        )
+    } else if response.hovered() {
+        lighten(color, 20)
+    } else {
+        color
+    };
+    painter.rect_filled(rect, 6.0, bg);
+
+    // Progress bar: bottom edge of the button, filling left→right.
+    if let Some(s) = state {
+        if !s.cancelled && on_button {
+            let elapsed = (now - s.start) as f32 * 1000.0;
+            let progress = (elapsed / duration_ms as f32).clamp(0.0, 1.0);
+            let bar_height = 4.0;
+            let bar_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.min.x, rect.max.y - bar_height),
+                egui::pos2(rect.min.x + rect.width() * progress, rect.max.y),
+            );
+            painter.rect_filled(bar_rect, 0.0, TEXT_PRIMARY);
+        }
+    }
+
+    // Text label (centred). Greyed-out when disabled.
+    let text_color = if enabled { TEXT_PRIMARY } else { TEXT_DISABLED };
+    let galley = painter.layout_no_wrap(
+        text.to_string(),
+        egui::FontId::proportional(FONT_SIZE_BODY),
+        text_color,
+    );
+    let text_pos = rect.center() - galley.size() / 2.0;
+    painter.galley(text_pos, galley, text_color);
+
+    if enabled {
+        response.on_hover_text(format!("Hold {duration_ms} ms to confirm"));
+    }
+
+    triggered
+}
