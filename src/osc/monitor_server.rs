@@ -127,10 +127,7 @@ impl MonitorSender {
     /// `/monitor/discovered` reply so clients can autodiscover both the
     /// daemon's IP (from the datagram source) and its monitor port.
     pub fn local_port(&self) -> u16 {
-        self.socket
-            .local_addr()
-            .map(|a| a.port())
-            .unwrap_or(0)
+        self.socket.local_addr().map(|a| a.port()).unwrap_or(0)
     }
 
     /// Send an OSC message to a monitoring client.

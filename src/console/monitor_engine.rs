@@ -187,10 +187,7 @@ impl MonitorEngine {
                     .send_to(
                         reply_addr,
                         "/monitor/discovered",
-                        vec![
-                            OscType::String(name),
-                            OscType::Int(monitor_port as i32),
-                        ],
+                        vec![OscType::String(name), OscType::Int(monitor_port as i32)],
                     )
                     .await;
                 info!(%reply_addr, monitor_port, "Monitor discovery reply sent");
