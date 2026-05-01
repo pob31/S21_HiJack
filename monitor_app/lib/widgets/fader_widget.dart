@@ -103,8 +103,31 @@ class _VerticalFaderState extends State<VerticalFader> {
   double? _grabOffset;
   double? _anchorPosition;
 
+  /// Optimistic local override of the displayed value — updated synchronously
+  /// on every drag event so the thumb tracks the finger without waiting for
+  /// the parent's state round-trip (Provider notifyListeners → strip rebuild
+  /// → fader rebuild). Cleared in [didUpdateWidget] once the parent catches
+  /// up, or in [_handleChangeEnd] on release.
+  double? _localValue;
+
+  double get _displayValue => _localValue ?? widget.value;
+
+  @override
+  void didUpdateWidget(VerticalFader oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Drop the optimistic override once the parent's value lines up with it
+    // (within the slider's resolution), so any future externally-driven value
+    // change wins automatically.
+    final localValue = _localValue;
+    if (localValue != null &&
+        widget.value != oldWidget.value &&
+        (widget.value - localValue).abs() < 0.05) {
+      _localValue = null;
+    }
+  }
+
   void _handleChangeStart(double position) {
-    _anchorPosition = dbToPosition(widget.value, widget.dbMin, widget.dbMax);
+    _anchorPosition = dbToPosition(_displayValue, widget.dbMin, widget.dbMax);
     _grabOffset = null;
   }
 
@@ -113,7 +136,11 @@ class _VerticalFaderState extends State<VerticalFader> {
     if (anchor == null) return;
     _grabOffset ??= position - anchor;
     final adjusted = (position - _grabOffset!).clamp(0.0, 1.0);
-    widget.onChanged(positionToDb(adjusted, widget.dbMin, widget.dbMax));
+    final db = positionToDb(adjusted, widget.dbMin, widget.dbMax);
+    setState(() {
+      _localValue = db;
+    });
+    widget.onChanged(db);
   }
 
   void _handleChangeEnd(double position) {
@@ -123,6 +150,7 @@ class _VerticalFaderState extends State<VerticalFader> {
 
   @override
   Widget build(BuildContext context) {
+    final displayValue = _displayValue;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -134,7 +162,7 @@ class _VerticalFaderState extends State<VerticalFader> {
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 child: Text(
-                  formatDb(widget.value, widget.dbMin),
+                  formatDb(displayValue, widget.dbMin),
                   style: TextStyle(
                     color: widget.active ? Colors.white70 : Colors.white30,
                     fontSize: 12,
@@ -197,7 +225,7 @@ class _VerticalFaderState extends State<VerticalFader> {
                       ),
                       child: Slider(
                         value: dbToPosition(
-                            widget.value, widget.dbMin, widget.dbMax),
+                            displayValue, widget.dbMin, widget.dbMax),
                         min: 0.0,
                         max: 1.0,
                         onChangeStart: _handleChangeStart,
