@@ -86,12 +86,20 @@ class VerticalFader extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(
-          formatDb(value, dbMin),
-          style: TextStyle(
-            color: active ? Colors.white70 : Colors.white30,
-            fontSize: 12,
-          ),
+        Row(
+          children: [
+            const SizedBox(width: 56),
+            Expanded(
+              child: Text(
+                formatDb(value, dbMin),
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: active ? Colors.white70 : Colors.white30,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 4),
         Expanded(
@@ -104,6 +112,7 @@ class VerticalFader extends StatelessWidget {
                   quarterTurns: -1,
                   child: FittedBox(
                     fit: BoxFit.contain,
+                    alignment: Alignment.centerRight,
                     child: Text(
                       label,
                       maxLines: 1,
@@ -132,11 +141,16 @@ class VerticalFader extends StatelessWidget {
                       thumbColor: active ? Colors.white : Colors.grey[600]!,
                       overlayColor: (active ? Colors.blueAccent : Colors.grey).withAlpha(40),
                     ),
-                    child: Slider(
-                      value: dbToPosition(value, dbMin, dbMax),
-                      min: 0.0,
-                      max: 1.0,
-                      onChanged: (pos) => onChanged(positionToDb(pos, dbMin, dbMax)),
+                    child: Theme(
+                      data: Theme.of(context).copyWith(
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Slider(
+                        value: dbToPosition(value, dbMin, dbMax),
+                        min: 0.0,
+                        max: 1.0,
+                        onChanged: (pos) => onChanged(positionToDb(pos, dbMin, dbMax)),
+                      ),
                     ),
                   ),
                 ),
