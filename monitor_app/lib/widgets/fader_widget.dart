@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 // ── dB ↔ slider position conversion ──
@@ -135,17 +136,28 @@ class VerticalFader extends StatelessWidget {
                 width: _kSliderColumnWidth,
                 child: LayoutBuilder(
                   builder: (context, constraints) {
-                    return Listener(
+                    return RawGestureDetector(
                       behavior: HitTestBehavior.opaque,
-                      onPointerMove: (event) {
-                        final faderHeight = constraints.maxHeight;
-                        if (faderHeight <= 0) return;
-                        final positionDelta = -event.delta.dy / faderHeight;
-                        if (positionDelta == 0) return;
-                        final currentPos = dbToPosition(value, dbMin, dbMax);
-                        final newPos =
-                            (currentPos + positionDelta).clamp(0.0, 1.0);
-                        onChanged(positionToDb(newPos, dbMin, dbMax));
+                      gestures: <Type, GestureRecognizerFactory>{
+                        _InstantVerticalDragRecognizer:
+                            GestureRecognizerFactoryWithHandlers<
+                                _InstantVerticalDragRecognizer>(
+                          () => _InstantVerticalDragRecognizer(),
+                          (instance) {
+                            instance.onUpdate = (details) {
+                              final faderHeight = constraints.maxHeight;
+                              if (faderHeight <= 0) return;
+                              final positionDelta =
+                                  -details.delta.dy / faderHeight;
+                              if (positionDelta == 0) return;
+                              final currentPos =
+                                  dbToPosition(value, dbMin, dbMax);
+                              final newPos =
+                                  (currentPos + positionDelta).clamp(0.0, 1.0);
+                              onChanged(positionToDb(newPos, dbMin, dbMax));
+                            };
+                          },
+                        ),
                       },
                       child: IgnorePointer(
                         child: RotatedBox(
@@ -232,6 +244,19 @@ class HorizontalFader extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Vertical-drag recognizer that wins the gesture arena on the very first
+/// pointer move, with no touch-slop. Lets the fader respond from the first
+/// pixel of finger movement and prevents a parent horizontal Scrollable
+/// from stealing the gesture mid-drag.
+class _InstantVerticalDragRecognizer extends VerticalDragGestureRecognizer {
+  @override
+  bool hasSufficientGlobalDistanceToAccept(
+    PointerDeviceKind pointerDeviceKind,
+    double? deviceTouchSlop,
+  ) =>
+      true;
 }
 
 /// Thumb that draws a thick line spanning [widthFraction] of the track's
