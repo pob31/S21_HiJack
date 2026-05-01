@@ -61,6 +61,8 @@ String formatDb(double db, double dbMin) {
 const double _kFaderTrackHeight = 16.0;
 const double _kFaderThumbThickness = 4.0;
 const double _kFaderThumbWidthFraction = 0.8;
+const double _kLabelColumnWidth = 56.0;
+const double _kSliderColumnWidth = 32.0;
 
 /// A vertical fader slider for mixing levels (dB scale with log curve).
 class VerticalFader extends StatelessWidget {
@@ -88,17 +90,21 @@ class VerticalFader extends StatelessWidget {
       children: [
         Row(
           children: [
-            const SizedBox(width: 56),
-            Expanded(
-              child: Text(
-                formatDb(value, dbMin),
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: active ? Colors.white70 : Colors.white30,
-                  fontSize: 12,
+            const SizedBox(width: _kLabelColumnWidth),
+            SizedBox(
+              width: _kSliderColumnWidth,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  formatDb(value, dbMin),
+                  style: TextStyle(
+                    color: active ? Colors.white70 : Colors.white30,
+                    fontSize: 12,
+                  ),
                 ),
               ),
             ),
+            const Spacer(),
           ],
         ),
         const SizedBox(height: 4),
@@ -107,7 +113,7 @@ class VerticalFader extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SizedBox(
-                width: 56,
+                width: _kLabelColumnWidth,
                 child: RotatedBox(
                   quarterTurns: -1,
                   child: FittedBox(
@@ -125,7 +131,8 @@ class VerticalFader extends StatelessWidget {
                   ),
                 ),
               ),
-              Expanded(
+              SizedBox(
+                width: _kSliderColumnWidth,
                 child: RotatedBox(
                   quarterTurns: -1,
                   child: SliderTheme(
@@ -155,6 +162,7 @@ class VerticalFader extends StatelessWidget {
                   ),
                 ),
               ),
+              const Spacer(),
             ],
           ),
         ),
