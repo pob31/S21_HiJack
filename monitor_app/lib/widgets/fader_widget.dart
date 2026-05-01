@@ -64,6 +64,10 @@ const double _kFaderThumbThickness = 4.0;
 const double _kFaderThumbWidthFraction = 0.8;
 const double _kLabelColumnWidth = 56.0;
 const double _kSliderColumnWidth = 32.0;
+/// Multiplier on the relative-drag sensitivity. 1.0 = full fader height for
+/// full value range (1:1 console feel). >1.0 = a smaller finger move covers
+/// more of the value range.
+const double _kFaderDragSensitivity = 2.5;
 
 /// A vertical fader slider for mixing levels (dB scale with log curve).
 class VerticalFader extends StatelessWidget {
@@ -148,7 +152,8 @@ class VerticalFader extends StatelessWidget {
                               final faderHeight = constraints.maxHeight;
                               if (faderHeight <= 0) return;
                               final positionDelta =
-                                  -details.delta.dy / faderHeight;
+                                  -details.delta.dy / faderHeight *
+                                      _kFaderDragSensitivity;
                               if (positionDelta == 0) return;
                               final currentPos =
                                   dbToPosition(value, dbMin, dbMax);
