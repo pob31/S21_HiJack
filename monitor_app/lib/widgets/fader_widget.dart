@@ -135,12 +135,13 @@ class VerticalFader extends StatelessWidget {
                 width: _kSliderColumnWidth,
                 child: LayoutBuilder(
                   builder: (context, constraints) {
-                    return GestureDetector(
+                    return Listener(
                       behavior: HitTestBehavior.opaque,
-                      onVerticalDragUpdate: (details) {
+                      onPointerMove: (event) {
                         final faderHeight = constraints.maxHeight;
                         if (faderHeight <= 0) return;
-                        final positionDelta = -details.delta.dy / faderHeight;
+                        final positionDelta = -event.delta.dy / faderHeight;
+                        if (positionDelta == 0) return;
                         final currentPos = dbToPosition(value, dbMin, dbMax);
                         final newPos =
                             (currentPos + positionDelta).clamp(0.0, 1.0);
