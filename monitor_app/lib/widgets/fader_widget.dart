@@ -1,4 +1,3 @@
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 // ── dB ↔ slider position conversion ──
@@ -64,13 +63,18 @@ const double _kFaderThumbThickness = 4.0;
 const double _kFaderThumbWidthFraction = 0.8;
 const double _kLabelColumnWidth = 56.0;
 const double _kSliderColumnWidth = 32.0;
-/// Multiplier on the relative-drag sensitivity. 1.0 = full fader height for
-/// full value range (1:1 console feel). >1.0 = a smaller finger move covers
-/// more of the value range.
-const double _kFaderDragSensitivity = 2.5;
 
 /// A vertical fader slider for mixing levels (dB scale with log curve).
-class VerticalFader extends StatelessWidget {
+///
+/// Uses Material's native Slider for snappy, optimistic visual feedback.
+/// To avoid the standard "tap-to-jump" footgun (a stray finger near the
+/// bottom of the strip drops the level instantly), the first onChanged
+/// call after each gesture is treated as the "grab anchor" — the offset
+/// between the touch position and the slider's existing value is
+/// recorded and subtracted from every subsequent move. Net effect:
+/// touching anywhere on the track behaves as if you had grabbed the
+/// thumb at its current position and started dragging.
+class VerticalFader extends StatefulWidget {
   final double value; // dB
   final double dbMin;
   final double dbMax;
@@ -89,6 +93,35 @@ class VerticalFader extends StatelessWidget {
   });
 
   @override
+  State<VerticalFader> createState() => _VerticalFaderState();
+}
+
+class _VerticalFaderState extends State<VerticalFader> {
+  /// Position offset captured on the first onChanged of each drag.
+  /// `Slider.onChanged` reports the absolute position the finger is at;
+  /// subtracting this anchor turns it into a relative drag.
+  double? _grabOffset;
+  double? _anchorPosition;
+
+  void _handleChangeStart(double position) {
+    _anchorPosition = dbToPosition(widget.value, widget.dbMin, widget.dbMax);
+    _grabOffset = null;
+  }
+
+  void _handleChanged(double position) {
+    final anchor = _anchorPosition;
+    if (anchor == null) return;
+    _grabOffset ??= position - anchor;
+    final adjusted = (position - _grabOffset!).clamp(0.0, 1.0);
+    widget.onChanged(positionToDb(adjusted, widget.dbMin, widget.dbMax));
+  }
+
+  void _handleChangeEnd(double position) {
+    _anchorPosition = null;
+    _grabOffset = null;
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -101,9 +134,9 @@ class VerticalFader extends StatelessWidget {
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 child: Text(
-                  formatDb(value, dbMin),
+                  formatDb(widget.value, widget.dbMin),
                   style: TextStyle(
-                    color: active ? Colors.white70 : Colors.white30,
+                    color: widget.active ? Colors.white70 : Colors.white30,
                     fontSize: 12,
                   ),
                 ),
@@ -125,10 +158,10 @@ class VerticalFader extends StatelessWidget {
                     fit: BoxFit.contain,
                     alignment: Alignment.centerRight,
                     child: Text(
-                      label,
+                      widget.label,
                       maxLines: 1,
                       style: TextStyle(
-                        color: active ? Colors.white : Colors.white38,
+                        color: widget.active ? Colors.white : Colors.white38,
                         fontSize: 48,
                         fontWeight: FontWeight.w700,
                       ),
@@ -138,66 +171,41 @@ class VerticalFader extends StatelessWidget {
               ),
               SizedBox(
                 width: _kSliderColumnWidth,
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    return RawGestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      gestures: <Type, GestureRecognizerFactory>{
-                        _InstantVerticalDragRecognizer:
-                            GestureRecognizerFactoryWithHandlers<
-                                _InstantVerticalDragRecognizer>(
-                          () => _InstantVerticalDragRecognizer(),
-                          (instance) {
-                            instance.onUpdate = (details) {
-                              final faderHeight = constraints.maxHeight;
-                              if (faderHeight <= 0) return;
-                              final positionDelta =
-                                  -details.delta.dy / faderHeight *
-                                      _kFaderDragSensitivity;
-                              if (positionDelta == 0) return;
-                              final currentPos =
-                                  dbToPosition(value, dbMin, dbMax);
-                              final newPos =
-                                  (currentPos + positionDelta).clamp(0.0, 1.0);
-                              onChanged(positionToDb(newPos, dbMin, dbMax));
-                            };
-                          },
-                        ),
-                      },
-                      child: IgnorePointer(
-                        child: RotatedBox(
-                          quarterTurns: -1,
-                          child: SliderTheme(
-                            data: SliderThemeData(
-                              trackHeight: _kFaderTrackHeight,
-                              thumbShape: const _LineThumbShape(
-                                widthFraction: _kFaderThumbWidthFraction,
-                                thickness: _kFaderThumbThickness,
-                              ),
-                              overlayShape: SliderComponentShape.noOverlay,
-                              activeTrackColor:
-                                  active ? Colors.blueAccent : Colors.grey[700]!,
-                              inactiveTrackColor: Colors.white12,
-                              thumbColor: active ? Colors.white : Colors.grey[600]!,
-                              overlayColor: (active ? Colors.blueAccent : Colors.grey)
-                                  .withAlpha(40),
-                            ),
-                            child: Theme(
-                              data: Theme.of(context).copyWith(
-                                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                              ),
-                              child: Slider(
-                                value: dbToPosition(value, dbMin, dbMax),
-                                min: 0.0,
-                                max: 1.0,
-                                onChanged: (_) {},
-                              ),
-                            ),
-                          ),
-                        ),
+                child: RotatedBox(
+                  quarterTurns: -1,
+                  child: SliderTheme(
+                    data: SliderThemeData(
+                      trackHeight: _kFaderTrackHeight,
+                      thumbShape: const _LineThumbShape(
+                        widthFraction: _kFaderThumbWidthFraction,
+                        thickness: _kFaderThumbThickness,
                       ),
-                    );
-                  },
+                      overlayShape: SliderComponentShape.noOverlay,
+                      activeTrackColor:
+                          widget.active ? Colors.blueAccent : Colors.grey[700]!,
+                      inactiveTrackColor: Colors.white12,
+                      thumbColor:
+                          widget.active ? Colors.white : Colors.grey[600]!,
+                      overlayColor:
+                          (widget.active ? Colors.blueAccent : Colors.grey)
+                              .withAlpha(40),
+                    ),
+                    child: Theme(
+                      data: Theme.of(context).copyWith(
+                        materialTapTargetSize:
+                            MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Slider(
+                        value: dbToPosition(
+                            widget.value, widget.dbMin, widget.dbMax),
+                        min: 0.0,
+                        max: 1.0,
+                        onChangeStart: _handleChangeStart,
+                        onChanged: _handleChanged,
+                        onChangeEnd: _handleChangeEnd,
+                      ),
+                    ),
+                  ),
                 ),
               ),
               const Spacer(),
@@ -249,19 +257,6 @@ class HorizontalFader extends StatelessWidget {
       ),
     );
   }
-}
-
-/// Vertical-drag recognizer that wins the gesture arena on the very first
-/// pointer move, with no touch-slop. Lets the fader respond from the first
-/// pixel of finger movement and prevents a parent horizontal Scrollable
-/// from stealing the gesture mid-drag.
-class _InstantVerticalDragRecognizer extends VerticalDragGestureRecognizer {
-  @override
-  bool hasSufficientGlobalDistanceToAccept(
-    PointerDeviceKind pointerDeviceKind,
-    double? deviceTouchSlop,
-  ) =>
-      true;
 }
 
 /// Thumb that draws a thick line spanning [widthFraction] of the track's
