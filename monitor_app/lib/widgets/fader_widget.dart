@@ -133,33 +133,53 @@ class VerticalFader extends StatelessWidget {
               ),
               SizedBox(
                 width: _kSliderColumnWidth,
-                child: RotatedBox(
-                  quarterTurns: -1,
-                  child: SliderTheme(
-                    data: SliderThemeData(
-                      trackHeight: _kFaderTrackHeight,
-                      thumbShape: const _LineThumbShape(
-                        widthFraction: _kFaderThumbWidthFraction,
-                        thickness: _kFaderThumbThickness,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    return GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onVerticalDragUpdate: (details) {
+                        final faderHeight = constraints.maxHeight;
+                        if (faderHeight <= 0) return;
+                        final positionDelta = -details.delta.dy / faderHeight;
+                        final currentPos = dbToPosition(value, dbMin, dbMax);
+                        final newPos =
+                            (currentPos + positionDelta).clamp(0.0, 1.0);
+                        onChanged(positionToDb(newPos, dbMin, dbMax));
+                      },
+                      child: IgnorePointer(
+                        child: RotatedBox(
+                          quarterTurns: -1,
+                          child: SliderTheme(
+                            data: SliderThemeData(
+                              trackHeight: _kFaderTrackHeight,
+                              thumbShape: const _LineThumbShape(
+                                widthFraction: _kFaderThumbWidthFraction,
+                                thickness: _kFaderThumbThickness,
+                              ),
+                              overlayShape: SliderComponentShape.noOverlay,
+                              activeTrackColor:
+                                  active ? Colors.blueAccent : Colors.grey[700]!,
+                              inactiveTrackColor: Colors.white12,
+                              thumbColor: active ? Colors.white : Colors.grey[600]!,
+                              overlayColor: (active ? Colors.blueAccent : Colors.grey)
+                                  .withAlpha(40),
+                            ),
+                            child: Theme(
+                              data: Theme.of(context).copyWith(
+                                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              child: Slider(
+                                value: dbToPosition(value, dbMin, dbMax),
+                                min: 0.0,
+                                max: 1.0,
+                                onChanged: (_) {},
+                              ),
+                            ),
+                          ),
+                        ),
                       ),
-                      overlayShape: SliderComponentShape.noOverlay,
-                      activeTrackColor: active ? Colors.blueAccent : Colors.grey[700]!,
-                      inactiveTrackColor: Colors.white12,
-                      thumbColor: active ? Colors.white : Colors.grey[600]!,
-                      overlayColor: (active ? Colors.blueAccent : Colors.grey).withAlpha(40),
-                    ),
-                    child: Theme(
-                      data: Theme.of(context).copyWith(
-                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                      child: Slider(
-                        value: dbToPosition(value, dbMin, dbMax),
-                        min: 0.0,
-                        max: 1.0,
-                        onChanged: (pos) => onChanged(positionToDb(pos, dbMin, dbMax)),
-                      ),
-                    ),
-                  ),
+                    );
+                  },
                 ),
               ),
               const Spacer(),
