@@ -27,7 +27,7 @@ class VerticalChannelStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 130,
+      width: 170,
       child: Column(
         children: [
           Expanded(

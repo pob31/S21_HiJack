@@ -94,46 +94,54 @@ class VerticalFader extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 4),
-        SizedBox(
-          height: 90,
-          child: RotatedBox(
-            quarterTurns: -1,
-            child: Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: active ? Colors.white : Colors.white38,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 4),
         Expanded(
-          child: RotatedBox(
-            quarterTurns: -1,
-            child: SliderTheme(
-              data: SliderThemeData(
-                trackHeight: _kFaderTrackHeight,
-                thumbShape: const _LineThumbShape(
-                  widthFraction: _kFaderThumbWidthFraction,
-                  thickness: _kFaderThumbThickness,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(
+                width: 56,
+                child: RotatedBox(
+                  quarterTurns: -1,
+                  child: FittedBox(
+                    fit: BoxFit.contain,
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      style: TextStyle(
+                        color: active ? Colors.white : Colors.white38,
+                        fontSize: 48,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
                 ),
-                overlayShape: SliderComponentShape.noOverlay,
-                activeTrackColor: active ? Colors.blueAccent : Colors.grey[700]!,
-                inactiveTrackColor: Colors.white12,
-                thumbColor: active ? Colors.white : Colors.grey[600]!,
-                overlayColor: (active ? Colors.blueAccent : Colors.grey).withAlpha(40),
               ),
-              child: Slider(
-                value: dbToPosition(value, dbMin, dbMax),
-                min: 0.0,
-                max: 1.0,
-                onChanged: (pos) => onChanged(positionToDb(pos, dbMin, dbMax)),
+              Expanded(
+                child: RotatedBox(
+                  quarterTurns: -1,
+                  child: SliderTheme(
+                    data: SliderThemeData(
+                      trackHeight: _kFaderTrackHeight,
+                      thumbShape: const _LineThumbShape(
+                        widthFraction: _kFaderThumbWidthFraction,
+                        thickness: _kFaderThumbThickness,
+                      ),
+                      overlayShape: SliderComponentShape.noOverlay,
+                      activeTrackColor: active ? Colors.blueAccent : Colors.grey[700]!,
+                      inactiveTrackColor: Colors.white12,
+                      thumbColor: active ? Colors.white : Colors.grey[600]!,
+                      overlayColor: (active ? Colors.blueAccent : Colors.grey).withAlpha(40),
+                    ),
+                    child: Slider(
+                      value: dbToPosition(value, dbMin, dbMax),
+                      min: 0.0,
+                      max: 1.0,
+                      onChanged: (pos) => onChanged(positionToDb(pos, dbMin, dbMax)),
+                    ),
+                  ),
+                ),
               ),
-            ),
+            ],
           ),
         ),
       ],
