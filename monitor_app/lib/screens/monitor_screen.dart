@@ -1,168 +1,117 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../models/monitor_client.dart';
 import '../models/send_state.dart';
-import '../services/osc_service.dart';
+import '../services/credentials_store.dart';
+import '../services/osc_bridge.dart';
 import '../widgets/channel_strip.dart';
 import '../widgets/fader_widget.dart';
 import 'connection_screen.dart';
 
 class MonitorScreen extends StatefulWidget {
-  final OscService osc;
-  final bool requestStateOnMount;
-  const MonitorScreen({super.key, required this.osc, this.requestStateOnMount = false});
+  final OscBridge bridge;
+  const MonitorScreen({super.key, required this.bridge});
 
   @override
   State<MonitorScreen> createState() => _MonitorScreenState();
 }
 
 class _MonitorScreenState extends State<MonitorScreen> {
-  late StreamSubscription<OscMessage> _sub;
+  late StreamSubscription<BridgeEvent> _sub;
   int _tabIndex = 0; // 0 = My Mix, 1 = My Aux
-
-  Timer? _watchdog;
 
   @override
   void initState() {
     super.initState();
-    _sub = widget.osc.incoming.listen(_handleIncoming);
-    _startWatchdog();
-
-    if (widget.requestStateOnMount) {
-      Future.delayed(const Duration(milliseconds: 100), () {
-        if (!mounted) return;
-        final model = context.read<MonitorClientModel>();
-        widget.osc.send(model.daemonHost, model.daemonPort,
-            '/monitor/${model.clientName}/state', []);
-        debugPrint('S21 Monitor: state request sent after mount');
-      });
-    }
-  }
-
-  DateTime _lastReceived = DateTime.now();
-  int _missedHeartbeats = 0;
-
-  /// Watchdog: tracks heartbeat responses. The app sends connect every 10s
-  /// (via OscService heartbeat). The daemon responds with a full state push.
-  /// If no data arrives for 15s (missing 1+ heartbeat cycles), attempt
-  /// reconnect. Only show red after 3 consecutive missed cycles.
-  void _startWatchdog() {
-    _watchdog = Timer.periodic(const Duration(seconds: 5), (_) {
-      if (!mounted) return;
-      final model = context.read<MonitorClientModel>();
-      final elapsed = DateTime.now().difference(_lastReceived).inSeconds;
-
-      if (elapsed > 15) {
-        _missedHeartbeats++;
-        // Re-send connect + state to recover
-        widget.osc.send(model.daemonHost, model.daemonPort,
-            '/monitor/${model.clientName}/connect', []);
-        widget.osc.send(model.daemonHost, model.daemonPort,
-            '/monitor/${model.clientName}/state', []);
-
-        // Only show red after 3 consecutive misses (45s+ of silence)
-        if (_missedHeartbeats >= 3 && model.status == ConnectionStatus.connected) {
-          debugPrint('S21 Monitor: connection lost after ${_missedHeartbeats} missed heartbeats');
-          model.status = ConnectionStatus.connecting;
-          model.notifyListeners();
-        }
-      } else {
-        if (_missedHeartbeats > 0) {
-          _missedHeartbeats = 0;
-        }
-        if (model.status == ConnectionStatus.connecting) {
-          model.status = ConnectionStatus.connected;
-          model.notifyListeners();
-        }
-      }
-    });
+    _sub = widget.bridge.events.listen(_onEvent);
+    // Pull whatever the background service has cached so the UI repaints
+    // immediately on this screen's first build (and on every resume).
+    widget.bridge.requestSnapshot();
   }
 
   @override
   void dispose() {
-    _watchdog?.cancel();
     _sub.cancel();
     super.dispose();
   }
 
-  void _handleIncoming(OscMessage msg) {
-    _lastReceived = DateTime.now();
+  void _onEvent(BridgeEvent event) {
+    if (!mounted) return;
     final model = context.read<MonitorClientModel>();
 
-    // Parse send state pushes: /monitor/state/send/{input}/{aux} [level, pan, on]
-    // Single message with 3 args: Float(level), Float(pan), Int(on)
-    if (msg.address.startsWith('/monitor/state/send/')) {
-      final parts = msg.address.split('/');
-      // parts: ['', 'monitor', 'state', 'send', '{input}', '{aux}']
-      if (parts.length >= 6 && msg.args.length >= 3) {
-        final input = int.tryParse(parts[4]);
-        final aux = int.tryParse(parts[5]);
-        if (input != null && aux != null) {
-          final level = (msg.args[0] is OscFloat) ? (msg.args[0] as OscFloat).value : -150.0;
-          final pan = (msg.args[1] is OscFloat) ? (msg.args[1] as OscFloat).value : 0.0;
-          bool on = false;
-          if (msg.args[2] is OscBool) on = (msg.args[2] as OscBool).value;
-          else if (msg.args[2] is OscInt) on = (msg.args[2] as OscInt).value != 0;
-          else if (msg.args[2] is OscFloat) on = (msg.args[2] as OscFloat).value != 0.0;
-          model.updateSend(input, aux, level, pan, on);
-          debugPrint('S21 Monitor: parsed send in=$input aux=$aux level=$level pan=$pan on=$on');
+    switch (event) {
+      case StatusChanged(:final connected, :final console):
+        if (console.isNotEmpty) {
+          model.consoleName = console;
+        }
+        model.status = connected
+            ? ConnectionStatus.connected
+            : ConnectionStatus.connecting;
+        model.notifyListeners();
 
-          // Auto-discover permitted auxes from incoming data
-          if (!model.permittedAuxes.contains(aux)) {
-            model.permittedAuxes.add(aux);
-            model.permittedAuxes.sort();
-            // Auto-select first aux if none selected
-            model.selectedAux ??= aux;
-            debugPrint('S21 Monitor: discovered aux $aux, selected=${model.selectedAux}');
+      case Snapshot s:
+        if (s.console.isNotEmpty) model.consoleName = s.console;
+        model.status = s.connected
+            ? ConnectionStatus.connected
+            : ConnectionStatus.connecting;
+        // Replay names first so subsequent send entries pick them up.
+        for (final n in s.names) {
+          _applyName(model, n);
+        }
+        for (final send in s.sends) {
+          model.updateSend(send.input, send.aux, send.level, send.pan, send.on);
+          if (!model.permittedAuxes.contains(send.aux)) {
+            model.permittedAuxes.add(send.aux);
           }
         }
-      }
-    }
+        for (final aux in s.auxes) {
+          model.updateAux(aux.aux, aux.fader, aux.mute);
+        }
+        model.permittedAuxes.sort();
+        model.selectedAux ??=
+            model.permittedAuxes.isNotEmpty ? model.permittedAuxes.first : null;
+        model.notifyListeners();
 
-    // Parse channel name pushes: /monitor/state/name/{input|aux}/{ch} [name]
-    if (msg.address.startsWith('/monitor/state/name/')) {
-      final parts = msg.address.split('/');
-      // parts: ['', 'monitor', 'state', 'name', 'input'|'aux', '{ch}']
-      if (parts.length >= 6 && msg.args.isNotEmpty) {
-        final type = parts[4];
-        final ch = int.tryParse(parts[5]);
-        final nameArg = msg.args[0];
-        if (ch != null && nameArg is OscString) {
-          final name = nameArg.value;
-          if (type == 'input') {
-            // Update name on all sends for this input
-            for (final entry in model.sends.entries) {
-              if (entry.key.$1 == ch) {
-                entry.value.name = name;
-              }
-            }
-            model.notifyListeners();
-          } else if (type == 'aux') {
-            final state = model.auxStates.putIfAbsent(
-              ch, () => AuxState(auxCh: ch),
-            );
-            state.name = name;
-            model.notifyListeners();
-          }
+      case SendUpdated(
+          :final input,
+          :final aux,
+          :final level,
+          :final pan,
+          :final on,
+        ):
+        model.updateSend(input, aux, level, pan, on);
+        if (!model.permittedAuxes.contains(aux)) {
+          model.permittedAuxes.add(aux);
+          model.permittedAuxes.sort();
+          model.selectedAux ??= aux;
+          model.notifyListeners();
+        }
+
+      case AuxUpdated(:final aux, :final fader, :final mute):
+        model.updateAux(aux, fader, mute);
+
+      case ChannelNamed n:
+        _applyName(model, n);
+        model.notifyListeners();
+    }
+  }
+
+  void _applyName(MonitorClientModel model, ChannelNamed n) {
+    if (n.kind == 'input') {
+      for (final entry in model.sends.entries) {
+        if (entry.key.$1 == n.ch) {
+          entry.value.name = n.name;
         }
       }
-    }
-
-    // Parse aux state pushes: /monitor/state/aux/{aux} [fader, mute]
-    if (msg.address.startsWith('/monitor/state/aux/')) {
-      final parts = msg.address.split('/');
-      if (parts.length >= 5 && msg.args.length >= 2) {
-        final aux = int.tryParse(parts[4]);
-        if (aux != null) {
-          final fader = (msg.args[0] is OscFloat) ? (msg.args[0] as OscFloat).value : -150.0;
-          bool mute = false;
-          if (msg.args[1] is OscBool) mute = (msg.args[1] as OscBool).value;
-          else if (msg.args[1] is OscInt) mute = (msg.args[1] as OscInt).value != 0;
-          model.updateAux(aux, fader, mute);
-        }
-      }
+    } else if (n.kind == 'aux') {
+      final state = model.auxStates.putIfAbsent(
+        n.ch,
+        () => AuxState(auxCh: n.ch),
+      );
+      state.name = n.name;
     }
   }
 
@@ -201,15 +150,14 @@ class _MonitorScreenState extends State<MonitorScreen> {
             ),
             actions: [
               IconButton(
-                icon: const Icon(Icons.logout, size: 20),
-                tooltip: 'Disconnect',
-                onPressed: () => _disconnect(model),
+                icon: const Icon(Icons.power_settings_new, size: 20),
+                tooltip: 'Shut down service',
+                onPressed: () => _shutdown(model),
               ),
             ],
           ),
           body: Column(
             children: [
-              // Tab bar
               Container(
                 color: const Color(0xFF1A1A1A),
                 child: Row(
@@ -217,7 +165,6 @@ class _MonitorScreenState extends State<MonitorScreen> {
                     _tabButton('My Mix', 0),
                     _tabButton('My Aux', 1),
                     const Spacer(),
-                    // Aux selector
                     if (_tabIndex == 0 && model.availableAuxes.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -227,17 +174,17 @@ class _MonitorScreenState extends State<MonitorScreen> {
                               style: TextStyle(color: Colors.white54)),
                           dropdownColor: const Color(0xFF1A1A1A),
                           style: const TextStyle(color: Colors.white),
-                          items: model.availableAuxes
-                              .map((a) {
-                                final auxState = model.auxStates[a];
-                                final auxName = auxState?.name ?? '';
-                                final label = auxName.isNotEmpty ? '$auxName (Aux $a)' : 'Aux $a';
-                                return DropdownMenuItem(
-                                  value: a,
-                                  child: Text(label),
-                                );
-                              })
-                              .toList(),
+                          items: model.availableAuxes.map((a) {
+                            final auxState = model.auxStates[a];
+                            final auxName = auxState?.name ?? '';
+                            final label = auxName.isNotEmpty
+                                ? '$auxName (Aux $a)'
+                                : 'Aux $a';
+                            return DropdownMenuItem(
+                              value: a,
+                              child: Text(label),
+                            );
+                          }).toList(),
                           onChanged: (v) {
                             setState(() => model.selectedAux = v);
                           },
@@ -246,7 +193,6 @@ class _MonitorScreenState extends State<MonitorScreen> {
                   ],
                 ),
               ),
-              // Content
               Expanded(
                 child: _tabIndex == 0
                     ? _buildMyMix(context, model)
@@ -309,10 +255,10 @@ class _MonitorScreenState extends State<MonitorScreen> {
     final isWide = MediaQuery.of(context).size.width >= 600;
 
     if (isWide) {
-      // Tablet: horizontal scroll of vertical channel strips
       return SingleChildScrollView(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.only(left: 8, right: 8, top: 8, bottom: 40),
+        padding:
+            const EdgeInsets.only(left: 8, right: 8, top: 8, bottom: 40),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: sends.map((send) {
@@ -332,7 +278,6 @@ class _MonitorScreenState extends State<MonitorScreen> {
         ),
       );
     } else {
-      // Phone: vertical list of horizontal channel strips
       return ListView.separated(
         padding: const EdgeInsets.all(8),
         itemCount: sends.length,
@@ -370,7 +315,8 @@ class _MonitorScreenState extends State<MonitorScreen> {
         final fader = auxState?.fader ?? -150.0;
         final mute = auxState?.mute ?? false;
         final auxName = auxState?.name ?? '';
-        final displayName = auxName.isNotEmpty ? '$auxName (Aux $auxCh)' : 'Aux $auxCh';
+        final displayName =
+            auxName.isNotEmpty ? '$auxName (Aux $auxCh)' : 'Aux $auxCh';
 
         return Container(
           margin: const EdgeInsets.only(bottom: 12),
@@ -401,31 +347,22 @@ class _MonitorScreenState extends State<MonitorScreen> {
                       active: !mute,
                       onChanged: (v) {
                         model.updateAux(auxCh, v, mute);
-                        widget.osc.send(
-                          model.daemonHost,
-                          model.daemonPort,
-                          '/monitor/${model.clientName}/aux/$auxCh/fader',
-                          [OscFloat(v)],
-                        );
+                        widget.bridge.setAuxFader(auxCh, v);
                       },
                     ),
                   ),
                   const SizedBox(width: 8),
                   Text(
                     _formatDb(fader),
-                    style: TextStyle(color: mute ? Colors.white24 : Colors.white54),
+                    style: TextStyle(
+                        color: mute ? Colors.white24 : Colors.white54),
                   ),
                   const SizedBox(width: 12),
                   GestureDetector(
                     onTap: () {
                       final newMute = !mute;
                       model.updateAux(auxCh, fader, newMute);
-                      widget.osc.send(
-                        model.daemonHost,
-                        model.daemonPort,
-                        '/monitor/${model.clientName}/aux/$auxCh/mute',
-                        [OscBool(newMute)],
-                      );
+                      widget.bridge.setAuxMute(auxCh, newMute);
                     },
                     child: Container(
                       width: 56,
@@ -436,7 +373,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
                       ),
                       child: Center(
                         child: Text(
-                          mute ? 'MUTE' : 'MUTE',
+                          'MUTE',
                           style: TextStyle(
                             color: mute ? Colors.white : Colors.white54,
                             fontWeight: FontWeight.bold,
@@ -460,51 +397,64 @@ class _MonitorScreenState extends State<MonitorScreen> {
   void _sendLevel(MonitorClientModel model, SendState send, double value) {
     send.level = value;
     model.notifyListeners();
-    widget.osc.send(
-      model.daemonHost,
-      model.daemonPort,
-      '/monitor/${model.clientName}/send/${send.inputCh}/${send.auxCh}/level',
-      [OscFloat(value)],
-    );
+    widget.bridge.setSendLevel(send.inputCh, send.auxCh, value);
   }
 
   void _sendPan(MonitorClientModel model, SendState send, double value) {
     send.pan = value;
     model.notifyListeners();
-    widget.osc.send(
-      model.daemonHost,
-      model.daemonPort,
-      '/monitor/${model.clientName}/send/${send.inputCh}/${send.auxCh}/pan',
-      [OscFloat(value)],
-    );
+    widget.bridge.setSendPan(send.inputCh, send.auxCh, value);
   }
 
   void _sendToggle(MonitorClientModel model, SendState send) {
     send.on = !send.on;
     model.notifyListeners();
-    widget.osc.send(
-      model.daemonHost,
-      model.daemonPort,
-      '/monitor/${model.clientName}/send/${send.inputCh}/${send.auxCh}/on',
-      [OscBool(send.on)],
-    );
+    widget.bridge.setSendOn(send.inputCh, send.auxCh, send.on);
   }
 
-  Future<void> _disconnect(MonitorClientModel model) async {
-    await _sub.cancel();
-    await widget.osc.reset();
+  /// Tear down the background service AND clear stored credentials.
+  /// Matches the WFS DIY pattern: an explicit "I'm done" action that
+  /// stops the OSC daemon connection and returns to the connection
+  /// wizard. Subsequent app launches will require entering creds again.
+  Future<void> _shutdown(MonitorClientModel model) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Shut down service?'),
+        content: const Text(
+          'This stops the background OSC connection. The app will return '
+          'to the connection screen.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Shut down'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    widget.bridge.shutdown();
+    await CredentialsStore.clear();
+
+    if (!mounted) return;
     model.setDisconnected();
     model.sends.clear();
     model.auxStates.clear();
     model.selectedAux = null;
     model.permittedAuxes.clear();
-    if (mounted) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => ConnectionScreen(osc: widget.osc),
-        ),
-      );
-    }
+
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => ConnectionScreen(bridge: widget.bridge),
+      ),
+    );
+    debugPrint('S21 Monitor: background service shut down');
   }
 
   String _formatDb(double db) {

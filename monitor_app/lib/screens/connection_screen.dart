@@ -1,36 +1,47 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../models/monitor_client.dart';
+import '../services/credentials_store.dart';
+import '../services/osc_bridge.dart';
 import '../services/osc_service.dart';
 import 'monitor_screen.dart';
 
 class ConnectionScreen extends StatefulWidget {
-  final OscService osc;
-  const ConnectionScreen({super.key, required this.osc});
+  final OscBridge bridge;
+  const ConnectionScreen({super.key, required this.bridge});
 
   @override
   State<ConnectionScreen> createState() => _ConnectionScreenState();
 }
 
-// Persist last connection across navigation (survives disconnect/reconnect)
-String _lastHost = '';
-String _lastPort = '8025';
-String _lastName = '';
-
 class _ConnectionScreenState extends State<ConnectionScreen> {
   late final TextEditingController _hostController;
   late final TextEditingController _portController;
   late final TextEditingController _nameController;
+  bool _starting = false;
   bool _discovering = false;
   String? _error;
 
   @override
   void initState() {
     super.initState();
-    _hostController = TextEditingController(text: _lastHost);
-    _portController = TextEditingController(text: _lastPort);
-    _nameController = TextEditingController(text: _lastName);
+    _hostController = TextEditingController();
+    _portController = TextEditingController(text: '8025');
+    _nameController = TextEditingController();
+    _hydrate();
+  }
+
+  Future<void> _hydrate() async {
+    final stored = await CredentialsStore.load();
+    if (!mounted || stored == null) return;
+    setState(() {
+      _hostController.text = stored.host;
+      _portController.text = stored.port.toString();
+      _nameController.text = stored.name;
+    });
   }
 
   @override
@@ -118,16 +129,21 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
 
               // Connect button
               FilledButton.icon(
-                onPressed: _connect,
-                icon: const Icon(Icons.wifi),
-                label: const Text('Connect'),
+                onPressed: _starting ? null : _connect,
+                icon: _starting
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.wifi),
+                label: Text(_starting ? 'Starting…' : 'Connect'),
                 style: FilledButton.styleFrom(
                   minimumSize: const Size(double.infinity, 48),
                 ),
               ),
               const SizedBox(height: 12),
 
-              // Discover button
               OutlinedButton.icon(
                 onPressed: _discovering ? null : _discover,
                 icon: _discovering
@@ -137,7 +153,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.search),
-                label: Text(_discovering ? 'Searching...' : 'Auto-discover'),
+                label: Text(_discovering ? 'Searching…' : 'Auto-discover'),
                 style: OutlinedButton.styleFrom(
                   minimumSize: const Size(double.infinity, 48),
                 ),
@@ -149,70 +165,27 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     );
   }
 
-  void _connect() {
-    final name = _nameController.text.trim();
-    final host = _hostController.text.trim();
-    final port = int.tryParse(_portController.text.trim()) ?? 8025;
-
-    if (name.isEmpty) {
-      setState(() => _error = 'Please enter your name');
-      return;
-    }
-    if (host.isEmpty) {
-      setState(() => _error = 'Please enter the daemon IP address');
-      return;
-    }
-
-    // Save for next time
-    _lastHost = host;
-    _lastPort = port.toString();
-    _lastName = name;
-
-    final model = context.read<MonitorClientModel>();
-    model.clientName = name;
-    model.setConnected(host, port, '');
-
-    debugPrint('S21 Monitor: connecting to $host:$port as "$name"');
-
-    // Start heartbeat
-    widget.osc.startHeartbeat(host, port, name);
-
-    // Send connect (heartbeat will maintain it)
-    widget.osc.send(host, port, '/monitor/$name/connect', []);
-    debugPrint('S21 Monitor: sent connect to $host:$port as "$name"');
-
-    // Navigate to monitor screen FIRST, then request state
-    // so the listener is ready when the state messages arrive.
-    if (mounted) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => MonitorScreen(osc: widget.osc, requestStateOnMount: true),
-        ),
-      );
-    }
-  }
-
+  /// Broadcast `/monitor/discover` on the LAN and auto-fill the host /
+  /// port fields from the daemon's reply. Uses a throwaway OscService
+  /// so it doesn't compete with the (not-yet-started) background
+  /// isolate's socket.
   Future<void> _discover() async {
     setState(() {
       _discovering = true;
       _error = null;
     });
 
-    // Send broadcast
-    widget.osc.broadcast(8025, '/monitor/discover', []);
-
-    // Wait for a reply
+    final probe = OscService();
+    await probe.bind();
     try {
-      final msg = await widget.osc.incoming
+      probe.broadcast(8025, '/monitor/discover', []);
+      final msg = await probe.incoming
           .where((m) => m.address == '/monitor/discovered')
           .first
           .timeout(const Duration(seconds: 3));
 
       if (msg.args.isNotEmpty && msg.args[0] is OscString) {
         final consoleName = (msg.args[0] as OscString).value;
-
-        // Prefer the explicit port from the reply payload (arg[1]);
-        // fall back to the datagram's source port.
         int? payloadPort;
         if (msg.args.length >= 2 && msg.args[1] is OscInt) {
           payloadPort = (msg.args[1] as OscInt).value;
@@ -224,8 +197,6 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
           setState(() {
             _hostController.text = host;
             _portController.text = port.toString();
-            _lastHost = host;
-            _lastPort = port.toString();
             _error = 'Found "$consoleName" at $host:$port';
             _discovering = false;
           });
@@ -246,7 +217,57 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         _error = 'Discovery failed';
         _discovering = false;
       });
+    } finally {
+      probe.dispose();
     }
+  }
+
+  Future<void> _connect() async {
+    final name = _nameController.text.trim();
+    final host = _hostController.text.trim();
+    final port = int.tryParse(_portController.text.trim()) ?? 8025;
+
+    if (name.isEmpty) {
+      setState(() => _error = 'Please enter your name');
+      return;
+    }
+    if (host.isEmpty) {
+      setState(() => _error = 'Please enter the daemon IP address');
+      return;
+    }
+
+    setState(() {
+      _error = null;
+      _starting = true;
+    });
+
+    final creds = Credentials(host: host, port: port, name: name);
+    final ok = await widget.bridge.startWith(creds);
+
+    if (!mounted) return;
+    if (!ok) {
+      setState(() {
+        _starting = false;
+        _error = 'Failed to start the background service';
+      });
+      return;
+    }
+
+    final model = context.read<MonitorClientModel>();
+    model.clientName = name;
+    model.setConnected(host, port, '');
+
+    // Background service is up; ask it for the current snapshot. The
+    // MonitorScreen will subscribe to bridge.events on mount and pick up
+    // whatever arrives.
+    widget.bridge.requestSnapshot();
+
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => MonitorScreen(bridge: widget.bridge),
+      ),
+    );
   }
 
   @override
