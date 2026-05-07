@@ -187,6 +187,7 @@ async fn run_headless(args: Args) {
         sender.clone(),
         pan_link_bindings.clone(),
         dirty_tracker.clone(),
+        gang_manager.clone(),
     )));
 
     let cancel_token = tokio_util::sync::CancellationToken::new();

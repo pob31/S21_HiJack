@@ -1361,6 +1361,7 @@ fn start_connection(
             osc_sender.clone(),
             pl_bindings.clone(),
             dirty.clone(),
+            gang_mgr.clone(),
         )));
 
         let daemon = crate::console::connection::DaemonState {
