@@ -70,7 +70,11 @@ pub fn draw_pan_link_tab(
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            // ── Channel selector + name ──
+            // ── Channel selector + name + linked-inputs chips ──
+            // The selector card folds in the previously-separate "Existing
+            // bindings" navigation: a compact chip row right under the
+            // selector lists inputs that have pan links, clickable to jump
+            // to them. No more standalone card duplicating the navigation.
             theme::card_frame().show(ui, |ui| {
                 theme::section_heading(ui, "Pan Link");
                 ui.horizontal(|ui| {
@@ -84,11 +88,20 @@ pub fn draw_pan_link_tab(
                     {
                         tab.selected_input = tab.selected_input.saturating_sub(1).max(1);
                     }
-                    ui.label(
-                        egui::RichText::new(format!("{}", tab.selected_input))
-                            .strong()
-                            .size(14.0),
+
+                    // DragValue allows both dragging and click-to-type for the
+                    // channel number — replaces the previous read-only label.
+                    let max_input = input_count.max(1) as u32;
+                    let mut input_val = tab.selected_input as u32;
+                    let drag = ui.add(
+                        egui::DragValue::new(&mut input_val)
+                            .range(1..=max_input)
+                            .speed(0.2),
                     );
+                    if drag.changed() {
+                        tab.selected_input = (input_val as u8).clamp(1, input_count.max(1));
+                    }
+
                     if ui
                         .add_enabled(
                             tab.selected_input < input_count,
@@ -103,7 +116,12 @@ pub fn draw_pan_link_tab(
                             .color(theme::TEXT_SECONDARY)
                             .small(),
                     );
-                    // Channel name from live state
+
+                    // Channel name from live state — always rendered, with a
+                    // dimmed "(unnamed)" placeholder when the console hasn't
+                    // assigned a name. Helps confirm the right channel is
+                    // selected without the user having to scrub through.
+                    ui.add_space(10.0);
                     let name = state_guard
                         .get(&ParameterAddress {
                             channel: ChannelId::Input(tab.selected_input),
@@ -114,40 +132,36 @@ pub fn draw_pan_link_tab(
                             _ => None,
                         })
                         .unwrap_or("");
-                    if !name.is_empty() {
-                        ui.add_space(8.0);
+                    if name.is_empty() {
                         ui.label(
-                            egui::RichText::new(name)
+                            egui::RichText::new("(unnamed)")
+                                .color(theme::TEXT_DISABLED)
+                                .italics(),
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new(format!("\u{201C}{}\u{201D}", name))
                                 .color(theme::TEXT_PRIMARY)
                                 .strong(),
                         );
                     }
                 });
-            });
 
-            ui.add_space(8.0);
-
-            // ── Existing bindings strip ──
-            theme::card_frame().show(ui, |ui| {
-                theme::section_heading(ui, "Existing bindings");
+                // Compact chip strip — only renders when there's at least one
+                // pan link to point to. Each chip jumps the selector to that
+                // input. Replaces the standalone "Existing bindings" card.
                 let linked_inputs = bindings_snapshot.linked_inputs();
-                if linked_inputs.is_empty() {
-                    ui.label(
-                        egui::RichText::new(
-                            "No pan links yet — toggle a stereo aux tile below to create one.",
-                        )
-                        .color(theme::TEXT_SECONDARY)
-                        .italics(),
-                    );
-                } else {
+                if !linked_inputs.is_empty() {
+                    ui.add_space(6.0);
                     ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            egui::RichText::new("Has pan links:")
+                                .color(theme::TEXT_SECONDARY)
+                                .small(),
+                        );
                         for input in linked_inputs {
-                            let auxes = bindings_snapshot.auxes_for(input);
-                            let aux_labels: Vec<String> = auxes
-                                .iter()
-                                .map(|a| state_guard.config.bus_label(*a))
-                                .collect();
-                            let label = format!("Ch {input} → {}", aux_labels.join(", "));
+                            let aux_count = bindings_snapshot.auxes_for(input).len();
+                            let label = format!("Ch {input} ({aux_count})");
                             let is_selected = input == tab.selected_input;
                             let fill = if is_selected {
                                 theme::ACCENT_BLUE
@@ -155,7 +169,9 @@ pub fn draw_pan_link_tab(
                                 theme::BG_ELEVATED
                             };
                             let btn = egui::Button::new(
-                                egui::RichText::new(label).color(theme::TEXT_PRIMARY),
+                                egui::RichText::new(label)
+                                    .color(theme::TEXT_PRIMARY)
+                                    .small(),
                             )
                             .fill(fill)
                             .corner_radius(4.0);
