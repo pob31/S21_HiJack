@@ -115,7 +115,7 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info,s21_hijack=debug")),
+                .unwrap_or_else(|_| EnvFilter::new("info,s21_hijack=debug,sctk_adwaita=error")),
         )
         .init();
 
@@ -494,7 +494,7 @@ fn run_ui(args: Args) {
     let icon = load_app_icon();
 
     let mut viewport = eframe::egui::ViewportBuilder::default()
-        .with_inner_size([1400.0, 1000.0])
+        .with_inner_size([1500.0, 1050.0])
         .with_title("S21 HiJack")
         .with_app_id("s21_hijack");
     if let Some(icon) = icon {

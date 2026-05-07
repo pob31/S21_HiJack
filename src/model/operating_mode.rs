@@ -23,6 +23,17 @@ impl OperatingMode {
         }
     }
 
+    /// Compact label for tight UI spots (toggle buttons in the Setup tab).
+    /// Drops the "Mode N: " prefix so the Server hub's Connection-Mode row
+    /// fits within `MAX_W_HUB` without overflowing the frame.
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            Self::Mode1 => "GP OSC",
+            Self::Mode2 => "Direct iPad",
+            Self::Mode3 => "iPad Proxy",
+        }
+    }
+
     /// Whether this mode requires an iPad protocol connection.
     pub fn uses_ipad_protocol(&self) -> bool {
         matches!(self, Self::Mode2 | Self::Mode3)
