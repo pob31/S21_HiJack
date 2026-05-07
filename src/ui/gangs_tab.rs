@@ -220,10 +220,12 @@ pub fn draw_gangs_tab(
                     });
 
                 // Section toggle blocks (instead of checkboxes).
-                // Only sections applicable to the chosen channel type are
-                // shown — keeps the UI honest and avoids the previous
-                // mystery of "what does GraphicEq linked do for a gang of
-                // Inputs?" (answer: nothing).
+                // The full set of section tiles is always laid out in the
+                // same canonical order — non-applicable sections for the
+                // current channel type render via `add_visible_ui(false, …)`
+                // so they keep their slot but are invisible and inert. This
+                // keeps the rest of the tiles from shifting when the user
+                // toggles channel type.
                 ui.add_space(8.0);
                 ui.label(
                     egui::RichText::new("Linked Sections")
@@ -231,18 +233,31 @@ pub fn draw_gangs_tab(
                         .color(theme::TEXT_PRIMARY),
                 );
                 ui.add_space(4.0);
-                let applicable: Vec<ParameterSection> =
-                    tab.new_gang_channel_type.applicable_sections();
+                let applicable: HashSet<ParameterSection> = tab
+                    .new_gang_channel_type
+                    .applicable_sections()
+                    .into_iter()
+                    .collect();
                 // Drop any previously-toggled sections that aren't applicable
                 // to the current channel-type pick — avoids saving a gang
                 // with sections the engine will silently ignore.
                 tab.new_gang_sections.retain(|s| applicable.contains(s));
                 ui.horizontal_wrapped(|ui| {
-                    for section in &applicable {
+                    for section in ParameterSection::all_variants() {
+                        let is_applicable = applicable.contains(section);
                         let active = tab.new_gang_sections.contains(section);
-                        let resp = theme::toggle_block(ui, &section.to_string(), active)
-                            .on_hover_text(section_tooltip(section));
-                        if resp.clicked() {
+                        let builder = if is_applicable {
+                            egui::UiBuilder::new()
+                        } else {
+                            egui::UiBuilder::new().invisible()
+                        };
+                        let resp = ui
+                            .scope_builder(builder, |ui| {
+                                theme::toggle_block(ui, &section.to_string(), active)
+                                    .on_hover_text(section_tooltip(section))
+                            })
+                            .inner;
+                        if is_applicable && resp.clicked() {
                             if active {
                                 tab.new_gang_sections.remove(section);
                             } else {
