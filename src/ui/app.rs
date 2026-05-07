@@ -476,11 +476,16 @@ impl eframe::App for HiJackApp {
                         } else {
                             super::theme::TEXT_SECONDARY
                         };
+                        // Fixed min-size so the button doesn't change
+                        // width between "Online" (6 chars) and "OFFLINE"
+                        // (7 chars) — the rest of the top bar would
+                        // otherwise jiggle every time it's toggled.
                         let btn = egui::Button::new(
                             egui::RichText::new(label).color(text_color).strong(),
                         )
                         .fill(fill)
-                        .corner_radius(4.0);
+                        .corner_radius(4.0)
+                        .min_size(egui::Vec2::new(80.0, 26.0));
                         if ui
                             .add(btn)
                             .on_hover_text(
@@ -511,26 +516,39 @@ impl eframe::App for HiJackApp {
                             const LABEL_MIN_W: f32 = 120.0;
                             const GAP: f32 = 8.0;
                             // Outer breathing room when the window is
-                            // wide; collapses to zero before the label
-                            // is allowed to shrink.
+                            // wide; collapses down to MIN_PAD before the
+                            // label is allowed to shrink. MIN_PAD is the
+                            // floor on *both* sides — the right gap to
+                            // the Online toggle stays at least this wide
+                            // so the Go button never overlaps it.
                             const PAD_MAX: f32 = 24.0;
+                            const MIN_PAD: f32 = 16.0;
+
+                            // Reserve the right-side gap explicitly: in
+                            // the right-to-left parent, add_space here
+                            // pushes the cursor leftward by MIN_PAD,
+                            // carving an unconditional gap between the
+                            // Online toggle and the transport strip.
+                            ui.add_space(MIN_PAD);
 
                             let leftover_w = ui.available_width();
                             let leftover_h = ui.available_height();
 
-                            // Two-stage responsive shrink:
-                            //   1. Trim outer padding from PAD_MAX → 0.
-                            //   2. Once padding is gone, shrink the cue
-                            //      label down to LABEL_MIN_W.
+                            // Two-stage responsive shrink (operating on
+                            // the inner sub-region, with MIN_PAD already
+                            // reserved on the right):
+                            //   1. Trim left padding from PAD_MAX → MIN_PAD.
+                            //   2. Once left padding is at MIN_PAD,
+                            //      shrink the cue label toward LABEL_MIN_W.
                             let buttons_w = PREV_W + GO_W + GAP + GAP;
                             let pref_w = buttons_w + LABEL_W;
-                            let (pad, label_w) = if leftover_w >= pref_w + PAD_MAX * 2.0 {
+                            let (pad, label_w) = if leftover_w >= pref_w + PAD_MAX + MIN_PAD {
                                 (PAD_MAX, LABEL_W)
-                            } else if leftover_w >= pref_w {
-                                ((leftover_w - pref_w) / 2.0, LABEL_W)
+                            } else if leftover_w >= pref_w + MIN_PAD * 2.0 {
+                                (leftover_w - pref_w - MIN_PAD, LABEL_W)
                             } else {
-                                let shrunk = (leftover_w - buttons_w).max(LABEL_MIN_W);
-                                (0.0, shrunk)
+                                let shrunk = (leftover_w - buttons_w - MIN_PAD).max(LABEL_MIN_W);
+                                (MIN_PAD, shrunk)
                             };
 
                             ui.allocate_ui_with_layout(
@@ -631,33 +649,38 @@ impl eframe::App for HiJackApp {
                 });
             });
 
+        // Offline-mode banner — anchored to the bottom of the window so
+        // it doesn't push the rest of the UI down when toggled. Drawn
+        // before the central panel so the central panel sees the
+        // remaining vertical space.
+        if self.offline_mode.load(Ordering::Relaxed) {
+            egui::TopBottomPanel::bottom("offline_banner")
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(super::theme::ACCENT_AMBER)
+                        .inner_margin(egui::Margin::symmetric(10, 6)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("⚠ OFFLINE MODE")
+                                .strong()
+                                .color(super::theme::BG_DARK),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                "— no OSC in/out. State mirror is frozen. \
+                                 Edits will not affect the console.",
+                            )
+                            .color(super::theme::BG_DARK),
+                        );
+                    });
+                });
+        }
+
         // Main content
         egui::CentralPanel::default().show(ctx, |ui| {
-            // Offline mode banner — visible on every tab while offline.
-            if self.offline_mode.load(Ordering::Relaxed) {
-                egui::Frame::new()
-                    .fill(super::theme::ACCENT_AMBER)
-                    .inner_margin(egui::Margin::symmetric(10, 6))
-                    .corner_radius(4.0)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("⚠ OFFLINE MODE")
-                                    .strong()
-                                    .color(super::theme::BG_DARK),
-                            );
-                            ui.label(
-                                egui::RichText::new(
-                                    "— no OSC in/out. State mirror is frozen. \
-                                     Edits will not affect the console.",
-                                )
-                                .color(super::theme::BG_DARK),
-                            );
-                        });
-                    });
-                ui.add_space(4.0);
-            }
-
             // Reset transient per-tab state when the user navigates away.
             // Pan Link's edit-mode is a "live editing" toggle that should
             // default to off whenever the operator returns to the tab,
