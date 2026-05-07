@@ -202,47 +202,39 @@ pub fn draw_pan_link_tab(
                 // protecting against accidental link toggles mid-show.
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(format!(
-                            "Aux sends for input {}",
-                            tab.selected_input
-                        ))
-                        .size(theme::FONT_SIZE_SECTION)
-                        .strong()
-                        .color(theme::TEXT_PRIMARY),
+                        egui::RichText::new(format!("Aux sends for input {}", tab.selected_input))
+                            .size(theme::FONT_SIZE_SECTION)
+                            .strong()
+                            .color(theme::TEXT_PRIMARY),
                     );
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            let (fill, text_color, label) = if tab.edit_mode {
-                                (theme::ACCENT_AMBER, theme::TEXT_PRIMARY, "Edit · on")
-                            } else {
-                                (theme::BG_ELEVATED, theme::TEXT_SECONDARY, "Edit")
-                            };
-                            let btn = egui::Button::new(
-                                egui::RichText::new(label).color(text_color).strong(),
-                            )
-                            .fill(fill)
-                            .corner_radius(4.0)
-                            .min_size(egui::Vec2::new(86.0, 26.0));
-                            if ui
-                                .add(btn)
-                                .on_hover_text(
-                                    "Click to enable / disable toggling pan links. Resets when \
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (fill, text_color, label) = if tab.edit_mode {
+                            (theme::ACCENT_AMBER, theme::TEXT_PRIMARY, "Edit · on")
+                        } else {
+                            (theme::BG_ELEVATED, theme::TEXT_SECONDARY, "Edit")
+                        };
+                        let btn = egui::Button::new(
+                            egui::RichText::new(label).color(text_color).strong(),
+                        )
+                        .fill(fill)
+                        .corner_radius(4.0)
+                        .min_size(egui::Vec2::new(86.0, 26.0));
+                        if ui
+                            .add(btn)
+                            .on_hover_text(
+                                "Click to enable / disable toggling pan links. Resets when \
                                      leaving the Pan Link tab.",
-                                )
-                                .clicked()
-                            {
-                                tab.edit_mode = !tab.edit_mode;
-                            }
-                        },
-                    );
+                            )
+                            .clicked()
+                        {
+                            tab.edit_mode = !tab.edit_mode;
+                        }
+                    });
                 });
                 ui.add_space(2.0);
                 let strip_w = ui.available_width();
-                let (rect, _) = ui.allocate_exact_size(
-                    egui::Vec2::new(strip_w, 1.0),
-                    egui::Sense::hover(),
-                );
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::Vec2::new(strip_w, 1.0), egui::Sense::hover());
                 ui.painter().rect_filled(rect, 0.0, theme::BORDER_SUBTLE);
                 ui.add_space(6.0);
 
@@ -378,9 +370,7 @@ fn draw_aux_tile(
         // `on_hover_text` consumes the response, so chain it before any
         // subsequent `.clicked()` reads (we don't need clicks here anyway
         // since `clickable` is false).
-        resp = resp.on_hover_text(
-            "Enable Edit (top-right of this card) to toggle pan links.",
-        );
+        resp = resp.on_hover_text("Enable Edit (top-right of this card) to toggle pan links.");
     }
     let bg = if clickable && resp.hovered() {
         theme::lighten(fill, 20)

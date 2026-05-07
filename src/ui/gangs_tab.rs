@@ -20,6 +20,8 @@ pub enum ChannelTypeSelection {
     Group,
     Matrix,
     ControlGroup,
+    GraphicEq,
+    MatrixInput,
     Mixed,
 }
 
@@ -31,18 +33,80 @@ impl ChannelTypeSelection {
             Self::Group => "Group",
             Self::Matrix => "Matrix",
             Self::ControlGroup => "Control Group",
+            Self::GraphicEq => "Graphic EQ",
+            Self::MatrixInput => "Matrix Input",
             Self::Mixed => "Mixed",
         }
     }
 
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 8] = [
         Self::Input,
         Self::Aux,
         Self::Group,
         Self::Matrix,
         Self::ControlGroup,
+        Self::GraphicEq,
+        Self::MatrixInput,
         Self::Mixed,
     ];
+
+    /// Sections this channel type can sensibly gang. Returned in display order.
+    /// `Mixed` returns the union of all sections so the user can compose
+    /// across types and let the engine sort out per-pair applicability.
+    fn applicable_sections(&self) -> Vec<ParameterSection> {
+        match self {
+            Self::Input => ParameterSection::applicable_to(&ChannelId::Input(1)),
+            Self::Aux => ParameterSection::applicable_to(&ChannelId::Aux(1)),
+            Self::Group => ParameterSection::applicable_to(&ChannelId::Group(1)),
+            Self::Matrix => ParameterSection::applicable_to(&ChannelId::Matrix(1)),
+            Self::ControlGroup => ParameterSection::applicable_to(&ChannelId::ControlGroup(1)),
+            Self::GraphicEq => ParameterSection::applicable_to(&ChannelId::GraphicEq(1)),
+            Self::MatrixInput => ParameterSection::applicable_to(&ChannelId::MatrixInput(1)),
+            Self::Mixed => ParameterSection::all_variants().to_vec(),
+        }
+    }
+}
+
+/// One-line tooltip explaining what a `ParameterSection` actually links
+/// when included in a gang. Surfaces in the UI on hover so the operator
+/// doesn't have to guess at non-obvious sections (Matrix Sends, Graphic
+/// EQ, CG Membership).
+fn section_tooltip(section: &ParameterSection) -> &'static str {
+    match section {
+        ParameterSection::FaderMutePan => "Channel fader level, mute and pan/balance.",
+        ParameterSection::Name => "Channel name string.",
+        ParameterSection::InputGain => "Head-amp input gain (input channels only).",
+        ParameterSection::Delay => "Channel delay time and on/off.",
+        ParameterSection::Digitube => "Digitube saturation amount and enable.",
+        ParameterSection::Eq => {
+            "Parametric EQ — band gains, Q, freq, dynamic-EQ \
+                                 settings, EQ on/off."
+        }
+        ParameterSection::Dyn1 => "Dynamics 1 — compressor / gate parameters and on/off.",
+        ParameterSection::Dyn2 => "Dynamics 2 — second processor parameters and on/off.",
+        ParameterSection::Sends => {
+            "Aux send levels and on/off across all aux buses. \
+                                    Only propagates between members of the same channel type."
+        }
+        ParameterSection::GroupRouting => {
+            "Group routing — which group buses the channel feeds. \
+                                           Only propagates between same-type members."
+        }
+        ParameterSection::Inserts => "Insert send / return enable.",
+        ParameterSection::CgMembership => {
+            "Control Group membership — which CGs the channel \
+                                           belongs to. Only propagates between same-type members \
+                                           (e.g. Input ↔ Input)."
+        }
+        ParameterSection::GraphicEq => {
+            "Graphic EQ band gains. Only meaningful when ganging \
+                                        Graphic EQ channels (GEQ1, GEQ2, …)."
+        }
+        ParameterSection::MatrixSends => {
+            "Matrix-send levels and on/off. Only meaningful when \
+                                          ganging Matrix Input channels (MI1, MI2, …)."
+        }
+    }
 }
 
 /// Per-tab UI state for the Gangs tab.
@@ -155,7 +219,11 @@ pub fn draw_gangs_tab(
                         ui.end_row();
                     });
 
-                // Section toggle blocks (instead of checkboxes)
+                // Section toggle blocks (instead of checkboxes).
+                // Only sections applicable to the chosen channel type are
+                // shown — keeps the UI honest and avoids the previous
+                // mystery of "what does GraphicEq linked do for a gang of
+                // Inputs?" (answer: nothing).
                 ui.add_space(8.0);
                 ui.label(
                     egui::RichText::new("Linked Sections")
@@ -163,10 +231,18 @@ pub fn draw_gangs_tab(
                         .color(theme::TEXT_PRIMARY),
                 );
                 ui.add_space(4.0);
+                let applicable: Vec<ParameterSection> =
+                    tab.new_gang_channel_type.applicable_sections();
+                // Drop any previously-toggled sections that aren't applicable
+                // to the current channel-type pick — avoids saving a gang
+                // with sections the engine will silently ignore.
+                tab.new_gang_sections.retain(|s| applicable.contains(s));
                 ui.horizontal_wrapped(|ui| {
-                    for section in ParameterSection::all_variants() {
+                    for section in &applicable {
                         let active = tab.new_gang_sections.contains(section);
-                        if theme::toggle_block(ui, &section.to_string(), active).clicked() {
+                        let resp = theme::toggle_block(ui, &section.to_string(), active)
+                            .on_hover_text(section_tooltip(section));
+                        if resp.clicked() {
                             if active {
                                 tab.new_gang_sections.remove(section);
                             } else {
@@ -556,6 +632,8 @@ pub fn parse_channel_members(channel_type: ChannelTypeSelection, input: &str) ->
             ChannelTypeSelection::Group => ChannelId::Group,
             ChannelTypeSelection::Matrix => ChannelId::Matrix,
             ChannelTypeSelection::ControlGroup => ChannelId::ControlGroup,
+            ChannelTypeSelection::GraphicEq => ChannelId::GraphicEq,
+            ChannelTypeSelection::MatrixInput => ChannelId::MatrixInput,
             ChannelTypeSelection::Mixed => unreachable!(),
         };
         numbers.into_iter().map(constructor).collect()
