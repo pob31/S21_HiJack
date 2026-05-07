@@ -977,21 +977,6 @@ pub fn draw_setup_tab(
                 if show_monitor {
                 // Monitor satellite — bottom-right
                 peer_section(ui, "Monitor", theme::TEXT_SECONDARY, w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Port:");
-                        ui.add_enabled(
-                            !is_connected,
-                            egui::TextEdit::singleline(&mut setup.monitor_port)
-                                .desired_width(60.0)
-                                .hint_text("disabled"),
-                        )
-                        .on_hover_text(
-                            "Local port for the Flutter monitor app — leave blank to disable.",
-                        );
-                    });
-                    ui.add_space(6.0);
-
-                    let port_set = !setup.monitor_port.trim().is_empty();
                     egui::Grid::new("monitor_flow_grid")
                         .num_columns(3)
                         .spacing([6.0, 6.0])
@@ -1001,22 +986,23 @@ pub fn draw_setup_tab(
                             ui.label(egui::RichText::new("Mobile / Web").strong().color(theme::TEXT_PRIMARY));
                             ui.end_row();
 
-                            if port_set {
-                                ui.label(
-                                    egui::RichText::new(format!("[{}]", setup.monitor_port))
-                                        .color(theme::TEXT_PRIMARY),
-                                );
-                                ui.label(egui::RichText::new("<->").color(theme::TEXT_SECONDARY));
-                                ui.label(
-                                    egui::RichText::new("any LAN client").color(theme::TEXT_SECONDARY),
-                                );
-                                ui.end_row();
-                            } else {
-                                ui.label(egui::RichText::new("(disabled)").color(theme::TEXT_DISABLED));
-                                ui.label("");
-                                ui.label("");
-                                ui.end_row();
-                            }
+                            // Editable port goes directly in the flow grid —
+                            // no separate "Port:" row above, since the value
+                            // is the only knob this satellite exposes.
+                            ui.add_enabled(
+                                !is_connected,
+                                egui::TextEdit::singleline(&mut setup.monitor_port)
+                                    .desired_width(60.0)
+                                    .hint_text("off"),
+                            )
+                            .on_hover_text(
+                                "Local port for the Flutter monitor app — leave blank to disable.",
+                            );
+                            ui.label(egui::RichText::new("<->").color(theme::TEXT_SECONDARY));
+                            ui.label(
+                                egui::RichText::new("any LAN client").color(theme::TEXT_SECONDARY),
+                            );
+                            ui.end_row();
                         });
                 });
                 }
@@ -1033,9 +1019,11 @@ pub fn draw_setup_tab(
 
         // ── Parameter-coverage popup ──
         // Centered modal-ish window so toggling it never reflows the diagram.
+        // Closes via the title-bar X, the Escape key, or any click outside
+        // the window's rect — the conventional dismiss-modal pattern.
         if setup.show_coverage_popup {
             let mut open = setup.show_coverage_popup;
-            egui::Window::new("Parameter coverage for this mode")
+            let popup = egui::Window::new("Parameter coverage for this mode")
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .collapsible(false)
                 .resizable(false)
@@ -1074,6 +1062,31 @@ pub fn draw_setup_tab(
                         });
                 });
             setup.show_coverage_popup = open;
+
+            // Click-outside-to-close: only treat clicks that land outside the
+            // window's full rect as a dismiss. Skip frames where the
+            // click was inside the window itself (interactions with grid
+            // contents, scrolling, etc.) so the popup doesn't fight its own
+            // event handling.
+            if setup.show_coverage_popup {
+                if let Some(popup) = popup {
+                    let popup_rect = popup.response.rect;
+                    let clicked_outside = ui.ctx().input(|i| {
+                        i.pointer.any_click()
+                            && !i
+                                .pointer
+                                .interact_pos()
+                                .map(|p| popup_rect.contains(p))
+                                .unwrap_or(false)
+                    });
+                    if clicked_outside {
+                        setup.show_coverage_popup = false;
+                    }
+                }
+                if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+                    setup.show_coverage_popup = false;
+                }
+            }
         }
     });
 }
