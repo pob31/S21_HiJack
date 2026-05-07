@@ -41,381 +41,411 @@ pub fn draw_monitor_tab(
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            // ── Server Status card ──
-            theme::card_frame().show(ui, |ui| {
-                theme::section_heading(ui, "Server Status");
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
 
-                ui.horizontal(|ui| {
-                    // Console status
-                    let console_color = if is_connected {
-                        theme::COLOR_CONNECTED
-                    } else {
-                        theme::COLOR_DISCONNECTED
-                    };
-                    theme::status_dot(ui, console_color);
-                    ui.label(
-                        egui::RichText::new(if is_connected {
-                            "Console Connected"
-                        } else {
-                            "Console Disconnected"
-                        })
-                        .color(console_color),
-                    );
+                // Left column — fixed-width stack of Server Status,
+                // Aux Channels reference table, and the Add-Profile
+                // launcher. Width chosen wide enough for the aux table's
+                // 3-column grid with a bit of room for long aux names.
+                let left_w = 380.0_f32.min(ui.available_width() * 0.4);
+                ui.scope(|ui| {
+                    ui.set_min_width(left_w);
+                    ui.set_max_width(left_w);
 
-                    ui.add_space(20.0);
+                    // ── Server Status card ──
+                    theme::card_frame().show(ui, |ui| {
+                        theme::section_heading(ui, "Server Status");
 
-                    // Monitor server status
-                    let monitor_color = if tab.monitor_server_running {
-                        theme::COLOR_CONNECTED
-                    } else {
-                        theme::TEXT_DISABLED
-                    };
-                    theme::status_dot(ui, monitor_color);
-                    ui.label(
-                        egui::RichText::new(if tab.monitor_server_running {
-                            "Monitor Server Running"
-                        } else {
-                            "Monitor Server Off"
-                        })
-                        .color(monitor_color),
-                    );
-                });
-
-                let mgr = runtime.block_on(monitor_manager.read());
-                let connected_count = mgr.connected_count();
-                let total_count = mgr.clients.len();
-
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    theme::colored_badge(
-                        ui,
-                        &format!("{connected_count} connected"),
-                        theme::ACCENT_GREEN,
-                    );
-                    theme::colored_badge(
-                        ui,
-                        &format!("{total_count} configured"),
-                        theme::BG_ELEVATED,
-                    );
-                });
-
-                drop(mgr);
-            });
-
-            ui.add_space(8.0);
-
-            // ── Aux Reference Table ──
-            theme::card_frame().show(ui, |ui| {
-                theme::section_heading(ui, "Aux Channels");
-
-                let st = runtime.block_on(console_state.read());
-                let aux_count = st.config.aux_output_count;
-
-                if aux_count == 0 {
-                    ui.label(
-                        egui::RichText::new("Connect to console to see aux channels.")
-                            .color(theme::TEXT_SECONDARY),
-                    );
-                } else {
-                    egui::Grid::new("aux_ref_grid")
-                        .num_columns(3)
-                        .spacing([16.0, 4.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            // Header
+                        ui.horizontal(|ui| {
+                            // Console status
+                            let console_color = if is_connected {
+                                theme::COLOR_CONNECTED
+                            } else {
+                                theme::COLOR_DISCONNECTED
+                            };
+                            theme::status_dot(ui, console_color);
                             ui.label(
-                                egui::RichText::new("Ch #")
-                                    .strong()
-                                    .color(theme::TEXT_SECONDARY),
+                                egui::RichText::new(if is_connected {
+                                    "Console Connected"
+                                } else {
+                                    "Console Disconnected"
+                                })
+                                .color(console_color),
                             );
-                            ui.label(
-                                egui::RichText::new("Name")
-                                    .strong()
-                                    .color(theme::TEXT_SECONDARY),
-                            );
-                            ui.label(
-                                egui::RichText::new("Send #")
-                                    .strong()
-                                    .color(theme::TEXT_SECONDARY),
-                            );
-                            ui.end_row();
 
-                            for aux in 1..=aux_count {
-                                let name = st
-                                    .get(&ParameterAddress {
-                                        channel: ChannelId::Aux(aux),
-                                        parameter: ParameterPath::Name,
-                                    })
-                                    .and_then(|v| match v {
-                                        crate::model::parameter::ParameterValue::String(s) => {
-                                            Some(s.clone())
-                                        }
-                                        _ => None,
-                                    })
-                                    .unwrap_or_default();
+                            ui.add_space(20.0);
 
-                                ui.label(
-                                    egui::RichText::new(format!("Aux {aux}")).color(theme::CH_AUX),
-                                );
-                                ui.label(
-                                    egui::RichText::new(if name.is_empty() {
-                                        "—"
-                                    } else {
-                                        &name
-                                    })
-                                    .color(theme::TEXT_PRIMARY),
-                                );
-                                ui.label(
-                                    egui::RichText::new(format!("{aux}"))
-                                        .color(theme::TEXT_SECONDARY),
-                                );
-                                ui.end_row();
-                            }
+                            // Monitor server status
+                            let monitor_color = if tab.monitor_server_running {
+                                theme::COLOR_CONNECTED
+                            } else {
+                                theme::TEXT_DISABLED
+                            };
+                            theme::status_dot(ui, monitor_color);
+                            ui.label(
+                                egui::RichText::new(if tab.monitor_server_running {
+                                    "Monitor Server Running"
+                                } else {
+                                    "Monitor Server Off"
+                                })
+                                .color(monitor_color),
+                            );
                         });
-                }
-                drop(st);
-            });
 
-            ui.add_space(8.0);
+                        let mgr = runtime.block_on(monitor_manager.read());
+                        let connected_count = mgr.connected_count();
+                        let total_count = mgr.clients.len();
 
-            // ── Add-profile button + status row ──
-            theme::card_frame().show(ui, |ui| {
-                theme::section_heading(ui, "Profiles");
-
-                ui.horizontal(|ui| {
-                    let add_btn = theme::action_button(
-                        "Add profile…",
-                        theme::ACCENT_GREEN,
-                        egui::Vec2::new(120.0, 32.0),
-                    );
-                    if ui.add(add_btn).clicked() && tab.picker.is_none() {
-                        let st = runtime.block_on(console_state.read());
-                        tab.picker = Some(ChannelPickerState::for_new_client(&st));
-                    }
-
-                    if let Some(ref msg) = tab.status_message {
-                        ui.add_space(8.0);
-                        ui.colored_label(theme::TEXT_WARNING, msg.as_str());
-                    }
-                });
-            });
-
-            ui.add_space(8.0);
-
-            // ── Client List card ──
-            theme::card_frame().show(ui, |ui| {
-                theme::section_heading(ui, "Clients");
-
-                let mgr = runtime.block_on(monitor_manager.read());
-                let clients = mgr.sorted_clients();
-
-                if clients.is_empty() {
-                    ui.label(
-                        egui::RichText::new("No monitoring clients configured.")
-                            .color(theme::TEXT_SECONDARY),
-                    );
-                } else {
-                    let mut to_remove = None;
-                    let mut to_edit: Option<MonitorClient> = None;
-                    // Per-row reorder result staged for after the loop, so we
-                    // can release the read lock before calling update_client.
-                    let mut to_update_order: Option<(Uuid, Vec<u8>, Vec<u8>)> = None;
-
-                    for client in &clients {
-                        let in_reorder = tab.reorder_for == Some(client.id);
-                        let stroke_color = if in_reorder {
-                            theme::ACCENT_BLUE
-                        } else {
-                            theme::BORDER_SUBTLE
-                        };
-                        egui::Frame::new()
-                            .fill(theme::BG_ELEVATED)
-                            .stroke(egui::Stroke::new(
-                                if in_reorder { 2.0 } else { 1.0 },
-                                stroke_color,
-                            ))
-                            .corner_radius(6.0)
-                            .inner_margin(egui::Margin::same(8))
-                            .show(ui, |ui| {
-                                ui.horizontal_wrapped(|ui| {
-                                    // Connection status dot
-                                    let status_color = if client.is_connected() {
-                                        theme::COLOR_CONNECTED
-                                    } else {
-                                        theme::TEXT_DISABLED
-                                    };
-                                    theme::status_dot(ui, status_color);
-
-                                    ui.add_space(4.0);
-
-                                    // Client name
-                                    ui.label(
-                                        egui::RichText::new(&client.name)
-                                            .strong()
-                                            .color(theme::TEXT_PRIMARY),
-                                    );
-
-                                    ui.add_space(8.0);
-
-                                    // Aux badges (magenta) — drag-reorderable in reorder mode.
-                                    let mut new_aux_order: Option<Vec<u8>> = None;
-                                    if in_reorder {
-                                        if let Some(reordered) = draw_reorderable_badges(
-                                            ui,
-                                            &client.permitted_auxes,
-                                            |v| format!("Aux {v}"),
-                                            theme::CH_AUX,
-                                            (client.id, "aux"),
-                                        ) {
-                                            new_aux_order = Some(reordered);
-                                        }
-                                    } else {
-                                        for aux in &client.permitted_auxes {
-                                            theme::colored_badge(
-                                                ui,
-                                                &format!("Aux {aux}"),
-                                                theme::CH_AUX,
-                                            );
-                                        }
-                                    }
-
-                                    ui.add_space(4.0);
-
-                                    // Input badges (blue) — drag-reorderable when visible_inputs
-                                    // is a specific list. The "All Inputs" sentinel is shown as
-                                    // a single non-draggable badge.
-                                    let mut new_input_order: Option<Vec<u8>> = None;
-                                    if client.visible_inputs.is_empty() {
-                                        theme::colored_badge(ui, "All Inputs", theme::CH_INPUT);
-                                    } else if in_reorder {
-                                        if let Some(reordered) = draw_reorderable_badges(
-                                            ui,
-                                            &client.visible_inputs,
-                                            |v| format!("In {v}"),
-                                            theme::CH_INPUT,
-                                            (client.id, "input"),
-                                        ) {
-                                            new_input_order = Some(reordered);
-                                        }
-                                    } else {
-                                        for input in &client.visible_inputs {
-                                            theme::colored_badge(
-                                                ui,
-                                                &format!("In {input}"),
-                                                theme::CH_INPUT,
-                                            );
-                                        }
-                                    }
-
-                                    // Stage the reorder result. Either auxes or inputs (not
-                                    // both in one frame) since each drop happens once.
-                                    if new_aux_order.is_some() || new_input_order.is_some() {
-                                        to_update_order = Some((
-                                            client.id,
-                                            new_aux_order
-                                                .unwrap_or_else(|| client.permitted_auxes.clone()),
-                                            new_input_order
-                                                .unwrap_or_else(|| client.visible_inputs.clone()),
-                                        ));
-                                    }
-                                });
-
-                                // Status + action-button row
-                                ui.horizontal(|ui| {
-                                    ui.add_space(18.0); // align under dot
-                                    let status_text = if in_reorder {
-                                        "Reorder mode — drag badges to rearrange"
-                                    } else if client.is_connected() {
-                                        "Connected"
-                                    } else {
-                                        "Offline"
-                                    };
-                                    ui.label(
-                                        egui::RichText::new(status_text)
-                                            .color(if in_reorder {
-                                                theme::ACCENT_BLUE
-                                            } else {
-                                                theme::TEXT_SECONDARY
-                                            })
-                                            .small(),
-                                    );
-
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            // Long-press: deleting a profile mid-show by accident
-                                            // would silently drop a musician's IEM control.
-                                            if theme::long_press_button(
-                                                ui,
-                                                "Delete",
-                                                theme::ACCENT_RED,
-                                                egui::Vec2::new(60.0, 24.0),
-                                                !in_reorder,
-                                                theme::LONG_PRESS_DURATION_MS,
-                                            ) {
-                                                to_remove = Some(client.id);
-                                            }
-
-                                            let edit_btn = theme::action_button(
-                                                "Edit",
-                                                theme::ACCENT_BLUE,
-                                                egui::Vec2::new(60.0, 24.0),
-                                            );
-                                            if ui.add_enabled(!in_reorder, edit_btn).clicked() {
-                                                to_edit = Some((*client).clone());
-                                            }
-
-                                            let (label, color) = if in_reorder {
-                                                ("Done", theme::ACCENT_GREEN)
-                                            } else {
-                                                ("Reorder", theme::ACCENT_ORANGE)
-                                            };
-                                            let reorder_btn = theme::action_button(
-                                                label,
-                                                color,
-                                                egui::Vec2::new(70.0, 24.0),
-                                            );
-                                            if ui.add(reorder_btn).clicked() {
-                                                tab.reorder_for =
-                                                    if in_reorder { None } else { Some(client.id) };
-                                            }
-                                        },
-                                    );
-                                });
-                            });
                         ui.add_space(4.0);
-                    }
-
-                    drop(mgr);
-                    if let Some(id) = to_remove {
-                        let mgr_clone = monitor_manager.clone();
-                        runtime.spawn(async move {
-                            mgr_clone.write().await.remove_client(id);
+                        ui.horizontal(|ui| {
+                            theme::colored_badge(
+                                ui,
+                                &format!("{connected_count} connected"),
+                                theme::ACCENT_GREEN,
+                            );
+                            theme::colored_badge(
+                                ui,
+                                &format!("{total_count} configured"),
+                                theme::BG_ELEVATED,
+                            );
                         });
-                        tab.status_message = Some("Client removed".into());
-                    }
-                    if let Some(client) = to_edit {
-                        if tab.picker.is_none() {
-                            let st = runtime.block_on(console_state.read());
-                            tab.picker = Some(ChannelPickerState::for_edit(&client, &st));
+
+                        drop(mgr);
+                    });
+
+                    ui.add_space(8.0);
+
+                    // ── Aux Reference Table ──
+                    theme::card_frame().show(ui, |ui| {
+                        theme::section_heading(ui, "Aux Channels");
+
+                        let st = runtime.block_on(console_state.read());
+                        let aux_count = st.config.aux_output_count;
+
+                        if aux_count == 0 {
+                            ui.label(
+                                egui::RichText::new("Connect to console to see aux channels.")
+                                    .color(theme::TEXT_SECONDARY),
+                            );
+                        } else {
+                            egui::Grid::new("aux_ref_grid")
+                                .num_columns(3)
+                                .spacing([16.0, 4.0])
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    // Header
+                                    ui.label(
+                                        egui::RichText::new("Ch #")
+                                            .strong()
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new("Name")
+                                            .strong()
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new("Send #")
+                                            .strong()
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                    ui.end_row();
+
+                                    for aux in 1..=aux_count {
+                                        let name = st
+                                            .get(&ParameterAddress {
+                                                channel: ChannelId::Aux(aux),
+                                                parameter: ParameterPath::Name,
+                                            })
+                                            .and_then(|v| match v {
+                                                crate::model::parameter::ParameterValue::String(
+                                                    s,
+                                                ) => Some(s.clone()),
+                                                _ => None,
+                                            })
+                                            .unwrap_or_default();
+
+                                        ui.label(
+                                            egui::RichText::new(format!("Aux {aux}"))
+                                                .color(theme::CH_AUX),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(if name.is_empty() {
+                                                "—"
+                                            } else {
+                                                &name
+                                            })
+                                            .color(theme::TEXT_PRIMARY),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!("{aux}"))
+                                                .color(theme::TEXT_SECONDARY),
+                                        );
+                                        ui.end_row();
+                                    }
+                                });
                         }
-                    }
-                    if let Some((id, auxes, inputs)) = to_update_order {
-                        // Read the existing client to keep its name (the
-                        // Reorder UI doesn't expose name editing) and skip
-                        // the update if nothing actually changed (paranoia
-                        // against frame races where the same drop fires twice).
-                        let mgr_clone = monitor_manager.clone();
-                        runtime.spawn(async move {
-                            let mut mgr = mgr_clone.write().await;
-                            if let Some(existing) = mgr.clients.get(&id) {
-                                let name = existing.name.clone();
-                                mgr.update_client(id, name, auxes, inputs);
+                        drop(st);
+                    });
+
+                    ui.add_space(8.0);
+
+                    // ── Add-profile button + status row ──
+                    theme::card_frame().show(ui, |ui| {
+                        theme::section_heading(ui, "Profiles");
+
+                        ui.horizontal(|ui| {
+                            let add_btn = theme::action_button(
+                                "Add profile…",
+                                theme::ACCENT_GREEN,
+                                egui::Vec2::new(120.0, 32.0),
+                            );
+                            if ui.add(add_btn).clicked() && tab.picker.is_none() {
+                                let st = runtime.block_on(console_state.read());
+                                tab.picker = Some(ChannelPickerState::for_new_client(&st));
+                            }
+
+                            if let Some(ref msg) = tab.status_message {
+                                ui.add_space(8.0);
+                                ui.colored_label(theme::TEXT_WARNING, msg.as_str());
                             }
                         });
-                    }
-                }
-            });
+                    });
+                }); // end left-column scope
+
+                // Right column — Clients list, takes whatever horizontal
+                // space remains so it can grow with wider windows.
+                ui.scope(|ui| {
+                    // ── Client List card ──
+                    theme::card_frame().show(ui, |ui| {
+                        theme::section_heading(ui, "Clients");
+
+                        let mgr = runtime.block_on(monitor_manager.read());
+                        let clients = mgr.sorted_clients();
+
+                        if clients.is_empty() {
+                            ui.label(
+                                egui::RichText::new("No monitoring clients configured.")
+                                    .color(theme::TEXT_SECONDARY),
+                            );
+                        } else {
+                            let mut to_remove = None;
+                            let mut to_edit: Option<MonitorClient> = None;
+                            // Per-row reorder result staged for after the loop, so we
+                            // can release the read lock before calling update_client.
+                            let mut to_update_order: Option<(Uuid, Vec<u8>, Vec<u8>)> = None;
+
+                            for client in &clients {
+                                let in_reorder = tab.reorder_for == Some(client.id);
+                                let stroke_color = if in_reorder {
+                                    theme::ACCENT_BLUE
+                                } else {
+                                    theme::BORDER_SUBTLE
+                                };
+                                egui::Frame::new()
+                                    .fill(theme::BG_ELEVATED)
+                                    .stroke(egui::Stroke::new(
+                                        if in_reorder { 2.0 } else { 1.0 },
+                                        stroke_color,
+                                    ))
+                                    .corner_radius(6.0)
+                                    .inner_margin(egui::Margin::same(8))
+                                    .show(ui, |ui| {
+                                        ui.horizontal_wrapped(|ui| {
+                                            // Connection status dot
+                                            let status_color = if client.is_connected() {
+                                                theme::COLOR_CONNECTED
+                                            } else {
+                                                theme::TEXT_DISABLED
+                                            };
+                                            theme::status_dot(ui, status_color);
+
+                                            ui.add_space(4.0);
+
+                                            // Client name
+                                            ui.label(
+                                                egui::RichText::new(&client.name)
+                                                    .strong()
+                                                    .color(theme::TEXT_PRIMARY),
+                                            );
+
+                                            ui.add_space(8.0);
+
+                                            // Aux badges (magenta) — drag-reorderable in reorder mode.
+                                            let mut new_aux_order: Option<Vec<u8>> = None;
+                                            if in_reorder {
+                                                if let Some(reordered) = draw_reorderable_badges(
+                                                    ui,
+                                                    &client.permitted_auxes,
+                                                    |v| format!("Aux {v}"),
+                                                    theme::CH_AUX,
+                                                    (client.id, "aux"),
+                                                ) {
+                                                    new_aux_order = Some(reordered);
+                                                }
+                                            } else {
+                                                for aux in &client.permitted_auxes {
+                                                    theme::colored_badge(
+                                                        ui,
+                                                        &format!("Aux {aux}"),
+                                                        theme::CH_AUX,
+                                                    );
+                                                }
+                                            }
+
+                                            ui.add_space(4.0);
+
+                                            // Input badges (blue) — drag-reorderable when visible_inputs
+                                            // is a specific list. The "All Inputs" sentinel is shown as
+                                            // a single non-draggable badge.
+                                            let mut new_input_order: Option<Vec<u8>> = None;
+                                            if client.visible_inputs.is_empty() {
+                                                theme::colored_badge(
+                                                    ui,
+                                                    "All Inputs",
+                                                    theme::CH_INPUT,
+                                                );
+                                            } else if in_reorder {
+                                                if let Some(reordered) = draw_reorderable_badges(
+                                                    ui,
+                                                    &client.visible_inputs,
+                                                    |v| format!("In {v}"),
+                                                    theme::CH_INPUT,
+                                                    (client.id, "input"),
+                                                ) {
+                                                    new_input_order = Some(reordered);
+                                                }
+                                            } else {
+                                                for input in &client.visible_inputs {
+                                                    theme::colored_badge(
+                                                        ui,
+                                                        &format!("In {input}"),
+                                                        theme::CH_INPUT,
+                                                    );
+                                                }
+                                            }
+
+                                            // Stage the reorder result. Either auxes or inputs (not
+                                            // both in one frame) since each drop happens once.
+                                            if new_aux_order.is_some() || new_input_order.is_some()
+                                            {
+                                                to_update_order = Some((
+                                                    client.id,
+                                                    new_aux_order.unwrap_or_else(|| {
+                                                        client.permitted_auxes.clone()
+                                                    }),
+                                                    new_input_order.unwrap_or_else(|| {
+                                                        client.visible_inputs.clone()
+                                                    }),
+                                                ));
+                                            }
+                                        });
+
+                                        // Status + action-button row
+                                        ui.horizontal(|ui| {
+                                            ui.add_space(18.0); // align under dot
+                                            let status_text = if in_reorder {
+                                                "Reorder mode — drag badges to rearrange"
+                                            } else if client.is_connected() {
+                                                "Connected"
+                                            } else {
+                                                "Offline"
+                                            };
+                                            ui.label(
+                                                egui::RichText::new(status_text)
+                                                    .color(if in_reorder {
+                                                        theme::ACCENT_BLUE
+                                                    } else {
+                                                        theme::TEXT_SECONDARY
+                                                    })
+                                                    .small(),
+                                            );
+
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    // Long-press: deleting a profile mid-show by accident
+                                                    // would silently drop a musician's IEM control.
+                                                    if theme::long_press_button(
+                                                        ui,
+                                                        "Delete",
+                                                        theme::ACCENT_RED,
+                                                        egui::Vec2::new(60.0, 24.0),
+                                                        !in_reorder,
+                                                        theme::LONG_PRESS_DURATION_MS,
+                                                    ) {
+                                                        to_remove = Some(client.id);
+                                                    }
+
+                                                    let edit_btn = theme::action_button(
+                                                        "Edit",
+                                                        theme::ACCENT_BLUE,
+                                                        egui::Vec2::new(60.0, 24.0),
+                                                    );
+                                                    if ui
+                                                        .add_enabled(!in_reorder, edit_btn)
+                                                        .clicked()
+                                                    {
+                                                        to_edit = Some((*client).clone());
+                                                    }
+
+                                                    let (label, color) = if in_reorder {
+                                                        ("Done", theme::ACCENT_GREEN)
+                                                    } else {
+                                                        ("Reorder", theme::ACCENT_ORANGE)
+                                                    };
+                                                    let reorder_btn = theme::action_button(
+                                                        label,
+                                                        color,
+                                                        egui::Vec2::new(70.0, 24.0),
+                                                    );
+                                                    if ui.add(reorder_btn).clicked() {
+                                                        tab.reorder_for = if in_reorder {
+                                                            None
+                                                        } else {
+                                                            Some(client.id)
+                                                        };
+                                                    }
+                                                },
+                                            );
+                                        });
+                                    });
+                                ui.add_space(4.0);
+                            }
+
+                            drop(mgr);
+                            if let Some(id) = to_remove {
+                                let mgr_clone = monitor_manager.clone();
+                                runtime.spawn(async move {
+                                    mgr_clone.write().await.remove_client(id);
+                                });
+                                tab.status_message = Some("Client removed".into());
+                            }
+                            if let Some(client) = to_edit {
+                                if tab.picker.is_none() {
+                                    let st = runtime.block_on(console_state.read());
+                                    tab.picker = Some(ChannelPickerState::for_edit(&client, &st));
+                                }
+                            }
+                            if let Some((id, auxes, inputs)) = to_update_order {
+                                // Read the existing client to keep its name (the
+                                // Reorder UI doesn't expose name editing) and skip
+                                // the update if nothing actually changed (paranoia
+                                // against frame races where the same drop fires twice).
+                                let mgr_clone = monitor_manager.clone();
+                                runtime.spawn(async move {
+                                    let mut mgr = mgr_clone.write().await;
+                                    if let Some(existing) = mgr.clients.get(&id) {
+                                        let name = existing.name.clone();
+                                        mgr.update_client(id, name, auxes, inputs);
+                                    }
+                                });
+                            }
+                        }
+                    });
+                }); // end right-column scope
+            }); // end horizontal_top
         });
 
     // ── Channel picker window (modal-style; not actually modal, just floats) ──

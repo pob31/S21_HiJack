@@ -205,9 +205,7 @@ pub fn draw_gangs_tab(
                     .spacing([10.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("Name:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut tab.new_gang_name).desired_width(200.0),
-                        );
+                        theme::padded_text_edit(ui, &mut tab.new_gang_name, 240.0, true, "");
                         ui.end_row();
 
                         ui.label("Channel Type:");
@@ -230,11 +228,7 @@ pub fn draw_gangs_tab(
                         } else {
                             "1-4,7,12"
                         };
-                        ui.add(
-                            egui::TextEdit::singleline(&mut tab.new_gang_members)
-                                .hint_text(hint)
-                                .desired_width(200.0),
-                        );
+                        theme::padded_text_edit(ui, &mut tab.new_gang_members, 240.0, true, hint);
                         ui.end_row();
                     });
 

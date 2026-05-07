@@ -477,9 +477,12 @@ pub fn draw_setup_tab(
                 peer_section(ui, "Console (S21)", theme::ACCENT_BLUE, w_sat, MIN_TOP_HEIGHT, false, console_status, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("IP:");
-                        ui.add_enabled(
+                        theme::padded_text_edit(
+                            ui,
+                            &mut setup.console_ip,
+                            w_sat - 100.0,
                             !is_connected,
-                            egui::TextEdit::singleline(&mut setup.console_ip).desired_width(w_sat - 100.0),
+                            "",
                         )
                         .on_hover_text("S21 console IP address.");
                     });
@@ -783,9 +786,12 @@ pub fn draw_setup_tab(
                     server_grid("server_show_file_grid").show(ui, |ui| {
                         ui.label("Show file:");
                         ui.horizontal(|ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut setup.show_file_path)
-                                    .desired_width(w_hub - LABEL_COL_W - 120.0),
+                            theme::padded_text_edit(
+                                ui,
+                                &mut setup.show_file_path,
+                                w_hub - LABEL_COL_W - 120.0,
+                                true,
+                                "",
                             );
                             if ui
                                 .add(theme::action_button(
@@ -914,11 +920,12 @@ pub fn draw_setup_tab(
                         peer_section(ui, "iPad", theme::ACCENT_ORANGE, w_sat, MIN_TOP_HEIGHT, false, ipad_status, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label("IP:");
-                                ui.add_enabled(
+                                theme::padded_text_edit(
+                                    ui,
+                                    &mut setup.ipad_ip,
+                                    w_sat - 120.0,
                                     !is_connected,
-                                    egui::TextEdit::singleline(&mut setup.ipad_ip)
-                                        .desired_width(w_sat - 120.0)
-                                        .hint_text("auto-detect"),
+                                    "auto-detect",
                                 )
                                 .on_hover_text(
                                     "iPad device IP — leave blank to auto-detect from first inbound packet.",
@@ -1005,11 +1012,12 @@ pub fn draw_setup_tab(
                 peer_section(ui, "QLab", theme::ACCENT_AMBER, w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("IP:");
-                        ui.add_enabled(
+                        theme::padded_text_edit(
+                            ui,
+                            &mut setup.qlab_ip,
+                            w_sat - 100.0,
                             !is_connected,
-                            egui::TextEdit::singleline(&mut setup.qlab_ip)
-                                .desired_width(w_sat - 100.0)
-                                .hint_text("127.0.0.1"),
+                            "127.0.0.1",
                         )
                         .on_hover_text("QLab host — usually 127.0.0.1 if QLab runs on this machine.");
                     });

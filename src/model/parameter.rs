@@ -1350,12 +1350,16 @@ impl PaletteKind {
         }
     }
 
-    /// Operator-facing label for the kind picker.
+    /// Operator-facing label for the kind picker. Mirrors the
+    /// `ParameterSection` names — Dyn1/Dyn2 are kept generic instead of
+    /// "Compressor"/"Gate" because the same processor slot can be
+    /// configured as comp / gate / multiband-deesser depending on the
+    /// channel.
     pub fn label(&self) -> &'static str {
         match self {
-            PaletteKind::Eq => "EQ",
-            PaletteKind::Dyn1 => "Compressor",
-            PaletteKind::Dyn2 => "Gate",
+            PaletteKind::Eq => "Eq",
+            PaletteKind::Dyn1 => "Dyn1",
+            PaletteKind::Dyn2 => "Dyn2",
         }
     }
 

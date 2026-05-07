@@ -237,6 +237,41 @@ pub fn action_button(text: &str, color: egui::Color32, size: egui::Vec2) -> egui
         .corner_radius(6.0)
 }
 
+// ─── Text-edit sizing primitives ──────────────────────────────────────
+//
+// Forces a consistent height + inner margin on single-line text edits
+// so they line up cleanly across forms (Setup ports / IPs / show file,
+// Gangs name + members, Snapshots fields…).
+
+/// Standard rendered height for a single-line `TextEdit`.
+pub const TEXT_EDIT_HEIGHT: f32 = 26.0;
+
+/// Inner margin (text-to-border padding) for `TextEdit`s — gives the
+/// text a bit of breathing room inside the box.
+pub const TEXT_EDIT_MARGIN: egui::Margin = egui::Margin::symmetric(6, 4);
+
+/// Render a single-line `TextEdit` with the standard inner margin and
+/// an explicit forced rect via `add_sized`. Useful when the edit lives
+/// inside a `Grid` cell or other auto-sizing container that would
+/// otherwise squeeze the box to fit its current text. Pass an empty
+/// `hint` for none.
+pub fn padded_text_edit(
+    ui: &mut egui::Ui,
+    value: &mut String,
+    width: f32,
+    enabled: bool,
+    hint: &str,
+) -> egui::Response {
+    ui.add_enabled_ui(enabled, |ui| {
+        let mut edit = egui::TextEdit::singleline(value).margin(TEXT_EDIT_MARGIN);
+        if !hint.is_empty() {
+            edit = edit.hint_text(hint);
+        }
+        ui.add_sized([width, TEXT_EDIT_HEIGHT], edit)
+    })
+    .inner
+}
+
 /// Scope/section toggle block — green when active, grey when inactive.
 /// Returns the response for click detection.
 pub fn toggle_block(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {

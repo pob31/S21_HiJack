@@ -172,7 +172,7 @@ pub fn draw_snapshots_tab(
 
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut snap_state.new_template_name).desired_width(150.0));
+                            theme::padded_text_edit(ui, &mut snap_state.new_template_name, 200.0, true, "");
                             let save_btn = theme::action_button("Save Template", theme::ACCENT_GREEN, egui::Vec2::new(100.0, 28.0));
                             if ui.add(save_btn).clicked() && !snap_state.new_template_name.is_empty() {
                                 let template = snap_state.scope_editor.to_scope_template(
@@ -344,9 +344,9 @@ pub fn draw_snapshots_tab(
                         // Add cue controls
                         ui.horizontal(|ui| {
                             ui.label("Cue #:");
-                            ui.add(egui::TextEdit::singleline(&mut snap_state.new_cue_number).desired_width(50.0));
+                            theme::padded_text_edit(ui, &mut snap_state.new_cue_number, 80.0, true, "");
                             ui.label("Name:");
-                            ui.add(egui::TextEdit::singleline(&mut snap_state.new_cue_name).desired_width(120.0));
+                            theme::padded_text_edit(ui, &mut snap_state.new_cue_name, 180.0, true, "");
                         });
 
                         // Snapshot selector for new cue
@@ -566,7 +566,7 @@ pub fn draw_snapshots_tab(
                         // the selection-count gate only applies to ApplyOnSave.
                         ui.horizontal(|ui| {
                             ui.label("Name:");
-                            ui.add(egui::TextEdit::singleline(&mut snap_state.new_snapshot_name).desired_width(150.0));
+                            theme::padded_text_edit(ui, &mut snap_state.new_snapshot_name, 220.0, true, "");
 
                             let scope_required = matches!(
                                 snap_state.pending_kind,
@@ -775,10 +775,12 @@ pub fn draw_snapshots_tab(
                             }
                             ui.horizontal(|ui| {
                                 ui.label("Console memory row:");
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut snap_state.console_snapshot_input)
-                                        .desired_width(60.0)
-                                        .hint_text("none"),
+                                theme::padded_text_edit(
+                                    ui,
+                                    &mut snap_state.console_snapshot_input,
+                                    90.0,
+                                    true,
+                                    "none",
                                 );
                                 if ui.button("Apply").clicked() {
                                     let new_val: Option<i32> = if snap_state.console_snapshot_input.trim().is_empty() {
@@ -976,16 +978,10 @@ pub fn draw_snapshots_tab(
                     .spacing([10.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("Starting row (inclusive):");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut snap_state.shift_from_row)
-                                .desired_width(60.0),
-                        );
+                        theme::padded_text_edit(ui, &mut snap_state.shift_from_row, 90.0, true, "");
                         ui.end_row();
                         ui.label("Delta (e.g. +1 / -1):");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut snap_state.shift_delta)
-                                .desired_width(60.0),
-                        );
+                        theme::padded_text_edit(ui, &mut snap_state.shift_delta, 90.0, true, "");
                         ui.end_row();
                     });
                 ui.add_space(8.0);
