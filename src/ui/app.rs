@@ -441,95 +441,16 @@ impl eframe::App for HiJackApp {
                         }
                     }
 
-                    // ── Cue transport strip ──
-                    // GO / current-cue / PREV inline in the top bar, only
-                    // when the display mode supports cueing (Full / Theatre,
-                    // not Live music). Visually distinct from tabs via red /
-                    // blue fills and triangle glyphs so it doesn't read as
-                    // "yet another tab".
-                    if mode.cue_transport_visible() {
-                        ui.add_space(16.0);
-                        ui.label(egui::RichText::new("│").color(super::theme::TEXT_DISABLED));
-                        ui.add_space(6.0);
-
-                        let is_connected =
-                            self.connected.load(std::sync::atomic::Ordering::Relaxed);
-                        let (current_cue_text, has_cues) = {
-                            let mgr = self.runtime.block_on(self.cue_manager.read());
-                            let count = mgr.cue_list.cues.len();
-                            let label = mgr.current_cue().map(|c| {
-                                let name = if c.name.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" — {}", c.name)
-                                };
-                                format!("Cue {:.1}{}", c.cue_number, name)
-                            });
-                            (label, count > 0)
-                        };
-                        let transport_enabled = is_connected && has_cues;
-
-                        // PREV (red)
-                        let prev_btn = egui::Button::new(
-                            egui::RichText::new("◀ Prev")
-                                .color(super::theme::TEXT_PRIMARY)
-                                .strong(),
-                        )
-                        .fill(super::theme::ACCENT_RED)
-                        .corner_radius(4.0)
-                        .min_size(egui::Vec2::new(80.0, 26.0));
-                        if ui
-                            .add_enabled(transport_enabled, prev_btn)
-                            .on_hover_text("Recall the previous cue.")
-                            .clicked()
-                        {
-                            super::cue_transport::fire_prev(
-                                &self.cue_manager,
-                                &self.palette_manager,
-                                &self.snapshot_engine,
-                                &self.runtime,
-                                &self.ui_tx,
-                            );
-                        }
-
-                        // Current cue label — plain text, dimmed when none.
-                        ui.add_space(8.0);
-                        match current_cue_text {
-                            Some(label) => ui.label(
-                                egui::RichText::new(label)
-                                    .color(super::theme::TEXT_PRIMARY)
-                                    .strong(),
-                            ),
-                            None => ui
-                                .label(egui::RichText::new("—").color(super::theme::TEXT_DISABLED)),
-                        };
-                        ui.add_space(8.0);
-
-                        // GO (blue)
-                        let go_btn = egui::Button::new(
-                            egui::RichText::new("Go ▶")
-                                .color(super::theme::TEXT_PRIMARY)
-                                .strong(),
-                        )
-                        .fill(super::theme::ACCENT_BLUE)
-                        .corner_radius(4.0)
-                        .min_size(egui::Vec2::new(80.0, 26.0));
-                        if ui
-                            .add_enabled(transport_enabled, go_btn)
-                            .on_hover_text("Recall the next cue.")
-                            .clicked()
-                        {
-                            super::cue_transport::fire_go(
-                                &self.cue_manager,
-                                &self.palette_manager,
-                                &self.snapshot_engine,
-                                &self.runtime,
-                                &self.ui_tx,
-                            );
-                        }
-                    }
-
-                    // Connection status + offline toggle (right-aligned)
+                    // Right-side status group + centred cue transport.
+                    //
+                    // Layout strategy: the outer right-to-left scope reserves
+                    // all the space remaining after the tab buttons. The
+                    // status group (Connected dot + Online toggle) is rendered
+                    // first so it anchors to the right edge. The cue transport
+                    // is then placed in the leftover horizontal slack via a
+                    // nested left-to-right sub-region with symmetric padding,
+                    // so the strip stays centred between the tabs and the
+                    // Online toggle as the window resizes.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let is_connected =
                             self.connected.load(std::sync::atomic::Ordering::Relaxed);
@@ -572,6 +493,139 @@ impl eframe::App for HiJackApp {
                         {
                             is_offline = !is_offline;
                             self.offline_mode.store(is_offline, Ordering::Relaxed);
+                        }
+
+                        // ── Cue transport strip — centred in the slack
+                        // between the tab buttons (left) and the status
+                        // group above (right). Hidden in Live music mode.
+                        if mode.cue_transport_visible() {
+                            const PREV_W: f32 = 80.0;
+                            const GO_W: f32 = 80.0;
+                            // Preferred cue-label width — keeps Prev / Go
+                            // anchored as the current cue changes so
+                            // muscle memory still hits the buttons.
+                            const LABEL_W: f32 = 320.0;
+                            // Floor when the window is tight: still wide
+                            // enough to read "Cue 12.3 — A…" before the
+                            // ellipsis kicks in.
+                            const LABEL_MIN_W: f32 = 120.0;
+                            const GAP: f32 = 8.0;
+                            // Outer breathing room when the window is
+                            // wide; collapses to zero before the label
+                            // is allowed to shrink.
+                            const PAD_MAX: f32 = 24.0;
+
+                            let leftover_w = ui.available_width();
+                            let leftover_h = ui.available_height();
+
+                            // Two-stage responsive shrink:
+                            //   1. Trim outer padding from PAD_MAX → 0.
+                            //   2. Once padding is gone, shrink the cue
+                            //      label down to LABEL_MIN_W.
+                            let buttons_w = PREV_W + GO_W + GAP + GAP;
+                            let pref_w = buttons_w + LABEL_W;
+                            let (pad, label_w) = if leftover_w >= pref_w + PAD_MAX * 2.0 {
+                                (PAD_MAX, LABEL_W)
+                            } else if leftover_w >= pref_w {
+                                ((leftover_w - pref_w) / 2.0, LABEL_W)
+                            } else {
+                                let shrunk = (leftover_w - buttons_w).max(LABEL_MIN_W);
+                                (0.0, shrunk)
+                            };
+
+                            ui.allocate_ui_with_layout(
+                                egui::Vec2::new(leftover_w, leftover_h),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.add_space(pad);
+
+                                    let (current_cue_text, has_cues) = {
+                                        let mgr = self.runtime.block_on(self.cue_manager.read());
+                                        let count = mgr.cue_list.cues.len();
+                                        let label = mgr.current_cue().map(|c| {
+                                            let name = if c.name.is_empty() {
+                                                String::new()
+                                            } else {
+                                                format!(" — {}", c.name)
+                                            };
+                                            format!("Cue {:.1}{}", c.cue_number, name)
+                                        });
+                                        (label, count > 0)
+                                    };
+                                    let transport_enabled = is_connected && has_cues;
+
+                                    // PREV (red)
+                                    let prev_btn = egui::Button::new(
+                                        egui::RichText::new("◀ Prev")
+                                            .color(super::theme::TEXT_PRIMARY)
+                                            .strong(),
+                                    )
+                                    .fill(super::theme::ACCENT_RED)
+                                    .corner_radius(4.0)
+                                    .min_size(egui::Vec2::new(PREV_W, 26.0));
+                                    if ui
+                                        .add_enabled(transport_enabled, prev_btn)
+                                        .on_hover_text("Recall the previous cue.")
+                                        .clicked()
+                                    {
+                                        super::cue_transport::fire_prev(
+                                            &self.cue_manager,
+                                            &self.palette_manager,
+                                            &self.snapshot_engine,
+                                            &self.runtime,
+                                            &self.ui_tx,
+                                        );
+                                    }
+
+                                    ui.add_space(GAP);
+
+                                    // Cue label — fixed-width, centred,
+                                    // truncated with ellipsis if it would
+                                    // overflow. Dimmed `—` when no current
+                                    // cue is set.
+                                    let label_rich = match &current_cue_text {
+                                        Some(s) => egui::RichText::new(s)
+                                            .color(super::theme::TEXT_PRIMARY)
+                                            .strong(),
+                                        None => egui::RichText::new("—")
+                                            .color(super::theme::TEXT_DISABLED),
+                                    };
+                                    ui.allocate_ui_with_layout(
+                                        egui::Vec2::new(label_w, 26.0),
+                                        egui::Layout::centered_and_justified(
+                                            egui::Direction::LeftToRight,
+                                        ),
+                                        |ui| {
+                                            ui.add(egui::Label::new(label_rich).truncate());
+                                        },
+                                    );
+
+                                    ui.add_space(GAP);
+
+                                    // GO (blue)
+                                    let go_btn = egui::Button::new(
+                                        egui::RichText::new("Go ▶")
+                                            .color(super::theme::TEXT_PRIMARY)
+                                            .strong(),
+                                    )
+                                    .fill(super::theme::ACCENT_BLUE)
+                                    .corner_radius(4.0)
+                                    .min_size(egui::Vec2::new(GO_W, 26.0));
+                                    if ui
+                                        .add_enabled(transport_enabled, go_btn)
+                                        .on_hover_text("Recall the next cue.")
+                                        .clicked()
+                                    {
+                                        super::cue_transport::fire_go(
+                                            &self.cue_manager,
+                                            &self.palette_manager,
+                                            &self.snapshot_engine,
+                                            &self.runtime,
+                                            &self.ui_tx,
+                                        );
+                                    }
+                                },
+                            );
                         }
                     });
                 });
