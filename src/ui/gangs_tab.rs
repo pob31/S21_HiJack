@@ -200,6 +200,7 @@ pub fn draw_gangs_tab(
         const LEFT_COL_W: f32 = 360.0;
         let editing = tab.editing_gang_id.is_some();
         theme::card_frame().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             theme::section_heading(ui, if editing { "Edit Gang" } else { "New Gang" });
 
             // Compute the applicable section set once, here, so we can
@@ -218,7 +219,8 @@ pub fn draw_gangs_tab(
                     egui::Vec2::new(LEFT_COL_W, ui.available_height()),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        ui.set_width(LEFT_COL_W);
+                        ui.set_min_width(LEFT_COL_W);
+                        ui.set_max_width(LEFT_COL_W);
                         egui::Grid::new("add_gang_grid")
                             .num_columns(2)
                             .spacing([10.0, 6.0])
@@ -270,13 +272,19 @@ pub fn draw_gangs_tab(
 
                 // Right column — Linked Sections picker. Takes the rest
                 // of the form's width; horizontal_wrapped inside reflows
-                // the button rows when that width shrinks.
+                // the button rows when that width shrinks. Both
+                // set_min_width and set_max_width are needed (matches
+                // the monitor_tab pattern) so the wrapped row knows
+                // exactly where to break — without max_width, egui can
+                // let the child grow past the allocated rect and the
+                // tiles never wrap.
                 let right_w = ui.available_width();
                 ui.allocate_ui_with_layout(
                     egui::Vec2::new(right_w, ui.available_height()),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        ui.set_width(right_w);
+                        ui.set_min_width(right_w);
+                        ui.set_max_width(right_w);
                         ui.label(
                             egui::RichText::new("Linked Sections")
                                 .strong()
@@ -392,10 +400,17 @@ pub fn draw_gangs_tab(
 
         // ── Gang list card ── wrapped in its own ScrollArea so the list
         // can grow without pushing the form above it off-screen.
+        // `set_min_width(available)` is applied at every nesting level
+        // — Frames in egui size to their content by default, so without
+        // these explicit hints the gang-list card and each per-gang
+        // frame would shrink to the width of their longest row instead
+        // of spanning the window.
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 theme::card_frame().show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
                     theme::section_heading(ui, "Gang Groups");
 
                     let groups: Vec<GangGroup> = mgr.sorted_groups().into_iter().cloned().collect();
@@ -425,6 +440,7 @@ pub fn draw_gangs_tab(
                                 .corner_radius(6.0)
                                 .inner_margin(egui::Margin::same(8))
                                 .show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
                                     ui.horizontal(|ui| {
                                         // Enable/disable toggle
                                         let toggle_color = if group.enabled {
