@@ -296,30 +296,46 @@ pub fn draw_gangs_tab(
                         // layout via `UiBuilder::invisible` so the tile
                         // grid doesn't reshuffle when the operator flips
                         // channel type.
-                        ui.horizontal_wrapped(|ui| {
-                            for section in ParameterSection::all_variants() {
-                                let is_applicable = applicable.contains(section);
-                                let active = tab.new_gang_sections.contains(section);
-                                let builder = if is_applicable {
-                                    egui::UiBuilder::new()
-                                } else {
-                                    egui::UiBuilder::new().invisible()
-                                };
-                                let resp = ui
-                                    .scope_builder(builder, |ui| {
-                                        theme::toggle_block(ui, &section.to_string(), active)
-                                            .on_hover_text(section_tooltip(section))
-                                    })
-                                    .inner;
-                                if is_applicable && resp.clicked() {
-                                    if active {
-                                        tab.new_gang_sections.remove(section);
+                        //
+                        // We use an explicit `with_main_wrap(true)` layout
+                        // with a fixed `right_w` allocation rather than
+                        // `ui.horizontal_wrapped` because the wrapper
+                        // reads `available_size_before_wrap()` from the
+                        // current ui, and that read returns the inherited
+                        // (unbounded) max_rect when the parent chain
+                        // includes a `horizontal_top`. Pinning the wrap
+                        // size explicitly here is the only reliable way
+                        // to get the tiles to break onto a new row.
+                        let wrap_layout =
+                            egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true);
+                        ui.allocate_ui_with_layout(
+                            egui::Vec2::new(right_w, 0.0),
+                            wrap_layout,
+                            |ui| {
+                                for section in ParameterSection::all_variants() {
+                                    let is_applicable = applicable.contains(section);
+                                    let active = tab.new_gang_sections.contains(section);
+                                    let builder = if is_applicable {
+                                        egui::UiBuilder::new()
                                     } else {
-                                        tab.new_gang_sections.insert(section.clone());
+                                        egui::UiBuilder::new().invisible()
+                                    };
+                                    let resp = ui
+                                        .scope_builder(builder, |ui| {
+                                            theme::toggle_block(ui, &section.to_string(), active)
+                                                .on_hover_text(section_tooltip(section))
+                                        })
+                                        .inner;
+                                    if is_applicable && resp.clicked() {
+                                        if active {
+                                            tab.new_gang_sections.remove(section);
+                                        } else {
+                                            tab.new_gang_sections.insert(section.clone());
+                                        }
                                     }
                                 }
-                            }
-                        });
+                            },
+                        );
                     },
                 );
             });
@@ -440,98 +456,110 @@ pub fn draw_gangs_tab(
                                 .corner_radius(6.0)
                                 .inner_margin(egui::Margin::same(8))
                                 .show(ui, |ui| {
-                                    ui.set_min_width(ui.available_width());
-                                    ui.horizontal(|ui| {
-                                        // Enable/disable toggle
-                                        let toggle_color = if group.enabled {
-                                            theme::ACCENT_GREEN
-                                        } else {
-                                            theme::BG_ELEVATED
-                                        };
-                                        let toggle_label = if group.enabled { "ON" } else { "OFF" };
-                                        let toggle_btn = egui::Button::new(
-                                            egui::RichText::new(toggle_label)
-                                                .color(theme::TEXT_PRIMARY)
-                                                .strong()
-                                                .small(),
-                                        )
-                                        .fill(toggle_color)
-                                        .corner_radius(4.0);
-                                        if ui.add(toggle_btn).clicked() {
-                                            to_toggle = Some((group.id, !group.enabled));
-                                        }
+                                    let row_w = ui.available_width();
+                                    ui.set_min_width(row_w);
+                                    // Wrap the controls + section badges row so a
+                                    // gang with many linked sections doesn't run
+                                    // off the right edge on narrow windows.
+                                    let wrap_layout =
+                                        egui::Layout::left_to_right(egui::Align::Center)
+                                            .with_main_wrap(true);
+                                    ui.allocate_ui_with_layout(
+                                        egui::Vec2::new(row_w, 0.0),
+                                        wrap_layout,
+                                        |ui| {
+                                            // Enable/disable toggle
+                                            let toggle_color = if group.enabled {
+                                                theme::ACCENT_GREEN
+                                            } else {
+                                                theme::BG_ELEVATED
+                                            };
+                                            let toggle_label =
+                                                if group.enabled { "ON" } else { "OFF" };
+                                            let toggle_btn = egui::Button::new(
+                                                egui::RichText::new(toggle_label)
+                                                    .color(theme::TEXT_PRIMARY)
+                                                    .strong()
+                                                    .small(),
+                                            )
+                                            .fill(toggle_color)
+                                            .corner_radius(4.0);
+                                            if ui.add(toggle_btn).clicked() {
+                                                to_toggle = Some((group.id, !group.enabled));
+                                            }
 
-                                        // Pause button
-                                        let pause_color = if group.paused {
-                                            theme::ACCENT_ORANGE
-                                        } else {
-                                            theme::BG_ELEVATED
-                                        };
-                                        let pause_label =
-                                            if group.paused { "PAUSED" } else { "||" };
-                                        let pause_btn = egui::Button::new(
-                                            egui::RichText::new(pause_label)
-                                                .color(theme::TEXT_PRIMARY)
-                                                .small(),
-                                        )
-                                        .fill(pause_color)
-                                        .corner_radius(4.0);
-                                        if ui.add_enabled(group.enabled, pause_btn).clicked() {
-                                            to_pause = Some((group.id, !group.paused));
-                                        }
+                                            // Pause button
+                                            let pause_color = if group.paused {
+                                                theme::ACCENT_ORANGE
+                                            } else {
+                                                theme::BG_ELEVATED
+                                            };
+                                            let pause_label =
+                                                if group.paused { "PAUSED" } else { "||" };
+                                            let pause_btn = egui::Button::new(
+                                                egui::RichText::new(pause_label)
+                                                    .color(theme::TEXT_PRIMARY)
+                                                    .small(),
+                                            )
+                                            .fill(pause_color)
+                                            .corner_radius(4.0);
+                                            if ui.add_enabled(group.enabled, pause_btn).clicked() {
+                                                to_pause = Some((group.id, !group.paused));
+                                            }
 
-                                        ui.add_space(4.0);
+                                            ui.add_space(4.0);
 
-                                        // Mode toggle (Relative / Absolute) — full words
-                                        // since the row has plenty of horizontal room.
-                                        let rel_btn = egui::Button::new(
-                                            egui::RichText::new("Relative").small(),
-                                        )
-                                        .selected(group.mode == GangMode::Relative)
-                                        .corner_radius(4.0);
-                                        if ui.add_enabled(group.enabled, rel_btn).clicked() {
-                                            to_set_mode = Some((group.id, GangMode::Relative));
-                                        }
-                                        let abs_btn = egui::Button::new(
-                                            egui::RichText::new("Absolute").small(),
-                                        )
-                                        .selected(group.mode == GangMode::Absolute)
-                                        .corner_radius(4.0);
-                                        if ui.add_enabled(group.enabled, abs_btn).clicked() {
-                                            to_set_mode = Some((group.id, GangMode::Absolute));
-                                        }
+                                            // Mode toggle (Relative / Absolute) — full words
+                                            // since the row has plenty of horizontal room.
+                                            let rel_btn = egui::Button::new(
+                                                egui::RichText::new("Relative").small(),
+                                            )
+                                            .selected(group.mode == GangMode::Relative)
+                                            .corner_radius(4.0);
+                                            if ui.add_enabled(group.enabled, rel_btn).clicked() {
+                                                to_set_mode = Some((group.id, GangMode::Relative));
+                                            }
+                                            let abs_btn = egui::Button::new(
+                                                egui::RichText::new("Absolute").small(),
+                                            )
+                                            .selected(group.mode == GangMode::Absolute)
+                                            .corner_radius(4.0);
+                                            if ui.add_enabled(group.enabled, abs_btn).clicked() {
+                                                to_set_mode = Some((group.id, GangMode::Absolute));
+                                            }
 
-                                        ui.add_space(8.0);
+                                            ui.add_space(8.0);
 
-                                        // Gang name
-                                        ui.label(
-                                            egui::RichText::new(&group.name)
-                                                .strong()
-                                                .color(theme::TEXT_PRIMARY),
-                                        );
-
-                                        ui.add_space(8.0);
-
-                                        // Member badge
-                                        let member_text = format_members(&group.members);
-                                        let member_color = if !group.members.is_empty() {
-                                            theme::channel_color(&group.members[0])
-                                        } else {
-                                            theme::BG_ELEVATED
-                                        };
-                                        theme::colored_badge(ui, &member_text, member_color);
-
-                                        ui.add_space(4.0);
-
-                                        // Section badges
-                                        for section in &group.linked_sections {
-                                            theme::colored_badge(
-                                                ui,
-                                                &section.to_string(),
-                                                theme::SCOPE_ACTIVE,
+                                            // Gang name
+                                            ui.label(
+                                                egui::RichText::new(&group.name)
+                                                    .strong()
+                                                    .color(theme::TEXT_PRIMARY),
                                             );
-                                        }
-                                    });
+
+                                            ui.add_space(8.0);
+
+                                            // Member badge
+                                            let member_text = format_members(&group.members);
+                                            let member_color = if !group.members.is_empty() {
+                                                theme::channel_color(&group.members[0])
+                                            } else {
+                                                theme::BG_ELEVATED
+                                            };
+                                            theme::colored_badge(ui, &member_text, member_color);
+
+                                            ui.add_space(4.0);
+
+                                            // Section badges
+                                            for section in &group.linked_sections {
+                                                theme::colored_badge(
+                                                    ui,
+                                                    &section.to_string(),
+                                                    theme::SCOPE_ACTIVE,
+                                                );
+                                            }
+                                        },
+                                    );
 
                                     // Action buttons row
                                     ui.horizontal(|ui| {
