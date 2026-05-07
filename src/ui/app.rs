@@ -715,11 +715,11 @@ impl eframe::App for HiJackApp {
         // Main content
         egui::CentralPanel::default().show(ctx, |ui| {
             // Reset transient per-tab state when the user navigates away.
-            // Pan Link's edit-mode is a "live editing" toggle that should
-            // default to off whenever the operator returns to the tab,
-            // even though it persists while browsing inputs within the tab.
+            // Pan Link's stage / apply buffer should drop unapplied work
+            // and clear the input selection on tab switch — re-entry
+            // always lands on a clean slate. Idempotent each frame.
             if self.active_tab != Tab::PanLink {
-                self.pan_link.edit_mode = false;
+                self.pan_link.mark_needs_sync();
             }
 
             match self.active_tab {

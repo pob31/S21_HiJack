@@ -1,12 +1,22 @@
-//! Pan Link tab — bind input channel main pan to stereo aux send pans.
+//! Pan Link tab — multi-input grid + multi-aux grid, stage + apply.
 //!
-//! Layout: channel selector at the top, existing-bindings strip below it,
-//! then a grid of aux tiles for the selected input. Mono auxes are greyed
-//! out; stereo auxes are blue (not sending) or green (sending), with a
-//! brighter tint when the link is active for that input→aux node.
+//! The operator clicks input tiles in the left grid (single click toggles,
+//! Shift+Click extends a range from the last anchor) and aux tiles on the
+//! right to stage / unstage links for every selected input. Apply commits
+//! the staged bindings; Revert restores the live state. Mono auxes are
+//! dimmed and inert. Auxes that are linked for *some but not all* of the
+//! selected inputs render with thick diagonal stripes; clicking those
+//! promotes them to "all linked" first.
+//!
+//! Apply does NOT eagerly push the input's main pan to the aux send pan —
+//! bindings stay dormant until the runtime mirror loop in
+//! `pan_link_engine.rs` next sees a main-pan change. This avoids the aux
+//! pan snapping the moment a binding is established.
 
+use std::collections::BTreeSet;
+use std::ops::Deref;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use eframe::egui;
 use tokio::sync::RwLock;
@@ -18,36 +28,74 @@ use crate::model::pan_link::PanLinkBindings;
 use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
-use crate::osc::encode;
 
 /// Per-frame state for the Pan Link tab.
 pub struct PanLinkTabState {
-    /// 1-based input channel currently in focus.
-    pub selected_input: u8,
-    /// Whether aux-tile clicks toggle pan links. Default off so glances
-    /// at the tab don't risk accidental edits during a show. The flag
-    /// persists while browsing through inputs but is reset to `false`
-    /// by `App::update` whenever the active tab moves away from
-    /// `Tab::PanLink`, so re-entering the tab always lands on the
-    /// safe non-editing state.
-    pub edit_mode: bool,
+    /// Inputs included in the current operation. Aux tile clicks toggle
+    /// the link for every input in this set.
+    pub selected_inputs: BTreeSet<u8>,
+    /// Last clicked input — anchor for Shift+Click range selection.
+    pub range_anchor: Option<u8>,
+    /// Working copy of the bindings. Tile clicks mutate this; only Apply
+    /// writes back to the live `PanLinkBindings`.
+    pub staged: PanLinkBindings,
+    /// Snapshot of the live bindings as of the last Apply or tab entry.
+    /// Used to detect dirty state and to power Revert.
+    pub baseline: PanLinkBindings,
+    /// True until the next frame after a tab-switch has had a chance to
+    /// re-seed `staged` and `baseline` from the live bindings. Defaults
+    /// to true so a freshly-constructed state syncs on first frame.
+    pub needs_baseline_sync: bool,
 }
 
 impl Default for PanLinkTabState {
     fn default() -> Self {
         Self {
-            selected_input: 1,
-            edit_mode: false,
+            selected_inputs: BTreeSet::new(),
+            range_anchor: None,
+            staged: PanLinkBindings::default(),
+            baseline: PanLinkBindings::default(),
+            needs_baseline_sync: true,
         }
     }
 }
+
+impl PanLinkTabState {
+    fn dirty(&self) -> bool {
+        self.staged != self.baseline
+    }
+
+    fn revert(&mut self) {
+        self.staged = self.baseline.clone();
+    }
+
+    fn seed_from_live(&mut self, live: &PanLinkBindings) {
+        self.baseline = live.clone();
+        self.staged = live.clone();
+        self.needs_baseline_sync = false;
+    }
+
+    /// Called by `app.rs` whenever the operator is on a tab other than
+    /// Pan Link. Re-entry should land on a clean slate even if bindings
+    /// were modified elsewhere, so we drop any unapplied stage and clear
+    /// the input selection. Idempotent — runs every frame while away.
+    pub fn mark_needs_sync(&mut self) {
+        self.selected_inputs.clear();
+        self.range_anchor = None;
+        self.needs_baseline_sync = true;
+    }
+}
+
+const TILE_SIZE: egui::Vec2 = egui::Vec2::new(82.0, 52.0);
+const TILES_PER_INPUT_ROW: u8 = 10;
+const TILES_PER_AUX_ROW: u8 = 4;
 
 pub fn draw_pan_link_tab(
     ui: &mut egui::Ui,
     tab: &mut PanLinkTabState,
     bindings: &Arc<RwLock<PanLinkBindings>>,
     console_state: &Arc<RwLock<ConsoleState>>,
-    sender: &Option<OscSender>,
+    _sender: &Option<OscSender>,
     _connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
 ) {
@@ -62,14 +110,7 @@ pub fn draw_pan_link_tab(
     let mix_types = state_guard.config.mix_output_types.clone();
     let mix_modes = state_guard.config.mix_output_modes.clone();
 
-    if tab.selected_input == 0 {
-        tab.selected_input = 1;
-    }
-    if input_count > 0 && tab.selected_input > input_count {
-        tab.selected_input = input_count;
-    }
-
-    let bindings_snapshot: PanLinkBindings = match bindings.try_read() {
+    let live: PanLinkBindings = match bindings.try_read() {
         Ok(b) => b.clone(),
         Err(_) => {
             ui.label("Loading pan link bindings…");
@@ -77,343 +118,548 @@ pub fn draw_pan_link_tab(
         }
     };
 
+    // Seed staged + baseline when:
+    //  1. It's the first frame after a tab entry (explicit flag), OR
+    //  2. We're clean and the live bindings drifted (e.g. a show-file
+    //     load happened while we sat on the tab) — adopt the new live
+    //     as baseline so the operator sees the change.
+    // While dirty, leave both alone so unapplied work isn't clobbered.
+    if tab.needs_baseline_sync || (!tab.dirty() && live != tab.baseline) {
+        tab.seed_from_live(&live);
+    }
+
+    // Build the aux bus list once — preserves the unified-bus ordering
+    // that `bindings` use to key entries. Mono auxes stay in the list so
+    // the grid layout matches the desk; they'll just render dimmed.
+    let aux_buses: Vec<AuxBusInfo> = (1..=total_buses)
+        .filter_map(|bus| {
+            let idx = (bus - 1) as usize;
+            let is_aux = mix_types.get(idx).copied().unwrap_or(true);
+            if !is_aux {
+                return None;
+            }
+            let stereo = matches!(mix_modes.get(idx), Some(ChannelMode::Stereo));
+            let label = state_guard.config.bus_label(bus);
+            Some(AuxBusInfo { bus, label, stereo })
+        })
+        .collect();
+
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            // ── Channel selector + name + linked-inputs chips ──
-            // The selector card folds in the previously-separate "Existing
-            // bindings" navigation: a compact chip row right under the
-            // selector lists inputs that have pan links, clickable to jump
-            // to them. No more standalone card duplicating the navigation.
+            // Header card: title + dirty indicator + Apply / Revert.
             theme::card_frame().show(ui, |ui| {
-                theme::section_heading(ui, "Pan Link");
-                ui.horizontal(|ui| {
-                    ui.label("Input channel:");
-                    if ui
-                        .add_enabled(
-                            tab.selected_input > 1,
-                            egui::Button::new("◀").min_size(egui::Vec2::new(28.0, 22.0)),
-                        )
-                        .clicked()
-                    {
-                        tab.selected_input = tab.selected_input.saturating_sub(1).max(1);
-                    }
-
-                    // DragValue allows both dragging and click-to-type for the
-                    // channel number — replaces the previous read-only label.
-                    let max_input = input_count.max(1) as u32;
-                    let mut input_val = tab.selected_input as u32;
-                    let drag = ui.add(
-                        egui::DragValue::new(&mut input_val)
-                            .range(1..=max_input)
-                            .speed(0.2),
-                    );
-                    if drag.changed() {
-                        tab.selected_input = (input_val as u8).clamp(1, input_count.max(1));
-                    }
-
-                    if ui
-                        .add_enabled(
-                            tab.selected_input < input_count,
-                            egui::Button::new("▶").min_size(egui::Vec2::new(28.0, 22.0)),
-                        )
-                        .clicked()
-                    {
-                        tab.selected_input = (tab.selected_input + 1).min(input_count);
-                    }
-                    ui.label(
-                        egui::RichText::new(format!("/ {input_count}"))
-                            .color(theme::TEXT_SECONDARY)
-                            .small(),
-                    );
-
-                    // Channel name from live state — always rendered, with a
-                    // dimmed "(unnamed)" placeholder when the console hasn't
-                    // assigned a name. Helps confirm the right channel is
-                    // selected without the user having to scrub through.
-                    ui.add_space(10.0);
-                    let name = state_guard
-                        .get(&ParameterAddress {
-                            channel: ChannelId::Input(tab.selected_input),
-                            parameter: ParameterPath::Name,
-                        })
-                        .and_then(|v| match v {
-                            ParameterValue::String(s) => Some(s.as_str()),
-                            _ => None,
-                        })
-                        .unwrap_or("");
-                    if name.is_empty() {
-                        ui.label(
-                            egui::RichText::new("(unnamed)")
-                                .color(theme::TEXT_DISABLED)
-                                .italics(),
-                        );
-                    } else {
-                        ui.label(
-                            egui::RichText::new(format!("\u{201C}{}\u{201D}", name))
-                                .color(theme::TEXT_PRIMARY)
-                                .strong(),
-                        );
-                    }
-                });
-
-                // Compact chip strip — only renders when there's at least one
-                // pan link to point to. Each chip jumps the selector to that
-                // input. Replaces the standalone "Existing bindings" card.
-                let linked_inputs = bindings_snapshot.linked_inputs();
-                if !linked_inputs.is_empty() {
-                    ui.add_space(6.0);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            egui::RichText::new("Has pan links:")
-                                .color(theme::TEXT_SECONDARY)
-                                .small(),
-                        );
-                        for input in linked_inputs {
-                            let aux_count = bindings_snapshot.auxes_for(input).len();
-                            let label = format!("Ch {input} ({aux_count})");
-                            let is_selected = input == tab.selected_input;
-                            let fill = if is_selected {
-                                theme::ACCENT_BLUE
-                            } else {
-                                theme::BG_ELEVATED
-                            };
-                            let btn = egui::Button::new(
-                                egui::RichText::new(label)
-                                    .color(theme::TEXT_PRIMARY)
-                                    .small(),
-                            )
-                            .fill(fill)
-                            .corner_radius(4.0);
-                            if ui.add(btn).clicked() {
-                                tab.selected_input = input;
-                            }
-                        }
-                    });
-                }
-            });
-
-            ui.add_space(8.0);
-
-            // ── Aux tile grid ──
-            theme::card_frame().show(ui, |ui| {
-                // Heading row carries the Edit toggle on the right. Aux tiles
-                // are read-only until the user explicitly enables editing,
-                // protecting against accidental link toggles mid-show.
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(format!("Aux sends for input {}", tab.selected_input))
+                        egui::RichText::new("Pan Link")
                             .size(theme::FONT_SIZE_SECTION)
                             .strong()
                             .color(theme::TEXT_PRIMARY),
                     );
+
+                    let dirty = tab.dirty();
+                    let staged_count = tab
+                        .staged
+                        .active
+                        .symmetric_difference(&tab.baseline.active)
+                        .count();
+                    if dirty {
+                        ui.add_space(8.0);
+                        ui.colored_label(theme::ACCENT_AMBER, format!("● {staged_count} staged"));
+                    }
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let (fill, text_color, label) = if tab.edit_mode {
-                            (theme::ACCENT_AMBER, theme::TEXT_PRIMARY, "Edit · on")
-                        } else {
-                            (theme::BG_ELEVATED, theme::TEXT_SECONDARY, "Edit")
-                        };
-                        let btn = egui::Button::new(
-                            egui::RichText::new(label).color(text_color).strong(),
-                        )
-                        .fill(fill)
-                        .corner_radius(4.0)
-                        .min_size(egui::Vec2::new(86.0, 26.0));
+                        let revert_btn = theme::action_button(
+                            "Revert",
+                            theme::BG_ELEVATED,
+                            egui::Vec2::new(80.0, 26.0),
+                        );
                         if ui
-                            .add(btn)
+                            .add_enabled(dirty, revert_btn)
                             .on_hover_text(
-                                "Click to enable / disable toggling pan links. Resets when \
-                                     leaving the Pan Link tab.",
+                                "Discard staged changes and resync with the live bindings.",
                             )
                             .clicked()
                         {
-                            tab.edit_mode = !tab.edit_mode;
+                            tab.revert();
+                        }
+                        ui.add_space(6.0);
+                        let apply_btn = theme::action_button(
+                            "Apply",
+                            theme::ACCENT_GREEN,
+                            egui::Vec2::new(80.0, 26.0),
+                        );
+                        if ui
+                            .add_enabled(dirty, apply_btn)
+                            .on_hover_text(
+                                "Commit staged links. Aux send pans don't move until \
+                                 the input main pan next changes.",
+                            )
+                            .clicked()
+                        {
+                            let staged_clone = tab.staged.clone();
+                            let bindings_arc = bindings.clone();
+                            runtime.spawn(async move {
+                                let mut guard = bindings_arc.write().await;
+                                *guard = staged_clone;
+                            });
+                            tab.baseline = tab.staged.clone();
                         }
                     });
                 });
                 ui.add_space(2.0);
-                let strip_w = ui.available_width();
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::Vec2::new(strip_w, 1.0), egui::Sense::hover());
-                ui.painter().rect_filled(rect, 0.0, theme::BORDER_SUBTLE);
-                ui.add_space(6.0);
-
                 ui.label(
                     egui::RichText::new(
-                        "Mono auxes are disabled. Blue = not sending. Green = sending. \
-                     Brighter = pan link active.",
+                        "Click inputs to select; Shift+Click for a range. Click stereo \
+                         aux tiles to stage links across all selected inputs. Diagonal \
+                         stripes mean partial — click promotes to all-linked first.",
                     )
                     .color(theme::TEXT_SECONDARY)
                     .small(),
                 );
-                ui.add_space(6.0);
+            });
 
-                // Iterate the unified bus space; show only buses configured as auxes.
-                let mut clicked_bus: Option<u8> = None;
-                ui.horizontal_wrapped(|ui| {
-                    for bus in 1..=total_buses {
-                        let idx0 = (bus - 1) as usize;
-                        let is_aux = mix_types.get(idx0).copied().unwrap_or(true);
-                        if !is_aux {
-                            continue;
-                        }
-                        let is_stereo = matches!(mix_modes.get(idx0), Some(ChannelMode::Stereo));
-                        let label = state_guard.config.bus_label(bus);
+            ui.add_space(8.0);
 
-                        // Sending? Read live SendEnabled state for this input → bus.
-                        let sending = match state_guard.get(&ParameterAddress {
-                            channel: ChannelId::Input(tab.selected_input),
-                            parameter: ParameterPath::SendEnabled(bus),
-                        }) {
-                            Some(ParameterValue::Bool(b)) => *b,
-                            Some(ParameterValue::Int(i)) => *i != 0,
-                            Some(ParameterValue::Float(f)) => f.abs() > f32::EPSILON,
-                            _ => false,
-                        };
-                        let active = bindings_snapshot.is_active(tab.selected_input, bus);
-
-                        if draw_aux_tile(ui, &label, is_stereo, sending, active, tab.edit_mode) {
-                            clicked_bus = Some(bus);
-                        }
-                    }
+            // Input grid + aux grid, side-by-side.
+            theme::card_frame().show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    draw_inputs_panel(ui, tab, state_guard.deref(), input_count);
+                    ui.add_space(16.0);
+                    draw_auxes_panel(ui, tab, &aux_buses);
                 });
-
-                // Apply click outside the borrow of `mix_modes` etc.
-                if let Some(bus) = clicked_bus {
-                    let was_active = bindings_snapshot.is_active(tab.selected_input, bus);
-                    let new_active = !was_active;
-                    let bindings_arc = bindings.clone();
-                    let input = tab.selected_input;
-                    runtime.spawn(async move {
-                        let mut b = bindings_arc.write().await;
-                        b.set_active(input, bus, new_active);
-                    });
-
-                    // On enabling: push the input's current main pan to that aux's
-                    // send pan immediately so the linked aux snaps to the live pan
-                    // (matches the absolute semantics).
-                    if new_active {
-                        let current_pan = state_guard
-                            .get(&ParameterAddress {
-                                channel: ChannelId::Input(tab.selected_input),
-                                parameter: ParameterPath::Pan,
-                            })
-                            .cloned();
-                        if let (Some(pan), Some(snd)) = (current_pan, sender.clone()) {
-                            let target = ParameterAddress {
-                                channel: ChannelId::Input(tab.selected_input),
-                                parameter: ParameterPath::SendPan(bus),
-                            };
-                            if let Some((path, args)) = encode::encode_parameter(&target, &pan) {
-                                runtime.spawn(async move {
-                                    let _ = snd.send(&path, args).await;
-                                });
-                            }
-                        }
-                    }
-                }
             });
         });
 
-    // Suppress unused-variable warning when sender is None and no tile clicked.
-    let _ = sender;
-    let _ = _connected.load(Ordering::Relaxed);
     drop(state_guard);
 }
 
-/// Draw a single aux tile and return true if it was clicked (and is enabled).
-///
-/// `editable` gates click sensing — when false, stereo tiles still render
-/// their state but ignore clicks, matching the read-only mode the user
-/// gets when entering the Pan Link tab.
-fn draw_aux_tile(
+struct AuxBusInfo {
+    /// Unified mix-output bus index (1-based).
+    bus: u8,
+    label: String,
+    stereo: bool,
+}
+
+fn draw_inputs_panel(
     ui: &mut egui::Ui,
-    label: &str,
-    is_stereo: bool,
-    sending: bool,
-    active: bool,
-    editable: bool,
-) -> bool {
-    let size = egui::Vec2::new(110.0, 50.0);
+    tab: &mut PanLinkTabState,
+    state: &ConsoleState,
+    input_count: u8,
+) {
+    let panel_width = TILE_SIZE.x * (TILES_PER_INPUT_ROW as f32) + 24.0;
+    ui.vertical(|ui| {
+        ui.set_width(panel_width);
 
-    // Mono = disabled grey. Stereo: blue (not sending) / green (sending),
-    // dark when link inactive, bright when link active.
-    let fill = if !is_stereo {
-        theme::BG_PANEL
-    } else if sending {
-        if active {
-            egui::Color32::from_rgb(0x00, 0xC0, 0x40)
-        } else {
-            egui::Color32::from_rgb(0x00, 0x55, 0x1E)
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Inputs")
+                    .strong()
+                    .color(theme::TEXT_PRIMARY),
+            );
+            ui.label(
+                egui::RichText::new(format!("({} selected)", tab.selected_inputs.len()))
+                    .color(theme::TEXT_SECONDARY)
+                    .small(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let clear_btn = theme::action_button(
+                    "Clear selection",
+                    theme::BG_ELEVATED,
+                    egui::Vec2::new(110.0, 24.0),
+                );
+                if ui
+                    .add_enabled(!tab.selected_inputs.is_empty(), clear_btn)
+                    .clicked()
+                {
+                    tab.selected_inputs.clear();
+                    tab.range_anchor = None;
+                }
+            });
+        });
+        ui.add_space(4.0);
+
+        if input_count == 0 {
+            ui.colored_label(
+                theme::TEXT_SECONDARY,
+                "No inputs configured — connect to console or load a show file.",
+            );
+            return;
         }
-    } else if active {
-        egui::Color32::from_rgb(0x2D, 0x8B, 0xC9)
-    } else {
-        egui::Color32::from_rgb(0x14, 0x3D, 0x5A)
-    };
 
-    let text_color = if !is_stereo {
-        theme::TEXT_DISABLED
-    } else {
-        egui::Color32::WHITE
-    };
+        let shift_held = ui.input(|i| i.modifiers.shift);
+        let mut clicked_input: Option<u8> = None;
+        let mut n: u8 = 1;
+        while n <= input_count {
+            ui.horizontal(|ui| {
+                let row_end = (n + TILES_PER_INPUT_ROW - 1).min(input_count);
+                for ch in n..=row_end {
+                    let selected = tab.selected_inputs.contains(&ch);
+                    let has_link = tab.staged.active.iter().any(|(input, _)| *input == ch);
+                    let name = state
+                        .get(&ParameterAddress {
+                            channel: ChannelId::Input(ch),
+                            parameter: ParameterPath::Name,
+                        })
+                        .and_then(|v| match v {
+                            ParameterValue::String(s) if !s.is_empty() => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    if draw_input_tile(ui, ch, &name, selected, has_link).clicked() {
+                        clicked_input = Some(ch);
+                    }
+                }
+            });
+            n += TILES_PER_INPUT_ROW;
+        }
 
-    let clickable = is_stereo && editable;
+        if let Some(ch) = clicked_input {
+            apply_input_click(tab, ch, shift_held);
+        }
+    });
+}
+
+fn apply_input_click(tab: &mut PanLinkTabState, ch: u8, shift_held: bool) {
+    if shift_held {
+        if let Some(anchor) = tab.range_anchor {
+            let (lo, hi) = if anchor <= ch {
+                (anchor, ch)
+            } else {
+                (ch, anchor)
+            };
+            for c in lo..=hi {
+                tab.selected_inputs.insert(c);
+            }
+            tab.range_anchor = Some(ch);
+            return;
+        }
+    }
+    // Plain click — toggle, and re-anchor.
+    if !tab.selected_inputs.insert(ch) {
+        tab.selected_inputs.remove(&ch);
+    }
+    tab.range_anchor = Some(ch);
+}
+
+fn draw_auxes_panel(ui: &mut egui::Ui, tab: &mut PanLinkTabState, aux_buses: &[AuxBusInfo]) {
+    let panel_width = TILE_SIZE.x * (TILES_PER_AUX_ROW as f32) + 24.0;
+    ui.vertical(|ui| {
+        ui.set_width(panel_width);
+        ui.label(
+            egui::RichText::new("Auxes")
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+        );
+        ui.add_space(4.0);
+
+        if aux_buses.is_empty() {
+            ui.colored_label(theme::TEXT_SECONDARY, "No auxes configured.");
+            return;
+        }
+
+        let mut clicked_aux: Option<u8> = None;
+        for chunk in aux_buses.chunks(TILES_PER_AUX_ROW as usize) {
+            ui.horizontal(|ui| {
+                for info in chunk {
+                    let aux_state = compute_aux_state(tab, info);
+                    if draw_aux_tile(ui, &info.label, info.stereo, aux_state).clicked()
+                        && info.stereo
+                        && !tab.selected_inputs.is_empty()
+                    {
+                        clicked_aux = Some(info.bus);
+                    }
+                }
+            });
+        }
+
+        if let Some(bus) = clicked_aux {
+            // Click cycle: Mixed → All-linked, All-linked → None,
+            // None → All-linked. Always promotes Mixed to All on first click.
+            let inputs: Vec<u8> = tab.selected_inputs.iter().copied().collect();
+            let all_linked = inputs.iter().all(|i| tab.staged.is_active(*i, bus));
+            let target = !all_linked;
+            for i in inputs {
+                tab.staged.set_active(i, bus, target);
+            }
+        }
+    });
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuxState {
+    Mono,
+    NoSelection,
+    NoneLinked,
+    AllLinked,
+    Mixed,
+}
+
+fn compute_aux_state(tab: &PanLinkTabState, info: &AuxBusInfo) -> AuxState {
+    if !info.stereo {
+        return AuxState::Mono;
+    }
+    if tab.selected_inputs.is_empty() {
+        return AuxState::NoSelection;
+    }
+    let total = tab.selected_inputs.len();
+    let linked = tab
+        .selected_inputs
+        .iter()
+        .filter(|i| tab.staged.is_active(**i, info.bus))
+        .count();
+    if linked == 0 {
+        AuxState::NoneLinked
+    } else if linked == total {
+        AuxState::AllLinked
+    } else {
+        AuxState::Mixed
+    }
+}
+
+fn draw_input_tile(
+    ui: &mut egui::Ui,
+    ch: u8,
+    name: &str,
+    selected: bool,
+    has_link: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(TILE_SIZE, egui::Sense::click());
+    let painter = ui.painter_at(rect);
+
+    let fill = if selected {
+        theme::CH_INPUT
+    } else {
+        blend(theme::CH_INPUT, theme::BG_ELEVATED, 0.7)
+    };
+    let hover_fill = if response.hovered() {
+        blend(fill, theme::TEXT_PRIMARY, 0.85)
+    } else {
+        fill
+    };
+    painter.rect_filled(rect, 4.0, hover_fill);
+
+    let stroke = if selected {
+        egui::Stroke::new(2.0, theme::TEXT_PRIMARY)
+    } else {
+        egui::Stroke::new(1.0, theme::BORDER_SUBTLE)
+    };
+    painter.rect_stroke(rect, 4.0, stroke, egui::StrokeKind::Inside);
+
+    // Channel number — top line.
+    painter.text(
+        egui::pos2(rect.center().x, rect.min.y + 14.0),
+        egui::Align2::CENTER_CENTER,
+        format!("Input {ch}"),
+        egui::FontId::proportional(13.0),
+        theme::TEXT_PRIMARY,
+    );
+    if !name.is_empty() {
+        painter.text(
+            egui::pos2(rect.center().x, rect.min.y + 34.0),
+            egui::Align2::CENTER_CENTER,
+            name,
+            egui::FontId::proportional(11.0),
+            theme::TEXT_PRIMARY,
+        );
+    }
+
+    // Has-link dot — small green disc in the bottom-right corner. Visible
+    // regardless of selection so the operator sees which inputs are wired
+    // even when nothing is currently selected. Outlined with the dark
+    // background so it stays legible on both the saturated (selected)
+    // and dimmed (unselected) tile fills.
+    if has_link {
+        let center = egui::pos2(rect.max.x - 9.0, rect.max.y - 9.0);
+        painter.circle_filled(center, 5.0, theme::ACCENT_GREEN);
+        painter.circle_stroke(center, 5.0, egui::Stroke::new(1.0, theme::BG_DARK));
+    }
+
+    let hover = if name.is_empty() {
+        format!("Input {ch}")
+    } else {
+        format!("Input {ch} — {name}")
+    };
+    response.on_hover_text(hover)
+}
+
+fn draw_aux_tile(ui: &mut egui::Ui, label: &str, stereo: bool, state: AuxState) -> egui::Response {
+    let clickable = matches!(
+        state,
+        AuxState::NoneLinked | AuxState::AllLinked | AuxState::Mixed
+    );
     let sense = if clickable {
         egui::Sense::click()
     } else {
         egui::Sense::hover()
     };
-    let (rect, mut resp) = ui.allocate_exact_size(size, sense);
-    if is_stereo && !editable {
-        // Hint why a stereo tile isn't responding to clicks in read-only mode.
-        // `on_hover_text` consumes the response, so chain it before any
-        // subsequent `.clicked()` reads (we don't need clicks here anyway
-        // since `clickable` is false).
-        resp = resp.on_hover_text("Enable Edit (top-right of this card) to toggle pan links.");
-    }
-    let bg = if clickable && resp.hovered() {
-        theme::lighten(fill, 20)
+    let (rect, response) = ui.allocate_exact_size(TILE_SIZE, sense);
+    let painter = ui.painter_at(rect);
+
+    let base = theme::CH_AUX;
+    let fill = match state {
+        AuxState::Mono => theme::BG_ELEVATED,
+        AuxState::NoSelection => blend(base, theme::BG_ELEVATED, 0.4),
+        AuxState::NoneLinked => blend(base, theme::BG_ELEVATED, 0.55),
+        AuxState::AllLinked => base,
+        AuxState::Mixed => blend(base, theme::BG_ELEVATED, 0.55),
+    };
+    let hover_fill = if clickable && response.hovered() {
+        blend(fill, theme::TEXT_PRIMARY, 0.85)
     } else {
         fill
     };
-    ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(
-        rect,
-        4.0,
-        egui::Stroke::new(1.0, theme::BORDER_SUBTLE),
-        egui::StrokeKind::Outside,
-    );
+    painter.rect_filled(rect, 4.0, hover_fill);
 
-    // Top line: aux label. Bottom line: link state.
-    let title = ui.painter().layout(
-        label.to_string(),
+    // Diagonal stripes for the Mixed state. The clipped painter (above)
+    // restricts drawing to the tile rect, so we can use long line
+    // segments and let clipping handle the corners. Three 45-degree
+    // stripes evenly distributed along the diagonal span give a
+    // recognisable "partial" hatch without obscuring the label.
+    if matches!(state, AuxState::Mixed) {
+        let stripe_color = blend(base, theme::TEXT_PRIMARY, 0.7);
+        let stripe = egui::Stroke::new(6.0, stripe_color);
+        let c_min = rect.min.y - rect.max.x;
+        let c_max = rect.max.y - rect.min.x;
+        let span = c_max - c_min;
+        // Lines have form y = x + c. To draw, pick two x-values far
+        // outside the rect and compute matching y. The painter is
+        // clipped, so the off-rect ends are discarded automatically.
+        let big = (rect.width() + rect.height()) * 2.0;
+        for frac in [0.25_f32, 0.5, 0.75] {
+            let c = c_min + frac * span;
+            let p1 = egui::pos2(rect.min.x - big, rect.min.x - big + c);
+            let p2 = egui::pos2(rect.max.x + big, rect.max.x + big + c);
+            painter.line_segment([p1, p2], stripe);
+        }
+    }
+
+    let stroke = if matches!(state, AuxState::AllLinked) {
+        egui::Stroke::new(2.0, theme::TEXT_PRIMARY)
+    } else {
+        egui::Stroke::new(1.0, theme::BORDER_SUBTLE)
+    };
+    painter.rect_stroke(rect, 4.0, stroke, egui::StrokeKind::Inside);
+
+    // Stereo bar — dark vertical slab on the right edge, copied from the
+    // Monitor picker so the Pan Link grid reads the same way.
+    if stereo {
+        let bar_rect = egui::Rect::from_min_max(
+            egui::pos2(rect.max.x - 6.0, rect.min.y + 4.0),
+            egui::pos2(rect.max.x - 2.0, rect.max.y - 4.0),
+        );
+        let bar_fill = blend(fill, egui::Color32::BLACK, 0.55);
+        painter.rect_filled(bar_rect, 2.0, bar_fill);
+    }
+
+    let text_color = match state {
+        AuxState::Mono => theme::TEXT_DISABLED,
+        _ => theme::TEXT_PRIMARY,
+    };
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
         egui::FontId::proportional(13.0),
         text_color,
-        rect.width() - 8.0,
     );
-    let title_pos = egui::pos2(rect.center().x - title.size().x / 2.0, rect.top() + 6.0);
-    ui.painter().galley(title_pos, title, text_color);
 
-    let sub = if !is_stereo {
-        "mono"
-    } else if active {
-        "linked"
-    } else {
-        "—"
+    let hover = match state {
+        AuxState::Mono => format!("{label} — mono, can't pan-link"),
+        AuxState::NoSelection => format!("{label} — select inputs to link"),
+        AuxState::NoneLinked => format!("{label} — none of the selected inputs are linked"),
+        AuxState::AllLinked => format!("{label} — all selected inputs linked"),
+        AuxState::Mixed => format!("{label} — partially linked (click to link all)"),
     };
-    let sub_galley = ui.painter().layout(
-        sub.to_string(),
-        egui::FontId::proportional(11.0),
-        text_color,
-        rect.width() - 8.0,
-    );
-    let sub_pos = egui::pos2(
-        rect.center().x - sub_galley.size().x / 2.0,
-        rect.bottom() - 18.0,
-    );
-    ui.painter().galley(sub_pos, sub_galley, text_color);
+    response.on_hover_text(hover)
+}
 
-    ui.add_space(4.0);
-    clickable && resp.clicked()
+fn blend(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let lerp = |x: u8, y: u8| ((x as f32) * t + (y as f32) * (1.0 - t)).round() as u8;
+    egui::Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with(initial: &[(u8, u8)]) -> PanLinkTabState {
+        let mut s = PanLinkTabState::default();
+        for (i, a) in initial {
+            s.staged.set_active(*i, *a, true);
+            s.baseline.set_active(*i, *a, true);
+        }
+        s.needs_baseline_sync = false;
+        s
+    }
+
+    #[test]
+    fn dirty_detects_staged_changes() {
+        let mut s = state_with(&[]);
+        assert!(!s.dirty());
+        s.staged.set_active(1, 5, true);
+        assert!(s.dirty());
+        s.revert();
+        assert!(!s.dirty());
+    }
+
+    #[test]
+    fn shift_click_extends_range_from_anchor() {
+        let mut s = state_with(&[]);
+        apply_input_click(&mut s, 5, false); // anchor at 5
+        apply_input_click(&mut s, 8, true); // shift-click 8 → range 5..=8
+        let v: Vec<u8> = s.selected_inputs.iter().copied().collect();
+        assert_eq!(v, vec![5, 6, 7, 8]);
+        assert_eq!(s.range_anchor, Some(8));
+    }
+
+    #[test]
+    fn plain_click_toggles_input_and_re_anchors() {
+        let mut s = state_with(&[]);
+        apply_input_click(&mut s, 3, false);
+        assert!(s.selected_inputs.contains(&3));
+        assert_eq!(s.range_anchor, Some(3));
+        apply_input_click(&mut s, 3, false);
+        assert!(s.selected_inputs.is_empty());
+    }
+
+    #[test]
+    fn aux_state_classifies_selection_vs_links() {
+        let info = AuxBusInfo {
+            bus: 5,
+            label: "Aux 5".into(),
+            stereo: true,
+        };
+        let mono = AuxBusInfo {
+            bus: 6,
+            label: "Aux 6".into(),
+            stereo: false,
+        };
+
+        let mut s = state_with(&[(1, 5), (2, 5)]);
+        assert_eq!(compute_aux_state(&s, &info), AuxState::NoSelection);
+        assert_eq!(compute_aux_state(&s, &mono), AuxState::Mono);
+
+        s.selected_inputs.insert(1);
+        s.selected_inputs.insert(2);
+        assert_eq!(compute_aux_state(&s, &info), AuxState::AllLinked);
+
+        s.selected_inputs.insert(3);
+        assert_eq!(compute_aux_state(&s, &info), AuxState::Mixed);
+
+        let mut s2 = state_with(&[]);
+        s2.selected_inputs.insert(7);
+        assert_eq!(compute_aux_state(&s2, &info), AuxState::NoneLinked);
+    }
+
+    #[test]
+    fn seed_from_live_clears_dirty() {
+        let mut s = PanLinkTabState::default();
+        let mut live = PanLinkBindings::default();
+        live.set_active(2, 4, true);
+        s.seed_from_live(&live);
+        assert!(!s.dirty());
+        assert!(s.staged.is_active(2, 4));
+        assert!(!s.needs_baseline_sync);
+    }
 }

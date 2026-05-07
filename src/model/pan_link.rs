@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 /// Active pan-link bindings, keyed by `(input_channel, aux_bus_index)`,
 /// both 1-based.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PanLinkBindings {
     #[serde(default)]
     pub active: HashSet<(u8, u8)>,
