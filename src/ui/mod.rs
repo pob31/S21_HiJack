@@ -1,7 +1,7 @@
 pub mod app;
+pub mod cue_transport;
 pub mod gangs_tab;
 pub mod inspector_tab;
-pub mod live_tab;
 pub mod macros_tab;
 pub mod monitor_channel_picker;
 pub mod monitor_tab;
@@ -15,13 +15,13 @@ pub mod setup_tab;
 pub mod snapshots_tab;
 pub mod theme;
 
-/// Active UI tab.
+/// Active UI tab. The previous `Live` variant was retired when the GO /
+/// PREV / current-cue transport moved into the top-bar strip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     Setup,
     Snapshots,
     Macros,
-    Live,
     Gangs,
     PanLink,
     Monitor,

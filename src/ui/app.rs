@@ -25,7 +25,6 @@ use crate::persistence::preferences::AppPreferences;
 
 use super::gangs_tab::GangsTabState;
 use super::inspector_tab::InspectorTabState;
-use super::live_tab::LiveTabState;
 use super::macros_tab::MacrosTabState;
 use super::monitor_tab::MonitorTabState;
 use super::osc_log_tab::OscLogTabState;
@@ -88,7 +87,6 @@ pub struct HiJackApp {
     pub setup: SetupTabState,
     pub snapshots: SnapshotsTabState,
     pub macros: MacrosTabState,
-    pub live: LiveTabState,
     pub palettes_ui: PalettesUiState,
     pub gangs: GangsTabState,
     pub pan_link: PanLinkTabState,
@@ -156,7 +154,6 @@ impl HiJackApp {
             ),
             snapshots: SnapshotsTabState::default(),
             macros: MacrosTabState::default(),
-            live: LiveTabState::default(),
             palettes_ui: PalettesUiState::default(),
             gangs: GangsTabState::default(),
             pan_link: PanLinkTabState::default(),
@@ -217,13 +214,12 @@ impl HiJackApp {
                     self.snapshots.status_message =
                         Some(format!("Captured '{name}' ({param_count} params)"));
                 }
-                UiEvent::CueRecalled {
-                    cue_number,
-                    params_sent,
-                } => {
-                    self.live.last_recall_info = Some(format!(
-                        "Cue {cue_number:.1} recalled ({params_sent} params sent)"
-                    ));
+                UiEvent::CueRecalled { .. } => {
+                    // The Live tab used to surface a "Cue X.Y recalled
+                    // (N params)" line here; now that the transport
+                    // lives in the top bar there's no place to print
+                    // that, so the event is just consumed for any
+                    // downstream listeners (logs, etc.).
                 }
                 UiEvent::MacroExecuted {
                     name,
@@ -237,8 +233,6 @@ impl HiJackApp {
                     };
                     self.macros.last_execution_info =
                         Some(format!("Executed '{name}' ({steps_executed} sent{suffix})"));
-                    self.live.last_recall_info =
-                        Some(format!("Macro '{name}' ({steps_executed} steps{suffix})"));
                 }
                 UiEvent::MacroExecutionFailed(msg) => {
                     self.macros.status_message = Some(format!("Run failed: {msg}"));
@@ -346,16 +340,11 @@ impl HiJackApp {
                     self.setup.ipad_connected = false;
                     self.setup.status_message = Some(format!("iPad connection failed: {msg}"));
                 }
-                UiEvent::FadeProgress {
-                    cue_number,
-                    progress,
-                    done,
-                } => {
-                    if done {
-                        self.live.fade_progress = None;
-                    } else {
-                        self.live.fade_progress = Some((cue_number, progress));
-                    }
+                UiEvent::FadeProgress { .. } => {
+                    // Fade-progress display lived on the old Live tab.
+                    // Drop it for now — could be re-surfaced as a thin
+                    // overlay under the top-bar transport later if
+                    // operators want it back.
                 }
                 UiEvent::MonitorClientConnected { name } => {
                     self.monitor.status_message = Some(format!("Client '{name}' connected"));
@@ -413,7 +402,6 @@ impl eframe::App for HiJackApp {
                     let all_tabs = [
                         (Tab::Setup, "Setup"),
                         (Tab::Macros, "Macros"),
-                        (Tab::Live, "Live"),
                         (Tab::Gangs, "Gangs"),
                         (Tab::PanLink, "Pan Link"),
                         (Tab::Snapshots, "Snapshots"),
@@ -450,6 +438,94 @@ impl eframe::App for HiJackApp {
                         .corner_radius(4.0);
                         if ui.add(btn).clicked() {
                             self.active_tab = tab;
+                        }
+                    }
+
+                    // ── Cue transport strip ──
+                    // GO / current-cue / PREV inline in the top bar, only
+                    // when the display mode supports cueing (Full / Theatre,
+                    // not Live music). Visually distinct from tabs via red /
+                    // blue fills and triangle glyphs so it doesn't read as
+                    // "yet another tab".
+                    if mode.cue_transport_visible() {
+                        ui.add_space(16.0);
+                        ui.label(egui::RichText::new("│").color(super::theme::TEXT_DISABLED));
+                        ui.add_space(6.0);
+
+                        let is_connected =
+                            self.connected.load(std::sync::atomic::Ordering::Relaxed);
+                        let (current_cue_text, has_cues) = {
+                            let mgr = self.runtime.block_on(self.cue_manager.read());
+                            let count = mgr.cue_list.cues.len();
+                            let label = mgr.current_cue().map(|c| {
+                                let name = if c.name.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" — {}", c.name)
+                                };
+                                format!("Cue {:.1}{}", c.cue_number, name)
+                            });
+                            (label, count > 0)
+                        };
+                        let transport_enabled = is_connected && has_cues;
+
+                        // PREV (red)
+                        let prev_btn = egui::Button::new(
+                            egui::RichText::new("◀ Prev")
+                                .color(super::theme::TEXT_PRIMARY)
+                                .strong(),
+                        )
+                        .fill(super::theme::ACCENT_RED)
+                        .corner_radius(4.0)
+                        .min_size(egui::Vec2::new(80.0, 26.0));
+                        if ui
+                            .add_enabled(transport_enabled, prev_btn)
+                            .on_hover_text("Recall the previous cue.")
+                            .clicked()
+                        {
+                            super::cue_transport::fire_prev(
+                                &self.cue_manager,
+                                &self.palette_manager,
+                                &self.snapshot_engine,
+                                &self.runtime,
+                                &self.ui_tx,
+                            );
+                        }
+
+                        // Current cue label — plain text, dimmed when none.
+                        ui.add_space(8.0);
+                        match current_cue_text {
+                            Some(label) => ui.label(
+                                egui::RichText::new(label)
+                                    .color(super::theme::TEXT_PRIMARY)
+                                    .strong(),
+                            ),
+                            None => ui
+                                .label(egui::RichText::new("—").color(super::theme::TEXT_DISABLED)),
+                        };
+                        ui.add_space(8.0);
+
+                        // GO (blue)
+                        let go_btn = egui::Button::new(
+                            egui::RichText::new("Go ▶")
+                                .color(super::theme::TEXT_PRIMARY)
+                                .strong(),
+                        )
+                        .fill(super::theme::ACCENT_BLUE)
+                        .corner_radius(4.0)
+                        .min_size(egui::Vec2::new(80.0, 26.0));
+                        if ui
+                            .add_enabled(transport_enabled, go_btn)
+                            .on_hover_text("Recall the next cue.")
+                            .clicked()
+                        {
+                            super::cue_transport::fire_go(
+                                &self.cue_manager,
+                                &self.palette_manager,
+                                &self.snapshot_engine,
+                                &self.runtime,
+                                &self.ui_tx,
+                            );
                         }
                     }
 
@@ -593,20 +669,6 @@ impl eframe::App for HiJackApp {
                         ui,
                         &mut self.macros,
                         &self.macro_manager,
-                        &self.macro_engine,
-                        &self.connected,
-                        &self.runtime,
-                        &self.ui_tx,
-                    );
-                }
-                Tab::Live => {
-                    super::live_tab::draw_live_tab(
-                        ui,
-                        &mut self.live,
-                        &self.cue_manager,
-                        &self.macro_manager,
-                        &self.palette_manager,
-                        &self.snapshot_engine,
                         &self.macro_engine,
                         &self.connected,
                         &self.runtime,

@@ -22,11 +22,19 @@ impl UiMode {
     /// setting).
     pub fn tab_visible(self, tab: Tab, show_diagnostics: bool) -> bool {
         match tab {
-            Tab::Setup | Tab::Macros | Tab::Live | Tab::Gangs | Tab::PanLink => true,
+            Tab::Setup | Tab::Macros | Tab::Gangs | Tab::PanLink => true,
             Tab::Snapshots => self != UiMode::LiveMusic,
             Tab::Monitor => self != UiMode::Theatre,
             Tab::OscLog | Tab::Inspector => show_diagnostics,
         }
+    }
+
+    /// Whether the top-bar cue-transport strip (Prev / current cue / Go)
+    /// should render in this display mode. Currently mirrors the
+    /// `Snapshots` tab visibility — Full and Theatre have cueing,
+    /// Live music doesn't.
+    pub fn cue_transport_visible(self) -> bool {
+        self.tab_visible(Tab::Snapshots, false)
     }
 
     pub fn label(self) -> &'static str {
@@ -50,10 +58,16 @@ mod tests {
         assert!(m.tab_visible(Tab::Setup, false));
         assert!(m.tab_visible(Tab::Snapshots, false));
         assert!(m.tab_visible(Tab::Macros, false));
-        assert!(m.tab_visible(Tab::Live, false));
         assert!(m.tab_visible(Tab::Gangs, false));
         assert!(m.tab_visible(Tab::PanLink, false));
         assert!(m.tab_visible(Tab::Monitor, false));
+    }
+
+    #[test]
+    fn cue_transport_visible_in_cueing_modes() {
+        assert!(UiMode::Full.cue_transport_visible());
+        assert!(UiMode::Theatre.cue_transport_visible());
+        assert!(!UiMode::LiveMusic.cue_transport_visible());
     }
 
     #[test]
