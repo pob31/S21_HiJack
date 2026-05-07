@@ -127,6 +127,97 @@ fn section_tooltip(section: &ParameterSection) -> &'static str {
     }
 }
 
+/// Pre-compute which `ParameterSection` variants fit on each row given
+/// the available width. The widths are measured the same way
+/// [`theme::toggle_block`] sizes itself (label width + `2 * padding_x`,
+/// floored at the 80 px minimum), with `item_spacing.x` accounted for
+/// between siblings on the same row.
+///
+/// Used because `ui.horizontal_wrapped` and explicit
+/// `Layout::with_main_wrap(true)` allocations both refused to break
+/// the tile row in this tab's nesting (form card → horizontal_top →
+/// allocated top_down sub-region → wrap layout). Building the rows
+/// upfront and emitting one `ui.horizontal` per row sidesteps the
+/// inheritance issue entirely.
+fn wrap_section_tiles(ui: &egui::Ui, available_w: f32) -> Vec<Vec<&'static ParameterSection>> {
+    const PADDING_X: f32 = 10.0;
+    const MIN_W: f32 = 80.0;
+    let item_spacing = ui.spacing().item_spacing.x;
+    let font_id = egui::FontId::proportional(theme::FONT_SIZE_BADGE);
+
+    let mut rows: Vec<Vec<&'static ParameterSection>> = vec![Vec::new()];
+    let mut current_w = 0.0_f32;
+
+    for section in ParameterSection::all_variants() {
+        let label = section.to_string();
+        let galley = ui
+            .painter()
+            .layout_no_wrap(label, font_id.clone(), theme::TEXT_PRIMARY);
+        let tile_w = (galley.size().x + PADDING_X * 2.0).max(MIN_W);
+
+        let row_is_empty = rows.last().map(|r| r.is_empty()).unwrap_or(true);
+        let needed = if row_is_empty {
+            tile_w
+        } else {
+            current_w + item_spacing + tile_w
+        };
+
+        if needed > available_w && !row_is_empty {
+            rows.push(Vec::new());
+            current_w = tile_w;
+        } else {
+            current_w = needed;
+        }
+
+        rows.last_mut().unwrap().push(section);
+    }
+
+    rows
+}
+
+/// Same row-wrap idea as [`wrap_section_tiles`] but for the
+/// [`theme::colored_badge`] sizing — text width plus an 8 px horizontal
+/// padding on each side, no minimum width. Returns `Vec<&ParameterSection>`
+/// per row, in the same order as the input slice.
+fn wrap_badges<'a>(
+    ui: &egui::Ui,
+    available_w: f32,
+    sections: &'a [&'a ParameterSection],
+) -> Vec<Vec<&'a ParameterSection>> {
+    const PADDING_X: f32 = 8.0;
+    let item_spacing = ui.spacing().item_spacing.x;
+    let font_id = egui::FontId::proportional(theme::FONT_SIZE_BADGE);
+
+    let mut rows: Vec<Vec<&'a ParameterSection>> = vec![Vec::new()];
+    let mut current_w = 0.0_f32;
+
+    for section in sections {
+        let label = section.to_string();
+        let galley = ui
+            .painter()
+            .layout_no_wrap(label, font_id.clone(), theme::TEXT_PRIMARY);
+        let badge_w = galley.size().x + PADDING_X * 2.0;
+
+        let row_is_empty = rows.last().map(|r| r.is_empty()).unwrap_or(true);
+        let needed = if row_is_empty {
+            badge_w
+        } else {
+            current_w + item_spacing + badge_w
+        };
+
+        if needed > available_w && !row_is_empty {
+            rows.push(Vec::new());
+            current_w = badge_w;
+        } else {
+            current_w = needed;
+        }
+
+        rows.last_mut().unwrap().push(*section);
+    }
+
+    rows
+}
+
 /// Per-tab UI state for the Gangs tab.
 pub struct GangsTabState {
     pub new_gang_name: String,
@@ -200,7 +291,13 @@ pub fn draw_gangs_tab(
         const LEFT_COL_W: f32 = 360.0;
         let editing = tab.editing_gang_id.is_some();
         theme::card_frame().show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
+            // Pin BOTH min and max width: without max_width, frames in
+            // egui can grow past the window when their content (e.g. a
+            // long horizontal row) exceeds available_width, which is
+            // what was causing the form card to overflow off-screen.
+            let card_w = ui.available_width();
+            ui.set_min_width(card_w);
+            ui.set_max_width(card_w);
             theme::section_heading(ui, if editing { "Edit Gang" } else { "New Gang" });
 
             // Compute the applicable section set once, here, so we can
@@ -297,22 +394,20 @@ pub fn draw_gangs_tab(
                         // grid doesn't reshuffle when the operator flips
                         // channel type.
                         //
-                        // We use an explicit `with_main_wrap(true)` layout
-                        // with a fixed `right_w` allocation rather than
-                        // `ui.horizontal_wrapped` because the wrapper
-                        // reads `available_size_before_wrap()` from the
-                        // current ui, and that read returns the inherited
-                        // (unbounded) max_rect when the parent chain
-                        // includes a `horizontal_top`. Pinning the wrap
-                        // size explicitly here is the only reliable way
-                        // to get the tiles to break onto a new row.
-                        let wrap_layout =
-                            egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true);
-                        ui.allocate_ui_with_layout(
-                            egui::Vec2::new(right_w, 0.0),
-                            wrap_layout,
-                            |ui| {
-                                for section in ParameterSection::all_variants() {
+                        // We do row wrapping manually: pre-compute each
+                        // tile's width using the same measurement logic
+                        // as `theme::toggle_block`, group tiles into
+                        // rows that fit within `right_w`, then emit one
+                        // `ui.horizontal` per row. Both `horizontal_wrapped`
+                        // and explicit `with_main_wrap(true)` layouts
+                        // refused to break the row in this nesting
+                        // (form card → horizontal_top → top_down →
+                        // wrap), so the manual approach is the only one
+                        // that reliably wraps the tiles.
+                        let rows = wrap_section_tiles(ui, right_w);
+                        for row in &rows {
+                            ui.horizontal(|ui| {
+                                for section in row {
                                     let is_applicable = applicable.contains(section);
                                     let active = tab.new_gang_sections.contains(section);
                                     let builder = if is_applicable {
@@ -328,14 +423,14 @@ pub fn draw_gangs_tab(
                                         .inner;
                                     if is_applicable && resp.clicked() {
                                         if active {
-                                            tab.new_gang_sections.remove(section);
+                                            tab.new_gang_sections.remove(*section);
                                         } else {
-                                            tab.new_gang_sections.insert(section.clone());
+                                            tab.new_gang_sections.insert((*section).clone());
                                         }
                                     }
                                 }
-                            },
-                        );
+                            });
+                        }
                     },
                 );
             });
@@ -424,9 +519,13 @@ pub fn draw_gangs_tab(
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
+                let scroll_w = ui.available_width();
+                ui.set_min_width(scroll_w);
+                ui.set_max_width(scroll_w);
                 theme::card_frame().show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
+                    let card_w = ui.available_width();
+                    ui.set_min_width(card_w);
+                    ui.set_max_width(card_w);
                     theme::section_heading(ui, "Gang Groups");
 
                     let groups: Vec<GangGroup> = mgr.sorted_groups().into_iter().cloned().collect();
@@ -458,108 +557,111 @@ pub fn draw_gangs_tab(
                                 .show(ui, |ui| {
                                     let row_w = ui.available_width();
                                     ui.set_min_width(row_w);
-                                    // Wrap the controls + section badges row so a
-                                    // gang with many linked sections doesn't run
-                                    // off the right edge on narrow windows.
-                                    let wrap_layout =
-                                        egui::Layout::left_to_right(egui::Align::Center)
-                                            .with_main_wrap(true);
-                                    ui.allocate_ui_with_layout(
-                                        egui::Vec2::new(row_w, 0.0),
-                                        wrap_layout,
-                                        |ui| {
-                                            // Enable/disable toggle
-                                            let toggle_color = if group.enabled {
-                                                theme::ACCENT_GREEN
-                                            } else {
-                                                theme::BG_ELEVATED
-                                            };
-                                            let toggle_label =
-                                                if group.enabled { "ON" } else { "OFF" };
-                                            let toggle_btn = egui::Button::new(
-                                                egui::RichText::new(toggle_label)
-                                                    .color(theme::TEXT_PRIMARY)
-                                                    .strong()
-                                                    .small(),
-                                            )
-                                            .fill(toggle_color)
-                                            .corner_radius(4.0);
-                                            if ui.add(toggle_btn).clicked() {
-                                                to_toggle = Some((group.id, !group.enabled));
-                                            }
+                                    ui.set_max_width(row_w);
 
-                                            // Pause button
-                                            let pause_color = if group.paused {
-                                                theme::ACCENT_ORANGE
-                                            } else {
-                                                theme::BG_ELEVATED
-                                            };
-                                            let pause_label =
-                                                if group.paused { "PAUSED" } else { "||" };
-                                            let pause_btn = egui::Button::new(
-                                                egui::RichText::new(pause_label)
-                                                    .color(theme::TEXT_PRIMARY)
-                                                    .small(),
-                                            )
-                                            .fill(pause_color)
-                                            .corner_radius(4.0);
-                                            if ui.add_enabled(group.enabled, pause_btn).clicked() {
-                                                to_pause = Some((group.id, !group.paused));
-                                            }
+                                    // Controls + name + member badge — single
+                                    // line, no wrap. These are stable in
+                                    // count (4 small buttons + name + 1 badge)
+                                    // and read better as a single horizontal
+                                    // strip.
+                                    ui.horizontal(|ui| {
+                                        // Enable/disable toggle
+                                        let toggle_color = if group.enabled {
+                                            theme::ACCENT_GREEN
+                                        } else {
+                                            theme::BG_ELEVATED
+                                        };
+                                        let toggle_label = if group.enabled { "ON" } else { "OFF" };
+                                        let toggle_btn = egui::Button::new(
+                                            egui::RichText::new(toggle_label)
+                                                .color(theme::TEXT_PRIMARY)
+                                                .strong()
+                                                .small(),
+                                        )
+                                        .fill(toggle_color)
+                                        .corner_radius(4.0);
+                                        if ui.add(toggle_btn).clicked() {
+                                            to_toggle = Some((group.id, !group.enabled));
+                                        }
 
-                                            ui.add_space(4.0);
+                                        // Pause button
+                                        let pause_color = if group.paused {
+                                            theme::ACCENT_ORANGE
+                                        } else {
+                                            theme::BG_ELEVATED
+                                        };
+                                        let pause_label =
+                                            if group.paused { "PAUSED" } else { "||" };
+                                        let pause_btn = egui::Button::new(
+                                            egui::RichText::new(pause_label)
+                                                .color(theme::TEXT_PRIMARY)
+                                                .small(),
+                                        )
+                                        .fill(pause_color)
+                                        .corner_radius(4.0);
+                                        if ui.add_enabled(group.enabled, pause_btn).clicked() {
+                                            to_pause = Some((group.id, !group.paused));
+                                        }
 
-                                            // Mode toggle (Relative / Absolute) — full words
-                                            // since the row has plenty of horizontal room.
-                                            let rel_btn = egui::Button::new(
-                                                egui::RichText::new("Relative").small(),
-                                            )
-                                            .selected(group.mode == GangMode::Relative)
-                                            .corner_radius(4.0);
-                                            if ui.add_enabled(group.enabled, rel_btn).clicked() {
-                                                to_set_mode = Some((group.id, GangMode::Relative));
-                                            }
-                                            let abs_btn = egui::Button::new(
-                                                egui::RichText::new("Absolute").small(),
-                                            )
-                                            .selected(group.mode == GangMode::Absolute)
-                                            .corner_radius(4.0);
-                                            if ui.add_enabled(group.enabled, abs_btn).clicked() {
-                                                to_set_mode = Some((group.id, GangMode::Absolute));
-                                            }
+                                        ui.add_space(4.0);
 
-                                            ui.add_space(8.0);
+                                        let rel_btn = egui::Button::new(
+                                            egui::RichText::new("Relative").small(),
+                                        )
+                                        .selected(group.mode == GangMode::Relative)
+                                        .corner_radius(4.0);
+                                        if ui.add_enabled(group.enabled, rel_btn).clicked() {
+                                            to_set_mode = Some((group.id, GangMode::Relative));
+                                        }
+                                        let abs_btn = egui::Button::new(
+                                            egui::RichText::new("Absolute").small(),
+                                        )
+                                        .selected(group.mode == GangMode::Absolute)
+                                        .corner_radius(4.0);
+                                        if ui.add_enabled(group.enabled, abs_btn).clicked() {
+                                            to_set_mode = Some((group.id, GangMode::Absolute));
+                                        }
 
-                                            // Gang name
-                                            ui.label(
-                                                egui::RichText::new(&group.name)
-                                                    .strong()
-                                                    .color(theme::TEXT_PRIMARY),
-                                            );
+                                        ui.add_space(8.0);
 
-                                            ui.add_space(8.0);
+                                        ui.label(
+                                            egui::RichText::new(&group.name)
+                                                .strong()
+                                                .color(theme::TEXT_PRIMARY),
+                                        );
 
-                                            // Member badge
-                                            let member_text = format_members(&group.members);
-                                            let member_color = if !group.members.is_empty() {
-                                                theme::channel_color(&group.members[0])
-                                            } else {
-                                                theme::BG_ELEVATED
-                                            };
-                                            theme::colored_badge(ui, &member_text, member_color);
+                                        ui.add_space(8.0);
 
-                                            ui.add_space(4.0);
+                                        let member_text = format_members(&group.members);
+                                        let member_color = if !group.members.is_empty() {
+                                            theme::channel_color(&group.members[0])
+                                        } else {
+                                            theme::BG_ELEVATED
+                                        };
+                                        theme::colored_badge(ui, &member_text, member_color);
+                                    });
 
-                                            // Section badges
-                                            for section in &group.linked_sections {
-                                                theme::colored_badge(
-                                                    ui,
-                                                    &section.to_string(),
-                                                    theme::SCOPE_ACTIVE,
-                                                );
-                                            }
-                                        },
-                                    );
+                                    // Section badges — manual wrap into rows
+                                    // that fit within `row_w`, since egui's
+                                    // built-in wrap layouts didn't break the
+                                    // row reliably in this frame nesting.
+                                    if !group.linked_sections.is_empty() {
+                                        let mut sections: Vec<&ParameterSection> =
+                                            group.linked_sections.iter().collect();
+                                        sections.sort_by_key(|s| s.to_string());
+                                        let badge_rows = wrap_badges(ui, row_w, &sections);
+                                        for badge_row in &badge_rows {
+                                            ui.horizontal(|ui| {
+                                                for section in badge_row {
+                                                    theme::colored_badge(
+                                                        ui,
+                                                        &section.to_string(),
+                                                        theme::SCOPE_ACTIVE,
+                                                    );
+                                                }
+                                            });
+                                        }
+                                    }
 
                                     // Action buttons row
                                     ui.horizontal(|ui| {
