@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui;
 use tokio::sync::RwLock;
@@ -153,15 +152,17 @@ impl Default for GangsTabState {
 }
 
 /// Draw the Gangs tab.
+///
+/// The disconnected hint ("connect to console for gang propagation to
+/// take effect") is rendered by `app.rs` as a bottom-anchored banner so
+/// the tab's vertical layout stays put when the connection state flips,
+/// which is why this function no longer takes a `connected` handle.
 pub fn draw_gangs_tab(
     ui: &mut egui::Ui,
     tab: &mut GangsTabState,
     gang_manager: &Arc<RwLock<GangManager>>,
-    connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
 ) {
-    let is_connected = connected.load(Ordering::Relaxed);
-
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -184,14 +185,6 @@ pub fn draw_gangs_tab(
                     theme::BG_ELEVATED,
                 );
             });
-
-            if !is_connected {
-                ui.add_space(4.0);
-                ui.colored_label(
-                    theme::TEXT_WARNING,
-                    "Connect to console for gang propagation to take effect",
-                );
-            }
 
             ui.add_space(8.0);
 

@@ -679,6 +679,39 @@ impl eframe::App for HiJackApp {
                 });
         }
 
+        // Gangs-tab disconnected hint — same bottom-anchored amber
+        // banner as the offline notice, so the Gangs UI doesn't shift
+        // up/down when the connection state flips. Only shown on the
+        // Gangs tab where this hint is relevant.
+        if self.active_tab == Tab::Gangs
+            && !self.connected.load(Ordering::Relaxed)
+            && !self.offline_mode.load(Ordering::Relaxed)
+        {
+            egui::TopBottomPanel::bottom("gangs_disconnected_banner")
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(super::theme::ACCENT_AMBER)
+                        .inner_margin(egui::Margin::symmetric(10, 6)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("⚠ DISCONNECTED")
+                                .strong()
+                                .color(super::theme::BG_DARK),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                "— connect to console for gang propagation \
+                                 to take effect.",
+                            )
+                            .color(super::theme::BG_DARK),
+                        );
+                    });
+                });
+        }
+
         // Main content
         egui::CentralPanel::default().show(ctx, |ui| {
             // Reset transient per-tab state when the user navigates away.
@@ -757,7 +790,6 @@ impl eframe::App for HiJackApp {
                         ui,
                         &mut self.gangs,
                         &self.gang_manager,
-                        &self.connected,
                         &self.runtime,
                     );
                 }
