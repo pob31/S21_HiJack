@@ -46,173 +46,186 @@ pub fn draw_monitor_tab(
 
                 // Left column — fixed-width stack of Server Status,
                 // Aux Channels reference table, and the Add-Profile
-                // launcher. Width chosen wide enough for the aux table's
-                // 3-column grid with a bit of room for long aux names.
-                let left_w = 380.0_f32.min(ui.available_width() * 0.4);
-                ui.scope(|ui| {
-                    ui.set_min_width(left_w);
-                    ui.set_max_width(left_w);
+                // launcher. The outer `horizontal_top` makes child
+                // sub-uis inherit `Layout::left_to_right`, which is why
+                // the cards previously rendered horizontally; we force
+                // `top_down` here so the three cards stack vertically
+                // as expected.
+                let left_w = 320.0_f32.min(ui.available_width() * 0.35);
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(left_w, ui.available_height()),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_min_width(left_w);
+                        ui.set_max_width(left_w);
 
-                    // ── Server Status card ──
-                    theme::card_frame().show(ui, |ui| {
-                        theme::section_heading(ui, "Server Status");
+                        // ── Server Status card ──
+                        theme::card_frame().show(ui, |ui| {
+                            theme::section_heading(ui, "Server Status");
 
-                        ui.horizontal(|ui| {
-                            // Console status
-                            let console_color = if is_connected {
-                                theme::COLOR_CONNECTED
-                            } else {
-                                theme::COLOR_DISCONNECTED
-                            };
-                            theme::status_dot(ui, console_color);
-                            ui.label(
-                                egui::RichText::new(if is_connected {
-                                    "Console Connected"
+                            // Console status — its own row.
+                            ui.horizontal(|ui| {
+                                let console_color = if is_connected {
+                                    theme::COLOR_CONNECTED
                                 } else {
-                                    "Console Disconnected"
-                                })
-                                .color(console_color),
-                            );
+                                    theme::COLOR_DISCONNECTED
+                                };
+                                theme::status_dot(ui, console_color);
+                                ui.label(
+                                    egui::RichText::new(if is_connected {
+                                        "Console Connected"
+                                    } else {
+                                        "Console Disconnected"
+                                    })
+                                    .color(console_color),
+                                );
+                            });
 
-                            ui.add_space(20.0);
+                            ui.add_space(2.0);
 
-                            // Monitor server status
-                            let monitor_color = if tab.monitor_server_running {
-                                theme::COLOR_CONNECTED
-                            } else {
-                                theme::TEXT_DISABLED
-                            };
-                            theme::status_dot(ui, monitor_color);
-                            ui.label(
-                                egui::RichText::new(if tab.monitor_server_running {
-                                    "Monitor Server Running"
+                            // Monitor-server status — its own row, below the
+                            // console status (was on the same line; user
+                            // asked for one item per row).
+                            ui.horizontal(|ui| {
+                                let monitor_color = if tab.monitor_server_running {
+                                    theme::COLOR_CONNECTED
                                 } else {
-                                    "Monitor Server Off"
-                                })
-                                .color(monitor_color),
-                            );
+                                    theme::TEXT_DISABLED
+                                };
+                                theme::status_dot(ui, monitor_color);
+                                ui.label(
+                                    egui::RichText::new(if tab.monitor_server_running {
+                                        "Monitor Server Running"
+                                    } else {
+                                        "Monitor Server Off"
+                                    })
+                                    .color(monitor_color),
+                                );
+                            });
+
+                            let mgr = runtime.block_on(monitor_manager.read());
+                            let connected_count = mgr.connected_count();
+                            let total_count = mgr.clients.len();
+
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                theme::colored_badge(
+                                    ui,
+                                    &format!("{connected_count} connected"),
+                                    theme::ACCENT_GREEN,
+                                );
+                                theme::colored_badge(
+                                    ui,
+                                    &format!("{total_count} configured"),
+                                    theme::BG_ELEVATED,
+                                );
+                            });
+
+                            drop(mgr);
                         });
 
-                        let mgr = runtime.block_on(monitor_manager.read());
-                        let connected_count = mgr.connected_count();
-                        let total_count = mgr.clients.len();
+                        ui.add_space(8.0);
 
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            theme::colored_badge(
-                                ui,
-                                &format!("{connected_count} connected"),
-                                theme::ACCENT_GREEN,
-                            );
-                            theme::colored_badge(
-                                ui,
-                                &format!("{total_count} configured"),
-                                theme::BG_ELEVATED,
-                            );
-                        });
+                        // ── Aux Reference Table ──
+                        theme::card_frame().show(ui, |ui| {
+                            theme::section_heading(ui, "Aux Channels");
 
-                        drop(mgr);
-                    });
+                            let st = runtime.block_on(console_state.read());
+                            let aux_count = st.config.aux_output_count;
 
-                    ui.add_space(8.0);
+                            if aux_count == 0 {
+                                ui.label(
+                                    egui::RichText::new("Connect to console to see aux channels.")
+                                        .color(theme::TEXT_SECONDARY),
+                                );
+                            } else {
+                                egui::Grid::new("aux_ref_grid")
+                                    .num_columns(3)
+                                    .spacing([16.0, 4.0])
+                                    .striped(true)
+                                    .show(ui, |ui| {
+                                        // Header
+                                        ui.label(
+                                            egui::RichText::new("Ch #")
+                                                .strong()
+                                                .color(theme::TEXT_SECONDARY),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new("Name")
+                                                .strong()
+                                                .color(theme::TEXT_SECONDARY),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new("Send #")
+                                                .strong()
+                                                .color(theme::TEXT_SECONDARY),
+                                        );
+                                        ui.end_row();
 
-                    // ── Aux Reference Table ──
-                    theme::card_frame().show(ui, |ui| {
-                        theme::section_heading(ui, "Aux Channels");
-
-                        let st = runtime.block_on(console_state.read());
-                        let aux_count = st.config.aux_output_count;
-
-                        if aux_count == 0 {
-                            ui.label(
-                                egui::RichText::new("Connect to console to see aux channels.")
-                                    .color(theme::TEXT_SECONDARY),
-                            );
-                        } else {
-                            egui::Grid::new("aux_ref_grid")
-                                .num_columns(3)
-                                .spacing([16.0, 4.0])
-                                .striped(true)
-                                .show(ui, |ui| {
-                                    // Header
-                                    ui.label(
-                                        egui::RichText::new("Ch #")
-                                            .strong()
-                                            .color(theme::TEXT_SECONDARY),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new("Name")
-                                            .strong()
-                                            .color(theme::TEXT_SECONDARY),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new("Send #")
-                                            .strong()
-                                            .color(theme::TEXT_SECONDARY),
-                                    );
-                                    ui.end_row();
-
-                                    for aux in 1..=aux_count {
-                                        let name = st
-                                            .get(&ParameterAddress {
-                                                channel: ChannelId::Aux(aux),
-                                                parameter: ParameterPath::Name,
-                                            })
-                                            .and_then(|v| match v {
+                                        for aux in 1..=aux_count {
+                                            let name = st
+                                                .get(&ParameterAddress {
+                                                    channel: ChannelId::Aux(aux),
+                                                    parameter: ParameterPath::Name,
+                                                })
+                                                .and_then(|v| {
+                                                    match v {
                                                 crate::model::parameter::ParameterValue::String(
                                                     s,
                                                 ) => Some(s.clone()),
                                                 _ => None,
-                                            })
-                                            .unwrap_or_default();
+                                            }
+                                                })
+                                                .unwrap_or_default();
 
-                                        ui.label(
-                                            egui::RichText::new(format!("Aux {aux}"))
-                                                .color(theme::CH_AUX),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new(if name.is_empty() {
-                                                "—"
-                                            } else {
-                                                &name
-                                            })
-                                            .color(theme::TEXT_PRIMARY),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new(format!("{aux}"))
-                                                .color(theme::TEXT_SECONDARY),
-                                        );
-                                        ui.end_row();
-                                    }
-                                });
-                        }
-                        drop(st);
-                    });
-
-                    ui.add_space(8.0);
-
-                    // ── Add-profile button + status row ──
-                    theme::card_frame().show(ui, |ui| {
-                        theme::section_heading(ui, "Profiles");
-
-                        ui.horizontal(|ui| {
-                            let add_btn = theme::action_button(
-                                "Add profile…",
-                                theme::ACCENT_GREEN,
-                                egui::Vec2::new(120.0, 32.0),
-                            );
-                            if ui.add(add_btn).clicked() && tab.picker.is_none() {
-                                let st = runtime.block_on(console_state.read());
-                                tab.picker = Some(ChannelPickerState::for_new_client(&st));
+                                            ui.label(
+                                                egui::RichText::new(format!("Aux {aux}"))
+                                                    .color(theme::CH_AUX),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(if name.is_empty() {
+                                                    "—"
+                                                } else {
+                                                    &name
+                                                })
+                                                .color(theme::TEXT_PRIMARY),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(format!("{aux}"))
+                                                    .color(theme::TEXT_SECONDARY),
+                                            );
+                                            ui.end_row();
+                                        }
+                                    });
                             }
-
-                            if let Some(ref msg) = tab.status_message {
-                                ui.add_space(8.0);
-                                ui.colored_label(theme::TEXT_WARNING, msg.as_str());
-                            }
+                            drop(st);
                         });
-                    });
-                }); // end left-column scope
+
+                        ui.add_space(8.0);
+
+                        // ── Add-profile button + status row ──
+                        theme::card_frame().show(ui, |ui| {
+                            theme::section_heading(ui, "Profiles");
+
+                            ui.horizontal(|ui| {
+                                let add_btn = theme::action_button(
+                                    "Add profile…",
+                                    theme::ACCENT_GREEN,
+                                    egui::Vec2::new(120.0, 32.0),
+                                );
+                                if ui.add(add_btn).clicked() && tab.picker.is_none() {
+                                    let st = runtime.block_on(console_state.read());
+                                    tab.picker = Some(ChannelPickerState::for_new_client(&st));
+                                }
+
+                                if let Some(ref msg) = tab.status_message {
+                                    ui.add_space(8.0);
+                                    ui.colored_label(theme::TEXT_WARNING, msg.as_str());
+                                }
+                            });
+                        });
+                    }, // end left-column closure
+                ); // end left-column allocate_ui_with_layout
 
                 // Right column — Clients list. Force it to claim the
                 // entire remaining horizontal width via
