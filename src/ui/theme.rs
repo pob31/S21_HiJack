@@ -119,9 +119,13 @@ pub fn configure_style(ctx: &egui::Context) {
     visuals.faint_bg_color = BG_ELEVATED;
     visuals.code_bg_color = BG_INPUT;
 
-    // Selection
+    // Selection. `selection.stroke.color` is what egui copies into
+    // `WidgetVisuals::fg_stroke.color` for selected `selectable_label`
+    // items — combobox dropdowns, scope toggles, etc. Use white instead
+    // of the accent so the selected item's text reads against the
+    // translucent-blue selection background instead of merging into it.
     visuals.selection.bg_fill = egui::Color32::from_rgba_premultiplied(0x2D, 0x8B, 0xC9, 80);
-    visuals.selection.stroke = egui::Stroke::new(1.0, ACCENT_BLUE);
+    visuals.selection.stroke = egui::Stroke::new(1.0, TEXT_PRIMARY);
 
     // Hyperlinks
     visuals.hyperlink_color = ACCENT_BLUE;

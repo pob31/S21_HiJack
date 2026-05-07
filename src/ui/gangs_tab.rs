@@ -39,15 +39,17 @@ impl ChannelTypeSelection {
         }
     }
 
-    const ALL: [Self; 8] = [
+    /// Variants offered in the Channel Type dropdown. `Mixed`,
+    /// `GraphicEq` and `MatrixInput` are kept in the enum (so the
+    /// underlying parser still recognises GEQn / MIn prefixes if they
+    /// ever appear in a saved show file) but excluded from the UI
+    /// picker — operators only build gangs on the five common types.
+    const ALL: [Self; 5] = [
         Self::Input,
         Self::Aux,
         Self::Group,
         Self::Matrix,
         Self::ControlGroup,
-        Self::GraphicEq,
-        Self::MatrixInput,
-        Self::Mixed,
     ];
 
     /// Sections this channel type can sensibly gang. Returned in display order.
@@ -429,16 +431,17 @@ pub fn draw_gangs_tab(
 
                                     ui.add_space(4.0);
 
-                                    // Mode toggle (Rel / Abs)
+                                    // Mode toggle (Relative / Absolute) — full words
+                                    // since the row has plenty of horizontal room.
                                     let rel_btn =
-                                        egui::Button::new(egui::RichText::new("Rel").small())
+                                        egui::Button::new(egui::RichText::new("Relative").small())
                                             .selected(group.mode == GangMode::Relative)
                                             .corner_radius(4.0);
                                     if ui.add_enabled(group.enabled, rel_btn).clicked() {
                                         to_set_mode = Some((group.id, GangMode::Relative));
                                     }
                                     let abs_btn =
-                                        egui::Button::new(egui::RichText::new("Abs").small())
+                                        egui::Button::new(egui::RichText::new("Absolute").small())
                                             .selected(group.mode == GangMode::Absolute)
                                             .corner_radius(4.0);
                                     if ui.add_enabled(group.enabled, abs_btn).clicked() {
