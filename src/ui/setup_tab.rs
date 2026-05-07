@@ -184,6 +184,74 @@ const HUB_FRAME_PAD: f32 = 24.0;
 const MIN_TOP_HEIGHT: f32 = 480.0;
 /// Min height for the two bottom-row sections (QLab / Monitor).
 const MIN_BOT_HEIGHT: f32 = 140.0;
+/// Width of every port-number `TextEdit` in the W-diagram. Chosen wide
+/// enough to display 5-digit ports (53000, 8001, 8025, …) plus the
+/// 6 px inner margin without truncation. Forced via `ui.add_sized`
+/// because egui's `Grid` only honours `desired_width` as a hint and
+/// can squeeze columns down to the actual text width otherwise.
+const PORT_EDIT_W: f32 = 90.0;
+/// Height of every port-number `TextEdit`.
+const PORT_EDIT_H: f32 = 26.0;
+/// Inner margin for port-number `TextEdit`s — gives the digits a bit
+/// of breathing room inside the box.
+const PORT_EDIT_MARGIN: egui::Margin = egui::Margin::symmetric(6, 4);
+
+/// Render a port-number `TextEdit` with the standard width / height /
+/// margin. `enabled` controls interaction (becomes greyed out when
+/// `is_connected` is true). Optional `hint` paints placeholder text
+/// when the field is empty.
+fn port_edit_enabled(
+    ui: &mut egui::Ui,
+    value: &mut String,
+    enabled: bool,
+    hint: &str,
+    hover: &str,
+) -> egui::Response {
+    let resp = ui
+        .add_enabled_ui(enabled, |ui| {
+            let mut edit = egui::TextEdit::singleline(value).margin(PORT_EDIT_MARGIN);
+            if !hint.is_empty() {
+                edit = edit.hint_text(hint);
+            }
+            ui.add_sized([PORT_EDIT_W, PORT_EDIT_H], edit)
+        })
+        .inner;
+    resp.on_hover_text(hover)
+}
+
+/// Render a port-number `TextEdit` whose visibility is gated by `visible`
+/// — used for the Mode-1 iPad rows in the Console satellite which keep
+/// their slot but render invisibly so the grid layout doesn't shift.
+/// Forces the same width / height / margin as `port_edit_enabled`.
+fn port_edit_visible(
+    ui: &mut egui::Ui,
+    value: &mut String,
+    visible: bool,
+    enabled: bool,
+    hover: &str,
+) -> egui::Response {
+    let builder = if visible {
+        egui::UiBuilder::new()
+    } else {
+        egui::UiBuilder::new().invisible()
+    };
+    let resp = ui
+        .scope_builder(builder, |ui| {
+            ui.add_enabled_ui(visible && enabled, |ui| {
+                ui.add_sized(
+                    [PORT_EDIT_W, PORT_EDIT_H],
+                    egui::TextEdit::singleline(value).margin(PORT_EDIT_MARGIN),
+                )
+            })
+            .inner
+        })
+        .inner;
+    if visible {
+        resp.on_hover_text(hover)
+    } else {
+        resp
+    }
+}
 
 /// Compute (w_sat, w_hub, inter-section gap) from `available_width`. See the
 /// constants block above for the scaling rules.
@@ -426,22 +494,26 @@ pub fn draw_setup_tab(
                             ui.label(egui::RichText::new("Server").strong().color(theme::ACCENT_GREEN));
                             ui.end_row();
 
-                            ui.add_enabled(
+                            port_edit_enabled(
+                                ui,
+                                &mut setup.console_port,
                                 !is_connected,
-                                egui::TextEdit::singleline(&mut setup.console_port).desired_width(80.0).margin(egui::Margin::symmetric(6, 4)),
-                            )
-                            .on_hover_text("Console port — daemon sends GP OSC here.");
+                                "",
+                                "Console port — daemon sends GP OSC here.",
+                            );
                             ui.label(egui::RichText::new("<").color(theme::TEXT_SECONDARY));
                             ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
                             ui.end_row();
 
                             ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
                             ui.label(egui::RichText::new(">").color(theme::TEXT_SECONDARY));
-                            ui.add_enabled(
+                            port_edit_enabled(
+                                ui,
+                                &mut setup.local_port,
                                 !is_connected,
-                                egui::TextEdit::singleline(&mut setup.local_port).desired_width(80.0).margin(egui::Margin::symmetric(6, 4)),
-                            )
-                            .on_hover_text("Local port the daemon listens on for GP OSC from the console.");
+                                "",
+                                "Local port the daemon listens on for GP OSC from the console.",
+                            );
                             ui.end_row();
 
                             // iPad rows are always rendered so the grid emits
@@ -449,11 +521,13 @@ pub fn draw_setup_tab(
                             // Mode 1 they're invisible (and thus disabled, by
                             // egui semantics) so identity + channel config
                             // below stay at a fixed Y-coordinate.
-                            ui.add_visible(
+                            port_edit_visible(
+                                ui,
+                                &mut setup.ipad_console_port,
                                 uses_ipad,
-                                egui::TextEdit::singleline(&mut setup.ipad_console_port).desired_width(80.0).margin(egui::Margin::symmetric(6, 4)),
-                            )
-                            .on_hover_text("Console iPad-protocol port — daemon sends here.");
+                                !is_connected,
+                                "Console iPad-protocol port — daemon sends here.",
+                            );
                             ui.add_visible(
                                 uses_ipad,
                                 egui::Label::new(egui::RichText::new("<").color(theme::TEXT_SECONDARY)),
@@ -472,11 +546,13 @@ pub fn draw_setup_tab(
                                 uses_ipad,
                                 egui::Label::new(egui::RichText::new(">").color(theme::TEXT_SECONDARY)),
                             );
-                            ui.add_visible(
+                            port_edit_visible(
+                                ui,
+                                &mut setup.ipad_local_port,
                                 uses_ipad,
-                                egui::TextEdit::singleline(&mut setup.ipad_local_port).desired_width(80.0).margin(egui::Margin::symmetric(6, 4)),
-                            )
-                            .on_hover_text("Local port the daemon listens on for iPad-protocol traffic.");
+                                !is_connected,
+                                "Local port the daemon listens on for iPad-protocol traffic.",
+                            );
                             ui.end_row();
                         });
 
@@ -861,18 +937,22 @@ pub fn draw_setup_tab(
 
                                     ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
                                     ui.label(egui::RichText::new(">").color(theme::TEXT_SECONDARY));
-                                    ui.add_enabled(
+                                    port_edit_enabled(
+                                        ui,
+                                        &mut setup.ipad_reply_port,
                                         !is_connected,
-                                        egui::TextEdit::singleline(&mut setup.ipad_reply_port).desired_width(80.0).margin(egui::Margin::symmetric(6, 4)),
-                                    )
-                                    .on_hover_text("Port on the iPad — daemon sends to it here.");
+                                        "",
+                                        "Port on the iPad — daemon sends to it here.",
+                                    );
                                     ui.end_row();
 
-                                    ui.add_enabled(
+                                    port_edit_enabled(
+                                        ui,
+                                        &mut setup.ipad_listen_port,
                                         !is_connected,
-                                        egui::TextEdit::singleline(&mut setup.ipad_listen_port).desired_width(80.0).margin(egui::Margin::symmetric(6, 4)),
-                                    )
-                                    .on_hover_text("Local port the daemon listens on for iPad→daemon traffic.");
+                                        "",
+                                        "Local port the daemon listens on for iPad→daemon traffic.",
+                                    );
                                     ui.label(egui::RichText::new("<").color(theme::TEXT_SECONDARY));
                                     ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
                                     ui.end_row();
@@ -944,24 +1024,26 @@ pub fn draw_setup_tab(
                             ui.label(egui::RichText::new("QLab").strong().color(theme::ACCENT_AMBER));
                             ui.end_row();
 
-                            ui.add_enabled(
+                            port_edit_enabled(
+                                ui,
+                                &mut setup.trigger_port,
                                 !is_connected,
-                                egui::TextEdit::singleline(&mut setup.trigger_port).desired_width(80.0).margin(egui::Margin::symmetric(6, 4)),
-                            )
-                            .on_hover_text("Local port the daemon listens on for cue triggers from QLab.");
+                                "",
+                                "Local port the daemon listens on for cue triggers from QLab.",
+                            );
                             ui.label(egui::RichText::new("<").color(theme::TEXT_SECONDARY));
                             ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
                             ui.end_row();
 
                             ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
                             ui.label(egui::RichText::new(">").color(theme::TEXT_SECONDARY));
-                            ui.add_enabled(
+                            port_edit_enabled(
+                                ui,
+                                &mut setup.qlab_port,
                                 !is_connected,
-                                egui::TextEdit::singleline(&mut setup.qlab_port)
-                                    .desired_width(80.0).margin(egui::Margin::symmetric(6, 4))
-                                    .hint_text("53000"),
-                            )
-                            .on_hover_text("QLab's OSC listen port — daemon sends cue-build commands here.");
+                                "53000",
+                                "QLab's OSC listen port — daemon sends cue-build commands here.",
+                            );
                             ui.end_row();
                         });
                 });
@@ -989,13 +1071,11 @@ pub fn draw_setup_tab(
                             // Editable port goes directly in the flow grid —
                             // no separate "Port:" row above, since the value
                             // is the only knob this satellite exposes.
-                            ui.add_enabled(
+                            port_edit_enabled(
+                                ui,
+                                &mut setup.monitor_port,
                                 !is_connected,
-                                egui::TextEdit::singleline(&mut setup.monitor_port)
-                                    .desired_width(80.0).margin(egui::Margin::symmetric(6, 4))
-                                    .hint_text("off"),
-                            )
-                            .on_hover_text(
+                                "off",
                                 "Local port for the Flutter monitor app — leave blank to disable.",
                             );
                             ui.label(egui::RichText::new("<->").color(theme::TEXT_SECONDARY));
