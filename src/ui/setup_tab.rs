@@ -428,7 +428,7 @@ pub fn draw_setup_tab(
 
                             ui.add_enabled(
                                 !is_connected,
-                                egui::TextEdit::singleline(&mut setup.console_port).desired_width(60.0),
+                                egui::TextEdit::singleline(&mut setup.console_port).desired_width(80.0).margin(egui::Margin::symmetric(6, 4)),
                             )
                             .on_hover_text("Console port — daemon sends GP OSC here.");
                             ui.label(egui::RichText::new("<").color(theme::TEXT_SECONDARY));
@@ -439,7 +439,7 @@ pub fn draw_setup_tab(
                             ui.label(egui::RichText::new(">").color(theme::TEXT_SECONDARY));
                             ui.add_enabled(
                                 !is_connected,
-                                egui::TextEdit::singleline(&mut setup.local_port).desired_width(60.0),
+                                egui::TextEdit::singleline(&mut setup.local_port).desired_width(80.0).margin(egui::Margin::symmetric(6, 4)),
                             )
                             .on_hover_text("Local port the daemon listens on for GP OSC from the console.");
                             ui.end_row();
@@ -451,7 +451,7 @@ pub fn draw_setup_tab(
                             // below stay at a fixed Y-coordinate.
                             ui.add_visible(
                                 uses_ipad,
-                                egui::TextEdit::singleline(&mut setup.ipad_console_port).desired_width(60.0),
+                                egui::TextEdit::singleline(&mut setup.ipad_console_port).desired_width(80.0).margin(egui::Margin::symmetric(6, 4)),
                             )
                             .on_hover_text("Console iPad-protocol port — daemon sends here.");
                             ui.add_visible(
@@ -474,7 +474,7 @@ pub fn draw_setup_tab(
                             );
                             ui.add_visible(
                                 uses_ipad,
-                                egui::TextEdit::singleline(&mut setup.ipad_local_port).desired_width(60.0),
+                                egui::TextEdit::singleline(&mut setup.ipad_local_port).desired_width(80.0).margin(egui::Margin::symmetric(6, 4)),
                             )
                             .on_hover_text("Local port the daemon listens on for iPad-protocol traffic.");
                             ui.end_row();
@@ -863,14 +863,14 @@ pub fn draw_setup_tab(
                                     ui.label(egui::RichText::new(">").color(theme::TEXT_SECONDARY));
                                     ui.add_enabled(
                                         !is_connected,
-                                        egui::TextEdit::singleline(&mut setup.ipad_reply_port).desired_width(60.0),
+                                        egui::TextEdit::singleline(&mut setup.ipad_reply_port).desired_width(80.0).margin(egui::Margin::symmetric(6, 4)),
                                     )
                                     .on_hover_text("Port on the iPad — daemon sends to it here.");
                                     ui.end_row();
 
                                     ui.add_enabled(
                                         !is_connected,
-                                        egui::TextEdit::singleline(&mut setup.ipad_listen_port).desired_width(60.0),
+                                        egui::TextEdit::singleline(&mut setup.ipad_listen_port).desired_width(80.0).margin(egui::Margin::symmetric(6, 4)),
                                     )
                                     .on_hover_text("Local port the daemon listens on for iPad→daemon traffic.");
                                     ui.label(egui::RichText::new("<").color(theme::TEXT_SECONDARY));
@@ -946,7 +946,7 @@ pub fn draw_setup_tab(
 
                             ui.add_enabled(
                                 !is_connected,
-                                egui::TextEdit::singleline(&mut setup.trigger_port).desired_width(60.0),
+                                egui::TextEdit::singleline(&mut setup.trigger_port).desired_width(80.0).margin(egui::Margin::symmetric(6, 4)),
                             )
                             .on_hover_text("Local port the daemon listens on for cue triggers from QLab.");
                             ui.label(egui::RichText::new("<").color(theme::TEXT_SECONDARY));
@@ -958,7 +958,7 @@ pub fn draw_setup_tab(
                             ui.add_enabled(
                                 !is_connected,
                                 egui::TextEdit::singleline(&mut setup.qlab_port)
-                                    .desired_width(60.0)
+                                    .desired_width(80.0).margin(egui::Margin::symmetric(6, 4))
                                     .hint_text("53000"),
                             )
                             .on_hover_text("QLab's OSC listen port — daemon sends cue-build commands here.");
@@ -992,7 +992,7 @@ pub fn draw_setup_tab(
                             ui.add_enabled(
                                 !is_connected,
                                 egui::TextEdit::singleline(&mut setup.monitor_port)
-                                    .desired_width(60.0)
+                                    .desired_width(80.0).margin(egui::Margin::symmetric(6, 4))
                                     .hint_text("off"),
                             )
                             .on_hover_text(
