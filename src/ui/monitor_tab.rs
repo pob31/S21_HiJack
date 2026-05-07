@@ -214,45 +214,53 @@ pub fn draw_monitor_tab(
                     });
                 }); // end left-column scope
 
-                // Right column — Clients list, takes whatever horizontal
-                // space remains so it can grow with wider windows.
-                ui.scope(|ui| {
-                    // ── Client List card ──
-                    theme::card_frame().show(ui, |ui| {
-                        theme::section_heading(ui, "Clients");
+                // Right column — Clients list. Force it to claim the
+                // entire remaining horizontal width via
+                // `allocate_ui_with_layout`, otherwise the inner
+                // `card_frame` shrinks to fit its widest row instead of
+                // expanding to the window.
+                let remaining_w = ui.available_width().max(0.0);
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(remaining_w, ui.available_height()),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_min_width(remaining_w);
+                        // ── Client List card ──
+                        theme::card_frame().show(ui, |ui| {
+                            theme::section_heading(ui, "Clients");
 
-                        let mgr = runtime.block_on(monitor_manager.read());
-                        let clients = mgr.sorted_clients();
+                            let mgr = runtime.block_on(monitor_manager.read());
+                            let clients = mgr.sorted_clients();
 
-                        if clients.is_empty() {
-                            ui.label(
-                                egui::RichText::new("No monitoring clients configured.")
-                                    .color(theme::TEXT_SECONDARY),
-                            );
-                        } else {
-                            let mut to_remove = None;
-                            let mut to_edit: Option<MonitorClient> = None;
-                            // Per-row reorder result staged for after the loop, so we
-                            // can release the read lock before calling update_client.
-                            let mut to_update_order: Option<(Uuid, Vec<u8>, Vec<u8>)> = None;
+                            if clients.is_empty() {
+                                ui.label(
+                                    egui::RichText::new("No monitoring clients configured.")
+                                        .color(theme::TEXT_SECONDARY),
+                                );
+                            } else {
+                                let mut to_remove = None;
+                                let mut to_edit: Option<MonitorClient> = None;
+                                // Per-row reorder result staged for after the loop, so we
+                                // can release the read lock before calling update_client.
+                                let mut to_update_order: Option<(Uuid, Vec<u8>, Vec<u8>)> = None;
 
-                            for client in &clients {
-                                let in_reorder = tab.reorder_for == Some(client.id);
-                                let stroke_color = if in_reorder {
-                                    theme::ACCENT_BLUE
-                                } else {
-                                    theme::BORDER_SUBTLE
-                                };
-                                egui::Frame::new()
-                                    .fill(theme::BG_ELEVATED)
-                                    .stroke(egui::Stroke::new(
-                                        if in_reorder { 2.0 } else { 1.0 },
-                                        stroke_color,
-                                    ))
-                                    .corner_radius(6.0)
-                                    .inner_margin(egui::Margin::same(8))
-                                    .show(ui, |ui| {
-                                        ui.horizontal_wrapped(|ui| {
+                                for client in &clients {
+                                    let in_reorder = tab.reorder_for == Some(client.id);
+                                    let stroke_color = if in_reorder {
+                                        theme::ACCENT_BLUE
+                                    } else {
+                                        theme::BORDER_SUBTLE
+                                    };
+                                    egui::Frame::new()
+                                        .fill(theme::BG_ELEVATED)
+                                        .stroke(egui::Stroke::new(
+                                            if in_reorder { 2.0 } else { 1.0 },
+                                            stroke_color,
+                                        ))
+                                        .corner_radius(6.0)
+                                        .inner_margin(egui::Margin::same(8))
+                                        .show(ui, |ui| {
+                                            ui.horizontal_wrapped(|ui| {
                                             // Connection status dot
                                             let status_color = if client.is_connected() {
                                                 theme::COLOR_CONNECTED
@@ -342,109 +350,113 @@ pub fn draw_monitor_tab(
                                             }
                                         });
 
-                                        // Status + action-button row
-                                        ui.horizontal(|ui| {
-                                            ui.add_space(18.0); // align under dot
-                                            let status_text = if in_reorder {
-                                                "Reorder mode — drag badges to rearrange"
-                                            } else if client.is_connected() {
-                                                "Connected"
-                                            } else {
-                                                "Offline"
-                                            };
-                                            ui.label(
-                                                egui::RichText::new(status_text)
-                                                    .color(if in_reorder {
-                                                        theme::ACCENT_BLUE
-                                                    } else {
-                                                        theme::TEXT_SECONDARY
-                                                    })
-                                                    .small(),
-                                            );
-
-                                            ui.with_layout(
-                                                egui::Layout::right_to_left(egui::Align::Center),
-                                                |ui| {
-                                                    // Long-press: deleting a profile mid-show by accident
-                                                    // would silently drop a musician's IEM control.
-                                                    if theme::long_press_button(
-                                                        ui,
-                                                        "Delete",
-                                                        theme::ACCENT_RED,
-                                                        egui::Vec2::new(60.0, 24.0),
-                                                        !in_reorder,
-                                                        theme::LONG_PRESS_DURATION_MS,
-                                                    ) {
-                                                        to_remove = Some(client.id);
-                                                    }
-
-                                                    let edit_btn = theme::action_button(
-                                                        "Edit",
-                                                        theme::ACCENT_BLUE,
-                                                        egui::Vec2::new(60.0, 24.0),
-                                                    );
-                                                    if ui
-                                                        .add_enabled(!in_reorder, edit_btn)
-                                                        .clicked()
-                                                    {
-                                                        to_edit = Some((*client).clone());
-                                                    }
-
-                                                    let (label, color) = if in_reorder {
-                                                        ("Done", theme::ACCENT_GREEN)
-                                                    } else {
-                                                        ("Reorder", theme::ACCENT_ORANGE)
-                                                    };
-                                                    let reorder_btn = theme::action_button(
-                                                        label,
-                                                        color,
-                                                        egui::Vec2::new(70.0, 24.0),
-                                                    );
-                                                    if ui.add(reorder_btn).clicked() {
-                                                        tab.reorder_for = if in_reorder {
-                                                            None
+                                            // Status + action-button row
+                                            ui.horizontal(|ui| {
+                                                ui.add_space(18.0); // align under dot
+                                                let status_text = if in_reorder {
+                                                    "Reorder mode — drag badges to rearrange"
+                                                } else if client.is_connected() {
+                                                    "Connected"
+                                                } else {
+                                                    "Offline"
+                                                };
+                                                ui.label(
+                                                    egui::RichText::new(status_text)
+                                                        .color(if in_reorder {
+                                                            theme::ACCENT_BLUE
                                                         } else {
-                                                            Some(client.id)
-                                                        };
-                                                    }
-                                                },
-                                            );
-                                        });
-                                    });
-                                ui.add_space(4.0);
-                            }
+                                                            theme::TEXT_SECONDARY
+                                                        })
+                                                        .small(),
+                                                );
 
-                            drop(mgr);
-                            if let Some(id) = to_remove {
-                                let mgr_clone = monitor_manager.clone();
-                                runtime.spawn(async move {
-                                    mgr_clone.write().await.remove_client(id);
-                                });
-                                tab.status_message = Some("Client removed".into());
-                            }
-                            if let Some(client) = to_edit {
-                                if tab.picker.is_none() {
-                                    let st = runtime.block_on(console_state.read());
-                                    tab.picker = Some(ChannelPickerState::for_edit(&client, &st));
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        // Long-press: deleting a profile mid-show by accident
+                                                        // would silently drop a musician's IEM control.
+                                                        if theme::long_press_button(
+                                                            ui,
+                                                            "Delete",
+                                                            theme::ACCENT_RED,
+                                                            egui::Vec2::new(60.0, 24.0),
+                                                            !in_reorder,
+                                                            theme::LONG_PRESS_DURATION_MS,
+                                                        ) {
+                                                            to_remove = Some(client.id);
+                                                        }
+
+                                                        let edit_btn = theme::action_button(
+                                                            "Edit",
+                                                            theme::ACCENT_BLUE,
+                                                            egui::Vec2::new(60.0, 24.0),
+                                                        );
+                                                        if ui
+                                                            .add_enabled(!in_reorder, edit_btn)
+                                                            .clicked()
+                                                        {
+                                                            to_edit = Some((*client).clone());
+                                                        }
+
+                                                        let (label, color) = if in_reorder {
+                                                            ("Done", theme::ACCENT_GREEN)
+                                                        } else {
+                                                            ("Reorder", theme::ACCENT_ORANGE)
+                                                        };
+                                                        let reorder_btn = theme::action_button(
+                                                            label,
+                                                            color,
+                                                            egui::Vec2::new(70.0, 24.0),
+                                                        );
+                                                        if ui.add(reorder_btn).clicked() {
+                                                            tab.reorder_for = if in_reorder {
+                                                                None
+                                                            } else {
+                                                                Some(client.id)
+                                                            };
+                                                        }
+                                                    },
+                                                );
+                                            });
+                                        });
+                                    ui.add_space(4.0);
+                                }
+
+                                drop(mgr);
+                                if let Some(id) = to_remove {
+                                    let mgr_clone = monitor_manager.clone();
+                                    runtime.spawn(async move {
+                                        mgr_clone.write().await.remove_client(id);
+                                    });
+                                    tab.status_message = Some("Client removed".into());
+                                }
+                                if let Some(client) = to_edit {
+                                    if tab.picker.is_none() {
+                                        let st = runtime.block_on(console_state.read());
+                                        tab.picker =
+                                            Some(ChannelPickerState::for_edit(&client, &st));
+                                    }
+                                }
+                                if let Some((id, auxes, inputs)) = to_update_order {
+                                    // Read the existing client to keep its name (the
+                                    // Reorder UI doesn't expose name editing) and skip
+                                    // the update if nothing actually changed (paranoia
+                                    // against frame races where the same drop fires twice).
+                                    let mgr_clone = monitor_manager.clone();
+                                    runtime.spawn(async move {
+                                        let mut mgr = mgr_clone.write().await;
+                                        if let Some(existing) = mgr.clients.get(&id) {
+                                            let name = existing.name.clone();
+                                            mgr.update_client(id, name, auxes, inputs);
+                                        }
+                                    });
                                 }
                             }
-                            if let Some((id, auxes, inputs)) = to_update_order {
-                                // Read the existing client to keep its name (the
-                                // Reorder UI doesn't expose name editing) and skip
-                                // the update if nothing actually changed (paranoia
-                                // against frame races where the same drop fires twice).
-                                let mgr_clone = monitor_manager.clone();
-                                runtime.spawn(async move {
-                                    let mut mgr = mgr_clone.write().await;
-                                    if let Some(existing) = mgr.clients.get(&id) {
-                                        let name = existing.name.clone();
-                                        mgr.update_client(id, name, auxes, inputs);
-                                    }
-                                });
-                            }
-                        }
-                    });
-                }); // end right-column scope
+                        });
+                    }, // end right-column allocate_ui_with_layout closure
+                );
             }); // end horizontal_top
         });
 
