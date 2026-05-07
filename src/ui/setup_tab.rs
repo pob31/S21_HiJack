@@ -553,39 +553,57 @@ pub fn draw_setup_tab(
 
                 // Server (This Computer) — central hub
                 peer_section(ui, "This Computer", theme::ACCENT_GREEN, w_hub, MIN_TOP_HEIGHT, true, None, |ui| {
-                    // ── Display Mode (toggle-button style, matching Connection Mode) ──
-                    ui.horizontal(|ui| {
+                    // All form rows in the Server hub share a fixed label-column
+                    // width via `min_col_width` so labels and widgets line up
+                    // across separator-divided groups. Grid cells are
+                    // vertically-centred by default — fixes the "label baseline
+                    // floats above buttons" feel from previous iterations.
+                    const LABEL_COL_W: f32 = 150.0;
+                    let server_grid = |id: &'static str| {
+                        egui::Grid::new(id)
+                            .num_columns(2)
+                            .spacing([14.0, 8.0])
+                            .min_col_width(LABEL_COL_W)
+                    };
+
+                    // ── Display Mode + diagnostic toggle ──
+                    server_grid("server_display_grid").show(ui, |ui| {
                         ui.label("Display Mode:");
-                        for mode in UiMode::ALL {
-                            let is_active = setup.ui_mode == mode;
-                            let fill = if is_active { theme::ACCENT_BLUE } else { theme::BG_ELEVATED };
-                            let text_color = if is_active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
-                            let btn = egui::Button::new(
-                                egui::RichText::new(mode.label()).color(text_color),
-                            )
-                            .fill(fill)
-                            .corner_radius(4.0);
-                            if ui.add(btn).clicked() && setup.ui_mode != mode {
-                                setup.ui_mode = mode;
-                                save_app_preferences(setup);
+                        ui.horizontal(|ui| {
+                            for mode in UiMode::ALL {
+                                let is_active = setup.ui_mode == mode;
+                                let fill = if is_active { theme::ACCENT_BLUE } else { theme::BG_ELEVATED };
+                                let text_color = if is_active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
+                                let btn = egui::Button::new(
+                                    egui::RichText::new(mode.label()).color(text_color),
+                                )
+                                .fill(fill)
+                                .corner_radius(4.0);
+                                if ui.add(btn).clicked() && setup.ui_mode != mode {
+                                    setup.ui_mode = mode;
+                                    save_app_preferences(setup);
+                                }
                             }
+                        });
+                        ui.end_row();
+
+                        ui.label("");
+                        let diag_resp = ui.checkbox(
+                            &mut setup.show_diagnostics,
+                            "Show diagnostic tabs (OSC Log, Inspector)",
+                        );
+                        if diag_resp.changed() {
+                            save_app_preferences(setup);
                         }
+                        ui.end_row();
                     });
 
-                    let diag_resp = ui.checkbox(
-                        &mut setup.show_diagnostics,
-                        "Show diagnostic tabs (OSC Log, Inspector)",
-                    );
-                    if diag_resp.changed() {
-                        save_app_preferences(setup);
-                    }
-
-                    ui.add_space(6.0);
+                    ui.add_space(8.0);
                     ui.separator();
-                    ui.add_space(4.0);
+                    ui.add_space(6.0);
 
-                    // ── Network ──
-                    ui.horizontal(|ui| {
+                    // ── Network + bind-IP read-out ──
+                    server_grid("server_network_grid").show(ui, |ui| {
                         ui.label("Network:");
                         ui.add_enabled_ui(!is_connected, |ui| {
                             let interfaces = net_interfaces::list_interfaces();
@@ -600,7 +618,7 @@ pub fn draw_setup_tab(
                             };
                             egui::ComboBox::from_id_salt("nic_select")
                                 .selected_text(&current_label)
-                                .width(w_hub - 160.0)
+                                .width(w_hub - LABEL_COL_W - 20.0)
                                 .show_ui(ui, |ui| {
                                     if ui
                                         .selectable_label(
@@ -622,137 +640,152 @@ pub fn draw_setup_tab(
                                     }
                                 });
                         });
-                    });
+                        ui.end_row();
 
-                    ui.add_space(4.0);
-                    let bind_label = if setup.local_ip.is_empty() {
-                        "Bind IP:  0.0.0.0  (all interfaces)".to_string()
-                    } else {
-                        format!("Bind IP:  {}", setup.local_ip)
-                    };
-                    ui.label(egui::RichText::new(bind_label).color(theme::TEXT_SECONDARY));
+                        ui.label("Bind IP:");
+                        let bind_value = if setup.local_ip.is_empty() {
+                            "0.0.0.0  (all interfaces)".to_string()
+                        } else {
+                            setup.local_ip.clone()
+                        };
+                        ui.label(egui::RichText::new(bind_value).color(theme::TEXT_SECONDARY));
+                        ui.end_row();
+                    });
 
                     ui.add_space(8.0);
                     ui.separator();
-                    ui.add_space(4.0);
+                    ui.add_space(6.0);
 
-                    // ── Connection Mode ──
-                    // Use `short_label()` so the row fits within `MAX_W_HUB`
-                    // — the full "Mode N: …" labels overflow the Server frame
-                    // and break the diagram-width math.
-                    ui.horizontal(|ui| {
+                    // ── Connection Mode + parameter-coverage popup trigger ──
+                    server_grid("server_conn_grid").show(ui, |ui| {
                         ui.label("Connection Mode:");
-                        for mode in [OperatingMode::Mode1, OperatingMode::Mode2, OperatingMode::Mode3] {
-                            let is_active = setup.operating_mode == mode;
-                            let fill = if is_active { theme::ACCENT_BLUE } else { theme::BG_ELEVATED };
-                            let text_color = if is_active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
-                            let btn = egui::Button::new(
-                                egui::RichText::new(mode.short_label()).color(text_color),
-                            )
-                            .fill(fill)
-                            .corner_radius(4.0);
-                            if ui.add_enabled(!is_connected, btn).clicked() {
-                                setup.operating_mode = mode;
+                        ui.horizontal(|ui| {
+                            for mode in [OperatingMode::Mode1, OperatingMode::Mode2, OperatingMode::Mode3] {
+                                let is_active = setup.operating_mode == mode;
+                                let fill = if is_active { theme::ACCENT_BLUE } else { theme::BG_ELEVATED };
+                                let text_color = if is_active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
+                                let btn = egui::Button::new(
+                                    egui::RichText::new(mode.short_label()).color(text_color),
+                                )
+                                .fill(fill)
+                                .corner_radius(4.0);
+                                if ui.add_enabled(!is_connected, btn).clicked() {
+                                    setup.operating_mode = mode;
+                                }
                             }
+                        });
+                        ui.end_row();
+
+                        ui.label("");
+                        if ui
+                            .add(theme::action_button(
+                                "Parameter coverage…",
+                                theme::BG_ELEVATED,
+                                egui::Vec2::new(180.0, 26.0),
+                            ))
+                            .clicked()
+                        {
+                            setup.show_coverage_popup = true;
                         }
+                        ui.end_row();
                     });
 
-                    ui.add_space(2.0);
-                    // Parameter-coverage details now live in a centered popup
-                    // (see end of card) so opening them doesn't push the
-                    // diagram below.
-                    if ui
-                        .add(theme::action_button(
-                            "Parameter coverage…",
-                            theme::BG_ELEVATED,
-                            egui::Vec2::new(180.0, 24.0),
-                        ))
-                        .clicked()
-                    {
-                        setup.show_coverage_popup = true;
-                    }
-
-                    ui.add_space(6.0);
+                    ui.add_space(8.0);
                     ui.separator();
-                    ui.add_space(4.0);
+                    ui.add_space(6.0);
 
                     // ── Show File ──
-                    ui.horizontal(|ui| {
+                    server_grid("server_show_file_grid").show(ui, |ui| {
                         ui.label("Show file:");
-                        ui.add(egui::TextEdit::singleline(&mut setup.show_file_path).desired_width(w_hub - 200.0));
-                        if ui.add(theme::action_button("Browse...", theme::BG_ELEVATED, egui::Vec2::new(80.0, 26.0))).clicked() {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("Show Files", &["json"])
-                                .add_filter("All Files", &["*"])
-                                .pick_file()
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut setup.show_file_path)
+                                    .desired_width(w_hub - LABEL_COL_W - 110.0),
+                            );
+                            if ui
+                                .add(theme::action_button(
+                                    "Browse…",
+                                    theme::BG_ELEVATED,
+                                    egui::Vec2::new(80.0, 26.0),
+                                ))
+                                .clicked()
                             {
-                                setup.show_file_path = path.display().to_string();
-                            }
-                        }
-                    });
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        let load_btn = theme::action_button(
-                            "Load Show",
-                            theme::ACCENT_BLUE,
-                            egui::Vec2::new(100.0, 28.0),
-                        );
-                        if ui.add(load_btn).clicked() {
-                            load_show_file(setup, state, cue_manager, macro_manager, monitor_manager, palette_manager, gang_manager, pan_link_bindings, connected, runtime, ui_tx);
-                        }
-
-                        let save_btn = theme::action_button(
-                            "Save Show",
-                            theme::ACCENT_GREEN,
-                            egui::Vec2::new(100.0, 28.0),
-                        );
-                        if ui.add(save_btn).clicked() {
-                            if setup.show_file_path.is_empty() {
                                 if let Some(path) = rfd::FileDialog::new()
                                     .add_filter("Show Files", &["json"])
-                                    .set_file_name("show.json")
-                                    .save_file()
+                                    .add_filter("All Files", &["*"])
+                                    .pick_file()
                                 {
                                     setup.show_file_path = path.display().to_string();
                                 }
                             }
-                            if !setup.show_file_path.is_empty() {
-                                save_show_file(
-                                    setup, state, cue_manager, macro_manager, monitor_manager,
-                                    palette_manager, gang_manager, pan_link_bindings,
-                                    auto_update_on_recall.load(Ordering::Relaxed),
-                                    console_snapshot_follow.load(Ordering::Relaxed),
-                                    console_recall.clone(),
-                                    runtime, ui_tx,
-                                );
-                            }
-                        }
+                        });
+                        ui.end_row();
 
-                        let new_btn = theme::action_button(
-                            "New Show",
-                            theme::ACCENT_ORANGE,
-                            egui::Vec2::new(100.0, 28.0),
-                        );
-                        if ui.add(new_btn).clicked() {
-                            let cue_mgr = cue_manager.clone();
-                            let macro_mgr = macro_manager.clone();
-                            let pmgr_arc = palette_manager.clone();
-                            runtime.spawn(async move {
-                                let mut mgr = cue_mgr.write().await;
-                                mgr.cue_list = CueList::default();
-                                mgr.snapshots.clear();
-                                mgr.scope_templates.clear();
-                                drop(mgr);
-                                let mut mmgr = macro_mgr.write().await;
-                                mmgr.macros.clear();
-                                mmgr.quick_trigger_ids.clear();
-                                drop(mmgr);
-                                let mut pmgr = pmgr_arc.write().await;
-                                pmgr.palettes.clear();
-                            });
-                            setup.show_file_path.clear();
-                            setup.status_message = Some("New show created".into());
-                        }
+                        ui.label("");
+                        ui.horizontal(|ui| {
+                            let load_btn = theme::action_button(
+                                "Load Show",
+                                theme::ACCENT_BLUE,
+                                egui::Vec2::new(100.0, 28.0),
+                            );
+                            if ui.add(load_btn).clicked() {
+                                load_show_file(setup, state, cue_manager, macro_manager, monitor_manager, palette_manager, gang_manager, pan_link_bindings, connected, runtime, ui_tx);
+                            }
+
+                            let save_btn = theme::action_button(
+                                "Save Show",
+                                theme::ACCENT_GREEN,
+                                egui::Vec2::new(100.0, 28.0),
+                            );
+                            if ui.add(save_btn).clicked() {
+                                if setup.show_file_path.is_empty() {
+                                    if let Some(path) = rfd::FileDialog::new()
+                                        .add_filter("Show Files", &["json"])
+                                        .set_file_name("show.json")
+                                        .save_file()
+                                    {
+                                        setup.show_file_path = path.display().to_string();
+                                    }
+                                }
+                                if !setup.show_file_path.is_empty() {
+                                    save_show_file(
+                                        setup, state, cue_manager, macro_manager, monitor_manager,
+                                        palette_manager, gang_manager, pan_link_bindings,
+                                        auto_update_on_recall.load(Ordering::Relaxed),
+                                        console_snapshot_follow.load(Ordering::Relaxed),
+                                        console_recall.clone(),
+                                        runtime, ui_tx,
+                                    );
+                                }
+                            }
+
+                            let new_btn = theme::action_button(
+                                "New Show",
+                                theme::ACCENT_ORANGE,
+                                egui::Vec2::new(100.0, 28.0),
+                            );
+                            if ui.add(new_btn).clicked() {
+                                let cue_mgr = cue_manager.clone();
+                                let macro_mgr = macro_manager.clone();
+                                let pmgr_arc = palette_manager.clone();
+                                runtime.spawn(async move {
+                                    let mut mgr = cue_mgr.write().await;
+                                    mgr.cue_list = CueList::default();
+                                    mgr.snapshots.clear();
+                                    mgr.scope_templates.clear();
+                                    drop(mgr);
+                                    let mut mmgr = macro_mgr.write().await;
+                                    mmgr.macros.clear();
+                                    mmgr.quick_trigger_ids.clear();
+                                    drop(mmgr);
+                                    let mut pmgr = pmgr_arc.write().await;
+                                    pmgr.palettes.clear();
+                                });
+                                setup.show_file_path.clear();
+                                setup.status_message = Some("New show created".into());
+                            }
+                        });
+                        ui.end_row();
                     });
                 });
 
