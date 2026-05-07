@@ -163,385 +163,436 @@ pub fn draw_gangs_tab(
     gang_manager: &Arc<RwLock<GangManager>>,
     runtime: &tokio::runtime::Handle,
 ) {
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            // Header
-            let mgr = runtime.block_on(gang_manager.read());
-            let active_count = mgr.groups.values().filter(|g| g.enabled).count();
-            let total_count = mgr.groups.len();
+    // Header + form sit in the top region and stay anchored — only the
+    // gang list below scrolls. ui.vertical hosts both, with the scroll
+    // area auto_shrink(false) consuming the residual height. Without
+    // this split, the form would scroll out of view as the gang list
+    // grew, forcing the operator to scroll back up to add or edit.
+    let mgr = runtime.block_on(gang_manager.read());
+    let active_count = mgr.groups.values().filter(|g| g.enabled).count();
+    let total_count = mgr.groups.len();
 
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("Smart Ganging")
-                        .size(theme::FONT_SIZE_SECTION)
-                        .strong()
-                        .color(theme::TEXT_PRIMARY),
-                );
-                ui.add_space(12.0);
-                theme::colored_badge(
-                    ui,
-                    &format!("{active_count} active / {total_count} total"),
-                    theme::BG_ELEVATED,
-                );
-            });
+    ui.vertical(|ui| {
+        // Header
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Smart Ganging")
+                    .size(theme::FONT_SIZE_SECTION)
+                    .strong()
+                    .color(theme::TEXT_PRIMARY),
+            );
+            ui.add_space(12.0);
+            theme::colored_badge(
+                ui,
+                &format!("{active_count} active / {total_count} total"),
+                theme::BG_ELEVATED,
+            );
+        });
 
-            ui.add_space(8.0);
+        ui.add_space(8.0);
 
-            // ── Add / Edit gang form card ──
-            let editing = tab.editing_gang_id.is_some();
-            theme::card_frame().show(ui, |ui| {
-                theme::section_heading(ui, if editing { "Edit Gang" } else { "New Gang" });
+        // ── Add / Edit gang form card ──
+        //
+        // Two-column body: Name / Channel Type / Members on the left in
+        // a fixed-width column; the wrapped Linked Sections picker on
+        // the right, taking the remaining width so its toggle buttons
+        // reflow into more rows when the window is narrowed.
+        const LEFT_COL_W: f32 = 360.0;
+        let editing = tab.editing_gang_id.is_some();
+        theme::card_frame().show(ui, |ui| {
+            theme::section_heading(ui, if editing { "Edit Gang" } else { "New Gang" });
 
-                egui::Grid::new("add_gang_grid")
-                    .num_columns(2)
-                    .spacing([10.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label("Name:");
-                        theme::padded_text_edit(ui, &mut tab.new_gang_name, 240.0, true, "");
-                        ui.end_row();
+            // Compute the applicable section set once, here, so we can
+            // both retain the user's selection across channel-type flips
+            // and pass the set into the right-column closure cheaply.
+            let applicable: HashSet<ParameterSection> = tab
+                .new_gang_channel_type
+                .applicable_sections()
+                .into_iter()
+                .collect();
+            tab.new_gang_sections.retain(|s| applicable.contains(s));
 
-                        ui.label("Channel Type:");
-                        egui::ComboBox::from_id_salt("gang_channel_type")
-                            .selected_text(tab.new_gang_channel_type.label())
-                            .show_ui(ui, |ui| {
-                                for ct in &ChannelTypeSelection::ALL {
-                                    ui.selectable_value(
-                                        &mut tab.new_gang_channel_type,
-                                        *ct,
-                                        ct.label(),
-                                    );
-                                }
-                            });
-                        ui.end_row();
-
-                        ui.label("Members:");
-                        let hint = if tab.new_gang_channel_type == ChannelTypeSelection::Mixed {
-                            "I1-4,A1-2,G5"
-                        } else {
-                            "1-4,7,12"
-                        };
-                        theme::padded_text_edit(ui, &mut tab.new_gang_members, 240.0, true, hint);
-                        ui.end_row();
-                    });
-
-                // Section toggle blocks (instead of checkboxes).
-                // The full set of section tiles is always laid out in the
-                // same canonical order — non-applicable sections for the
-                // current channel type render via `add_visible_ui(false, …)`
-                // so they keep their slot but are invisible and inert. This
-                // keeps the rest of the tiles from shifting when the user
-                // toggles channel type.
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("Linked Sections")
-                        .strong()
-                        .color(theme::TEXT_PRIMARY),
-                );
-                ui.add_space(4.0);
-                let applicable: HashSet<ParameterSection> = tab
-                    .new_gang_channel_type
-                    .applicable_sections()
-                    .into_iter()
-                    .collect();
-                // Drop any previously-toggled sections that aren't applicable
-                // to the current channel-type pick — avoids saving a gang
-                // with sections the engine will silently ignore.
-                tab.new_gang_sections.retain(|s| applicable.contains(s));
-                ui.horizontal_wrapped(|ui| {
-                    for section in ParameterSection::all_variants() {
-                        let is_applicable = applicable.contains(section);
-                        let active = tab.new_gang_sections.contains(section);
-                        let builder = if is_applicable {
-                            egui::UiBuilder::new()
-                        } else {
-                            egui::UiBuilder::new().invisible()
-                        };
-                        let resp = ui
-                            .scope_builder(builder, |ui| {
-                                theme::toggle_block(ui, &section.to_string(), active)
-                                    .on_hover_text(section_tooltip(section))
-                            })
-                            .inner;
-                        if is_applicable && resp.clicked() {
-                            if active {
-                                tab.new_gang_sections.remove(section);
-                            } else {
-                                tab.new_gang_sections.insert(section.clone());
-                            }
-                        }
-                    }
-                });
-
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let btn_text = if editing { "Save" } else { "Add Gang" };
-                    let btn_color = if editing {
-                        theme::ACCENT_BLUE
-                    } else {
-                        theme::ACCENT_GREEN
-                    };
-                    let save_btn =
-                        theme::action_button(btn_text, btn_color, egui::Vec2::new(100.0, 32.0));
-                    if ui.add(save_btn).clicked() && !tab.new_gang_name.trim().is_empty() {
-                        let members =
-                            parse_channel_members(tab.new_gang_channel_type, &tab.new_gang_members);
-
-                        if members.is_empty() {
-                            tab.status_message = Some("No valid members parsed".into());
-                        } else if tab.new_gang_sections.is_empty() {
-                            tab.status_message = Some("Select at least one section".into());
-                        } else if members.len() < 2 {
-                            tab.status_message = Some("A gang needs at least 2 members".into());
-                        } else {
-                            let name = tab.new_gang_name.trim().to_string();
-                            let sections = tab.new_gang_sections.clone();
-                            let mgr_clone = gang_manager.clone();
-
-                            if let Some(edit_id) = tab.editing_gang_id.take() {
-                                runtime.spawn(async move {
-                                    let mut mgr = mgr_clone.write().await;
-                                    if let Some(group) = mgr.groups.get_mut(&edit_id) {
-                                        group.name = name;
-                                        group.members = members;
-                                        group.linked_sections = sections;
-                                    }
-                                });
-                                tab.status_message = Some("Gang updated".into());
-                            } else {
-                                let group = GangGroup::new(name.clone(), members, sections);
-                                runtime.spawn(async move {
-                                    mgr_clone.write().await.add_group(group);
-                                });
-                                tab.status_message = Some(format!("Added gang '{name}'"));
-                            }
-
-                            tab.new_gang_name.clear();
-                            tab.new_gang_members.clear();
-                            tab.new_gang_sections = HashSet::from([ParameterSection::FaderMutePan]);
-                        }
-                    }
-
-                    if editing {
-                        let cancel_btn = theme::action_button(
-                            "Cancel",
-                            theme::BG_ELEVATED,
-                            egui::Vec2::new(80.0, 32.0),
-                        );
-                        if ui.add(cancel_btn).clicked() {
-                            tab.editing_gang_id = None;
-                            tab.new_gang_name.clear();
-                            tab.new_gang_members.clear();
-                            tab.new_gang_sections = HashSet::from([ParameterSection::FaderMutePan]);
-                            tab.status_message = None;
-                        }
-                    }
-                });
-
-                // Status message
-                if let Some(ref msg) = tab.status_message {
-                    ui.add_space(4.0);
-                    ui.colored_label(theme::TEXT_WARNING, msg.as_str());
-                }
-            });
-
-            ui.add_space(8.0);
-
-            // ── Gang list card ──
-            theme::card_frame().show(ui, |ui| {
-                theme::section_heading(ui, "Gang Groups");
-
-                let groups: Vec<GangGroup> = mgr.sorted_groups().into_iter().cloned().collect();
-                drop(mgr);
-
-                if groups.is_empty() {
-                    ui.label(
-                        egui::RichText::new("No gang groups configured.")
-                            .color(theme::TEXT_SECONDARY),
-                    );
-                } else {
-                    let mut to_remove = None;
-                    let mut to_edit = None;
-                    let mut to_toggle = None;
-                    let mut to_pause: Option<(Uuid, bool)> = None;
-                    let mut to_set_mode: Option<(Uuid, GangMode)> = None;
-
-                    for group in &groups {
-                        let bg = if !group.enabled || group.paused {
-                            theme::BG_PANEL // dimmed when disabled or paused
-                        } else {
-                            theme::BG_ELEVATED
-                        };
-                        egui::Frame::new()
-                            .fill(bg)
-                            .stroke(egui::Stroke::new(1.0, theme::BORDER_SUBTLE))
-                            .corner_radius(6.0)
-                            .inner_margin(egui::Margin::same(8))
+            ui.horizontal_top(|ui| {
+                // Left column — fixed width form fields.
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(LEFT_COL_W, ui.available_height()),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(LEFT_COL_W);
+                        egui::Grid::new("add_gang_grid")
+                            .num_columns(2)
+                            .spacing([10.0, 6.0])
                             .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    // Enable/disable toggle
-                                    let toggle_color = if group.enabled {
-                                        theme::ACCENT_GREEN
+                                ui.label("Name:");
+                                theme::padded_text_edit(
+                                    ui,
+                                    &mut tab.new_gang_name,
+                                    240.0,
+                                    true,
+                                    "",
+                                );
+                                ui.end_row();
+
+                                ui.label("Channel Type:");
+                                egui::ComboBox::from_id_salt("gang_channel_type")
+                                    .selected_text(tab.new_gang_channel_type.label())
+                                    .show_ui(ui, |ui| {
+                                        for ct in &ChannelTypeSelection::ALL {
+                                            ui.selectable_value(
+                                                &mut tab.new_gang_channel_type,
+                                                *ct,
+                                                ct.label(),
+                                            );
+                                        }
+                                    });
+                                ui.end_row();
+
+                                ui.label("Members:");
+                                let hint =
+                                    if tab.new_gang_channel_type == ChannelTypeSelection::Mixed {
+                                        "I1-4,A1-2,G5"
                                     } else {
-                                        theme::BG_ELEVATED
+                                        "1-4,7,12"
                                     };
-                                    let toggle_label = if group.enabled { "ON" } else { "OFF" };
-                                    let toggle_btn = egui::Button::new(
-                                        egui::RichText::new(toggle_label)
-                                            .color(theme::TEXT_PRIMARY)
-                                            .strong()
-                                            .small(),
-                                    )
-                                    .fill(toggle_color)
-                                    .corner_radius(4.0);
-                                    if ui.add(toggle_btn).clicked() {
-                                        to_toggle = Some((group.id, !group.enabled));
-                                    }
-
-                                    // Pause button
-                                    let pause_color = if group.paused {
-                                        theme::ACCENT_ORANGE
-                                    } else {
-                                        theme::BG_ELEVATED
-                                    };
-                                    let pause_label = if group.paused { "PAUSED" } else { "||" };
-                                    let pause_btn = egui::Button::new(
-                                        egui::RichText::new(pause_label)
-                                            .color(theme::TEXT_PRIMARY)
-                                            .small(),
-                                    )
-                                    .fill(pause_color)
-                                    .corner_radius(4.0);
-                                    if ui.add_enabled(group.enabled, pause_btn).clicked() {
-                                        to_pause = Some((group.id, !group.paused));
-                                    }
-
-                                    ui.add_space(4.0);
-
-                                    // Mode toggle (Relative / Absolute) — full words
-                                    // since the row has plenty of horizontal room.
-                                    let rel_btn =
-                                        egui::Button::new(egui::RichText::new("Relative").small())
-                                            .selected(group.mode == GangMode::Relative)
-                                            .corner_radius(4.0);
-                                    if ui.add_enabled(group.enabled, rel_btn).clicked() {
-                                        to_set_mode = Some((group.id, GangMode::Relative));
-                                    }
-                                    let abs_btn =
-                                        egui::Button::new(egui::RichText::new("Absolute").small())
-                                            .selected(group.mode == GangMode::Absolute)
-                                            .corner_radius(4.0);
-                                    if ui.add_enabled(group.enabled, abs_btn).clicked() {
-                                        to_set_mode = Some((group.id, GangMode::Absolute));
-                                    }
-
-                                    ui.add_space(8.0);
-
-                                    // Gang name
-                                    ui.label(
-                                        egui::RichText::new(&group.name)
-                                            .strong()
-                                            .color(theme::TEXT_PRIMARY),
-                                    );
-
-                                    ui.add_space(8.0);
-
-                                    // Member badge
-                                    let member_text = format_members(&group.members);
-                                    let member_color = if !group.members.is_empty() {
-                                        theme::channel_color(&group.members[0])
-                                    } else {
-                                        theme::BG_ELEVATED
-                                    };
-                                    theme::colored_badge(ui, &member_text, member_color);
-
-                                    ui.add_space(4.0);
-
-                                    // Section badges
-                                    for section in &group.linked_sections {
-                                        theme::colored_badge(
-                                            ui,
-                                            &section.to_string(),
-                                            theme::SCOPE_ACTIVE,
-                                        );
-                                    }
-                                });
-
-                                // Action buttons row
-                                ui.horizontal(|ui| {
-                                    ui.add_space(52.0);
-                                    let edit_btn = theme::action_button(
-                                        "Edit",
-                                        theme::ACCENT_ORANGE,
-                                        egui::Vec2::new(60.0, 24.0),
-                                    );
-                                    if ui.add(edit_btn).clicked() {
-                                        to_edit = Some(group.clone());
-                                    }
-                                    let del_btn = theme::action_button(
-                                        "Delete",
-                                        theme::ACCENT_RED,
-                                        egui::Vec2::new(60.0, 24.0),
-                                    );
-                                    if ui.add(del_btn).clicked() {
-                                        to_remove = Some(group.id);
-                                    }
-                                });
+                                theme::padded_text_edit(
+                                    ui,
+                                    &mut tab.new_gang_members,
+                                    240.0,
+                                    true,
+                                    hint,
+                                );
+                                ui.end_row();
                             });
+                    },
+                );
+
+                ui.add_space(16.0);
+
+                // Right column — Linked Sections picker. Takes the rest
+                // of the form's width; horizontal_wrapped inside reflows
+                // the button rows when that width shrinks.
+                let right_w = ui.available_width();
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(right_w, ui.available_height()),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(right_w);
+                        ui.label(
+                            egui::RichText::new("Linked Sections")
+                                .strong()
+                                .color(theme::TEXT_PRIMARY),
+                        );
                         ui.add_space(4.0);
-                    }
-
-                    if let Some(id) = to_remove {
-                        let mgr_clone = gang_manager.clone();
-                        runtime.spawn(async move {
-                            mgr_clone.write().await.remove_group(id);
-                        });
-                        tab.status_message = Some("Gang removed".into());
-                    }
-
-                    if let Some((id, new_enabled)) = to_toggle {
-                        let mgr_clone = gang_manager.clone();
-                        runtime.spawn(async move {
-                            let mut mgr = mgr_clone.write().await;
-                            if let Some(group) = mgr.groups.get_mut(&id) {
-                                group.enabled = new_enabled;
-                                if !new_enabled {
-                                    group.paused = false;
+                        // Section toggle blocks. Non-applicable sections
+                        // for the current channel type stay in the
+                        // layout via `UiBuilder::invisible` so the tile
+                        // grid doesn't reshuffle when the operator flips
+                        // channel type.
+                        ui.horizontal_wrapped(|ui| {
+                            for section in ParameterSection::all_variants() {
+                                let is_applicable = applicable.contains(section);
+                                let active = tab.new_gang_sections.contains(section);
+                                let builder = if is_applicable {
+                                    egui::UiBuilder::new()
+                                } else {
+                                    egui::UiBuilder::new().invisible()
+                                };
+                                let resp = ui
+                                    .scope_builder(builder, |ui| {
+                                        theme::toggle_block(ui, &section.to_string(), active)
+                                            .on_hover_text(section_tooltip(section))
+                                    })
+                                    .inner;
+                                if is_applicable && resp.clicked() {
+                                    if active {
+                                        tab.new_gang_sections.remove(section);
+                                    } else {
+                                        tab.new_gang_sections.insert(section.clone());
+                                    }
                                 }
                             }
                         });
-                    }
+                    },
+                );
+            });
 
-                    if let Some((id, new_paused)) = to_pause {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let btn_text = if editing { "Save" } else { "Add Gang" };
+                let btn_color = if editing {
+                    theme::ACCENT_BLUE
+                } else {
+                    theme::ACCENT_GREEN
+                };
+                let save_btn =
+                    theme::action_button(btn_text, btn_color, egui::Vec2::new(100.0, 32.0));
+                if ui.add(save_btn).clicked() && !tab.new_gang_name.trim().is_empty() {
+                    let members =
+                        parse_channel_members(tab.new_gang_channel_type, &tab.new_gang_members);
+
+                    if members.is_empty() {
+                        tab.status_message = Some("No valid members parsed".into());
+                    } else if tab.new_gang_sections.is_empty() {
+                        tab.status_message = Some("Select at least one section".into());
+                    } else if members.len() < 2 {
+                        tab.status_message = Some("A gang needs at least 2 members".into());
+                    } else {
+                        let name = tab.new_gang_name.trim().to_string();
+                        let sections = tab.new_gang_sections.clone();
                         let mgr_clone = gang_manager.clone();
-                        runtime.spawn(async move {
-                            let mut mgr = mgr_clone.write().await;
-                            if let Some(group) = mgr.groups.get_mut(&id) {
-                                group.paused = new_paused;
-                            }
-                        });
-                    }
 
-                    if let Some((id, new_mode)) = to_set_mode {
-                        let mgr_clone = gang_manager.clone();
-                        runtime.spawn(async move {
-                            let mut mgr = mgr_clone.write().await;
-                            if let Some(group) = mgr.groups.get_mut(&id) {
-                                group.mode = new_mode;
-                            }
-                        });
-                    }
+                        if let Some(edit_id) = tab.editing_gang_id.take() {
+                            runtime.spawn(async move {
+                                let mut mgr = mgr_clone.write().await;
+                                if let Some(group) = mgr.groups.get_mut(&edit_id) {
+                                    group.name = name;
+                                    group.members = members;
+                                    group.linked_sections = sections;
+                                }
+                            });
+                            tab.status_message = Some("Gang updated".into());
+                        } else {
+                            let group = GangGroup::new(name.clone(), members, sections);
+                            runtime.spawn(async move {
+                                mgr_clone.write().await.add_group(group);
+                            });
+                            tab.status_message = Some(format!("Added gang '{name}'"));
+                        }
 
-                    if let Some(group) = to_edit {
-                        tab.editing_gang_id = Some(group.id);
-                        tab.new_gang_name = group.name.clone();
-                        tab.new_gang_members = format_members(&group.members);
-                        tab.new_gang_sections = group.linked_sections.clone();
+                        tab.new_gang_name.clear();
+                        tab.new_gang_members.clear();
+                        tab.new_gang_sections = HashSet::from([ParameterSection::FaderMutePan]);
+                    }
+                }
+
+                if editing {
+                    let cancel_btn = theme::action_button(
+                        "Cancel",
+                        theme::BG_ELEVATED,
+                        egui::Vec2::new(80.0, 32.0),
+                    );
+                    if ui.add(cancel_btn).clicked() {
+                        tab.editing_gang_id = None;
+                        tab.new_gang_name.clear();
+                        tab.new_gang_members.clear();
+                        tab.new_gang_sections = HashSet::from([ParameterSection::FaderMutePan]);
                         tab.status_message = None;
                     }
                 }
             });
+
+            // Status message
+            if let Some(ref msg) = tab.status_message {
+                ui.add_space(4.0);
+                ui.colored_label(theme::TEXT_WARNING, msg.as_str());
+            }
         });
+
+        ui.add_space(8.0);
+
+        // ── Gang list card ── wrapped in its own ScrollArea so the list
+        // can grow without pushing the form above it off-screen.
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                theme::card_frame().show(ui, |ui| {
+                    theme::section_heading(ui, "Gang Groups");
+
+                    let groups: Vec<GangGroup> = mgr.sorted_groups().into_iter().cloned().collect();
+                    drop(mgr);
+
+                    if groups.is_empty() {
+                        ui.label(
+                            egui::RichText::new("No gang groups configured.")
+                                .color(theme::TEXT_SECONDARY),
+                        );
+                    } else {
+                        let mut to_remove = None;
+                        let mut to_edit = None;
+                        let mut to_toggle = None;
+                        let mut to_pause: Option<(Uuid, bool)> = None;
+                        let mut to_set_mode: Option<(Uuid, GangMode)> = None;
+
+                        for group in &groups {
+                            let bg = if !group.enabled || group.paused {
+                                theme::BG_PANEL // dimmed when disabled or paused
+                            } else {
+                                theme::BG_ELEVATED
+                            };
+                            egui::Frame::new()
+                                .fill(bg)
+                                .stroke(egui::Stroke::new(1.0, theme::BORDER_SUBTLE))
+                                .corner_radius(6.0)
+                                .inner_margin(egui::Margin::same(8))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        // Enable/disable toggle
+                                        let toggle_color = if group.enabled {
+                                            theme::ACCENT_GREEN
+                                        } else {
+                                            theme::BG_ELEVATED
+                                        };
+                                        let toggle_label = if group.enabled { "ON" } else { "OFF" };
+                                        let toggle_btn = egui::Button::new(
+                                            egui::RichText::new(toggle_label)
+                                                .color(theme::TEXT_PRIMARY)
+                                                .strong()
+                                                .small(),
+                                        )
+                                        .fill(toggle_color)
+                                        .corner_radius(4.0);
+                                        if ui.add(toggle_btn).clicked() {
+                                            to_toggle = Some((group.id, !group.enabled));
+                                        }
+
+                                        // Pause button
+                                        let pause_color = if group.paused {
+                                            theme::ACCENT_ORANGE
+                                        } else {
+                                            theme::BG_ELEVATED
+                                        };
+                                        let pause_label =
+                                            if group.paused { "PAUSED" } else { "||" };
+                                        let pause_btn = egui::Button::new(
+                                            egui::RichText::new(pause_label)
+                                                .color(theme::TEXT_PRIMARY)
+                                                .small(),
+                                        )
+                                        .fill(pause_color)
+                                        .corner_radius(4.0);
+                                        if ui.add_enabled(group.enabled, pause_btn).clicked() {
+                                            to_pause = Some((group.id, !group.paused));
+                                        }
+
+                                        ui.add_space(4.0);
+
+                                        // Mode toggle (Relative / Absolute) — full words
+                                        // since the row has plenty of horizontal room.
+                                        let rel_btn = egui::Button::new(
+                                            egui::RichText::new("Relative").small(),
+                                        )
+                                        .selected(group.mode == GangMode::Relative)
+                                        .corner_radius(4.0);
+                                        if ui.add_enabled(group.enabled, rel_btn).clicked() {
+                                            to_set_mode = Some((group.id, GangMode::Relative));
+                                        }
+                                        let abs_btn = egui::Button::new(
+                                            egui::RichText::new("Absolute").small(),
+                                        )
+                                        .selected(group.mode == GangMode::Absolute)
+                                        .corner_radius(4.0);
+                                        if ui.add_enabled(group.enabled, abs_btn).clicked() {
+                                            to_set_mode = Some((group.id, GangMode::Absolute));
+                                        }
+
+                                        ui.add_space(8.0);
+
+                                        // Gang name
+                                        ui.label(
+                                            egui::RichText::new(&group.name)
+                                                .strong()
+                                                .color(theme::TEXT_PRIMARY),
+                                        );
+
+                                        ui.add_space(8.0);
+
+                                        // Member badge
+                                        let member_text = format_members(&group.members);
+                                        let member_color = if !group.members.is_empty() {
+                                            theme::channel_color(&group.members[0])
+                                        } else {
+                                            theme::BG_ELEVATED
+                                        };
+                                        theme::colored_badge(ui, &member_text, member_color);
+
+                                        ui.add_space(4.0);
+
+                                        // Section badges
+                                        for section in &group.linked_sections {
+                                            theme::colored_badge(
+                                                ui,
+                                                &section.to_string(),
+                                                theme::SCOPE_ACTIVE,
+                                            );
+                                        }
+                                    });
+
+                                    // Action buttons row
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(52.0);
+                                        let edit_btn = theme::action_button(
+                                            "Edit",
+                                            theme::ACCENT_ORANGE,
+                                            egui::Vec2::new(60.0, 24.0),
+                                        );
+                                        if ui.add(edit_btn).clicked() {
+                                            to_edit = Some(group.clone());
+                                        }
+                                        let del_btn = theme::action_button(
+                                            "Delete",
+                                            theme::ACCENT_RED,
+                                            egui::Vec2::new(60.0, 24.0),
+                                        );
+                                        if ui.add(del_btn).clicked() {
+                                            to_remove = Some(group.id);
+                                        }
+                                    });
+                                });
+                            ui.add_space(4.0);
+                        }
+
+                        if let Some(id) = to_remove {
+                            let mgr_clone = gang_manager.clone();
+                            runtime.spawn(async move {
+                                mgr_clone.write().await.remove_group(id);
+                            });
+                            tab.status_message = Some("Gang removed".into());
+                        }
+
+                        if let Some((id, new_enabled)) = to_toggle {
+                            let mgr_clone = gang_manager.clone();
+                            runtime.spawn(async move {
+                                let mut mgr = mgr_clone.write().await;
+                                if let Some(group) = mgr.groups.get_mut(&id) {
+                                    group.enabled = new_enabled;
+                                    if !new_enabled {
+                                        group.paused = false;
+                                    }
+                                }
+                            });
+                        }
+
+                        if let Some((id, new_paused)) = to_pause {
+                            let mgr_clone = gang_manager.clone();
+                            runtime.spawn(async move {
+                                let mut mgr = mgr_clone.write().await;
+                                if let Some(group) = mgr.groups.get_mut(&id) {
+                                    group.paused = new_paused;
+                                }
+                            });
+                        }
+
+                        if let Some((id, new_mode)) = to_set_mode {
+                            let mgr_clone = gang_manager.clone();
+                            runtime.spawn(async move {
+                                let mut mgr = mgr_clone.write().await;
+                                if let Some(group) = mgr.groups.get_mut(&id) {
+                                    group.mode = new_mode;
+                                }
+                            });
+                        }
+
+                        if let Some(group) = to_edit {
+                            tab.editing_gang_id = Some(group.id);
+                            tab.new_gang_name = group.name.clone();
+                            tab.new_gang_members = format_members(&group.members);
+                            tab.new_gang_sections = group.linked_sections.clone();
+                            tab.status_message = None;
+                        }
+                    }
+                });
+            });
+    });
 }
 
 /// Format a list of channel members for display.
