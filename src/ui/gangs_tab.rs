@@ -75,36 +75,53 @@ fn section_tooltip(section: &ParameterSection) -> &'static str {
     match section {
         ParameterSection::FaderMutePan => "Channel fader level, mute and pan/balance.",
         ParameterSection::Name => "Channel name string.",
-        ParameterSection::InputGain => "Head-amp input gain (input channels only).",
-        ParameterSection::Delay => "Channel delay time and on/off.",
-        ParameterSection::Digitube => "Digitube saturation amount and enable.",
+        ParameterSection::InputGain => {
+            "Head-amp gain, total/computed gain, gain tracking, phantom \
+             power, main/alt input switch, stereo mode (input channels only)."
+        }
+        ParameterSection::Trim => {
+            "Channel trim level (-40 dB to +40 dB). Available on input, \
+             aux, group and matrix channels."
+        }
+        ParameterSection::Polarity => {
+            "Phase / polarity invert. Available on input, aux, group and \
+             matrix channels."
+        }
+        ParameterSection::BalanceWidth => {
+            "Stereo balance (-1 to +1) and width — applies to stereo \
+             input channels only (GP OSC, input-only per the S21 chart)."
+        }
+        ParameterSection::Delay => "Channel delay time and enable.",
+        ParameterSection::Digitube => "Digitube drive, bias and enable.",
         ParameterSection::Eq => {
             "Parametric EQ — band gains, Q, freq, dynamic-EQ \
-                                 settings, EQ on/off."
+             settings, EQ on/off."
         }
         ParameterSection::Dyn1 => "Dynamics 1 — compressor / gate parameters and on/off.",
         ParameterSection::Dyn2 => "Dynamics 2 — second processor parameters and on/off.",
         ParameterSection::Sends => {
             "Aux send levels and on/off across all aux buses. \
-                                    Only propagates between members of the same channel type."
+             Only propagates between members of the same channel type."
         }
         ParameterSection::GroupRouting => {
             "Group routing — which group buses the channel feeds. \
-                                           Only propagates between same-type members."
+             Only propagates between same-type members."
         }
-        ParameterSection::Inserts => "Insert send / return enable.",
+        ParameterSection::Inserts => "Insert A / B send / return enable.",
         ParameterSection::CgMembership => {
-            "Control Group membership — which CGs the channel \
-                                           belongs to. Only propagates between same-type members \
-                                           (e.g. Input ↔ Input)."
+            "Control Group membership — which CGs the channel belongs \
+             to. Settable via the iPad protocol only (Mode 2 / Mode 3) \
+             using CGs_level / CGs_mute bitmasks; GP OSC has no \
+             CG-membership writer. Only propagates between same-type \
+             members."
         }
         ParameterSection::GraphicEq => {
             "Graphic EQ band gains. Only meaningful when ganging \
-                                        Graphic EQ channels (GEQ1, GEQ2, …)."
+             Graphic EQ channels (GEQ1, GEQ2, …)."
         }
         ParameterSection::MatrixSends => {
             "Matrix-send levels and on/off. Only meaningful when \
-                                          ganging Matrix Input channels (MI1, MI2, …)."
+             ganging Matrix Input channels (MI1, MI2, …)."
         }
     }
 }

@@ -854,6 +854,15 @@ impl ParameterPath {
 pub enum ParameterSection {
     Name,
     InputGain,
+    /// Channel trim (-40 dB to +40 dB). On the S21 this is exposed for
+    /// input, aux, group and matrix channels per the OSC chart, so it
+    /// lives in its own section instead of being lumped with head-amp
+    /// gain (which is input-only).
+    Trim,
+    /// Phase / polarity invert. Same broad applicability as `Trim`.
+    Polarity,
+    /// Stereo balance + width. Input-channel-only on the S21 (GP OSC).
+    BalanceWidth,
     Delay,
     Digitube,
     Eq,
@@ -869,12 +878,16 @@ pub enum ParameterSection {
 }
 
 impl ParameterSection {
-    /// All section variants in display order.
+    /// All section variants in display order. Order roughly follows
+    /// signal flow (input conditioning → EQ/dyn → routing → output).
     pub fn all_variants() -> &'static [ParameterSection] {
         &[
             ParameterSection::FaderMutePan,
             ParameterSection::Name,
             ParameterSection::InputGain,
+            ParameterSection::Trim,
+            ParameterSection::Polarity,
+            ParameterSection::BalanceWidth,
             ParameterSection::Delay,
             ParameterSection::Digitube,
             ParameterSection::Eq,
@@ -889,13 +902,19 @@ impl ParameterSection {
         ]
     }
 
-    /// Which sections are applicable to a given channel type.
+    /// Which sections are applicable to a given channel type. Per the
+    /// DiGiCo S OSC chart (`Documentation/DiGiCo S OSC Commandset_OSCpaths.csv`):
+    /// trim/polarity/delay/digitube apply to input/aux/group/matrix; balance
+    /// and width are input-only; CG channels only carry name/fader/mute/solo.
     pub fn applicable_to(channel: &ChannelId) -> Vec<ParameterSection> {
         match channel {
             ChannelId::Input(_) => vec![
                 ParameterSection::FaderMutePan,
                 ParameterSection::Name,
                 ParameterSection::InputGain,
+                ParameterSection::Trim,
+                ParameterSection::Polarity,
+                ParameterSection::BalanceWidth,
                 ParameterSection::Delay,
                 ParameterSection::Digitube,
                 ParameterSection::Eq,
@@ -909,6 +928,10 @@ impl ParameterSection {
             ChannelId::Aux(_) => vec![
                 ParameterSection::FaderMutePan,
                 ParameterSection::Name,
+                ParameterSection::Trim,
+                ParameterSection::Polarity,
+                ParameterSection::Delay,
+                ParameterSection::Digitube,
                 ParameterSection::Eq,
                 ParameterSection::Dyn1,
                 ParameterSection::Dyn2,
@@ -917,6 +940,10 @@ impl ParameterSection {
             ChannelId::Group(_) => vec![
                 ParameterSection::FaderMutePan,
                 ParameterSection::Name,
+                ParameterSection::Trim,
+                ParameterSection::Polarity,
+                ParameterSection::Delay,
+                ParameterSection::Digitube,
                 ParameterSection::Eq,
                 ParameterSection::Dyn1,
                 ParameterSection::Dyn2,
@@ -925,9 +952,14 @@ impl ParameterSection {
             ChannelId::Matrix(_) => vec![
                 ParameterSection::FaderMutePan,
                 ParameterSection::Name,
+                ParameterSection::Trim,
+                ParameterSection::Polarity,
+                ParameterSection::Delay,
+                ParameterSection::Digitube,
                 ParameterSection::Eq,
                 ParameterSection::Dyn1,
                 ParameterSection::Dyn2,
+                ParameterSection::Inserts,
             ],
             ChannelId::ControlGroup(_) => {
                 vec![ParameterSection::FaderMutePan, ParameterSection::Name]
@@ -943,6 +975,9 @@ impl fmt::Display for ParameterSection {
         match self {
             ParameterSection::Name => write!(f, "Name"),
             ParameterSection::InputGain => write!(f, "Input Gain"),
+            ParameterSection::Trim => write!(f, "Trim"),
+            ParameterSection::Polarity => write!(f, "Polarity"),
+            ParameterSection::BalanceWidth => write!(f, "Balance / Width"),
             ParameterSection::Delay => write!(f, "Delay"),
             ParameterSection::Digitube => write!(f, "Digitube"),
             ParameterSection::Eq => write!(f, "EQ"),
@@ -974,13 +1009,13 @@ impl ParameterPath {
             ParameterPath::AnalogGain
             | ParameterPath::TotalGain
             | ParameterPath::GainTracking
-            | ParameterPath::Trim
-            | ParameterPath::Balance
-            | ParameterPath::Width
-            | ParameterPath::Polarity
             | ParameterPath::Phantom
             | ParameterPath::MainAltIn
             | ParameterPath::StereoMode => ParameterSection::InputGain,
+
+            ParameterPath::Trim => ParameterSection::Trim,
+            ParameterPath::Polarity => ParameterSection::Polarity,
+            ParameterPath::Balance | ParameterPath::Width => ParameterSection::BalanceWidth,
 
             ParameterPath::DelayEnabled | ParameterPath::DelayTime => ParameterSection::Delay,
 
@@ -1733,7 +1768,19 @@ mod tests {
             ParameterPath::AnalogGain.section(),
             ParameterSection::InputGain
         );
-        assert_eq!(ParameterPath::Trim.section(), ParameterSection::InputGain);
+        assert_eq!(ParameterPath::Trim.section(), ParameterSection::Trim);
+        assert_eq!(
+            ParameterPath::Polarity.section(),
+            ParameterSection::Polarity
+        );
+        assert_eq!(
+            ParameterPath::Balance.section(),
+            ParameterSection::BalanceWidth
+        );
+        assert_eq!(
+            ParameterPath::Width.section(),
+            ParameterSection::BalanceWidth
+        );
         assert_eq!(
             ParameterPath::Phantom.section(),
             ParameterSection::InputGain
@@ -1798,6 +1845,37 @@ mod tests {
             ParameterPath::GeqEnabled.section(),
             ParameterSection::GraphicEq
         );
+    }
+
+    #[test]
+    fn parameter_section_applicable_to_aux_includes_trim_polarity_delay_digitube() {
+        // Per the DiGiCo S OSC chart, aux channels expose trim, polarity,
+        // delay and digitube — these all need to be gangable on aux.
+        let sections = ParameterSection::applicable_to(&ChannelId::Aux(1));
+        assert!(sections.contains(&ParameterSection::Trim));
+        assert!(sections.contains(&ParameterSection::Polarity));
+        assert!(sections.contains(&ParameterSection::Delay));
+        assert!(sections.contains(&ParameterSection::Digitube));
+        // Stereo balance/width is input-only on the S21.
+        assert!(!sections.contains(&ParameterSection::BalanceWidth));
+    }
+
+    #[test]
+    fn parameter_section_applicable_to_matrix_now_includes_inserts() {
+        let sections = ParameterSection::applicable_to(&ChannelId::Matrix(1));
+        assert!(sections.contains(&ParameterSection::Trim));
+        assert!(sections.contains(&ParameterSection::Polarity));
+        assert!(sections.contains(&ParameterSection::Delay));
+        assert!(sections.contains(&ParameterSection::Digitube));
+        assert!(sections.contains(&ParameterSection::Inserts));
+    }
+
+    #[test]
+    fn parameter_section_applicable_to_input_includes_balance_width() {
+        let sections = ParameterSection::applicable_to(&ChannelId::Input(1));
+        assert!(sections.contains(&ParameterSection::BalanceWidth));
+        assert!(sections.contains(&ParameterSection::Trim));
+        assert!(sections.contains(&ParameterSection::Polarity));
     }
 
     #[test]
