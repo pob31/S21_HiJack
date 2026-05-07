@@ -176,7 +176,13 @@ pub async fn perform_handshake(
 }
 
 /// Apply a config message to update the ConsoleConfig.
-fn apply_config_message(config: &mut ConsoleConfig, msg: &IpadConfigMessage) {
+///
+/// Used both during the initial handshake and during the steady-state
+/// mirror loop — the console may push fresh `Aux_Outputs/modes` (etc.)
+/// when the user reconfigures channel stereo/mono on the desk, and the
+/// daemon's mirror needs to follow so the Pan Link tab and other
+/// config-driven UI track the live state.
+pub(crate) fn apply_config_message(config: &mut ConsoleConfig, msg: &IpadConfigMessage) {
     match msg {
         IpadConfigMessage::ConsoleName { name, serial } => {
             config.console_name = name.clone();

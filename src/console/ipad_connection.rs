@@ -287,8 +287,16 @@ async fn ipad_state_mirror_loop(
             ParsedIpadMessage::MeterValues(_) => {
                 // Meters are high-frequency — skip state updates
             }
+            ParsedIpadMessage::ConfigResponse(cfg_msg) => {
+                // Mirror runtime config pushes — e.g. when an aux is
+                // reconfigured stereo↔mono the console resends
+                // `/Console/Aux_Outputs/modes` and the Pan Link tab's
+                // aux-mode read needs to follow.
+                debug!(?cfg_msg, "iPad mirror: config update");
+                let mut s = state.write().await;
+                ipad_handshake::apply_config_message(&mut s.config, &cfg_msg);
+            }
             _ => {
-                // Config/layout messages during mirror phase
                 debug!(path = msg.path, "iPad mirror: non-parameter message");
             }
         }
@@ -480,6 +488,13 @@ async fn log_and_capture_packet(
                 }
                 ParsedIpadMessage::ConfigResponse(cfg) => {
                     info!(?cfg, "Proxy {direction}: config");
+                    // Same as the Mode-2 mirror loop: track live config
+                    // pushes (aux-mode reconfig, name/serial/session
+                    // changes, channel-count changes) so config-driven
+                    // UI (Pan Link, Setup, …) follows the desk in real
+                    // time instead of needing a reconnect.
+                    let mut s = state.write().await;
+                    ipad_handshake::apply_config_message(&mut s.config, cfg);
                 }
                 _ => {
                     debug!(path = msg.path, "Proxy {direction}: {}", msg.path);

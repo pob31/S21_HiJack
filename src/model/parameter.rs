@@ -880,6 +880,12 @@ pub enum ParameterSection {
 impl ParameterSection {
     /// All section variants in display order. Order roughly follows
     /// signal flow (input conditioning → EQ/dyn → routing → output).
+    /// `CgMembership` is intentionally absent — there's no OSC writer
+    /// for CG membership on the S21, so exposing it as a gangable /
+    /// scope-editable section would advertise functionality the
+    /// console can't actually receive. The variant still exists for
+    /// classifying any incoming `CgLevel` / `CgMute` echoes from the
+    /// state mirror.
     pub fn all_variants() -> &'static [ParameterSection] {
         &[
             ParameterSection::FaderMutePan,
@@ -896,7 +902,6 @@ impl ParameterSection {
             ParameterSection::Sends,
             ParameterSection::GroupRouting,
             ParameterSection::Inserts,
-            ParameterSection::CgMembership,
             ParameterSection::GraphicEq,
             ParameterSection::MatrixSends,
         ]
@@ -923,7 +928,8 @@ impl ParameterSection {
                 ParameterSection::Sends,
                 ParameterSection::GroupRouting,
                 ParameterSection::Inserts,
-                ParameterSection::CgMembership,
+                // CgMembership is intentionally absent — see the note on
+                // `all_variants` above.
             ],
             ChannelId::Aux(_) => vec![
                 ParameterSection::FaderMutePan,
