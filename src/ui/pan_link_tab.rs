@@ -24,11 +24,21 @@ use crate::osc::encode;
 pub struct PanLinkTabState {
     /// 1-based input channel currently in focus.
     pub selected_input: u8,
+    /// Whether aux-tile clicks toggle pan links. Default off so glances
+    /// at the tab don't risk accidental edits during a show. The flag
+    /// persists while browsing through inputs but is reset to `false`
+    /// by `App::update` whenever the active tab moves away from
+    /// `Tab::PanLink`, so re-entering the tab always lands on the
+    /// safe non-editing state.
+    pub edit_mode: bool,
 }
 
 impl Default for PanLinkTabState {
     fn default() -> Self {
-        Self { selected_input: 1 }
+        Self {
+            selected_input: 1,
+            edit_mode: false,
+        }
     }
 }
 
@@ -187,7 +197,55 @@ pub fn draw_pan_link_tab(
 
             // ── Aux tile grid ──
             theme::card_frame().show(ui, |ui| {
-                theme::section_heading(ui, &format!("Aux sends for input {}", tab.selected_input));
+                // Heading row carries the Edit toggle on the right. Aux tiles
+                // are read-only until the user explicitly enables editing,
+                // protecting against accidental link toggles mid-show.
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Aux sends for input {}",
+                            tab.selected_input
+                        ))
+                        .size(theme::FONT_SIZE_SECTION)
+                        .strong()
+                        .color(theme::TEXT_PRIMARY),
+                    );
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            let (fill, text_color, label) = if tab.edit_mode {
+                                (theme::ACCENT_AMBER, theme::TEXT_PRIMARY, "Edit · on")
+                            } else {
+                                (theme::BG_ELEVATED, theme::TEXT_SECONDARY, "Edit")
+                            };
+                            let btn = egui::Button::new(
+                                egui::RichText::new(label).color(text_color).strong(),
+                            )
+                            .fill(fill)
+                            .corner_radius(4.0)
+                            .min_size(egui::Vec2::new(86.0, 26.0));
+                            if ui
+                                .add(btn)
+                                .on_hover_text(
+                                    "Click to enable / disable toggling pan links. Resets when \
+                                     leaving the Pan Link tab.",
+                                )
+                                .clicked()
+                            {
+                                tab.edit_mode = !tab.edit_mode;
+                            }
+                        },
+                    );
+                });
+                ui.add_space(2.0);
+                let strip_w = ui.available_width();
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::Vec2::new(strip_w, 1.0),
+                    egui::Sense::hover(),
+                );
+                ui.painter().rect_filled(rect, 0.0, theme::BORDER_SUBTLE);
+                ui.add_space(6.0);
+
                 ui.label(
                     egui::RichText::new(
                         "Mono auxes are disabled. Blue = not sending. Green = sending. \
@@ -222,7 +280,7 @@ pub fn draw_pan_link_tab(
                         };
                         let active = bindings_snapshot.is_active(tab.selected_input, bus);
 
-                        if draw_aux_tile(ui, &label, is_stereo, sending, active) {
+                        if draw_aux_tile(ui, &label, is_stereo, sending, active, tab.edit_mode) {
                             clicked_bus = Some(bus);
                         }
                     }
@@ -272,12 +330,17 @@ pub fn draw_pan_link_tab(
 }
 
 /// Draw a single aux tile and return true if it was clicked (and is enabled).
+///
+/// `editable` gates click sensing — when false, stereo tiles still render
+/// their state but ignore clicks, matching the read-only mode the user
+/// gets when entering the Pan Link tab.
 fn draw_aux_tile(
     ui: &mut egui::Ui,
     label: &str,
     is_stereo: bool,
     sending: bool,
     active: bool,
+    editable: bool,
 ) -> bool {
     let size = egui::Vec2::new(110.0, 50.0);
 
@@ -303,13 +366,23 @@ fn draw_aux_tile(
         egui::Color32::WHITE
     };
 
-    let sense = if is_stereo {
+    let clickable = is_stereo && editable;
+    let sense = if clickable {
         egui::Sense::click()
     } else {
         egui::Sense::hover()
     };
-    let (rect, resp) = ui.allocate_exact_size(size, sense);
-    let bg = if is_stereo && resp.hovered() {
+    let (rect, mut resp) = ui.allocate_exact_size(size, sense);
+    if is_stereo && !editable {
+        // Hint why a stereo tile isn't responding to clicks in read-only mode.
+        // `on_hover_text` consumes the response, so chain it before any
+        // subsequent `.clicked()` reads (we don't need clicks here anyway
+        // since `clickable` is false).
+        resp = resp.on_hover_text(
+            "Enable Edit (top-right of this card) to toggle pan links.",
+        );
+    }
+    let bg = if clickable && resp.hovered() {
         theme::lighten(fill, 20)
     } else {
         fill
@@ -352,5 +425,5 @@ fn draw_aux_tile(
     ui.painter().galley(sub_pos, sub_galley, text_color);
 
     ui.add_space(4.0);
-    is_stereo && resp.clicked()
+    clickable && resp.clicked()
 }

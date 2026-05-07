@@ -528,6 +528,14 @@ impl eframe::App for HiJackApp {
                 ui.add_space(4.0);
             }
 
+            // Reset transient per-tab state when the user navigates away.
+            // Pan Link's edit-mode is a "live editing" toggle that should
+            // default to off whenever the operator returns to the tab,
+            // even though it persists while browsing inputs within the tab.
+            if self.active_tab != Tab::PanLink {
+                self.pan_link.edit_mode = false;
+            }
+
             match self.active_tab {
                 Tab::Setup => {
                     super::setup_tab::draw_setup_tab(
