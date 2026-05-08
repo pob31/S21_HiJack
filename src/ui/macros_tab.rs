@@ -8,11 +8,14 @@ use uuid::Uuid;
 
 use super::UiEvent;
 use super::theme;
+use crate::console::cue_manager::CueManager;
 use crate::console::macro_engine::MacroEngine;
 use crate::console::macro_manager::MacroManager;
+use crate::console::palette_manager::PaletteManager;
 use crate::model::channel::ChannelId;
-use crate::model::macro_def::{MacroDef, MacroStep, MacroStepMode};
-use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
+use crate::model::macro_def::{MacroDef, MacroStep, MacroStepKind, MacroStepMode};
+use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterSection, ParameterValue};
+use crate::model::state::ConsoleState;
 
 /// State for the Macros tab.
 pub struct MacrosTabState {
@@ -26,12 +29,32 @@ pub struct MacrosTabState {
     pub new_macro_name: String,
 
     // Add step fields
+    /// Top-level kind selector — Parameter (full wizard) vs.
+    /// app-internal action (Go / Connect / Run macro / Recall).
+    pub add_step_kind: AddStepKindChoice,
     pub add_step_channel_type: ChannelTypeChoice,
     pub add_step_channel_number: String,
-    pub add_step_parameter: ParameterChoice,
+    /// Cascading wizard: section within the channel (EQ, Sends, …).
+    /// `None` until a channel selection is established.
+    pub add_step_section: Option<ParameterSection>,
+    /// Concrete parameter path within the selected section.
+    pub add_step_parameter_path: Option<ParameterPath>,
     pub add_step_mode: StepModeChoice,
     pub add_step_value: String,
     pub add_step_delay: String,
+    /// When ON, the Add Step form continuously mirrors the most-recent
+    /// inbound parameter from the console — the operator touches the
+    /// physical desk, the form follows.
+    pub track_latest_osc: bool,
+    /// Last address synced from `last_received` so we don't re-overwrite
+    /// the form on every frame.
+    pub last_synced: Option<ParameterAddress>,
+    /// Target IDs / channel for app-action step kinds.
+    pub add_step_target_macro: Option<Uuid>,
+    pub add_step_target_snapshot: Option<Uuid>,
+    pub add_step_target_palette: Option<Uuid>,
+    pub add_step_palette_channel_type: ChannelTypeChoice,
+    pub add_step_palette_channel_number: String,
 
     // Per-step edit buffers (indexed by step position)
     pub step_mode_edits: Vec<StepModeChoice>,
@@ -58,7 +81,10 @@ pub struct MacrosTabState {
 pub struct CachedSteps {
     pub macro_id: Uuid,
     pub name: String,
-    pub steps: Vec<(ParameterAddress, MacroStepMode, u32)>,
+    /// Each step's kind + delay. `kind` discriminates between OSC
+    /// parameter writes and the various app-internal commands so the
+    /// per-row rendering knows what to draw.
+    pub steps: Vec<(MacroStepKind, u32)>,
     pub mark_dirty: bool,
 }
 
@@ -68,12 +94,21 @@ impl Default for MacrosTabState {
             selected_macro_id: None,
             learn_name: String::new(),
             new_macro_name: String::new(),
+            add_step_kind: AddStepKindChoice::Parameter,
             add_step_channel_type: ChannelTypeChoice::Input,
             add_step_channel_number: "1".into(),
-            add_step_parameter: ParameterChoice::Fader,
+            add_step_section: Some(ParameterSection::FaderMutePan),
+            add_step_parameter_path: Some(ParameterPath::Fader),
             add_step_mode: StepModeChoice::Fixed,
             add_step_value: "0.0".into(),
             add_step_delay: "0".into(),
+            track_latest_osc: true,
+            last_synced: None,
+            add_step_target_macro: None,
+            add_step_target_snapshot: None,
+            add_step_target_palette: None,
+            add_step_palette_channel_type: ChannelTypeChoice::Input,
+            add_step_palette_channel_number: "1".into(),
             step_mode_edits: Vec::new(),
             step_value_edits: Vec::new(),
             step_delay_edits: Vec::new(),
@@ -124,57 +159,61 @@ impl ChannelTypeChoice {
             Self::ControlGroup => ChannelId::ControlGroup(num),
         }
     }
+
+    /// Decompose a `ChannelId` into `(kind, number)` for the dropdown
+    /// pair. GraphicEq / MatrixInput don't have a corresponding choice
+    /// and fall through to `Input` — the caller should then re-enter
+    /// the section/parameter cascade fresh.
+    fn from_channel_id(channel: &ChannelId) -> (Self, u8) {
+        match channel {
+            ChannelId::Input(n) => (Self::Input, *n),
+            ChannelId::Aux(n) => (Self::Aux, *n),
+            ChannelId::Group(n) => (Self::Group, *n),
+            ChannelId::Matrix(n) => (Self::Matrix, *n),
+            ChannelId::ControlGroup(n) => (Self::ControlGroup, *n),
+            ChannelId::GraphicEq(n) | ChannelId::MatrixInput(n) => (Self::Input, *n),
+        }
+    }
 }
 
-/// Parameter choices for the Add Step UI.
+/// Top-level macro step kind choices for the Add Step UI. Mirrors the
+/// `MacroStepKind` model variants but lives here so the UI can switch
+/// between them without binding the dropdown to one particular set of
+/// IDs / channels (those are stored separately on `MacrosTabState`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ParameterChoice {
-    Fader,
-    Mute,
-    Solo,
-    Pan,
-    AnalogGain,
-    Trim,
-    DelayEnabled,
-    DelayTime,
+pub enum AddStepKindChoice {
+    Parameter,
+    GoNextCue,
+    GoPreviousCue,
+    Connect,
+    Disconnect,
+    FireMacro,
+    RecallSnapshot,
+    RecallPalette,
 }
 
-impl ParameterChoice {
+impl AddStepKindChoice {
     const ALL: [Self; 8] = [
-        Self::Fader,
-        Self::Mute,
-        Self::Solo,
-        Self::Pan,
-        Self::AnalogGain,
-        Self::Trim,
-        Self::DelayEnabled,
-        Self::DelayTime,
+        Self::Parameter,
+        Self::GoNextCue,
+        Self::GoPreviousCue,
+        Self::Connect,
+        Self::Disconnect,
+        Self::FireMacro,
+        Self::RecallSnapshot,
+        Self::RecallPalette,
     ];
 
     fn label(&self) -> &'static str {
         match self {
-            Self::Fader => "Fader",
-            Self::Mute => "Mute",
-            Self::Solo => "Solo",
-            Self::Pan => "Pan",
-            Self::AnalogGain => "Analog Gain",
-            Self::Trim => "Trim",
-            Self::DelayEnabled => "Delay On",
-            Self::DelayTime => "Delay Time",
-        }
-    }
-
-    #[allow(clippy::wrong_self_convention)] // Copy enum; &self/self equivalent here.
-    fn to_parameter_path(&self) -> ParameterPath {
-        match self {
-            Self::Fader => ParameterPath::Fader,
-            Self::Mute => ParameterPath::Mute,
-            Self::Solo => ParameterPath::Solo,
-            Self::Pan => ParameterPath::Pan,
-            Self::AnalogGain => ParameterPath::AnalogGain,
-            Self::Trim => ParameterPath::Trim,
-            Self::DelayEnabled => ParameterPath::DelayEnabled,
-            Self::DelayTime => ParameterPath::DelayTime,
+            Self::Parameter => "Parameter",
+            Self::GoNextCue => "Go (next cue)",
+            Self::GoPreviousCue => "Go Back (previous cue)",
+            Self::Connect => "Connect",
+            Self::Disconnect => "Disconnect",
+            Self::FireMacro => "Run Macro",
+            Self::RecallSnapshot => "Recall Snapshot",
+            Self::RecallPalette => "Recall Palette",
         }
     }
 }
@@ -208,12 +247,17 @@ impl StepModeChoice {
 }
 
 /// Draw the Macros tab.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_macros_tab(
     ui: &mut egui::Ui,
     macros_state: &mut MacrosTabState,
     macro_manager: &Arc<RwLock<MacroManager>>,
     macro_engine: &Option<Arc<MacroEngine>>,
     connected: &Arc<AtomicBool>,
+    state: &Arc<RwLock<ConsoleState>>,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
+    last_received: &Arc<RwLock<Option<ParameterAddress>>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
@@ -308,7 +352,16 @@ pub fn draw_macros_tab(
             ui.set_min_height(panel_height);
 
             theme::card_frame().show(ui, |ui| {
-                draw_step_editor(ui, macros_state, macro_manager, runtime);
+                draw_step_editor(
+                    ui,
+                    macros_state,
+                    macro_manager,
+                    state,
+                    cue_manager,
+                    palette_manager,
+                    last_received,
+                    runtime,
+                );
             });
         });
     });
@@ -563,10 +616,15 @@ fn draw_action_buttons(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_step_editor(
     ui: &mut egui::Ui,
     macros_state: &mut MacrosTabState,
     macro_manager: &Arc<RwLock<MacroManager>>,
+    state: &Arc<RwLock<ConsoleState>>,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
+    last_received: &Arc<RwLock<Option<ParameterAddress>>>,
     runtime: &tokio::runtime::Handle,
 ) {
     let Some(selected_id) = macros_state.selected_macro_id else {
@@ -590,7 +648,7 @@ fn draw_step_editor(
                     steps: m
                         .steps
                         .iter()
-                        .map(|s| (s.address.clone(), s.mode.clone(), s.delay_ms))
+                        .map(|s| (s.kind.clone(), s.delay_ms))
                         .collect(),
                     mark_dirty: m.mark_dirty,
                 });
@@ -642,16 +700,28 @@ fn draw_step_editor(
         });
     }
 
-    // Ensure edit buffers match step count
+    // Ensure edit buffers match step count. The mode / value buffers
+    // are only meaningful for `Parameter`-kind steps; for app-action
+    // kinds they get default placeholder values that the UI never
+    // surfaces (the rendering loop skips the mode/value combos for
+    // non-Parameter rows).
     let step_count = steps.len();
     if macros_state.step_mode_edits.len() != step_count {
         macros_state.step_mode_edits = steps
             .iter()
-            .map(|(_, m, _)| StepModeChoice::from_mode(m))
+            .map(|(kind, _)| match kind {
+                MacroStepKind::Parameter { mode, .. } => StepModeChoice::from_mode(mode),
+                _ => StepModeChoice::Fixed,
+            })
             .collect();
-        macros_state.step_value_edits =
-            steps.iter().map(|(_, m, _)| mode_value_string(m)).collect();
-        macros_state.step_delay_edits = steps.iter().map(|(_, _, d)| d.to_string()).collect();
+        macros_state.step_value_edits = steps
+            .iter()
+            .map(|(kind, _)| match kind {
+                MacroStepKind::Parameter { mode, .. } => mode_value_string(mode),
+                _ => String::new(),
+            })
+            .collect();
+        macros_state.step_delay_edits = steps.iter().map(|(_, d)| d.to_string()).collect();
     }
 
     // Deferred actions
@@ -671,55 +741,71 @@ fn draw_step_editor(
             .id_salt("step_editor_scroll")
             .max_height((ui.available_height() - 200.0).max(80.0))
             .show(ui, |ui| {
-                for (i, (addr, _mode, _delay)) in steps.iter().enumerate() {
+                for (i, (kind, _delay)) in steps.iter().enumerate() {
                     theme::elevated_frame().show(ui, |ui| {
                         ui.horizontal(|ui| {
                             theme::colored_badge(ui, &format!("#{}", i + 1), theme::BG_ELEVATED);
-                            ui.label(
-                                egui::RichText::new(format!("{}", addr)).color(theme::TEXT_PRIMARY),
-                            );
-
-                            ui.separator();
-
-                            // Mode ComboBox
-                            let mode_id = ui.id().with(("step_mode", i));
-                            egui::ComboBox::from_id_salt(mode_id)
-                                .width(80.0)
-                                .selected_text(macros_state.step_mode_edits[i].label())
-                                .show_ui(ui, |ui| {
-                                    for choice in StepModeChoice::ALL {
-                                        if ui
-                                            .selectable_value(
-                                                &mut macros_state.step_mode_edits[i],
-                                                choice,
-                                                choice.label(),
-                                            )
-                                            .changed()
-                                        {
-                                            action = Some(StepAction::UpdateMode(i));
-                                        }
-                                    }
-                                });
-
-                            // Value field (for Fixed/Relative)
-                            match macros_state.step_mode_edits[i] {
-                                StepModeChoice::Fixed | StepModeChoice::Relative => {
-                                    let resp = ui.add(
-                                        egui::TextEdit::singleline(
-                                            &mut macros_state.step_value_edits[i],
-                                        )
-                                        .desired_width(60.0),
+                            match kind {
+                                MacroStepKind::Parameter { address, .. } => {
+                                    ui.label(
+                                        egui::RichText::new(format!("{}", address))
+                                            .color(theme::TEXT_PRIMARY),
                                     );
-                                    if resp.lost_focus() {
-                                        action = Some(StepAction::UpdateMode(i));
+
+                                    ui.separator();
+
+                                    // Mode ComboBox
+                                    let mode_id = ui.id().with(("step_mode", i));
+                                    egui::ComboBox::from_id_salt(mode_id)
+                                        .width(80.0)
+                                        .selected_text(macros_state.step_mode_edits[i].label())
+                                        .show_ui(ui, |ui| {
+                                            for choice in StepModeChoice::ALL {
+                                                if ui
+                                                    .selectable_value(
+                                                        &mut macros_state.step_mode_edits[i],
+                                                        choice,
+                                                        choice.label(),
+                                                    )
+                                                    .changed()
+                                                {
+                                                    action = Some(StepAction::UpdateMode(i));
+                                                }
+                                            }
+                                        });
+
+                                    // Value field (for Fixed/Relative)
+                                    match macros_state.step_mode_edits[i] {
+                                        StepModeChoice::Fixed | StepModeChoice::Relative => {
+                                            let resp = ui.add(
+                                                egui::TextEdit::singleline(
+                                                    &mut macros_state.step_value_edits[i],
+                                                )
+                                                .desired_width(60.0),
+                                            );
+                                            if resp.lost_focus() {
+                                                action = Some(StepAction::UpdateMode(i));
+                                            }
+                                        }
+                                        StepModeChoice::Toggle => {}
                                     }
                                 }
-                                StepModeChoice::Toggle => {}
+                                _ => {
+                                    // App-action steps render as a
+                                    // single descriptive label — no
+                                    // mode / value editor. Delay is
+                                    // still editable below.
+                                    ui.label(
+                                        egui::RichText::new(describe_step_kind(kind))
+                                            .color(theme::TEXT_PRIMARY)
+                                            .strong(),
+                                    );
+                                }
                             }
 
                             ui.separator();
 
-                            // Delay field
+                            // Delay field — applies to every kind.
                             ui.label("ms:");
                             let delay_resp = ui.add(
                                 egui::TextEdit::singleline(&mut macros_state.step_delay_edits[i])
@@ -792,23 +878,156 @@ fn draw_step_editor(
 
     // Add Step section
     theme::elevated_frame().show(ui, |ui| {
-        draw_add_step(ui, macros_state, selected_id, macro_manager, runtime);
+        draw_add_step(
+            ui,
+            macros_state,
+            selected_id,
+            macro_manager,
+            state,
+            cue_manager,
+            palette_manager,
+            last_received,
+            runtime,
+        );
     });
 }
 
 /// Draw the "Add Step" controls.
+#[allow(clippy::too_many_arguments)]
 fn draw_add_step(
     ui: &mut egui::Ui,
     macros_state: &mut MacrosTabState,
     macro_id: Uuid,
     macro_manager: &Arc<RwLock<MacroManager>>,
+    state: &Arc<RwLock<ConsoleState>>,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
+    last_received: &Arc<RwLock<Option<ParameterAddress>>>,
     runtime: &tokio::runtime::Handle,
 ) {
-    ui.label(
-        egui::RichText::new("Add Step")
-            .strong()
-            .color(theme::TEXT_PRIMARY),
-    );
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Add Step")
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+        );
+        ui.add_space(8.0);
+        ui.checkbox(&mut macros_state.track_latest_osc, "Track latest OSC")
+            .on_hover_text(
+                "Mirror the most-recent inbound parameter from the console into \
+                 the form below so you can hit Add Step without retyping.",
+            );
+    });
+
+    // Step kind selector — drives which sub-form is rendered below.
+    ui.horizontal(|ui| {
+        ui.label("Kind:");
+        egui::ComboBox::from_id_salt("add_step_kind")
+            .width(180.0)
+            .selected_text(macros_state.add_step_kind.label())
+            .show_ui(ui, |ui| {
+                for k in AddStepKindChoice::ALL {
+                    ui.selectable_value(&mut macros_state.add_step_kind, k, k.label());
+                }
+            });
+    });
+
+    match macros_state.add_step_kind {
+        AddStepKindChoice::Parameter => {
+            draw_parameter_wizard(ui, macros_state, state, last_received);
+        }
+        AddStepKindChoice::FireMacro => {
+            draw_fire_macro_picker(ui, macros_state, macro_id, macro_manager);
+        }
+        AddStepKindChoice::RecallSnapshot => {
+            draw_snapshot_picker(ui, macros_state, cue_manager);
+        }
+        AddStepKindChoice::RecallPalette => {
+            draw_palette_picker(ui, macros_state, palette_manager);
+        }
+        AddStepKindChoice::GoNextCue
+        | AddStepKindChoice::GoPreviousCue
+        | AddStepKindChoice::Connect
+        | AddStepKindChoice::Disconnect => {
+            // No additional fields for these kinds.
+        }
+    }
+
+    // Delay applies to every kind.
+    ui.horizontal(|ui| {
+        ui.label("Delay:");
+        ui.add(egui::TextEdit::singleline(&mut macros_state.add_step_delay).desired_width(50.0));
+        ui.label("ms");
+    });
+
+    let add_btn =
+        theme::action_button("Add Step", theme::ACCENT_GREEN, egui::Vec2::new(90.0, 28.0));
+    if ui.add(add_btn).clicked() {
+        let delay_ms: u32 = macros_state.add_step_delay.parse().unwrap_or(0);
+
+        let Some(kind) = build_step_kind(macros_state, macro_id) else {
+            macros_state.status_message =
+                Some("Add Step: required field missing for this kind".into());
+            return;
+        };
+
+        let step = MacroStep { kind, delay_ms };
+
+        let mgr_clone = macro_manager.clone();
+        runtime.spawn(async move {
+            let mut mgr = mgr_clone.write().await;
+            if let Some(m) = mgr.get_macro_mut(&macro_id) {
+                m.steps.push(step);
+                m.touch();
+            }
+        });
+
+        // Reset edit buffers so they refresh on next frame
+        macros_state.step_mode_edits.clear();
+        macros_state.step_value_edits.clear();
+        macros_state.step_delay_edits.clear();
+    }
+}
+
+/// Cascading-dropdown wizard for picking a `Parameter` step's address +
+/// mode + value. Channel Type → Channel # → Section → Parameter.
+fn draw_parameter_wizard(
+    ui: &mut egui::Ui,
+    macros_state: &mut MacrosTabState,
+    state: &Arc<RwLock<ConsoleState>>,
+    last_received: &Arc<RwLock<Option<ParameterAddress>>>,
+) {
+    // Live-OSC sync — runs before rendering so the dropdowns reflect
+    // the latest address in this same frame. Only resyncs when the
+    // address changes.
+    if macros_state.track_latest_osc {
+        if let Ok(latest) = last_received.try_read() {
+            if let Some(addr) = latest.as_ref() {
+                let differs = macros_state
+                    .last_synced
+                    .as_ref()
+                    .map(|prev| prev != addr)
+                    .unwrap_or(true);
+                if differs {
+                    apply_address_to_form(macros_state, addr);
+                    // Pull the current value from console state so
+                    // the operator can hit Add Step without retyping.
+                    if let Ok(s) = state.try_read() {
+                        if let Some(value) = s.get(addr) {
+                            macros_state.add_step_mode = StepModeChoice::Fixed;
+                            macros_state.add_step_value = format!("{value}");
+                        }
+                    }
+                    macros_state.last_synced = Some(addr.clone());
+                }
+            }
+        }
+    }
+
+    let config = state
+        .try_read()
+        .map(|s| s.config.clone())
+        .unwrap_or_default();
 
     ui.horizontal(|ui| {
         // Channel type
@@ -817,7 +1036,15 @@ fn draw_add_step(
             .selected_text(macros_state.add_step_channel_type.label())
             .show_ui(ui, |ui| {
                 for ch in ChannelTypeChoice::ALL {
-                    ui.selectable_value(&mut macros_state.add_step_channel_type, ch, ch.label());
+                    if ui
+                        .selectable_value(&mut macros_state.add_step_channel_type, ch, ch.label())
+                        .changed()
+                    {
+                        // Reset the section + parameter so they're
+                        // valid for the new channel type.
+                        macros_state.add_step_section = None;
+                        macros_state.add_step_parameter_path = None;
+                    }
                 }
             });
 
@@ -827,13 +1054,75 @@ fn draw_add_step(
                 .desired_width(30.0),
         );
 
-        // Parameter
-        egui::ComboBox::from_id_salt("add_param")
-            .width(80.0)
-            .selected_text(macros_state.add_step_parameter.label())
+        // Section
+        let ch_num: u8 = macros_state
+            .add_step_channel_number
+            .parse()
+            .unwrap_or(1)
+            .max(1);
+        let channel = macros_state.add_step_channel_type.to_channel_id(ch_num);
+        let sections = ParameterSection::applicable_to(&channel);
+        // Clamp section if it's no longer applicable.
+        if let Some(sec) = &macros_state.add_step_section {
+            if !sections.contains(sec) {
+                macros_state.add_step_section = None;
+                macros_state.add_step_parameter_path = None;
+            }
+        }
+        if macros_state.add_step_section.is_none() {
+            macros_state.add_step_section = sections.first().cloned();
+        }
+        let section_label = macros_state
+            .add_step_section
+            .as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "—".into());
+        egui::ComboBox::from_id_salt("add_section")
+            .width(140.0)
+            .selected_text(section_label)
             .show_ui(ui, |ui| {
-                for p in ParameterChoice::ALL {
-                    ui.selectable_value(&mut macros_state.add_step_parameter, p, p.label());
+                for sec in &sections {
+                    let label = sec.to_string();
+                    let mut tmp = macros_state.add_step_section.clone();
+                    if ui
+                        .selectable_value(&mut tmp, Some(sec.clone()), label)
+                        .changed()
+                    {
+                        macros_state.add_step_section = tmp;
+                        macros_state.add_step_parameter_path = None;
+                    }
+                }
+            });
+
+        // Parameter (within section)
+        let paths = match &macros_state.add_step_section {
+            Some(sec) => sec.paths_for(&channel, &config),
+            None => Vec::new(),
+        };
+        if let Some(p) = &macros_state.add_step_parameter_path {
+            if !paths.contains(p) {
+                macros_state.add_step_parameter_path = None;
+            }
+        }
+        if macros_state.add_step_parameter_path.is_none() {
+            macros_state.add_step_parameter_path = paths.first().cloned();
+        }
+        let path_label = macros_state
+            .add_step_parameter_path
+            .as_ref()
+            .map(|p| p.label_with_config(&config))
+            .unwrap_or_else(|| "—".into());
+        egui::ComboBox::from_id_salt("add_param")
+            .width(220.0)
+            .selected_text(path_label)
+            .show_ui(ui, |ui| {
+                for p in &paths {
+                    let label = p.label_with_config(&config);
+                    let mut tmp = macros_state.add_step_parameter_path.clone();
+                    ui.selectable_value(&mut tmp, Some(p.clone()), label);
+                    if tmp != macros_state.add_step_parameter_path {
+                        macros_state.add_step_parameter_path = tmp;
+                    }
                 }
             });
     });
@@ -860,52 +1149,213 @@ fn draw_add_step(
             }
             StepModeChoice::Toggle => {}
         }
+    });
+}
 
-        // Delay
-        ui.label("Delay:");
-        ui.add(egui::TextEdit::singleline(&mut macros_state.add_step_delay).desired_width(50.0));
-        ui.label("ms");
+/// Mirror an inbound parameter address into the Add Step form's
+/// channel / section / path selectors.
+fn apply_address_to_form(macros_state: &mut MacrosTabState, addr: &ParameterAddress) {
+    let (ch_choice, num) = ChannelTypeChoice::from_channel_id(&addr.channel);
+    macros_state.add_step_channel_type = ch_choice;
+    macros_state.add_step_channel_number = num.to_string();
+    macros_state.add_step_section = Some(addr.parameter.section());
+    macros_state.add_step_parameter_path = Some(addr.parameter.clone());
+}
+
+fn draw_fire_macro_picker(
+    ui: &mut egui::Ui,
+    macros_state: &mut MacrosTabState,
+    current_macro_id: Uuid,
+    macro_manager: &Arc<RwLock<MacroManager>>,
+) {
+    let macros: Vec<(Uuid, String)> = macro_manager
+        .try_read()
+        .map(|mgr| {
+            mgr.sorted_macros()
+                .iter()
+                .filter(|m| m.id != current_macro_id)
+                .map(|m| (m.id, m.name.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let selected_label = macros_state
+        .add_step_target_macro
+        .and_then(|id| {
+            macros
+                .iter()
+                .find(|(mid, _)| *mid == id)
+                .map(|(_, n)| n.clone())
+        })
+        .unwrap_or_else(|| "— select macro —".into());
+
+    ui.horizontal(|ui| {
+        ui.label("Macro:");
+        egui::ComboBox::from_id_salt("add_step_target_macro")
+            .width(220.0)
+            .selected_text(selected_label)
+            .show_ui(ui, |ui| {
+                for (id, name) in &macros {
+                    ui.selectable_value(&mut macros_state.add_step_target_macro, Some(*id), name);
+                }
+            });
+    });
+}
+
+fn draw_snapshot_picker(
+    ui: &mut egui::Ui,
+    macros_state: &mut MacrosTabState,
+    cue_manager: &Arc<RwLock<CueManager>>,
+) {
+    let mut snapshots: Vec<(Uuid, String)> = cue_manager
+        .try_read()
+        .map(|mgr| {
+            mgr.snapshots
+                .values()
+                .map(|s| (s.id, s.name.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    snapshots.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let selected_label: String = macros_state
+        .add_step_target_snapshot
+        .and_then(|id| {
+            snapshots
+                .iter()
+                .find(|(sid, _)| *sid == id)
+                .map(|(_, n)| n.clone())
+        })
+        .unwrap_or_else(|| "— select snapshot —".into());
+
+    ui.horizontal(|ui| {
+        ui.label("Snapshot:");
+        egui::ComboBox::from_id_salt("add_step_target_snapshot")
+            .width(220.0)
+            .selected_text(selected_label)
+            .show_ui(ui, |ui| {
+                for (id, name) in &snapshots {
+                    ui.selectable_value(
+                        &mut macros_state.add_step_target_snapshot,
+                        Some(*id),
+                        name,
+                    );
+                }
+            });
+    });
+}
+
+fn draw_palette_picker(
+    ui: &mut egui::Ui,
+    macros_state: &mut MacrosTabState,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
+) {
+    let mut palettes: Vec<(Uuid, String)> = palette_manager
+        .try_read()
+        .map(|mgr| {
+            mgr.palettes
+                .values()
+                .map(|p| (p.id, p.name.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    palettes.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let selected_label: String = macros_state
+        .add_step_target_palette
+        .and_then(|id| {
+            palettes
+                .iter()
+                .find(|(pid, _)| *pid == id)
+                .map(|(_, n)| n.clone())
+        })
+        .unwrap_or_else(|| "— select palette —".into());
+
+    ui.horizontal(|ui| {
+        ui.label("Palette:");
+        egui::ComboBox::from_id_salt("add_step_target_palette")
+            .width(220.0)
+            .selected_text(selected_label)
+            .show_ui(ui, |ui| {
+                for (id, name) in &palettes {
+                    ui.selectable_value(&mut macros_state.add_step_target_palette, Some(*id), name);
+                }
+            });
     });
 
-    let add_btn =
-        theme::action_button("Add Step", theme::ACCENT_GREEN, egui::Vec2::new(90.0, 28.0));
-    if ui.add(add_btn).clicked() {
-        let ch_num: u8 = macros_state.add_step_channel_number.parse().unwrap_or(1);
-        let channel = macros_state.add_step_channel_type.to_channel_id(ch_num);
-        let parameter = macros_state.add_step_parameter.to_parameter_path();
-        let delay_ms: u32 = macros_state.add_step_delay.parse().unwrap_or(0);
+    ui.horizontal(|ui| {
+        ui.label("Target channel:");
+        egui::ComboBox::from_id_salt("add_step_palette_ch_type")
+            .width(70.0)
+            .selected_text(macros_state.add_step_palette_channel_type.label())
+            .show_ui(ui, |ui| {
+                for ch in ChannelTypeChoice::ALL {
+                    ui.selectable_value(
+                        &mut macros_state.add_step_palette_channel_type,
+                        ch,
+                        ch.label(),
+                    );
+                }
+            });
+        ui.add(
+            egui::TextEdit::singleline(&mut macros_state.add_step_palette_channel_number)
+                .desired_width(30.0),
+        );
+    });
+}
 
-        let mode = match macros_state.add_step_mode {
-            StepModeChoice::Toggle => MacroStepMode::Toggle,
-            StepModeChoice::Fixed => {
-                let value = parse_parameter_value(&macros_state.add_step_value);
-                MacroStepMode::Fixed(value)
-            }
-            StepModeChoice::Relative => {
-                let offset: f32 = macros_state.add_step_value.parse().unwrap_or(0.0);
-                MacroStepMode::Relative(offset)
-            }
-        };
-
-        let step = MacroStep {
-            address: ParameterAddress { channel, parameter },
-            mode,
-            delay_ms,
-        };
-
-        let mgr_clone = macro_manager.clone();
-        runtime.spawn(async move {
-            let mut mgr = mgr_clone.write().await;
-            if let Some(m) = mgr.get_macro_mut(&macro_id) {
-                m.steps.push(step);
-                m.touch();
-            }
-        });
-
-        // Reset edit buffers so they refresh on next frame
-        macros_state.step_mode_edits.clear();
-        macros_state.step_value_edits.clear();
-        macros_state.step_delay_edits.clear();
+/// Build a `MacroStepKind` from the current Add Step form state.
+/// Returns `None` if a required field for the chosen kind is missing
+/// (e.g. no target snapshot selected).
+fn build_step_kind(
+    macros_state: &MacrosTabState,
+    _current_macro_id: Uuid,
+) -> Option<MacroStepKind> {
+    match macros_state.add_step_kind {
+        AddStepKindChoice::Parameter => {
+            let ch_num: u8 = macros_state
+                .add_step_channel_number
+                .parse()
+                .unwrap_or(1)
+                .max(1);
+            let channel = macros_state.add_step_channel_type.to_channel_id(ch_num);
+            let parameter = macros_state.add_step_parameter_path.clone()?;
+            let mode = match macros_state.add_step_mode {
+                StepModeChoice::Toggle => MacroStepMode::Toggle,
+                StepModeChoice::Fixed => {
+                    MacroStepMode::Fixed(parse_parameter_value(&macros_state.add_step_value))
+                }
+                StepModeChoice::Relative => {
+                    MacroStepMode::Relative(macros_state.add_step_value.parse().unwrap_or(0.0))
+                }
+            };
+            Some(MacroStepKind::Parameter {
+                address: ParameterAddress { channel, parameter },
+                mode,
+            })
+        }
+        AddStepKindChoice::GoNextCue => Some(MacroStepKind::GoNextCue),
+        AddStepKindChoice::GoPreviousCue => Some(MacroStepKind::GoPreviousCue),
+        AddStepKindChoice::Connect => Some(MacroStepKind::Connect),
+        AddStepKindChoice::Disconnect => Some(MacroStepKind::Disconnect),
+        AddStepKindChoice::FireMacro => macros_state
+            .add_step_target_macro
+            .map(|id| MacroStepKind::FireMacro { id }),
+        AddStepKindChoice::RecallSnapshot => macros_state
+            .add_step_target_snapshot
+            .map(|id| MacroStepKind::RecallSnapshot { id }),
+        AddStepKindChoice::RecallPalette => {
+            let id = macros_state.add_step_target_palette?;
+            let ch_num: u8 = macros_state
+                .add_step_palette_channel_number
+                .parse()
+                .unwrap_or(1)
+                .max(1);
+            let channel = macros_state
+                .add_step_palette_channel_type
+                .to_channel_id(ch_num);
+            Some(MacroStepKind::RecallPalette { id, channel })
+        }
     }
 }
 
@@ -981,25 +1431,31 @@ fn apply_step_action(
             macros_state.step_delay_edits.clear();
         }
         StepAction::UpdateMode(i) => {
-            let new_mode = macros_state.step_mode_edits[i];
+            let new_mode_choice = macros_state.step_mode_edits[i];
             let value_str = macros_state.step_value_edits[i].clone();
             let mgr_clone = macro_manager.clone();
             runtime.spawn(async move {
                 let mut mgr = mgr_clone.write().await;
                 if let Some(m) = mgr.get_macro_mut(&macro_id) {
                     if let Some(step) = m.steps.get_mut(i) {
-                        step.mode = match new_mode {
-                            StepModeChoice::Toggle => MacroStepMode::Toggle,
-                            StepModeChoice::Fixed => {
-                                let value = parse_parameter_value(&value_str);
-                                MacroStepMode::Fixed(value)
-                            }
-                            StepModeChoice::Relative => {
-                                let offset: f32 = value_str.parse().unwrap_or(0.0);
-                                MacroStepMode::Relative(offset)
-                            }
-                        };
-                        m.touch();
+                        // Mode/value edits only apply to Parameter
+                        // steps. App-action kinds (GoNextCue etc.)
+                        // ignore the edit silently — the UI shouldn't
+                        // expose mode/value fields for them anyway.
+                        if let MacroStepKind::Parameter { mode, .. } = &mut step.kind {
+                            *mode = match new_mode_choice {
+                                StepModeChoice::Toggle => MacroStepMode::Toggle,
+                                StepModeChoice::Fixed => {
+                                    let value = parse_parameter_value(&value_str);
+                                    MacroStepMode::Fixed(value)
+                                }
+                                StepModeChoice::Relative => {
+                                    let offset: f32 = value_str.parse().unwrap_or(0.0);
+                                    MacroStepMode::Relative(offset)
+                                }
+                            };
+                            m.touch();
+                        }
                     }
                 }
             });
@@ -1080,6 +1536,25 @@ pub fn fire_macro_by_id(
             steps_skipped: result.steps_skipped,
         });
     });
+}
+
+/// Compact human-readable label for a non-Parameter macro step kind.
+/// Used by the steps list to render app-action rows. Parameter steps
+/// have their own dedicated rendering path that shows the address +
+/// mode + value.
+fn describe_step_kind(kind: &MacroStepKind) -> String {
+    match kind {
+        MacroStepKind::Parameter { .. } => "Parameter".into(),
+        MacroStepKind::GoNextCue => "Go (next cue)".into(),
+        MacroStepKind::GoPreviousCue => "Go Back (previous cue)".into(),
+        MacroStepKind::Connect => "Connect to console".into(),
+        MacroStepKind::Disconnect => "Disconnect from console".into(),
+        MacroStepKind::FireMacro { id } => format!("Run Macro {id}"),
+        MacroStepKind::RecallSnapshot { id } => format!("Recall Snapshot {id}"),
+        MacroStepKind::RecallPalette { id, channel } => {
+            format!("Recall Palette {id} on {channel}")
+        }
+    }
 }
 
 /// Extract the value string from a MacroStepMode.

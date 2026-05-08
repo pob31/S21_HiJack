@@ -233,7 +233,11 @@ mod tests {
         let client = OscClient::new(local, remote, None).await.unwrap();
         let (sender, _rx) = client.into_parts();
         let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
-        Arc::new(MacroEngine::new(state, sender))
+        let macro_mgr = Arc::new(RwLock::new(
+            crate::console::macro_manager::MacroManager::new(),
+        ));
+        let (ui_tx, _ui_rx) = std::sync::mpsc::channel::<crate::ui::UiEvent>();
+        Arc::new(MacroEngine::new(state, sender, macro_mgr, ui_tx))
     }
 
     #[tokio::test]

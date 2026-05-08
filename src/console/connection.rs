@@ -47,6 +47,12 @@ pub struct DaemonState {
     pub pan_link_engine: Arc<RwLock<PanLinkEngine>>,
     pub dirty_tracker: Arc<RwLock<DirtyTracker>>,
     pub offline_mode: Arc<AtomicBool>,
+    /// Address of the most recently dispatched parameter from the
+    /// console. Used by the Macros tab "track latest OSC" affordance to
+    /// mirror the operator's currently-touched parameter into the Add
+    /// Step form. Updated unconditionally on every inbound parameter
+    /// (one address clone per message — negligible).
+    pub last_received: Arc<RwLock<Option<crate::model::parameter::ParameterAddress>>>,
 }
 
 /// Connection manager handles the lifecycle of the console connection.
@@ -287,6 +293,10 @@ async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender
                 .write()
                 .await
                 .update(addr.clone(), value.clone());
+
+            // Mirror the most recent parameter address for the Macros
+            // tab's "track latest OSC" affordance.
+            *daemon.last_received.write().await = Some(addr.clone());
 
             // Mark this cell dirty IF the value actually changed. The dirty
             // tracker is suppression-aware, so echoes from snapshot recall

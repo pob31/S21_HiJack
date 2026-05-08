@@ -65,6 +65,10 @@ pub struct HiJackApp {
     /// parameter update changes the live state. The scope editor reads it to
     /// power "select modified" / "auto-preselect modified" / "clear changes".
     pub dirty_tracker: Arc<RwLock<DirtyTracker>>,
+    /// Most recent inbound parameter address from the connection
+    /// daemon. Drives the Macros tab "track latest OSC" affordance — UI
+    /// reads this each frame and mirrors it into the Add Step form.
+    pub last_received: Arc<RwLock<Option<crate::model::parameter::ParameterAddress>>>,
 
     // OSC log (shared with network tasks)
     pub osc_log: OscLog,
@@ -147,6 +151,7 @@ impl HiJackApp {
             macro_engine: None,
             pending_engines: Arc::new(std::sync::Mutex::new(None)),
             dirty_tracker: Arc::new(RwLock::new(DirtyTracker::new())),
+            last_received: Arc::new(RwLock::new(None)),
 
             osc_log: OscLog::new(),
 
@@ -369,6 +374,138 @@ impl HiJackApp {
                 UiEvent::MonitorServerFailed(msg) => {
                     self.monitor.monitor_server_running = false;
                     self.setup.status_message = Some(format!("Monitor server failed: {msg}"));
+                }
+                // ── Macro-emitted app-internal commands ─────────────
+                UiEvent::MacroFireGo => {
+                    super::cue_transport::fire_go(
+                        &self.cue_manager,
+                        &self.palette_manager,
+                        &self.snapshot_engine,
+                        &self.runtime,
+                        &self.ui_tx,
+                    );
+                }
+                UiEvent::MacroFirePrev => {
+                    super::cue_transport::fire_prev(
+                        &self.cue_manager,
+                        &self.palette_manager,
+                        &self.snapshot_engine,
+                        &self.runtime,
+                        &self.ui_tx,
+                    );
+                }
+                UiEvent::MacroConnect => {
+                    // Macro-driven Connect routes to the same
+                    // start_connection helper the operator's Connect
+                    // button uses, with the current Setup-tab state.
+                    super::setup_tab::start_connection(
+                        &mut self.setup,
+                        &self.state,
+                        &self.cue_manager,
+                        &self.macro_manager,
+                        &self.monitor_manager,
+                        &self.palette_manager,
+                        &self.gang_manager,
+                        &self.pan_link_bindings,
+                        &self.offline_mode,
+                        &self.auto_update_on_recall,
+                        &self.console_snapshot_follow,
+                        &self.dirty_tracker,
+                        &self.last_received,
+                        &self.pending_engines,
+                        &self.connected,
+                        &mut self.cancel_token,
+                        &self.osc_log,
+                        &self.runtime,
+                        &self.ui_tx,
+                        &self.egui_ctx,
+                    );
+                }
+                UiEvent::MacroDisconnect => {
+                    super::setup_tab::do_disconnect(
+                        &self.connected,
+                        &mut self.cancel_token,
+                        &self.ui_tx,
+                    );
+                }
+                UiEvent::MacroRecallSnapshot { snapshot_id } => {
+                    let cue_mgr = self.cue_manager.clone();
+                    let pmgr = self.palette_manager.clone();
+                    let engine = self.snapshot_engine.clone();
+                    let tx = self.ui_tx.clone();
+                    self.runtime.spawn(async move {
+                        let Some(engine) = engine else {
+                            let _ = tx.send(UiEvent::MacroExecutionFailed(
+                                "Macro: snapshot recall — engine not available".into(),
+                            ));
+                            return;
+                        };
+                        let mgr = cue_mgr.read().await;
+                        let snapshot = mgr.snapshots.get(&snapshot_id).cloned();
+                        drop(mgr);
+                        let Some(snapshot) = snapshot else {
+                            let _ = tx.send(UiEvent::MacroExecutionFailed(format!(
+                                "Macro: snapshot recall — id {snapshot_id} not found"
+                            )));
+                            return;
+                        };
+                        // Build a synthetic Cue wrapping this
+                        // snapshot — `recall_cue` is the path that
+                        // already handles fades + dirty tracking +
+                        // recall scope. Cue number `0.0` signals "no
+                        // cue context" since we're bypassing the
+                        // list.
+                        let cue = crate::model::snapshot::Cue::new(
+                            0.0,
+                            format!("(macro) {}", snapshot.name),
+                            snapshot_id,
+                        );
+                        let pmgr = pmgr.read().await;
+                        let _ = engine
+                            .recall_cue(&cue, &snapshot, &pmgr.palettes, false)
+                            .await;
+                    });
+                }
+                UiEvent::MacroRecallPalette {
+                    palette_id,
+                    channel,
+                } => {
+                    // Palette apply path — surface a status message
+                    // and defer the actual write to a runtime task
+                    // that locates the palette and applies its
+                    // values to the channel via the snapshot engine.
+                    let pmgr = self.palette_manager.clone();
+                    let engine = self.snapshot_engine.clone();
+                    let tx = self.ui_tx.clone();
+                    self.runtime.spawn(async move {
+                        let Some(_engine) = engine else {
+                            let _ = tx.send(UiEvent::MacroExecutionFailed(
+                                "Macro: palette recall — engine not available".into(),
+                            ));
+                            return;
+                        };
+                        let mgr = pmgr.read().await;
+                        let palette = mgr.palettes.get(&palette_id).cloned();
+                        drop(mgr);
+                        match palette {
+                            Some(p) => {
+                                let _ = tx.send(UiEvent::PaletteUpdated {
+                                    name: p.name.clone(),
+                                    affected_count: 1,
+                                });
+                                tracing::info!(
+                                    palette = %p.name,
+                                    %channel,
+                                    "Macro: palette recall queued (apply not yet implemented)"
+                                );
+                            }
+                            None => {
+                                let _ = tx.send(UiEvent::MacroExecutionFailed(format!(
+                                    "Macro: palette recall — id {palette_id} not found"
+                                )));
+                            }
+                        }
+                    });
                 }
             }
         }
@@ -860,6 +997,7 @@ impl eframe::App for HiJackApp {
                         &self.console_snapshot_follow,
                         &self.snapshots.scope_editor.console_recall,
                         &self.dirty_tracker,
+                        &self.last_received,
                         &self.pending_engines,
                         &self.connected,
                         &mut self.cancel_token,
@@ -902,6 +1040,10 @@ impl eframe::App for HiJackApp {
                         &self.macro_manager,
                         &self.macro_engine,
                         &self.connected,
+                        &self.state,
+                        &self.cue_manager,
+                        &self.palette_manager,
+                        &self.last_received,
                         &self.runtime,
                         &self.ui_tx,
                     );

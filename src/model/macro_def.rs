@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::channel::ChannelId;
 use super::parameter::{ParameterAddress, ParameterValue};
 
 // ─── Persisted types ───────────────────────────────────────────────
@@ -48,16 +49,19 @@ impl MacroDef {
     }
 
     /// Remove every other step that targets the same `(channel, parameter)`
-    /// as the step at `idx`. The kept step's index may shift downward as
-    /// earlier duplicates are removed; the new kept index is returned along
-    /// with the number of removed steps.
+    /// as the step at `idx`. Only meaningful for `Parameter`-kind steps;
+    /// app-action kinds (Go, Connect, FireMacro, …) have no parameter
+    /// address to match against and are returned `None` immediately.
+    /// The kept step's index may shift downward as earlier duplicates
+    /// are removed; the new kept index is returned along with the
+    /// number of removed steps.
     pub fn keep_only_step(&mut self, idx: usize) -> Option<(usize, usize)> {
-        let target_addr = self.steps.get(idx)?.address.clone();
+        let target_addr = self.steps.get(idx)?.parameter_address()?.clone();
         let mut new_idx = idx;
         let mut removed = 0usize;
         let mut i = 0;
         self.steps.retain(|step| {
-            let same = step.address == target_addr;
+            let same = step.parameter_address() == Some(&target_addr);
             let kept = !same || i == idx;
             if !kept && i < idx {
                 new_idx -= 1;
@@ -75,17 +79,81 @@ impl MacroDef {
     }
 }
 
-/// A single step within a macro.
+/// A single step within a macro. The `kind` field discriminates
+/// between an OSC parameter write and the various app-internal
+/// commands (cue transport, connect/disconnect, run-another-macro,
+/// recall snapshot/palette).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MacroStep {
-    /// Which channel and parameter this step targets.
-    pub address: ParameterAddress,
-    /// How the target value is determined at execution time.
-    pub mode: MacroStepMode,
+    pub kind: MacroStepKind,
     /// Delay in milliseconds before this step executes,
     /// measured from the completion of the previous step
     /// (or from macro start for the first step).
     pub delay_ms: u32,
+}
+
+/// The action a macro step performs at execution time.
+///
+/// `Parameter` is what learn-mode recordings produce — a direct OSC
+/// write. The other variants are app-internal commands the operator
+/// can add through the Add Step UI.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum MacroStepKind {
+    /// Write a parameter value to the console.
+    Parameter {
+        address: ParameterAddress,
+        mode: MacroStepMode,
+    },
+    /// Advance the cue list to the next cue (same as the top-bar Go).
+    GoNextCue,
+    /// Step back to the previous cue (same as the top-bar Prev).
+    GoPreviousCue,
+    /// Trigger a console connection using the current Setup-tab
+    /// settings.
+    Connect,
+    /// Disconnect from the console. **Caveat:** this tears down the
+    /// connection that's running the macro — subsequent steps in the
+    /// same macro will not execute.
+    Disconnect,
+    /// Fire another macro. Recursion is guarded at runtime by a
+    /// depth counter; a macro that calls itself (directly or
+    /// transitively) is rejected once the depth limit is hit.
+    FireMacro { id: Uuid },
+    /// Recall a specific snapshot directly, bypassing the cue list.
+    RecallSnapshot { id: Uuid },
+    /// Apply a palette to the given channel.
+    RecallPalette { id: Uuid, channel: ChannelId },
+}
+
+impl MacroStep {
+    /// Convenience constructor for the (overwhelmingly common)
+    /// parameter-write case — keeps existing call sites brief.
+    pub fn parameter(address: ParameterAddress, mode: MacroStepMode, delay_ms: u32) -> Self {
+        Self {
+            kind: MacroStepKind::Parameter { address, mode },
+            delay_ms,
+        }
+    }
+
+    /// `Some(&address)` when this step is a `Parameter` write,
+    /// `None` for the app-internal kinds. Used by `keep_only_step`
+    /// and any UI that wants to compare addresses across steps.
+    pub fn parameter_address(&self) -> Option<&ParameterAddress> {
+        match &self.kind {
+            MacroStepKind::Parameter { address, .. } => Some(address),
+            _ => None,
+        }
+    }
+
+    /// `Some(&mode)` when this step is a `Parameter` write,
+    /// `None` for the app-internal kinds.
+    pub fn parameter_mode(&self) -> Option<&MacroStepMode> {
+        match &self.kind {
+            MacroStepKind::Parameter { mode, .. } => Some(mode),
+            _ => None,
+        }
+    }
 }
 
 /// How a macro step resolves its target value at execution time.
@@ -161,15 +229,19 @@ impl MacroRecording {
     }
 
     /// Convert this recording into a MacroDef.
-    /// All steps become Fixed mode with the recorded values.
+    /// All steps become Fixed-mode `Parameter` writes with the
+    /// recorded values — recordings can only ever produce parameter
+    /// writes (the app-internal kinds are added through the UI).
     pub fn to_macro_def(&self, name: String) -> MacroDef {
         let steps = self
             .steps
             .iter()
-            .map(|rs| MacroStep {
-                address: rs.address.clone(),
-                mode: MacroStepMode::Fixed(rs.value.clone()),
-                delay_ms: rs.elapsed_ms,
+            .map(|rs| {
+                MacroStep::parameter(
+                    rs.address.clone(),
+                    MacroStepMode::Fixed(rs.value.clone()),
+                    rs.elapsed_ms,
+                )
             })
             .collect();
         MacroDef::new(name, steps)
@@ -201,16 +273,12 @@ mod tests {
     #[test]
     fn macro_def_creation() {
         let steps = vec![
-            MacroStep {
-                address: make_addr(1, ParameterPath::Mute),
-                mode: MacroStepMode::Toggle,
-                delay_ms: 0,
-            },
-            MacroStep {
-                address: make_addr(2, ParameterPath::Fader),
-                mode: MacroStepMode::Fixed(ParameterValue::Float(-10.0)),
-                delay_ms: 100,
-            },
+            MacroStep::parameter(make_addr(1, ParameterPath::Mute), MacroStepMode::Toggle, 0),
+            MacroStep::parameter(
+                make_addr(2, ParameterPath::Fader),
+                MacroStepMode::Fixed(ParameterValue::Float(-10.0)),
+                100,
+            ),
         ];
         let m = MacroDef::new("Test Macro".into(), steps);
 
@@ -270,34 +338,38 @@ mod tests {
         assert_eq!(m.name, "Recorded");
         assert_eq!(m.steps.len(), 2);
 
-        // All steps should be Fixed mode
+        // All steps should be Fixed-mode parameter writes.
         assert_eq!(
-            m.steps[0].mode,
-            MacroStepMode::Fixed(ParameterValue::Bool(true))
+            m.steps[0].parameter_mode().cloned(),
+            Some(MacroStepMode::Fixed(ParameterValue::Bool(true)))
         );
         assert_eq!(
-            m.steps[1].mode,
-            MacroStepMode::Fixed(ParameterValue::Float(0.0))
+            m.steps[1].parameter_mode().cloned(),
+            Some(MacroStepMode::Fixed(ParameterValue::Float(0.0)))
         );
     }
 
     #[test]
     fn serialization_round_trip() {
         let steps = vec![
+            MacroStep::parameter(make_addr(1, ParameterPath::Mute), MacroStepMode::Toggle, 0),
+            MacroStep::parameter(
+                make_addr(2, ParameterPath::Fader),
+                MacroStepMode::Fixed(ParameterValue::Float(-10.0)),
+                100,
+            ),
+            MacroStep::parameter(
+                make_addr(3, ParameterPath::AnalogGain),
+                MacroStepMode::Relative(3.5),
+                200,
+            ),
             MacroStep {
-                address: make_addr(1, ParameterPath::Mute),
-                mode: MacroStepMode::Toggle,
+                kind: MacroStepKind::GoNextCue,
+                delay_ms: 50,
+            },
+            MacroStep {
+                kind: MacroStepKind::FireMacro { id: Uuid::new_v4() },
                 delay_ms: 0,
-            },
-            MacroStep {
-                address: make_addr(2, ParameterPath::Fader),
-                mode: MacroStepMode::Fixed(ParameterValue::Float(-10.0)),
-                delay_ms: 100,
-            },
-            MacroStep {
-                address: make_addr(3, ParameterPath::AnalogGain),
-                mode: MacroStepMode::Relative(3.5),
-                delay_ms: 200,
             },
         ];
         let original = MacroDef::new("Serialize Test".into(), steps);
@@ -307,20 +379,32 @@ mod tests {
 
         assert_eq!(loaded.name, original.name);
         assert_eq!(loaded.id, original.id);
-        assert_eq!(loaded.steps.len(), 3);
-        assert_eq!(loaded.steps[0].mode, MacroStepMode::Toggle);
+        assert_eq!(loaded.steps.len(), 5);
+        assert_eq!(
+            loaded.steps[0].parameter_mode().cloned(),
+            Some(MacroStepMode::Toggle)
+        );
         assert_eq!(loaded.steps[1].delay_ms, 100);
-        assert_eq!(loaded.steps[2].mode, MacroStepMode::Relative(3.5));
+        assert_eq!(
+            loaded.steps[2].parameter_mode().cloned(),
+            Some(MacroStepMode::Relative(3.5))
+        );
+        assert_eq!(loaded.steps[3].kind, MacroStepKind::GoNextCue);
+        // FireMacro round-trips with the same UUID.
+        match (&loaded.steps[4].kind, &original.steps[4].kind) {
+            (MacroStepKind::FireMacro { id: a }, MacroStepKind::FireMacro { id: b }) => {
+                assert_eq!(a, b)
+            }
+            _ => panic!("expected FireMacro both sides"),
+        }
     }
 
     #[test]
     fn keep_only_step_removes_duplicates_of_same_address() {
         let addr_fader_1 = make_addr(1, ParameterPath::Fader);
         let addr_mute_1 = make_addr(1, ParameterPath::Mute);
-        let mk = |addr: ParameterAddress, val: f32| MacroStep {
-            address: addr,
-            mode: MacroStepMode::Fixed(ParameterValue::Float(val)),
-            delay_ms: 0,
+        let mk = |addr: ParameterAddress, val: f32| {
+            MacroStep::parameter(addr, MacroStepMode::Fixed(ParameterValue::Float(val)), 0)
         };
         let mut m = MacroDef::new(
             "Test".into(),
@@ -340,14 +424,14 @@ mod tests {
             "kept index shifts from 2 to 1 after the earlier duplicate is removed"
         );
         assert_eq!(m.steps.len(), 3);
-        assert_eq!(m.steps[0].address, addr_mute_1);
-        assert_eq!(m.steps[1].address, addr_fader_1);
-        assert_eq!(m.steps[2].address, addr_mute_1);
+        assert_eq!(m.steps[0].parameter_address(), Some(&addr_mute_1));
+        assert_eq!(m.steps[1].parameter_address(), Some(&addr_fader_1));
+        assert_eq!(m.steps[2].parameter_address(), Some(&addr_mute_1));
 
         // Verify the kept step is the one we asked for (-5.0)
         assert_eq!(
-            m.steps[1].mode,
-            MacroStepMode::Fixed(ParameterValue::Float(-5.0))
+            m.steps[1].parameter_mode().cloned(),
+            Some(MacroStepMode::Fixed(ParameterValue::Float(-5.0)))
         );
     }
 
@@ -356,16 +440,8 @@ mod tests {
         let mut m = MacroDef::new(
             "Test".into(),
             vec![
-                MacroStep {
-                    address: make_addr(1, ParameterPath::Fader),
-                    mode: MacroStepMode::Toggle,
-                    delay_ms: 0,
-                },
-                MacroStep {
-                    address: make_addr(2, ParameterPath::Fader),
-                    mode: MacroStepMode::Toggle,
-                    delay_ms: 0,
-                },
+                MacroStep::parameter(make_addr(1, ParameterPath::Fader), MacroStepMode::Toggle, 0),
+                MacroStep::parameter(make_addr(2, ParameterPath::Fader), MacroStepMode::Toggle, 0),
             ],
         );
         let modified_before = m.modified_at;
@@ -376,6 +452,25 @@ mod tests {
         assert_eq!(new_idx, 0);
         assert_eq!(m.steps.len(), 2);
         assert_eq!(m.modified_at, modified_before, "no-op should not touch");
+    }
+
+    #[test]
+    fn keep_only_step_skips_app_action_steps() {
+        // App-action steps don't have a parameter address, so
+        // `keep_only_step` returns None when called on them. Other
+        // steps in the macro are unaffected.
+        let mut m = MacroDef::new(
+            "Test".into(),
+            vec![
+                MacroStep {
+                    kind: MacroStepKind::GoNextCue,
+                    delay_ms: 0,
+                },
+                MacroStep::parameter(make_addr(1, ParameterPath::Fader), MacroStepMode::Toggle, 0),
+            ],
+        );
+        assert!(m.keep_only_step(0).is_none(), "GoNextCue has no address");
+        assert_eq!(m.steps.len(), 2, "macro untouched after the no-op call");
     }
 
     #[test]

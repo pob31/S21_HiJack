@@ -4,7 +4,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::model::macro_def::{MacroDef, MacroRecording};
-use crate::model::parameter::{ParameterAddress, ParameterValue};
+use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
 
 /// Manages the collection of macros and learn mode state.
 pub struct MacroManager {
@@ -103,7 +103,16 @@ impl MacroManager {
     /// Feed a parameter change into the active recording.
     /// Called from the state mirror loop whenever a parameter update arrives
     /// from the console. Returns true if the change was recorded.
+    ///
+    /// `TotalGain` is intentionally filtered out — it's a derived value
+    /// (analog gain + trim, exposed by the console for monitoring) and
+    /// the operator never sets it directly. Recording it just produces
+    /// noise steps that fight whatever the analog gain / trim chain
+    /// actually wrote.
     pub fn record_change(&mut self, address: ParameterAddress, value: ParameterValue) -> bool {
+        if matches!(address.parameter, ParameterPath::TotalGain) {
+            return false;
+        }
         if let Some(ref mut rec) = self.recording {
             rec.record(address, value);
             true
@@ -133,14 +142,14 @@ mod tests {
     fn make_macro(name: &str) -> MacroDef {
         MacroDef::new(
             name.to_string(),
-            vec![MacroStep {
-                address: ParameterAddress {
+            vec![MacroStep::parameter(
+                ParameterAddress {
                     channel: ChannelId::Input(1),
                     parameter: ParameterPath::Mute,
                 },
-                mode: MacroStepMode::Toggle,
-                delay_ms: 0,
-            }],
+                MacroStepMode::Toggle,
+                0,
+            )],
         )
     }
 
@@ -217,6 +226,33 @@ mod tests {
 
         // No recording in progress
         assert!(mgr.stop_recording().is_none());
+    }
+
+    #[test]
+    fn record_skips_total_gain() {
+        // TotalGain is derived (analog gain + trim) and the operator
+        // never sets it directly — recording it just produces noise
+        // steps. Verify it's filtered out even while recording.
+        let mut mgr = MacroManager::new();
+        mgr.start_recording();
+
+        // A real operator change (Fader) is recorded.
+        assert!(mgr.record_change(
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Fader,
+            },
+            ParameterValue::Float(-3.0),
+        ));
+        // TotalGain echo is filtered.
+        assert!(!mgr.record_change(
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::TotalGain,
+            },
+            ParameterValue::Float(20.0),
+        ));
+        assert_eq!(mgr.recording_step_count(), 1);
     }
 
     #[test]

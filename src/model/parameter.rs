@@ -974,6 +974,26 @@ impl ParameterSection {
             ChannelId::MatrixInput(_) => vec![ParameterSection::MatrixSends],
         }
     }
+
+    /// All concrete `ParameterPath`s in this section that apply to
+    /// `channel`, in display order. Send and EQ-band variants are
+    /// expanded using counts from `config`. Returns an empty vec when
+    /// the section is not applicable to the channel.
+    pub fn paths_for(
+        &self,
+        channel: &ChannelId,
+        config: &crate::model::config::ConsoleConfig,
+    ) -> Vec<ParameterPath> {
+        ParameterPath::applicable_to(
+            channel,
+            config.aux_output_count,
+            config.group_output_count,
+            config.matrix_output_count,
+        )
+        .into_iter()
+        .filter(|p| p.section() == *self)
+        .collect()
+    }
 }
 
 impl fmt::Display for ParameterSection {
@@ -2514,6 +2534,56 @@ mod tests {
             ParameterPath::Fader.label_with_config(&config),
             ParameterPath::Fader.label(),
         );
+    }
+
+    #[test]
+    fn paths_for_eq_section_returns_band_variants() {
+        use crate::model::config::ConsoleConfig;
+        let config = ConsoleConfig::default();
+        let paths = ParameterSection::Eq.paths_for(&ChannelId::Input(1), &config);
+        // Globals: EqEnabled, HighpassEnabled, HighpassFrequency,
+        // LowpassEnabled, LowpassFrequency = 5. Per band (4 bands):
+        // 10 fields each = 40. Total 45.
+        assert_eq!(paths.len(), 45);
+        assert!(paths.contains(&ParameterPath::EqEnabled));
+        assert!(paths.contains(&ParameterPath::EqBandFrequency(1)));
+        assert!(paths.contains(&ParameterPath::EqBandFrequency(4)));
+        assert!(paths.iter().all(|p| p.section() == ParameterSection::Eq));
+    }
+
+    #[test]
+    fn paths_for_sends_uses_aux_plus_group_count_from_config() {
+        use crate::model::config::ConsoleConfig;
+        let mut config = ConsoleConfig::default();
+        config.aux_output_count = 4;
+        config.group_output_count = 2;
+        // Sends section enumerates SendEnabled/Level/Pan per bus.
+        let paths = ParameterSection::Sends.paths_for(&ChannelId::Input(1), &config);
+        let bus_count = (config.aux_output_count + config.group_output_count) as usize;
+        let send_enabled = paths
+            .iter()
+            .filter(|p| matches!(p, ParameterPath::SendEnabled(_)))
+            .count();
+        let send_level = paths
+            .iter()
+            .filter(|p| matches!(p, ParameterPath::SendLevel(_)))
+            .count();
+        let send_pan = paths
+            .iter()
+            .filter(|p| matches!(p, ParameterPath::SendPan(_)))
+            .count();
+        assert_eq!(send_enabled, bus_count);
+        assert_eq!(send_level, bus_count);
+        assert_eq!(send_pan, bus_count);
+    }
+
+    #[test]
+    fn paths_for_inapplicable_section_returns_empty() {
+        use crate::model::config::ConsoleConfig;
+        let config = ConsoleConfig::default();
+        // CG channels don't have an EQ section.
+        let paths = ParameterSection::Eq.paths_for(&ChannelId::ControlGroup(1), &config);
+        assert!(paths.is_empty());
     }
 
     #[test]

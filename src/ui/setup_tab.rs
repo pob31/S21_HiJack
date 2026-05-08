@@ -439,6 +439,7 @@ pub fn draw_setup_tab(
     console_snapshot_follow: &Arc<AtomicBool>,
     console_recall: &ConsoleRecallConfig,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
+    last_received: &Arc<RwLock<Option<crate::model::parameter::ParameterAddress>>>,
     pending_engines: &Arc<std::sync::Mutex<Option<crate::ui::PendingEngines>>>,
     connected: &Arc<AtomicBool>,
     cancel_token: &mut Option<CancellationToken>,
@@ -521,6 +522,7 @@ pub fn draw_setup_tab(
                                     setup, state, cue_manager, macro_manager, monitor_manager,
                                     palette_manager, gang_manager, pan_link_bindings, offline_mode,
                                     auto_update_on_recall, console_snapshot_follow, dirty_tracker,
+                                    last_received,
                                     pending_engines,
                                     connected, cancel_token, osc_log,
                                     runtime, ui_tx, egui_ctx,
@@ -1378,7 +1380,7 @@ pub fn draw_setup_tab(
 }
 
 /// Disconnect from the console: cancel all tasks and reset state.
-fn do_disconnect(
+pub(crate) fn do_disconnect(
     connected: &Arc<AtomicBool>,
     cancel_token: &mut Option<CancellationToken>,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -1392,7 +1394,7 @@ fn do_disconnect(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn start_connection(
+pub(crate) fn start_connection(
     setup: &mut SetupTabState,
     state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
@@ -1405,6 +1407,7 @@ fn start_connection(
     auto_update_on_recall: &Arc<AtomicBool>,
     console_snapshot_follow: &Arc<AtomicBool>,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
+    last_received: &Arc<RwLock<Option<crate::model::parameter::ParameterAddress>>>,
     pending_engines: &Arc<std::sync::Mutex<Option<crate::ui::PendingEngines>>>,
     connected: &Arc<AtomicBool>,
     cancel_token: &mut Option<CancellationToken>,
@@ -1523,6 +1526,7 @@ fn start_connection(
     let auto_update_flag = auto_update_on_recall.clone();
     let follow_flag = console_snapshot_follow.clone();
     let dirty = dirty_tracker.clone();
+    let last_recv = last_received.clone();
     let conn_flag = connected.clone();
     let tx = ui_tx.clone();
     let ctx = egui_ctx.clone();
@@ -1564,12 +1568,13 @@ fn start_connection(
 
         let daemon = crate::console::connection::DaemonState {
             state: st.clone(),
-            macro_manager: macro_mgr,
+            macro_manager: macro_mgr.clone(),
             gang_engine: gang_engine.clone(),
             gang_manager: gang_mgr,
             pan_link_engine: pan_link_engine.clone(),
             dirty_tracker: dirty.clone(),
             offline_mode: offline.clone(),
+            last_received: last_recv.clone(),
         };
         let manager = ConnectionManager::connect_from_parts(osc_sender, rx, daemon, token.clone());
 
@@ -1706,7 +1711,8 @@ fn start_connection(
         // still has an engine to work with. Previously this lived inside the
         // trigger-listener `Ok` arm and was lost on bind failure, leaving
         // `App.macro_engine` permanently `None`.
-        let mut macro_eng = MacroEngine::new(st.clone(), manager.sender());
+        let mut macro_eng =
+            MacroEngine::new(st.clone(), manager.sender(), macro_mgr.clone(), tx.clone());
         macro_eng.set_dirty_tracker(dirty.clone());
         let macro_eng = Arc::new(macro_eng);
 

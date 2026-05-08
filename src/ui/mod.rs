@@ -107,4 +107,35 @@ pub enum UiEvent {
     },
     MonitorServerStarted,
     MonitorServerFailed(String),
+
+    // ─── App-internal commands triggered by macro steps ──────────────
+    //
+    // The macro engine emits these events instead of calling app-side
+    // helpers directly — keeps the engine ↔ UI coupling thin (the
+    // engine doesn't need handles to CueManager, SnapshotEngine, the
+    // setup-tab connection helpers, etc.). The UI thread drains them
+    // in `HiJackApp::drain_events` and dispatches to the appropriate
+    // existing handler (cue_transport::fire_go etc.).
+    //
+    /// Macro step requested a Go (advance to next cue).
+    MacroFireGo,
+    /// Macro step requested a Prev (step back to previous cue).
+    MacroFirePrev,
+    /// Macro step requested a console connect using current Setup
+    /// settings.
+    MacroConnect,
+    /// Macro step requested a disconnect. **Note:** this tears down
+    /// the connection running the macro — subsequent steps in the
+    /// same macro will not execute.
+    MacroDisconnect,
+    /// Macro step requested a direct snapshot recall (bypasses cue
+    /// list).
+    MacroRecallSnapshot {
+        snapshot_id: uuid::Uuid,
+    },
+    /// Macro step requested applying a palette to a specific channel.
+    MacroRecallPalette {
+        palette_id: uuid::Uuid,
+        channel: crate::model::channel::ChannelId,
+    },
 }

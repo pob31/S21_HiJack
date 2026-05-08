@@ -201,6 +201,7 @@ async fn run_headless(args: Args) {
 
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let offline_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let last_received = Arc::new(tokio::sync::RwLock::new(None));
     let daemon = console::connection::DaemonState {
         state,
         macro_manager: macro_manager.clone(),
@@ -209,6 +210,7 @@ async fn run_headless(args: Args) {
         pan_link_engine: pan_link_engine.clone(),
         dirty_tracker: dirty_tracker.clone(),
         offline_mode: offline_mode.clone(),
+        last_received,
     };
     let manager =
         ConnectionManager::connect_from_parts(sender.clone(), rx, daemon, cancel_token.clone());
@@ -222,7 +224,18 @@ async fn run_headless(args: Args) {
     let palette_manager = Arc::new(RwLock::new(PaletteManager::new()));
     let mut snapshot_engine = SnapshotEngine::new(manager.state(), manager.sender());
     snapshot_engine.set_dirty_tracker(dirty_tracker.clone());
-    let mut macro_engine = MacroEngine::new(manager.state(), manager.sender());
+    // Headless path: no UI thread to consume macro app-action
+    // events (Go / Prev / Connect / Disconnect / RecallSnapshot /
+    // RecallPalette). Use a dummy channel whose receiver is dropped
+    // immediately — those step kinds become silent no-ops in
+    // headless mode. Parameter writes work normally.
+    let (headless_macro_tx, _) = std::sync::mpsc::channel::<ui::UiEvent>();
+    let mut macro_engine = MacroEngine::new(
+        manager.state(),
+        manager.sender(),
+        macro_manager.clone(),
+        headless_macro_tx,
+    );
     macro_engine.set_dirty_tracker(dirty_tracker.clone());
     let macro_engine = Arc::new(macro_engine);
 
