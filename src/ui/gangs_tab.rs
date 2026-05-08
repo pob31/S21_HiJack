@@ -334,15 +334,15 @@ pub fn draw_gangs_tab(
 
                                 ui.label("Channel type:");
                                 // Match the Name / Members text fields'
-                                // width AND height. The default
-                                // button_padding (12×8) renders the
-                                // ComboBox button taller than
-                                // padded_text_edit's 26 px, so the row
-                                // looks taller than the surrounding
-                                // ones. Scope a tighter padding for
-                                // just this widget.
+                                // width AND height. The Body font
+                                // renders at ~19 px tall (FONT_SIZE_BODY
+                                // = 16 plus egui's leading), so to hit
+                                // theme::TEXT_EDIT_HEIGHT (26 px) we
+                                // need button_padding.y ≈ 3.5; round
+                                // down to 3 since the ComboBox already
+                                // adds a 1 px stroke each side.
                                 ui.scope(|ui| {
-                                    ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 5.0);
+                                    ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 3.0);
                                     egui::ComboBox::from_id_salt("gang_channel_type")
                                         .width(240.0)
                                         .selected_text(tab.new_gang_channel_type.label())
