@@ -174,6 +174,13 @@ impl PanLinkEngine {
                         })
                         .cloned();
                     if let Some(p) = sib_pan {
+                        // Defensive clamp: even though the gang
+                        // engine now clamps when it writes pan, a
+                        // stale state from before this fix landed
+                        // could still hold an out-of-range value.
+                        // Belt-and-braces — the writes we emit are
+                        // always in [-1, +1].
+                        let p = ParameterPath::Pan.clamp_value(p);
                         targets.push((*sib_n, p));
                     }
                     // If the sibling's main pan isn't in the state
@@ -564,5 +571,39 @@ mod tests {
             .compute_pan_writes(&pan_addr(1), &ParameterValue::Float(0.5))
             .await;
         assert!(writes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn out_of_range_sibling_state_is_clamped_in_writes() {
+        // Defensive: state somehow holds an out-of-range pan for a
+        // gang sibling (e.g. from before the gang clamp landed, or
+        // from a malformed inbound). Pan-link's fan-out should still
+        // emit a write inside [-1, +1] for that sibling.
+        let engine = make_engine();
+        engine.bindings.write().await.set_active(1, 5, true);
+        let group = GangGroup::new(
+            "Vox".into(),
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        );
+        engine.gang_manager.write().await.add_group(group);
+        // Pre-seed input 2's pan to an out-of-range +1.3.
+        engine
+            .state
+            .write()
+            .await
+            .update(pan_addr(2), ParameterValue::Float(1.3));
+
+        let writes = engine
+            .compute_pan_writes(&pan_addr(1), &ParameterValue::Float(0.5))
+            .await;
+        // Two writes: input 1 (the source) and input 2 (the sibling).
+        assert_eq!(writes.len(), 2);
+        let by_channel: std::collections::HashMap<ChannelId, &ParameterValue> =
+            writes.iter().map(|(a, v)| (a.channel.clone(), v)).collect();
+        assert!(matches!(
+            by_channel.get(&ChannelId::Input(2)),
+            Some(ParameterValue::Float(f)) if (*f - 1.0).abs() < 1e-3
+        ));
     }
 }

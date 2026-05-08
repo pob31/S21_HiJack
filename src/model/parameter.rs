@@ -1167,6 +1167,28 @@ impl ParameterPath {
             _ => false,
         }
     }
+
+    /// Clamp `value` to the parameter's valid range. Defaults to a
+    /// passthrough for parameters whose range we don't yet model —
+    /// keep this method conservative; aggressive clamping would mask
+    /// legitimate problems elsewhere.
+    ///
+    /// Currently models the `[-1, +1]` pan-family parameters. Other
+    /// parameters (Fader dB, EQ band gain, etc.) have ranges too but
+    /// are deliberately left unclamped until we encode their per-
+    /// channel-type ranges precisely.
+    pub fn clamp_value(&self, value: ParameterValue) -> ParameterValue {
+        use ParameterPath as P;
+        match self {
+            P::Pan | P::SendPan(_) | P::Balance | P::Width => {
+                if let ParameterValue::Float(f) = value {
+                    return ParameterValue::Float(f.clamp(-1.0, 1.0));
+                }
+                value
+            }
+            _ => value,
+        }
+    }
 }
 
 // ── Timing categories ────────────────────────────────────────────────
@@ -2635,5 +2657,60 @@ mod tests {
         assert!(TimingCategory::Preprocessing.supports_fade());
         assert!(TimingCategory::Sends.supports_fade());
         assert!(!TimingCategory::Mute.supports_fade());
+    }
+
+    fn fv(v: f32) -> ParameterValue {
+        ParameterValue::Float(v)
+    }
+
+    #[test]
+    fn clamp_value_pan_family_clamps_above_one() {
+        for path in [
+            ParameterPath::Pan,
+            ParameterPath::SendPan(5),
+            ParameterPath::Balance,
+            ParameterPath::Width,
+        ] {
+            assert_eq!(
+                path.clamp_value(fv(1.5)),
+                fv(1.0),
+                "above-one clamp failed for {path:?}",
+            );
+            assert_eq!(
+                path.clamp_value(fv(-1.5)),
+                fv(-1.0),
+                "below-minus-one clamp failed for {path:?}",
+            );
+            assert_eq!(
+                path.clamp_value(fv(0.42)),
+                fv(0.42),
+                "in-range value should pass through for {path:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn clamp_value_other_parameters_passthrough() {
+        // Fader / EqBandGain are unclamped (their ranges are dB and
+        // the model doesn't yet encode them precisely).
+        assert_eq!(ParameterPath::Fader.clamp_value(fv(15.0)), fv(15.0));
+        assert_eq!(
+            ParameterPath::EqBandGain(1).clamp_value(fv(-30.0)),
+            fv(-30.0)
+        );
+    }
+
+    #[test]
+    fn clamp_value_non_float_passes_through() {
+        // Non-float values for pan are nonsensical but shouldn't panic
+        // — return them verbatim so the engine can decide.
+        assert_eq!(
+            ParameterPath::Pan.clamp_value(ParameterValue::Bool(true)),
+            ParameterValue::Bool(true),
+        );
+        assert_eq!(
+            ParameterPath::Pan.clamp_value(ParameterValue::Int(7)),
+            ParameterValue::Int(7),
+        );
     }
 }

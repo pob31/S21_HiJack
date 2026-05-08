@@ -206,9 +206,15 @@ async fn run_fade(
             (elapsed.as_secs_f32() / fade_time_secs).min(1.0)
         };
 
-        // Interpolate and send each target
+        // Interpolate and send each target. The lerp result is
+        // clamped to the parameter's valid range — without this, a
+        // fade between two in-range pan values is fine, but a fade
+        // anchored on an out-of-range start (e.g. legacy show file)
+        // would emit out-of-range intermediate values straight to
+        // the console.
         for target in &targets {
             if let Some(interpolated) = target.start_value.lerp(&target.end_value, t) {
+                let interpolated = target.address.parameter.clamp_value(interpolated);
                 let sent =
                     send_parameter(&sender, &ipad_sender, &target.address, &interpolated).await;
                 if sent {

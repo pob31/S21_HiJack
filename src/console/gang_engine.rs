@@ -146,6 +146,16 @@ impl GangEngine {
                     new_value.clone()
                 };
 
+                // Clamp to the parameter's valid range. Critical for
+                // pan / send pan / balance / width: relative-mode
+                // delta application can otherwise drift past ±1.0
+                // (sibling pan = 0.8 + delta 0.3 → 1.1) and the
+                // console's behaviour outside that range is undefined,
+                // producing the "jumping" the operator sees on aux
+                // pans. Pass-through for parameters whose range we
+                // don't yet model (Fader, EQ band gain, etc.).
+                let target_value = target_addr.parameter.clamp_value(target_value);
+
                 // Send to console and update local state
                 if self.send_to_console(&target_addr, &target_value).await {
                     // Add to suppression set so the echo-back is suppressed
@@ -532,6 +542,97 @@ mod tests {
                     parameter: ParameterPath::Fader,
                 })
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn relative_pan_delta_is_clamped_to_one() {
+        // Relative-mode gang shares FaderMutePan. Sibling B sits at
+        // pan 0.8. A nudge from 0.0 → +0.3 (delta +0.3) would push
+        // B's pan to 1.1 without the clamp. We assert the engine
+        // stores 1.0 in state instead.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        let mut group = GangGroup::new(
+            "Vox".into(),
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        );
+        group.mode = GangMode::Relative;
+        manager.add_group(group);
+
+        // Pre-seed sibling B's pan to 0.8.
+        engine.state.write().await.update(
+            ParameterAddress {
+                channel: ChannelId::Input(2),
+                parameter: ParameterPath::Pan,
+            },
+            ParameterValue::Float(0.8),
+        );
+
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Pan,
+        };
+        engine
+            .process_gang_update(
+                &addr,
+                &ParameterValue::Float(0.3),
+                Some(&ParameterValue::Float(0.0)),
+                &manager,
+            )
+            .await;
+
+        // Sibling B's state should have been clamped to +1.0 (not
+        // overshooting to +1.1).
+        let state = engine.state.read().await;
+        let v = state.get(&ParameterAddress {
+            channel: ChannelId::Input(2),
+            parameter: ParameterPath::Pan,
+        });
+        assert!(
+            matches!(v, Some(ParameterValue::Float(f)) if (*f - 1.0).abs() < 1e-3),
+            "Input(2) Pan should be clamped to 1.0, got {v:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn absolute_pan_propagation_is_also_clamped() {
+        // Defensive: if the source channel somehow already holds an
+        // out-of-range value (from a stale state, a buggy upstream,
+        // or a malformed inbound packet), Absolute-mode propagation
+        // shouldn't propagate the bad value. Verify by sending an
+        // explicitly out-of-range new_value through Absolute mode.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        let group = GangGroup::new(
+            "Vox".into(),
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        );
+        manager.add_group(group); // default mode is Absolute
+
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Pan,
+        };
+        engine
+            .process_gang_update(
+                &addr,
+                &ParameterValue::Float(1.7),
+                Some(&ParameterValue::Float(0.0)),
+                &manager,
+            )
+            .await;
+
+        let state = engine.state.read().await;
+        let v = state.get(&ParameterAddress {
+            channel: ChannelId::Input(2),
+            parameter: ParameterPath::Pan,
+        });
+        assert!(
+            matches!(v, Some(ParameterValue::Float(f)) if (*f - 1.0).abs() < 1e-3),
+            "Input(2) Pan should be clamped to 1.0 in Absolute mode too, got {v:?}",
         );
     }
 }
