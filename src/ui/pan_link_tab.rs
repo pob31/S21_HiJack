@@ -104,6 +104,11 @@ const GRIDS_CONTENT_W: f32 = TILE_SIZE.x * (TILES_PER_INPUT_ROW as f32)
     + TILE_SIZE.x * (TILES_PER_AUX_ROW as f32)
     + 24.0;
 
+/// `uses_ipad_protocol`: true when the active operating mode uses the
+/// iPad protocol (Mode 2 / Mode 3). GP OSC alone (Mode 1) doesn't
+/// expose the stereo / mono configuration of mix-output buses, so
+/// when this is false the stereo filter is bypassed and every aux is
+/// rendered as available for pan-linking.
 pub fn draw_pan_link_tab(
     ui: &mut egui::Ui,
     tab: &mut PanLinkTabState,
@@ -112,6 +117,7 @@ pub fn draw_pan_link_tab(
     _sender: &Option<OscSender>,
     _connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
+    uses_ipad_protocol: bool,
 ) {
     // Snapshot live state for this frame. try_read so we don't deadlock
     // if a write is in flight; the next frame will redraw.
@@ -145,6 +151,10 @@ pub fn draw_pan_link_tab(
     // Build the aux bus list once — preserves the unified-bus ordering
     // that `bindings` use to key entries. Mono auxes stay in the list so
     // the grid layout matches the desk; they'll just render dimmed.
+    //
+    // In Mode 1 (GP OSC only) the channel-mode info isn't available, so
+    // every aux is treated as if stereo and stays clickable. The engine
+    // applies the same rule when it sends pan-link writes.
     let aux_buses: Vec<AuxBusInfo> = (1..=total_buses)
         .filter_map(|bus| {
             let idx = (bus - 1) as usize;
@@ -152,7 +162,8 @@ pub fn draw_pan_link_tab(
             if !is_aux {
                 return None;
             }
-            let stereo = matches!(mix_modes.get(idx), Some(ChannelMode::Stereo));
+            let stereo =
+                !uses_ipad_protocol || matches!(mix_modes.get(idx), Some(ChannelMode::Stereo));
             let label = state_guard.config.bus_label(bus);
             Some(AuxBusInfo { bus, label, stereo })
         })

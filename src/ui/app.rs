@@ -831,6 +831,7 @@ impl eframe::App for HiJackApp {
                         &self.sender,
                         &self.connected,
                         &self.runtime,
+                        self.setup.operating_mode.uses_ipad_protocol(),
                     );
                 }
                 Tab::Monitor => {

@@ -13,6 +13,12 @@
 //! gang engine has already written) so Relative-mode gangs propagate
 //! correctly. Operators only have to set a binding once on a gang
 //! representative for every member's matching aux to follow.
+//!
+//! Stereo / mono filter: mix-output buses must be stereo to be
+//! pan-linkable in Mode 2 / Mode 3 (iPad protocol active), since
+//! that's where the bus mode is discoverable. In Mode 1 (GP OSC only)
+//! the desk doesn't expose channel mode, so the filter is bypassed
+//! and every aux is allowed.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -157,6 +163,13 @@ impl PanLinkEngine {
             }
         }
 
+        // In Mode 1 (GP OSC only, no iPad sender attached) the channel
+        // mode of mix-output buses isn't reported, so we can't tell
+        // mono from stereo — assume stereo and let the operator decide
+        // by binding (or not) in the Pan Link tab. Mode 2 / Mode 3
+        // (iPad protocol active) still enforces the stereo filter.
+        let assume_all_stereo = self.ipad_sender.is_none();
+
         let mut writes: Vec<(ParameterAddress, ParameterValue)> = Vec::new();
         for (ch_n, pan_value) in targets {
             for &aux in &auxes {
@@ -165,10 +178,11 @@ impl PanLinkEngine {
                 if !is_aux_bus {
                     continue;
                 }
-                let is_stereo = idx0
-                    .and_then(|i| mix_modes.get(i))
-                    .map(|m| *m == ChannelMode::Stereo)
-                    .unwrap_or(false);
+                let is_stereo = assume_all_stereo
+                    || idx0
+                        .and_then(|i| mix_modes.get(i))
+                        .map(|m| *m == ChannelMode::Stereo)
+                        .unwrap_or(false);
                 if !is_stereo {
                     continue;
                 }
@@ -437,9 +451,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skips_when_aux_is_mono() {
-        let engine = make_engine();
-        // Aux 5 → mono.
+    async fn skips_when_aux_is_mono_in_ipad_mode() {
+        // Mode 2 / Mode 3 (iPad protocol active) honours the stereo
+        // filter — mono auxes are skipped.
+        let mut engine = make_engine();
+        attach_dummy_ipad_sender(&mut engine).await;
         engine.state.write().await.config.mix_output_modes[4] = ChannelMode::Mono;
         engine.bindings.write().await.set_active(1, 5, true);
 
@@ -447,6 +463,36 @@ mod tests {
             .compute_pan_writes(&pan_addr(1), &ParameterValue::Float(0.5))
             .await;
         assert!(writes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn allows_mono_aux_in_gp_osc_mode() {
+        // Mode 1 (no iPad sender attached) skips the stereo filter so
+        // pan-link can be set up against any aux — GP OSC doesn't
+        // expose channel mode and we'd otherwise refuse every aux.
+        let engine = make_engine();
+        engine.state.write().await.config.mix_output_modes[4] = ChannelMode::Mono;
+        engine.bindings.write().await.set_active(1, 5, true);
+
+        let writes = engine
+            .compute_pan_writes(&pan_addr(1), &ParameterValue::Float(0.5))
+            .await;
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, send_pan_addr(1, 5));
+    }
+
+    /// Spin up an iPad sender pointing at a dummy local address and
+    /// attach it to the engine so the stereo filter activates.
+    async fn attach_dummy_ipad_sender(engine: &mut PanLinkEngine) {
+        let ipad_client = crate::osc::ipad_client::IpadClient::new(
+            "127.0.0.1:0".parse().unwrap(),
+            "127.0.0.1:1".parse().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        let (ipad_sender, _ipad_rx) = ipad_client.into_parts();
+        engine.set_ipad_sender(Some(ipad_sender));
     }
 
     #[tokio::test]
