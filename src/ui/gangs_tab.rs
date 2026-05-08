@@ -333,7 +333,10 @@ pub fn draw_gangs_tab(
                                 ui.end_row();
 
                                 ui.label("Channel type:");
+                                // Match the Name / Members text fields'
+                                // width so the right edges line up.
                                 egui::ComboBox::from_id_salt("gang_channel_type")
+                                    .width(240.0)
                                     .selected_text(tab.new_gang_channel_type.label())
                                     .show_ui(ui, |ui| {
                                         for ct in &ChannelTypeSelection::ALL {
