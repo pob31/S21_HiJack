@@ -143,20 +143,39 @@ impl PanLinkEngine {
         let mix_types = state.config.mix_output_types.clone();
 
         // Build the (channel, pan_value) targets list. The moved input
-        // is always first; pan-shared gang siblings follow with each
-        // sibling's own main-pan from state. Dedup by channel number so
-        // a sibling that appears in multiple matching gangs is only
-        // written once.
+        // is always first; gang siblings follow according to two rules:
+        //
+        //  1. **FaderMutePan-shared** siblings — the gang shares the
+        //     main pan, so each sibling's own main pan was just
+        //     updated by the gang engine. Pan-link writes the
+        //     sibling's `SendPan(X)` = sibling's main pan (read from
+        //     state), so the aux follows the new main pan.
+        //
+        //  2. **Sends-shared** siblings — the gang shares aux send
+        //     levels / pans across members. The sibling's main pan
+        //     didn't move (FaderMutePan isn't shared), but the gang's
+        //     Sends rule says all members must hold the same send
+        //     pan. Pan-link writes the sibling's `SendPan(X)` = A's
+        //     new pan (Absolute mode). Relative-mode Sends gangs
+        //     aren't fully respected — pan-link doesn't have A's old
+        //     `SendPan(X)` to compute a per-sibling delta.
+        //
+        // Dedupe by sibling channel number so a sibling that appears
+        // in both a FaderMutePan gang AND a Sends gang only generates
+        // one write — FaderMutePan wins because its rule is processed
+        // first (and in Absolute mode the two rules agree anyway).
         let mut targets: Vec<(u8, ParameterValue)> = vec![(input_n, new_value.clone())];
         let mut seen: HashSet<u8> = HashSet::new();
         seen.insert(input_n);
         {
             let gm = self.gang_manager.read().await;
-            let gangs = gm.find_gangs_for_channel_and_section(
+
+            // FaderMutePan-shared fan-out (sibling's own main pan).
+            let pan_gangs = gm.find_gangs_for_channel_and_section(
                 &ChannelId::Input(input_n),
                 &ParameterSection::FaderMutePan,
             );
-            for gang in gangs {
+            for gang in pan_gangs {
                 if gang.paused {
                     continue;
                 }
@@ -174,19 +193,38 @@ impl PanLinkEngine {
                         })
                         .cloned();
                     if let Some(p) = sib_pan {
-                        // Defensive clamp: even though the gang
-                        // engine now clamps when it writes pan, a
-                        // stale state from before this fix landed
-                        // could still hold an out-of-range value.
-                        // Belt-and-braces — the writes we emit are
-                        // always in [-1, +1].
+                        // Defensive clamp — see above.
                         let p = ParameterPath::Pan.clamp_value(p);
                         targets.push((*sib_n, p));
                     }
-                    // If the sibling's main pan isn't in the state
-                    // mirror yet, skip — we don't want to invent a
-                    // value for an aux send that may not match the
-                    // unknown main pan.
+                    // If the sibling's main pan isn't in state yet,
+                    // skip — we don't want to invent a value for an
+                    // aux send that may not match the unknown main
+                    // pan.
+                }
+            }
+
+            // Sends-shared fan-out (sibling's send pan = A's new pan).
+            // Relies on the routing-section guard already baked into
+            // `find_gangs_for_channel_and_section` — same-channel-type
+            // members only.
+            let sends_gangs = gm.find_gangs_for_channel_and_section(
+                &ChannelId::Input(input_n),
+                &ParameterSection::Sends,
+            );
+            let a_pan = ParameterPath::Pan.clamp_value(new_value.clone());
+            for gang in sends_gangs {
+                if gang.paused {
+                    continue;
+                }
+                for sibling in gang.other_members(&ChannelId::Input(input_n)) {
+                    let ChannelId::Input(sib_n) = sibling else {
+                        continue;
+                    };
+                    if !seen.insert(*sib_n) {
+                        continue;
+                    }
+                    targets.push((*sib_n, a_pan.clone()));
                 }
             }
         }
@@ -605,5 +643,107 @@ mod tests {
             by_channel.get(&ChannelId::Input(2)),
             Some(ParameterValue::Float(f)) if (*f - 1.0).abs() < 1e-3
         ));
+    }
+
+    #[tokio::test]
+    async fn fans_out_to_sends_only_gang_using_source_pan() {
+        // Sends-only gang: B's main pan does NOT track A's, but the
+        // gang shares aux send pans across members. Pan-link should
+        // therefore write B's SendPan(X) = A's pan, not B's own pan
+        // (which is unrelated and unchanged).
+        let engine = make_engine();
+        engine.bindings.write().await.set_active(1, 5, true);
+        let group = GangGroup::new(
+            "Vox".into(),
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::Sends]),
+        );
+        engine.gang_manager.write().await.add_group(group);
+
+        // Input 2's main pan is at -0.7 (totally unrelated to A).
+        engine
+            .state
+            .write()
+            .await
+            .update(pan_addr(2), ParameterValue::Float(-0.7));
+
+        let writes = engine
+            .compute_pan_writes(&pan_addr(1), &ParameterValue::Float(0.4))
+            .await;
+        assert_eq!(writes.len(), 2);
+        let by_channel: std::collections::HashMap<ChannelId, &ParameterValue> =
+            writes.iter().map(|(a, v)| (a.channel.clone(), v)).collect();
+        // A's own write uses A's pan.
+        assert!(matches!(
+            by_channel.get(&ChannelId::Input(1)),
+            Some(ParameterValue::Float(f)) if (*f - 0.4).abs() < 1e-3
+        ));
+        // B's write uses A's pan (NOT B's main pan -0.7) — Sends gang
+        // semantics.
+        assert!(matches!(
+            by_channel.get(&ChannelId::Input(2)),
+            Some(ParameterValue::Float(f)) if (*f - 0.4).abs() < 1e-3
+        ));
+    }
+
+    #[tokio::test]
+    async fn fader_mute_pan_wins_over_sends_when_both_share() {
+        // Gang shares both FaderMutePan and Sends. The FaderMutePan
+        // rule is processed first and dedupe stops the Sends rule
+        // from re-emitting for the same sibling. In Absolute mode
+        // both rules agree, so this just verifies one write per
+        // sibling rather than two.
+        let engine = make_engine();
+        engine.bindings.write().await.set_active(1, 5, true);
+        let group = GangGroup::new(
+            "Vox".into(),
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan, ParameterSection::Sends]),
+        );
+        engine.gang_manager.write().await.add_group(group);
+        // Sibling B's main pan was just updated by the gang engine
+        // to A's new pan (Absolute mode FaderMutePan).
+        engine
+            .state
+            .write()
+            .await
+            .update(pan_addr(2), ParameterValue::Float(0.4));
+
+        let writes = engine
+            .compute_pan_writes(&pan_addr(1), &ParameterValue::Float(0.4))
+            .await;
+        // Two writes total — A and B exactly once each.
+        assert_eq!(writes.len(), 2);
+        let by_channel: std::collections::HashMap<ChannelId, &ParameterValue> =
+            writes.iter().map(|(a, v)| (a.channel.clone(), v)).collect();
+        assert!(matches!(
+            by_channel.get(&ChannelId::Input(2)),
+            Some(ParameterValue::Float(f)) if (*f - 0.4).abs() < 1e-3
+        ));
+    }
+
+    #[tokio::test]
+    async fn does_not_fan_out_to_sends_gang_when_paused() {
+        let engine = make_engine();
+        engine.bindings.write().await.set_active(1, 5, true);
+        let mut group = GangGroup::new(
+            "Vox".into(),
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::Sends]),
+        );
+        group.paused = true;
+        engine.gang_manager.write().await.add_group(group);
+        engine
+            .state
+            .write()
+            .await
+            .update(pan_addr(2), ParameterValue::Float(-0.7));
+
+        let writes = engine
+            .compute_pan_writes(&pan_addr(1), &ParameterValue::Float(0.4))
+            .await;
+        // Only the source's own write — no fan-out from the paused gang.
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0.channel, ChannelId::Input(1));
     }
 }
