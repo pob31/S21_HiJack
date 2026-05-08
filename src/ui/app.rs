@@ -664,28 +664,35 @@ impl eframe::App for HiJackApp {
 
                         // ── Cue transport strip — centred in the slack
                         // between the tab buttons (left) and the status
-                        // group above (right). Hidden in Live music mode.
-                        if mode.cue_transport_visible() {
-                            const PREV_W: f32 = 80.0;
-                            const GO_W: f32 = 80.0;
-                            // Preferred cue-label width — keeps Prev / Go
-                            // anchored as the current cue changes so
-                            // muscle memory still hits the buttons.
-                            const LABEL_W: f32 = 320.0;
-                            // Floor when the window is tight: still wide
-                            // enough to read "Cue 12.3 — A…" before the
-                            // ellipsis kicks in.
-                            const LABEL_MIN_W: f32 = 120.0;
-                            const GAP: f32 = 8.0;
-                            // Outer breathing room when the window is
-                            // wide; collapses down to MIN_PAD before the
-                            // label is allowed to shrink. MIN_PAD is the
-                            // floor on *both* sides — the right gap to
-                            // the Online toggle stays at least this wide
-                            // so the Go button never overlaps it.
-                            const PAD_MAX: f32 = 24.0;
-                            const MIN_PAD: f32 = 16.0;
+                        // group above (right). Hidden in Live music mode
+                        // OR when the tab bar's right side doesn't have
+                        // enough horizontal room (e.g. diagnostic tabs
+                        // visible AND a narrow window) — without this
+                        // floor the GO button overflows the allocated
+                        // rect and lands on top of the Online toggle.
+                        const PREV_W: f32 = 80.0;
+                        const GO_W: f32 = 80.0;
+                        // Preferred cue-label width — keeps Prev / Go
+                        // anchored as the current cue changes so muscle
+                        // memory still hits the buttons.
+                        const LABEL_W: f32 = 320.0;
+                        // Floor when the window is tight: enough to
+                        // read "Cue 12.3" before the ellipsis kicks in.
+                        const LABEL_MIN_W: f32 = 60.0;
+                        const GAP: f32 = 8.0;
+                        // Outer breathing room when the window is wide;
+                        // collapses down to MIN_PAD before the label is
+                        // allowed to shrink.
+                        const PAD_MAX: f32 = 24.0;
+                        const MIN_PAD: f32 = 16.0;
 
+                        // Strip's absolute minimum: MIN_PAD on the
+                        // left, both buttons + their gaps, label at
+                        // its floor, MIN_PAD on the right.
+                        const MIN_STRIP_W: f32 =
+                            MIN_PAD * 2.0 + PREV_W + GO_W + GAP * 2.0 + LABEL_MIN_W;
+
+                        if mode.cue_transport_visible() && ui.available_width() >= MIN_STRIP_W {
                             // Reserve the right-side gap explicitly: in
                             // the right-to-left parent, add_space here
                             // pushes the cursor leftward by MIN_PAD,
