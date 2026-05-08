@@ -727,15 +727,6 @@ pub fn draw_setup_tab(
                                 });
                         });
                         ui.end_row();
-
-                        ui.label("Bind IP:");
-                        let bind_value = if setup.local_ip.is_empty() {
-                            "0.0.0.0  (all interfaces)".to_string()
-                        } else {
-                            setup.local_ip.clone()
-                        };
-                        ui.label(egui::RichText::new(bind_value).color(theme::TEXT_SECONDARY));
-                        ui.end_row();
                     });
 
                     ui.add_space(8.0);
