@@ -354,7 +354,10 @@ pub fn draw_gangs_tab(
                         };
                         egui::Grid::new("add_gang_grid")
                             .num_columns(2)
-                            .spacing([10.0, 6.0])
+                            // Bumped vertical spacing 6 → 10 so any
+                            // small per-row height differences read as
+                            // padding rather than misalignment.
+                            .spacing([10.0, 10.0])
                             .show(ui, |ui| {
                                 row_label(ui, "Name:");
                                 theme::padded_text_edit(
