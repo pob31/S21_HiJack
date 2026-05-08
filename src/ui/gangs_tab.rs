@@ -681,12 +681,17 @@ pub fn draw_gangs_tab(
                                         if ui.add(edit_btn).clicked() {
                                             to_edit = Some(group.clone());
                                         }
-                                        let del_btn = theme::action_button(
+                                        // Long-press to confirm — matches the
+                                        // Setup-tab transport buttons and the
+                                        // Macros-tab Delete.
+                                        if theme::long_press_button(
+                                            ui,
                                             "Delete",
                                             theme::ACCENT_RED,
                                             egui::Vec2::new(60.0, 24.0),
-                                        );
-                                        if ui.add(del_btn).clicked() {
+                                            true,
+                                            theme::LONG_PRESS_DURATION_MS,
+                                        ) {
                                             to_remove = Some(group.id);
                                         }
                                     });
