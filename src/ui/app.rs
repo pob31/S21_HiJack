@@ -108,8 +108,29 @@ impl HiJackApp {
         monitor_port: u16,
         prefs: AppPreferences,
         runtime: tokio::runtime::Handle,
+        show_file: Option<std::path::PathBuf>,
     ) -> Self {
         let (ui_tx, ui_rx) = std::sync::mpsc::channel();
+
+        let mut setup = SetupTabState::new(
+            console_ip,
+            console_port,
+            local_port,
+            trigger_port,
+            operating_mode,
+            ipad_ip,
+            ipad_send_port,
+            ipad_receive_port,
+            monitor_port,
+            &prefs,
+        );
+        if let Some(path) = show_file {
+            // Pre-populate the path field so the UI shows where we
+            // came from, and queue an auto-load on the first frame
+            // the Setup tab draws.
+            setup.show_file_path = path.display().to_string();
+            setup.pending_initial_load = Some(path);
+        }
 
         Self {
             state: Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default()))),
@@ -140,18 +161,7 @@ impl HiJackApp {
             cancel_token: None,
 
             active_tab: Tab::Setup,
-            setup: SetupTabState::new(
-                console_ip,
-                console_port,
-                local_port,
-                trigger_port,
-                operating_mode,
-                ipad_ip,
-                ipad_send_port,
-                ipad_receive_port,
-                monitor_port,
-                &prefs,
-            ),
+            setup,
             snapshots: SnapshotsTabState::default(),
             macros: MacrosTabState::default(),
             palettes_ui: PalettesUiState::default(),

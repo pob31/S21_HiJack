@@ -13,6 +13,7 @@ mod persistence;
 mod ui;
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -96,6 +97,14 @@ struct Args {
     /// Run in headless mode (no UI, daemon only)
     #[arg(long)]
     headless: bool,
+
+    /// Optional show-file path to load on startup. The OS file
+    /// associations (Linux .desktop / Windows .reg / macOS Info.plist)
+    /// invoke the binary with this positional argument so
+    /// double-clicking a `.s21show` file in a file manager opens it
+    /// in the app.
+    #[arg(value_name = "SHOW_FILE")]
+    show_file: Option<PathBuf>,
 }
 
 impl Args {
@@ -487,6 +496,7 @@ fn run_ui(args: Args) {
         args.monitor_port,
         prefs,
         runtime.handle().clone(),
+        args.show_file.clone(),
     );
 
     // Load the app icon. Embedded at compile time so the binary is

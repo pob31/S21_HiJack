@@ -1,9 +1,10 @@
 [Desktop Entry]
 Name=S21 HiJack
 Comment=DiGiCo S21/S31 snapshot manager
-Exec=s21_hijack
+Exec=s21_hijack %f
 Icon=s21_hijack
 Terminal=false
 Type=Application
 Categories=Audio;Mixer;
+MimeType=application/x-s21show;
 StartupWMClass=s21_hijack

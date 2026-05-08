@@ -98,6 +98,11 @@ pub struct SetupTabState {
     /// cleared whenever the console IP or selected NIC changes so the
     /// warning re-evaluates. Runtime-only; not persisted.
     pub console_ip_warning_dismissed: bool,
+    /// Show-file path passed on the command line (positional CLI arg
+    /// or via OS file association). Drained on the first frame the
+    /// Setup tab draws — `draw_setup_tab` calls `load_show_file` once
+    /// and clears the slot. Runtime-only.
+    pub pending_initial_load: Option<std::path::PathBuf>,
 }
 
 impl SetupTabState {
@@ -152,6 +157,7 @@ impl SetupTabState {
             show_first_run_popup: prefs.ui_mode.is_none(),
             show_coverage_popup: false,
             console_ip_warning_dismissed: false,
+            pending_initial_load: None,
         }
     }
 }
@@ -206,6 +212,22 @@ fn align_first_three_octets(target: &str, source: &str) -> String {
 /// IP is on a different /16 — i.e. the warning should fire.
 pub fn console_ip_mismatch(setup: &SetupTabState) -> bool {
     !setup.local_ip.is_empty() && !first_two_octets_match(&setup.local_ip, &setup.console_ip)
+}
+
+/// Ensure the show-file path has a recognised extension. If it
+/// already ends in `.s21show` (the canonical extension) or `.json`
+/// (legacy), it's left alone — re-saving over a legacy `.json` show
+/// file shouldn't silently rename it. Otherwise `.s21show` is
+/// appended. Idempotent and string-only; the caller writes the file.
+pub fn ensure_show_file_extension(path: &mut String) {
+    if path.is_empty() {
+        return;
+    }
+    let lower = path.to_lowercase();
+    if lower.ends_with(".s21show") || lower.ends_with(".json") {
+        return;
+    }
+    path.push_str(".s21show");
 }
 
 // ── Connection diagram layout constants ──
@@ -426,6 +448,28 @@ pub fn draw_setup_tab(
     egui_ctx: &Arc<std::sync::OnceLock<egui::Context>>,
 ) {
     let is_connected = connected.load(Ordering::Relaxed);
+
+    // Auto-load on startup: a CLI positional show-file (or a file
+    // opened via OS association) is queued in `pending_initial_load`
+    // and drained on the first Setup-tab draw. Loading is async; the
+    // helper spawns a task and reports progress via `ui_tx`, so this
+    // returns immediately and the rest of the frame proceeds normally.
+    if let Some(path) = setup.pending_initial_load.take() {
+        setup.show_file_path = path.display().to_string();
+        load_show_file(
+            setup,
+            state,
+            cue_manager,
+            macro_manager,
+            monitor_manager,
+            palette_manager,
+            gang_manager,
+            pan_link_bindings,
+            connected,
+            runtime,
+            ui_tx,
+        );
+    }
 
     // First-run popup — shown once per machine until the operator picks a mode.
     if setup.show_first_run_popup {
@@ -896,15 +940,19 @@ pub fn draw_setup_tab(
                             );
                             if ui
                                 .add(theme::action_button(
-                                    "Browse…",
+                                    "Open…",
                                     theme::BG_ELEVATED,
                                     egui::Vec2::new(80.0, 26.0),
                                 ))
+                                .on_hover_text(
+                                    "Pick an existing show file to load. Use Load to \
+                                     actually load it; Save As… to save to a new path.",
+                                )
                                 .clicked()
                             {
                                 if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Show Files", &["json"])
-                                    .add_filter("All Files", &["*"])
+                                    .add_filter("Show files", &["s21show", "json"])
+                                    .add_filter("All files", &["*"])
                                     .pick_file()
                                 {
                                     setup.show_file_path = path.display().to_string();
@@ -934,17 +982,67 @@ pub fn draw_setup_tab(
                             theme::ACCENT_GREEN,
                             egui::Vec2::new(80.0, 28.0),
                         );
-                        if ui.add(save_btn).clicked() {
-                            if setup.show_file_path.is_empty() {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Show Files", &["json"])
-                                    .set_file_name("show.json")
+                        if ui
+                            .add(save_btn)
+                            .on_hover_text(
+                                "Save to the path shown above. If empty, prompts for a \
+                                 location.",
+                            )
+                            .clicked()
+                        {
+                            if setup.show_file_path.is_empty()
+                                && let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("Show files", &["s21show", "json"])
+                                    .set_file_name("show.s21show")
                                     .save_file()
-                                {
-                                    setup.show_file_path = path.display().to_string();
-                                }
+                            {
+                                setup.show_file_path = path.display().to_string();
                             }
                             if !setup.show_file_path.is_empty() {
+                                ensure_show_file_extension(&mut setup.show_file_path);
+                                save_show_file(
+                                    setup, state, cue_manager, macro_manager, monitor_manager,
+                                    palette_manager, gang_manager, pan_link_bindings,
+                                    auto_update_on_recall.load(Ordering::Relaxed),
+                                    console_snapshot_follow.load(Ordering::Relaxed),
+                                    console_recall.clone(),
+                                    runtime, ui_tx,
+                                );
+                            }
+                        }
+
+                        let save_as_btn = theme::action_button(
+                            "Save As…",
+                            theme::ACCENT_GREEN,
+                            egui::Vec2::new(80.0, 28.0),
+                        );
+                        if ui
+                            .add(save_as_btn)
+                            .on_hover_text(
+                                "Pick a new location and save there. Useful when the \
+                                 path field already points at a different file.",
+                            )
+                            .clicked()
+                        {
+                            // Pre-seed the dialog with the current path's
+                            // directory + filename when available; otherwise
+                            // fall back to the default `show.s21show`.
+                            let mut dlg = rfd::FileDialog::new()
+                                .add_filter("Show files", &["s21show", "json"]);
+                            if !setup.show_file_path.is_empty() {
+                                let p = std::path::Path::new(&setup.show_file_path);
+                                if let Some(dir) = p.parent() {
+                                    dlg = dlg.set_directory(dir);
+                                }
+                                if let Some(name) = p.file_name() {
+                                    dlg = dlg.set_file_name(name.to_string_lossy());
+                                }
+                            } else {
+                                dlg = dlg.set_file_name("show.s21show");
+                            }
+                            if let Some(path) = dlg.save_file() {
+                                setup.show_file_path = path.display().to_string();
+                                ensure_show_file_extension(&mut setup.show_file_path);
                                 save_show_file(
                                     setup, state, cue_manager, macro_manager, monitor_manager,
                                     palette_manager, gang_manager, pan_link_bindings,
@@ -1838,8 +1936,8 @@ fn load_show_file(
     // If no path, open a file dialog
     if setup.show_file_path.is_empty() {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Show Files", &["json"])
-            .add_filter("All Files", &["*"])
+            .add_filter("Show files", &["s21show", "json"])
+            .add_filter("All files", &["*"])
             .pick_file()
         {
             setup.show_file_path = path.display().to_string();
@@ -2144,5 +2242,50 @@ mod tests {
             align_first_three_octets("192.168.1.1", "garbage"),
             "192.168.1.1"
         );
+    }
+
+    #[test]
+    fn ensure_show_file_extension_appends_when_missing() {
+        let mut p = "/tmp/mygig".to_string();
+        ensure_show_file_extension(&mut p);
+        assert_eq!(p, "/tmp/mygig.s21show");
+    }
+
+    #[test]
+    fn ensure_show_file_extension_keeps_s21show() {
+        let mut p = "/tmp/mygig.s21show".to_string();
+        ensure_show_file_extension(&mut p);
+        assert_eq!(p, "/tmp/mygig.s21show");
+    }
+
+    #[test]
+    fn ensure_show_file_extension_keeps_legacy_json() {
+        // Re-saving over a legacy JSON file keeps the .json extension
+        // — no surprise renames.
+        let mut p = "/tmp/oldshow.json".to_string();
+        ensure_show_file_extension(&mut p);
+        assert_eq!(p, "/tmp/oldshow.json");
+    }
+
+    #[test]
+    fn ensure_show_file_extension_handles_uppercase() {
+        let mut p = "/tmp/Show.S21SHOW".to_string();
+        ensure_show_file_extension(&mut p);
+        assert_eq!(p, "/tmp/Show.S21SHOW");
+    }
+
+    #[test]
+    fn ensure_show_file_extension_empty_is_noop() {
+        let mut p = String::new();
+        ensure_show_file_extension(&mut p);
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn ensure_show_file_extension_unknown_extension_appends() {
+        // A weird extension (.txt) gets `.s21show` appended on top.
+        let mut p = "/tmp/notes.txt".to_string();
+        ensure_show_file_extension(&mut p);
+        assert_eq!(p, "/tmp/notes.txt.s21show");
     }
 }

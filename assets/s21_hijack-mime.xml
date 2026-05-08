@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-s21show">
+    <comment>S21 HiJack show file</comment>
+    <icon name="s21_hijack"/>
+    <glob pattern="*.s21show"/>
+    <!-- Show files are JSON internally; this is a weak hint, not a
+         strict signature. The .s21show glob is the authoritative
+         match. -->
+    <magic priority="40">
+      <match type="string" offset="0" value="{"/>
+    </magic>
+    <sub-class-of type="application/json"/>
+  </mime-type>
+</mime-info>

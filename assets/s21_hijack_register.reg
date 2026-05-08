@@ -1,0 +1,34 @@
+Windows Registry Editor Version 5.00
+
+; ----------------------------------------------------------------------
+; S21 HiJack — Windows file association for *.s21show
+;
+; Before importing, replace the EXE path on the line marked TODO with
+; the absolute path to your installed s21_hijack.exe. Path components
+; must be double-backslash-escaped (e.g. C:\\Program Files\\S21\\s21_hijack.exe).
+;
+; Import with:   regedit /s s21_hijack_register.reg
+; Or double-click the file in Explorer and confirm the elevation prompt.
+;
+; This installs to HKEY_CURRENT_USER so it doesn't require admin and is
+; per-user. Replace HKEY_CURRENT_USER\\Software\\Classes with
+; HKEY_LOCAL_MACHINE\\Software\\Classes for a system-wide install (admin
+; required).
+; ----------------------------------------------------------------------
+
+; .s21show extension → ProgID
+[HKEY_CURRENT_USER\Software\Classes\.s21show]
+@="S21HiJack.Show"
+"Content Type"="application/x-s21show"
+
+; ProgID metadata
+[HKEY_CURRENT_USER\Software\Classes\S21HiJack.Show]
+@="S21 HiJack show file"
+
+[HKEY_CURRENT_USER\Software\Classes\S21HiJack.Show\DefaultIcon]
+@="\"C:\\Path\\To\\s21_hijack.exe\",0"
+
+; Open command — %1 is the file the user double-clicked.
+; TODO: replace the path with your installed location.
+[HKEY_CURRENT_USER\Software\Classes\S21HiJack.Show\shell\open\command]
+@="\"C:\\Path\\To\\s21_hijack.exe\" \"%1\""
