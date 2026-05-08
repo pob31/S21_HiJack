@@ -13,4 +13,5 @@ pub mod parameter;
 pub mod recall_scope;
 pub mod snapshot;
 pub mod state;
+pub mod streamdeck;
 pub mod ui_mode;

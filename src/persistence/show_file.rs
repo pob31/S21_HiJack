@@ -11,6 +11,7 @@ use crate::model::palette::ChannelPalette;
 use crate::model::pan_link::PanLinkBindings;
 use crate::model::recall_scope::ConsoleRecallConfig;
 use crate::model::snapshot::{CueList, ScopeTemplate, Snapshot};
+use crate::model::streamdeck::StreamDeckConfig;
 use crate::model::ui_mode::UiMode;
 
 /// Connection settings persisted in the show file.
@@ -176,12 +177,18 @@ pub struct ShowFile {
     /// Pan link bindings: aux-send pans that follow an input's main pan.
     #[serde(default)]
     pub pan_link: PanLinkBindings,
+    /// Stream Deck integration: device selection + per-button macro
+    /// sequences. New in v15. Older show files (v14 and earlier) load
+    /// with `StreamDeckConfig::default()` (disabled, no device, empty
+    /// button list).
+    #[serde(default)]
+    pub stream_deck: StreamDeckConfig,
 }
 
 impl ShowFile {
     pub fn new(config: ConsoleConfig) -> Self {
         Self {
-            version: 14,
+            version: 15,
             console_config: config,
             connection: ConnectionSettings::default(),
             scope_templates: Vec::new(),
@@ -193,6 +200,7 @@ impl ShowFile {
             gang_groups: Vec::new(),
             console_recall: ConsoleRecallConfig::default(),
             pan_link: PanLinkBindings::default(),
+            stream_deck: StreamDeckConfig::default(),
         }
     }
 
@@ -263,15 +271,86 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 14);
+        assert_eq!(loaded.version, 15);
         assert_eq!(loaded.console_config.input_channel_count, 48);
         assert_eq!(loaded.console_config.control_group_count, 10);
         assert!(loaded.scope_templates.is_empty());
         assert!(loaded.snapshots.is_empty());
         assert!(loaded.cue_list.cues.is_empty());
+        assert_eq!(
+            loaded.stream_deck,
+            crate::model::streamdeck::StreamDeckConfig::default()
+        );
 
         // Cleanup
         let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn stream_deck_config_round_trips() {
+        use crate::model::streamdeck::{StreamDeckButton, StreamDeckConfig, StreamDeckStep};
+
+        let mut show = ShowFile::new(ConsoleConfig::default());
+        show.stream_deck = StreamDeckConfig {
+            enabled: true,
+            device_serial: Some("AL12K1A12345".into()),
+            buttons: vec![
+                StreamDeckButton::default(),
+                StreamDeckButton {
+                    steps: vec![
+                        StreamDeckStep {
+                            macro_id: uuid::Uuid::from_bytes([1; 16]),
+                        },
+                        StreamDeckStep {
+                            macro_id: uuid::Uuid::from_bytes([2; 16]),
+                        },
+                    ],
+                    current_step: 1,
+                },
+            ],
+        };
+
+        let dir = std::env::temp_dir().join("s21_hijack_test");
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let path = dir.join("test_show_streamdeck.json");
+        show.save(&path).await.unwrap();
+        let loaded = ShowFile::load(&path).await.unwrap();
+        assert_eq!(loaded.version, 15);
+        assert_eq!(loaded.stream_deck, show.stream_deck);
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn legacy_v14_show_loads_with_default_streamdeck() {
+        // Older show files (without `stream_deck`) should round-trip
+        // through serde with the field defaulted. Synthesise one by
+        // hand-crafting a minimal v14 JSON blob.
+        let json = r#"{
+            "version": 14,
+            "console_config": {
+                "console_name": "",
+                "console_serial": "",
+                "session_filename": null,
+                "input_channel_count": 48,
+                "aux_output_count": 8,
+                "group_output_count": 8,
+                "matrix_output_count": 8,
+                "matrix_input_count": 10,
+                "control_group_count": 10,
+                "graphic_eq_count": 16,
+                "talkback_output_count": 0,
+                "mix_output_types": [],
+                "mix_output_modes": [],
+                "input_modes": [],
+                "group_modes": []
+            }
+        }"#;
+        let parsed: ShowFile = serde_json::from_str(json).expect("v14 JSON parses");
+        assert_eq!(parsed.version, 14);
+        assert_eq!(
+            parsed.stream_deck,
+            crate::model::streamdeck::StreamDeckConfig::default()
+        );
     }
 
     #[tokio::test]

@@ -69,6 +69,16 @@ pub struct HiJackApp {
     /// daemon. Drives the Macros tab "track latest OSC" affordance — UI
     /// reads this each frame and mirrors it into the Add Step form.
     pub last_received: Arc<RwLock<Option<crate::model::parameter::ParameterAddress>>>,
+    /// Stream Deck integration: device selection + per-button macro
+    /// sequences. Loaded from / saved to the show file. Mutated by the
+    /// Macros tab UI (operator edits) and by `drain_events` when a
+    /// physical button press advances the playback cursor.
+    pub stream_deck_config: Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
+    /// Stream Deck driver engine — owns the device-thread + LCD
+    /// rendering. Eagerly constructed at app startup so the UI can
+    /// see freshly-plugged devices without an explicit "scan" step;
+    /// idle when no device is connected.
+    pub stream_deck_engine: Arc<crate::console::streamdeck_engine::StreamDeckEngine>,
 
     // OSC log (shared with network tasks)
     pub osc_log: OscLog,
@@ -152,6 +162,12 @@ impl HiJackApp {
             pending_engines: Arc::new(std::sync::Mutex::new(None)),
             dirty_tracker: Arc::new(RwLock::new(DirtyTracker::new())),
             last_received: Arc::new(RwLock::new(None)),
+            stream_deck_config: Arc::new(RwLock::new(
+                crate::model::streamdeck::StreamDeckConfig::default(),
+            )),
+            stream_deck_engine: crate::console::streamdeck_engine::StreamDeckEngine::new(
+                ui_tx.clone(),
+            ),
 
             osc_log: OscLog::new(),
 
@@ -507,8 +523,131 @@ impl HiJackApp {
                         }
                     });
                 }
+                UiEvent::StreamDeckButtonPressed { button_idx } => {
+                    self.handle_streamdeck_button(button_idx);
+                }
+                UiEvent::StreamDeckConnected {
+                    device_name,
+                    button_count,
+                } => {
+                    tracing::info!(
+                        device = %device_name,
+                        button_count,
+                        "Stream Deck connected"
+                    );
+                    self.macros.status_message = Some(format!("Stream Deck: {device_name}"));
+                    // Resize the per-button slots to match the new
+                    // device's button count, preserving overlap, then
+                    // push initial LCD labels for every slot.
+                    let labels = self.streamdeck_resize_and_collect_labels(button_count as usize);
+                    self.stream_deck_engine.refresh_all(labels);
+                }
+                UiEvent::StreamDeckDisconnected => {
+                    tracing::info!("Stream Deck disconnected");
+                    self.macros.status_message = Some("Stream Deck: disconnected".into());
+                }
+                UiEvent::StreamDeckError { message } => {
+                    tracing::warn!("Stream Deck error: {message}");
+                    self.macros.status_message = Some(format!("Stream Deck: {message}"));
+                }
             }
         }
+    }
+
+    /// Handle a Stream Deck button press: fire the next-to-fire macro
+    /// for that button, advance the cursor (with wrap-around), then
+    /// refresh the LCD to show the now-next-to-fire macro's name.
+    fn handle_streamdeck_button(&self, button_idx: usize) {
+        let cfg = self.stream_deck_config.clone();
+        let macro_mgr = self.macro_manager.clone();
+        let macro_engine = self.macro_engine.clone();
+        let sd_engine = self.stream_deck_engine.clone();
+        let tx = self.ui_tx.clone();
+        self.runtime.spawn(async move {
+            // Take a snapshot of the macro_id to fire and advance the
+            // cursor under a single write-lock.
+            let macro_id_to_fire: Option<uuid::Uuid> = {
+                let mut cfg_w = cfg.write().await;
+                let Some(button) = cfg_w.buttons.get_mut(button_idx) else {
+                    return;
+                };
+                if button.steps.is_empty() {
+                    return;
+                }
+                let idx = (button.current_step as usize).min(button.steps.len() - 1);
+                let macro_id = button.steps[idx].macro_id;
+                button.advance();
+                Some(macro_id)
+            };
+            let Some(macro_id) = macro_id_to_fire else {
+                return;
+            };
+            // Fire the macro.
+            if let Some(engine) = macro_engine {
+                let mgr = macro_mgr.read().await;
+                let macro_def = mgr.get_macro(&macro_id).cloned();
+                drop(mgr);
+                match macro_def {
+                    Some(def) => {
+                        engine.execute(&def).await;
+                    }
+                    None => {
+                        let _ = tx.send(UiEvent::MacroExecutionFailed(format!(
+                            "Stream Deck: macro {macro_id} no longer exists"
+                        )));
+                    }
+                }
+            } else {
+                let _ = tx.send(UiEvent::MacroExecutionFailed(
+                    "Stream Deck: macro engine not initialised — connect to console first".into(),
+                ));
+            }
+            // Refresh the LCD with the new next-to-fire label.
+            let label = {
+                let cfg_r = cfg.read().await;
+                let mgr = macro_mgr.read().await;
+                cfg_r
+                    .buttons
+                    .get(button_idx)
+                    .and_then(|b| b.next_step())
+                    .map(|s| {
+                        mgr.get_macro(&s.macro_id)
+                            .map(|m| m.name.clone())
+                            .unwrap_or_else(|| "(deleted)".into())
+                    })
+                    .unwrap_or_default()
+            };
+            sd_engine.refresh_button(button_idx as u8, label);
+        });
+    }
+
+    /// Resize the StreamDeck per-button vector to `count` (preserving
+    /// overlap), then build the per-slot label strings (next-to-fire
+    /// macro name, or "" for empty slots / deleted macros).
+    fn streamdeck_resize_and_collect_labels(&self, count: usize) -> Vec<String> {
+        // Synchronously block on the runtime to read+write — this
+        // runs on the UI thread but operations are quick (memory only).
+        let cfg = self.stream_deck_config.clone();
+        let macro_mgr = self.macro_manager.clone();
+        self.runtime.block_on(async move {
+            let mut cfg_w = cfg.write().await;
+            cfg_w.buttons.resize_with(count, Default::default);
+            let mgr = macro_mgr.read().await;
+            (0..count)
+                .map(|i| {
+                    cfg_w
+                        .buttons
+                        .get(i)
+                        .and_then(|b| b.next_step())
+                        .map(|s| {
+                            mgr.get_macro(&s.macro_id)
+                                .map(|m| m.name.clone())
+                                .unwrap_or_else(|| "(deleted)".into())
+                        })
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
     }
 }
 
@@ -1014,6 +1153,7 @@ impl eframe::App for HiJackApp {
                         &self.palette_manager,
                         &self.gang_manager,
                         &self.pan_link_bindings,
+                        &self.stream_deck_config,
                         &self.offline_mode,
                         &self.auto_update_on_recall,
                         &self.console_snapshot_follow,
@@ -1066,6 +1206,8 @@ impl eframe::App for HiJackApp {
                         &self.cue_manager,
                         &self.palette_manager,
                         &self.last_received,
+                        &self.stream_deck_engine,
+                        &self.stream_deck_config,
                         &self.runtime,
                         &self.ui_tx,
                     );

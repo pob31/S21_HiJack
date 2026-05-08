@@ -72,6 +72,16 @@ pub struct MacrosTabState {
     // selection feel sticky/unresponsive.
     pub cached_list: Vec<(Uuid, String, usize)>,
     pub cached_steps: Option<CachedSteps>,
+
+    // ─── Stream Deck ──────────────────────────────────────────────
+    /// Index of the currently-selected Stream Deck button slot. When
+    /// `Some(_)`, the right column shows the per-button step editor
+    /// instead of the macro step editor; selecting a button clears
+    /// `selected_macro_id` and vice-versa.
+    pub selected_streamdeck_button: Option<usize>,
+    /// Combo selection in the Stream Deck "Add step" form (right
+    /// column when a button is selected): pick from existing macros.
+    pub streamdeck_add_step_target: Option<Uuid>,
 }
 
 /// Cached step data for the currently-selected macro. Read once when the
@@ -114,6 +124,8 @@ impl Default for MacrosTabState {
             step_delay_edits: Vec::new(),
             cached_list: Vec::new(),
             cached_steps: None,
+            selected_streamdeck_button: None,
+            streamdeck_add_step_target: None,
             status_message: None,
             last_execution_info: None,
         }
@@ -258,6 +270,8 @@ pub fn draw_macros_tab(
     cue_manager: &Arc<RwLock<CueManager>>,
     palette_manager: &Arc<RwLock<PaletteManager>>,
     last_received: &Arc<RwLock<Option<ParameterAddress>>>,
+    streamdeck_engine: &Arc<crate::console::streamdeck_engine::StreamDeckEngine>,
+    streamdeck_config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
@@ -353,26 +367,51 @@ pub fn draw_macros_tab(
                         ui.add_space(2.0);
                         ui.colored_label(theme::TEXT_WARNING, msg);
                     }
+
+                    ui.add_space(8.0);
+
+                    // Stream Deck integration card
+                    theme::card_frame().show(ui, |ui| {
+                        draw_streamdeck_section(
+                            ui,
+                            macros_state,
+                            streamdeck_engine,
+                            streamdeck_config,
+                            macro_manager,
+                            runtime,
+                        );
+                    });
                 });
         });
 
         ui.add_space(4.0);
 
-        // ═══ RIGHT PANEL: Step Editor ═══
+        // ═══ RIGHT PANEL: Step Editor (macro or Stream Deck button) ═══
         ui.vertical(|ui| {
             ui.set_min_height(panel_height);
 
             theme::card_frame().show(ui, |ui| {
-                draw_step_editor(
-                    ui,
-                    macros_state,
-                    macro_manager,
-                    state,
-                    cue_manager,
-                    palette_manager,
-                    last_received,
-                    runtime,
-                );
+                if macros_state.selected_streamdeck_button.is_some() {
+                    draw_streamdeck_button_editor(
+                        ui,
+                        macros_state,
+                        streamdeck_engine,
+                        streamdeck_config,
+                        macro_manager,
+                        runtime,
+                    );
+                } else {
+                    draw_step_editor(
+                        ui,
+                        macros_state,
+                        macro_manager,
+                        state,
+                        cue_manager,
+                        palette_manager,
+                        last_received,
+                        runtime,
+                    );
+                }
             });
         });
     });
@@ -1581,6 +1620,497 @@ fn mode_value_string(mode: &MacroStepMode) -> String {
         MacroStepMode::Toggle => String::new(),
         MacroStepMode::Fixed(v) => format!("{v}"),
         MacroStepMode::Relative(offset) => format!("{offset}"),
+    }
+}
+
+// ═══ Stream Deck UI ════════════════════════════════════════════════
+
+/// Left-column "Stream Deck" card: enable toggle, device selector,
+/// connection status, and the per-device button grid. Selecting a
+/// grid cell sets `selected_streamdeck_button`, which causes the
+/// right column to switch to the per-button step editor.
+fn draw_streamdeck_section(
+    ui: &mut egui::Ui,
+    macros_state: &mut MacrosTabState,
+    engine: &Arc<crate::console::streamdeck_engine::StreamDeckEngine>,
+    config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
+    macro_manager: &Arc<RwLock<MacroManager>>,
+    runtime: &tokio::runtime::Handle,
+) {
+    use crate::model::streamdeck::StreamDeckButton;
+
+    // Read a snapshot of the config + connected device. `try_read`
+    // keeps the UI responsive even when the engine is mid-write.
+    let cfg_snapshot = config
+        .try_read()
+        .ok()
+        .map(|c| c.clone())
+        .unwrap_or_default();
+    let connected = engine.connected_device();
+    let available = engine.available_devices();
+
+    ui.horizontal(|ui| {
+        theme::section_heading(ui, "Stream Deck");
+        let dot_color = if connected.is_some() {
+            theme::COLOR_CONNECTED
+        } else if cfg_snapshot.enabled {
+            theme::COLOR_CONNECTING
+        } else {
+            theme::TEXT_DISABLED
+        };
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            theme::status_dot(ui, dot_color);
+        });
+    });
+
+    // ── Enable toggle ──
+    let mut enabled = cfg_snapshot.enabled;
+    let toggle_label = if enabled { "Disable" } else { "Enable" };
+    let toggle_color = if enabled {
+        theme::ACCENT_RED
+    } else {
+        theme::ACCENT_GREEN
+    };
+    if ui
+        .add(theme::action_button(
+            toggle_label,
+            toggle_color,
+            egui::Vec2::new(100.0, 26.0),
+        ))
+        .clicked()
+    {
+        enabled = !enabled;
+        let cfg = config.clone();
+        runtime.spawn(async move {
+            cfg.write().await.enabled = enabled;
+        });
+        if enabled {
+            // Try connect to the saved serial if any (and present).
+            if let Some(serial) = cfg_snapshot.device_serial.clone() {
+                if available.iter().any(|d| d.serial == serial) {
+                    engine.connect(serial);
+                }
+            }
+        } else {
+            engine.disconnect();
+        }
+    }
+
+    ui.add_space(4.0);
+
+    // ── Device combo ──
+    if enabled {
+        let selected_label = match (cfg_snapshot.device_serial.as_deref(), connected.as_ref()) {
+            (_, Some(c)) => c.label.clone(),
+            (Some(s), None) => available
+                .iter()
+                .find(|d| d.serial == s)
+                .map(|d| format!("{} (not connected)", d.label))
+                .unwrap_or_else(|| format!("{s} (unplugged)")),
+            (None, None) => {
+                if available.is_empty() {
+                    "No device detected".into()
+                } else {
+                    "Select device…".into()
+                }
+            }
+        };
+        ui.horizontal(|ui| {
+            ui.add_sized([60.0, 26.0], egui::Label::new("Device:"));
+            ui.scope(|ui| {
+                ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
+                egui::ComboBox::from_id_salt("streamdeck_device")
+                    .width(200.0)
+                    .selected_text(selected_label)
+                    .show_ui(ui, |ui| {
+                        for dev in &available {
+                            let is_selected =
+                                cfg_snapshot.device_serial.as_deref() == Some(dev.serial.as_str());
+                            let label = format!("{}  ({})", dev.label, dev.serial);
+                            if ui.selectable_label(is_selected, label).clicked() {
+                                let serial = dev.serial.clone();
+                                let cfg = config.clone();
+                                let s = serial.clone();
+                                runtime.spawn(async move {
+                                    cfg.write().await.device_serial = Some(s);
+                                });
+                                engine.connect(serial);
+                            }
+                        }
+                        if available.is_empty() {
+                            ui.colored_label(
+                                theme::TEXT_SECONDARY,
+                                "(no Stream Deck found — plug one in)",
+                            );
+                        }
+                    });
+            });
+        });
+    }
+
+    ui.add_space(4.0);
+
+    // ── Status line ──
+    let status = match &connected {
+        Some(c) => format!("Connected: {}", c.label),
+        None if enabled => "Disconnected".into(),
+        None => "Off".into(),
+    };
+    ui.colored_label(
+        if connected.is_some() {
+            theme::COLOR_CONNECTED
+        } else {
+            theme::TEXT_SECONDARY
+        },
+        status,
+    );
+
+    // ── Button grid (only when connected) ──
+    if let Some(c) = connected {
+        ui.add_space(8.0);
+        let avail_w = ui.available_width();
+        let cols = c.column_count.max(1) as f32;
+        let rows = c.row_count.max(1) as usize;
+        let spacing = 4.0_f32;
+        let cell_w = ((avail_w - spacing * (cols - 1.0)) / cols).clamp(40.0, 96.0);
+        let cell_h = cell_w;
+
+        // Cache macro names for the labels.
+        let macro_names: std::collections::HashMap<Uuid, String> = macro_manager
+            .try_read()
+            .map(|mgr| {
+                mgr.macros
+                    .iter()
+                    .map(|(id, m)| (*id, m.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let buttons = &cfg_snapshot.buttons;
+        let mut clicked_idx: Option<usize> = None;
+        for r in 0..rows {
+            ui.horizontal(|ui| {
+                for col in 0..(cols as usize) {
+                    let idx = r * cols as usize + col;
+                    if idx >= c.key_count as usize {
+                        break;
+                    }
+                    let label = buttons
+                        .get(idx)
+                        .and_then(|b| b.next_step())
+                        .map(|s| {
+                            macro_names
+                                .get(&s.macro_id)
+                                .cloned()
+                                .unwrap_or_else(|| "(deleted)".into())
+                        })
+                        .unwrap_or_else(|| "—".into());
+                    let is_selected = macros_state.selected_streamdeck_button == Some(idx);
+                    let fill = if is_selected {
+                        theme::ACCENT_BLUE
+                    } else {
+                        theme::BG_INPUT
+                    };
+                    let stroke_color = if is_selected {
+                        theme::ACCENT_BLUE
+                    } else {
+                        theme::BORDER_SUBTLE
+                    };
+                    let btn = egui::Button::new(
+                        egui::RichText::new(label)
+                            .color(theme::TEXT_PRIMARY)
+                            .small(),
+                    )
+                    .fill(fill)
+                    .stroke(egui::Stroke::new(1.0, stroke_color))
+                    .corner_radius(4.0)
+                    .min_size(egui::Vec2::new(cell_w, cell_h))
+                    .truncate();
+                    if ui.add_sized([cell_w, cell_h], btn).clicked() {
+                        clicked_idx = Some(idx);
+                    }
+                    if col + 1 < cols as usize {
+                        ui.add_space(spacing);
+                    }
+                }
+            });
+            if r + 1 < rows {
+                ui.add_space(spacing);
+            }
+        }
+        if let Some(idx) = clicked_idx {
+            // Selecting a Stream Deck button is mutually exclusive
+            // with selecting a macro: clear the other side so the
+            // right column knows what to render.
+            macros_state.selected_streamdeck_button = Some(idx);
+            macros_state.selected_macro_id = None;
+            macros_state.streamdeck_add_step_target = None;
+        }
+    }
+
+    let _ = (
+        StreamDeckButton::default(), // touch the import to keep it stable across edits
+    );
+}
+
+/// Right-column editor for the currently-selected Stream Deck button.
+/// Shows the step list (each step = "fire macro X") plus an add-step
+/// combo. Step changes update the LCD label live via the engine.
+fn draw_streamdeck_button_editor(
+    ui: &mut egui::Ui,
+    macros_state: &mut MacrosTabState,
+    engine: &Arc<crate::console::streamdeck_engine::StreamDeckEngine>,
+    config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
+    macro_manager: &Arc<RwLock<MacroManager>>,
+    runtime: &tokio::runtime::Handle,
+) {
+    use crate::model::streamdeck::StreamDeckStep;
+
+    let Some(button_idx) = macros_state.selected_streamdeck_button else {
+        return;
+    };
+
+    // Snapshot config + macros for read-only display
+    let cfg_snapshot = config
+        .try_read()
+        .ok()
+        .map(|c| c.clone())
+        .unwrap_or_default();
+    let macro_names: std::collections::HashMap<Uuid, String> = macro_manager
+        .try_read()
+        .map(|mgr| {
+            mgr.macros
+                .iter()
+                .map(|(id, m)| (*id, m.name.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let sorted_macros: Vec<(Uuid, String)> = {
+        let mut v: Vec<_> = macro_names
+            .iter()
+            .map(|(id, name)| (*id, name.clone()))
+            .collect();
+        v.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+        v
+    };
+
+    let button = cfg_snapshot
+        .buttons
+        .get(button_idx)
+        .cloned()
+        .unwrap_or_default();
+    let key_count = engine.connected_device().map(|c| c.key_count).unwrap_or(0);
+
+    ui.horizontal(|ui| {
+        theme::section_heading(ui, &format!("Stream Deck Button #{}", button_idx + 1));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .add(theme::action_button(
+                    "Close",
+                    theme::BG_ELEVATED,
+                    egui::Vec2::new(60.0, 24.0),
+                ))
+                .on_hover_text("Deselect this button — go back to editing macros.")
+                .clicked()
+            {
+                macros_state.selected_streamdeck_button = None;
+                macros_state.streamdeck_add_step_target = None;
+            }
+        });
+    });
+
+    ui.label(
+        egui::RichText::new(format!(
+            "Each press fires the next step in this list, then advances the cursor. \
+             Wraps back to step 1 after the last step. Currently next-to-fire: \
+             {}",
+            button
+                .next_step()
+                .map(|s| macro_names
+                    .get(&s.macro_id)
+                    .cloned()
+                    .unwrap_or_else(|| "(deleted)".into()))
+                .unwrap_or_else(|| "—".into()),
+        ))
+        .small()
+        .color(theme::TEXT_SECONDARY),
+    );
+
+    ui.add_space(8.0);
+
+    // ── Step list ──
+    enum SdStepAction {
+        MoveUp(usize),
+        MoveDown(usize),
+        Delete(usize),
+    }
+    let mut action: Option<SdStepAction> = None;
+
+    if button.steps.is_empty() {
+        ui.label(egui::RichText::new("No steps yet — add one below.").color(theme::TEXT_SECONDARY));
+    } else {
+        egui::ScrollArea::vertical()
+            .id_salt("sd_button_step_scroll")
+            .max_height((ui.available_height() - 140.0).max(80.0))
+            .show(ui, |ui| {
+                for (i, step) in button.steps.iter().enumerate() {
+                    theme::elevated_frame().show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let is_current = i == button.current_step as usize;
+                            theme::colored_badge(
+                                ui,
+                                &format!("#{}", i + 1),
+                                if is_current {
+                                    theme::ACCENT_BLUE
+                                } else {
+                                    theme::BG_ELEVATED
+                                },
+                            );
+                            let name = macro_names
+                                .get(&step.macro_id)
+                                .cloned()
+                                .unwrap_or_else(|| "(deleted)".into());
+                            ui.label(egui::RichText::new(name).color(theme::TEXT_PRIMARY));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("Del").clicked() {
+                                        action = Some(SdStepAction::Delete(i));
+                                    }
+                                    if i + 1 < button.steps.len() && ui.small_button("Dn").clicked()
+                                    {
+                                        action = Some(SdStepAction::MoveDown(i));
+                                    }
+                                    if i > 0 && ui.small_button("Up").clicked() {
+                                        action = Some(SdStepAction::MoveUp(i));
+                                    }
+                                },
+                            );
+                        });
+                    });
+                    ui.add_space(2.0);
+                }
+            });
+    }
+
+    ui.add_space(8.0);
+
+    // ── Add step ──
+    theme::elevated_frame().show(ui, |ui| {
+        ui.label(
+            egui::RichText::new("Add step")
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+        );
+        ui.horizontal(|ui| {
+            let selected_label = macros_state
+                .streamdeck_add_step_target
+                .and_then(|id| {
+                    sorted_macros
+                        .iter()
+                        .find(|(mid, _)| *mid == id)
+                        .map(|(_, n)| n.clone())
+                })
+                .unwrap_or_else(|| "— select macro —".into());
+            ui.scope(|ui| {
+                ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
+                egui::ComboBox::from_id_salt("sd_add_step_macro")
+                    .width(220.0)
+                    .selected_text(selected_label)
+                    .show_ui(ui, |ui| {
+                        for (id, name) in &sorted_macros {
+                            ui.selectable_value(
+                                &mut macros_state.streamdeck_add_step_target,
+                                Some(*id),
+                                name,
+                            );
+                        }
+                        if sorted_macros.is_empty() {
+                            ui.colored_label(
+                                theme::TEXT_SECONDARY,
+                                "(no macros — create one in the left panel)",
+                            );
+                        }
+                    });
+            });
+            if ui
+                .add(theme::action_button(
+                    "Add",
+                    theme::ACCENT_GREEN,
+                    egui::Vec2::new(60.0, 26.0),
+                ))
+                .clicked()
+            {
+                if let Some(macro_id) = macros_state.streamdeck_add_step_target {
+                    let cfg = config.clone();
+                    let mgr = macro_manager.clone();
+                    let eng = engine.clone();
+                    runtime.spawn(async move {
+                        let mut cfg_w = cfg.write().await;
+                        if let Some(b) = cfg_w.buttons.get_mut(button_idx) {
+                            b.steps.push(StreamDeckStep { macro_id });
+                            // Push the now-current step's label to LCD.
+                            let mgr_r = mgr.read().await;
+                            let label = b
+                                .next_step()
+                                .and_then(|s| mgr_r.get_macro(&s.macro_id))
+                                .map(|m| m.name.clone())
+                                .unwrap_or_default();
+                            drop(mgr_r);
+                            eng.refresh_button(button_idx as u8, label);
+                        }
+                    });
+                }
+            }
+        });
+    });
+
+    // Apply deferred action.
+    if let Some(act) = action {
+        let cfg = config.clone();
+        let mgr = macro_manager.clone();
+        let eng = engine.clone();
+        runtime.spawn(async move {
+            let mut cfg_w = cfg.write().await;
+            let Some(button) = cfg_w.buttons.get_mut(button_idx) else {
+                return;
+            };
+            match act {
+                SdStepAction::MoveUp(i) => {
+                    if i > 0 && i < button.steps.len() {
+                        button.steps.swap(i, i - 1);
+                    }
+                }
+                SdStepAction::MoveDown(i) => {
+                    if i + 1 < button.steps.len() {
+                        button.steps.swap(i, i + 1);
+                    }
+                }
+                SdStepAction::Delete(i) => {
+                    if i < button.steps.len() {
+                        button.steps.remove(i);
+                        if button.current_step as usize >= button.steps.len() {
+                            button.current_step = 0;
+                        }
+                    }
+                }
+            }
+            let mgr_r = mgr.read().await;
+            let label = button
+                .next_step()
+                .and_then(|s| mgr_r.get_macro(&s.macro_id))
+                .map(|m| m.name.clone())
+                .unwrap_or_default();
+            drop(mgr_r);
+            eng.refresh_button(button_idx as u8, label);
+        });
+    }
+
+    // Sanity: if the UI selection points past the current device's
+    // button count (e.g. operator deselected the device or swapped to
+    // a smaller model), drop the selection.
+    if (button_idx as u8) >= key_count {
+        macros_state.selected_streamdeck_button = None;
     }
 }
 

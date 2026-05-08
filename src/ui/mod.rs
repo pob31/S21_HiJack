@@ -139,4 +139,31 @@ pub enum UiEvent {
         palette_id: uuid::Uuid,
         channel: crate::model::channel::ChannelId,
     },
+
+    // ─── Stream Deck integration ─────────────────────────────────────
+    //
+    // The Stream Deck engine runs on a dedicated background thread
+    // (HID I/O is sync). Button presses and connection-state changes
+    // arrive here and are drained on the UI thread, which then fires
+    // the next-to-fire macro for the pressed button and/or refreshes
+    // the LCD via the engine's command channel.
+    //
+    /// One physical button on the connected Stream Deck was pressed
+    /// (transition to "down"). `button_idx` is the device's 0-based
+    /// row-major index.
+    StreamDeckButtonPressed {
+        button_idx: usize,
+    },
+    /// Connection succeeded; UI should resize its config to match
+    /// `button_count` and push initial LCD labels.
+    StreamDeckConnected {
+        device_name: String,
+        button_count: u8,
+    },
+    /// Device dropped (unplugged, read error, or operator disabled).
+    StreamDeckDisconnected,
+    /// Driver-level error, surfaced as a status string for the UI.
+    StreamDeckError {
+        message: String,
+    },
 }

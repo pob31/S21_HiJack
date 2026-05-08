@@ -209,6 +209,24 @@ cargo test
 
 346 tests covering the data model, OSC protocol parsing/encoding, engine logic, persistence backward compatibility, and UI parsing utilities. Continuous integration runs `cargo check`, `cargo test`, `cargo fmt --check`, `cargo clippy`, and `cargo audit` on a Linux/macOS/Windows matrix on every push and PR — see [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
+## Stream Deck integration (Linux setup)
+
+The Macros tab can drive an Elgato Stream Deck (Original / Mini / XL /
+MK.2 / Plus / Pedal) — each physical button maps to a sequence of
+macros, the LCD shows the next-to-fire macro's name, and pressing the
+button fires it and advances to the next step.
+
+On Linux, USB HID devices are root-only by default. Install the
+shipped udev rules to grant non-root access (one-time setup):
+
+```bash
+sudo cp assets/udev/40-elgato-streamdeck.rules /etc/udev/rules.d/
+sudo udevadm control --reload && sudo udevadm trigger
+# Then unplug and replug the Stream Deck.
+```
+
+macOS and Windows work out of the box — no extra setup needed.
+
 ## Target Platforms
 
 - **Raspberry Pi** (Linux ARM) — primary deployment target, runs headless as a daemon

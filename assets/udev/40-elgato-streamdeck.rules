@@ -1,0 +1,7 @@
+# Elgato Stream Deck — grant non-root HID access via uaccess.
+# Install:
+#   sudo cp 40-elgato-streamdeck.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+# Then unplug + replug the device.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", MODE="0660", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="0fd9", MODE="0660", TAG+="uaccess"

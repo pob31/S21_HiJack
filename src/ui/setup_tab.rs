@@ -472,6 +472,7 @@ pub fn draw_setup_tab(
     palette_manager: &Arc<RwLock<PaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
     pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
+    stream_deck_config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
     offline_mode: &Arc<AtomicBool>,
     auto_update_on_recall: &Arc<AtomicBool>,
     console_snapshot_follow: &Arc<AtomicBool>,
@@ -504,6 +505,7 @@ pub fn draw_setup_tab(
             palette_manager,
             gang_manager,
             pan_link_bindings,
+            stream_deck_config,
             connected,
             runtime,
             ui_tx,
@@ -1070,7 +1072,8 @@ pub fn draw_setup_tab(
                                         load_show_file(
                                             setup, state, cue_manager, macro_manager,
                                             monitor_manager, palette_manager, gang_manager,
-                                            pan_link_bindings, connected, runtime, ui_tx,
+                                            pan_link_bindings, stream_deck_config, connected,
+                                            runtime, ui_tx,
                                         );
                                     }
                                 }
@@ -1111,6 +1114,7 @@ pub fn draw_setup_tab(
                                 save_show_file(
                                     setup, state, cue_manager, macro_manager, monitor_manager,
                                     palette_manager, gang_manager, pan_link_bindings,
+                                    stream_deck_config,
                                     auto_update_on_recall.load(Ordering::Relaxed),
                                     console_snapshot_follow.load(Ordering::Relaxed),
                                     console_recall.clone(),
@@ -1154,6 +1158,7 @@ pub fn draw_setup_tab(
                                 save_show_file(
                                     setup, state, cue_manager, macro_manager, monitor_manager,
                                     palette_manager, gang_manager, pan_link_bindings,
+                                    stream_deck_config,
                                     auto_update_on_recall.load(Ordering::Relaxed),
                                     console_snapshot_follow.load(Ordering::Relaxed),
                                     console_recall.clone(),
@@ -2045,6 +2050,7 @@ fn load_show_file(
     palette_manager: &Arc<RwLock<PaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
     pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
+    stream_deck_config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
     connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -2070,6 +2076,7 @@ fn load_show_file(
     let pmgr_arc = palette_manager.clone();
     let gang_mgr = gang_manager.clone();
     let pl_bindings = pan_link_bindings.clone();
+    let sd_config = stream_deck_config.clone();
     let conn_flag = connected.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
@@ -2127,6 +2134,14 @@ fn load_show_file(
                     *pl = show.pan_link;
                 }
 
+                // Restore Stream Deck config (device + per-button maps).
+                // The engine will pick up the new state on the next
+                // frame via the UI's Connect/Disconnect logic.
+                {
+                    let mut sd = sd_config.write().await;
+                    *sd = show.stream_deck;
+                }
+
                 // Restore console config (channel counts, plus_mode, bus
                 // split) so offline editing works. Skip if already
                 // connected — the live console is authoritative.
@@ -2161,6 +2176,7 @@ fn save_show_file(
     palette_manager: &Arc<RwLock<PaletteManager>>,
     gang_manager: &Arc<RwLock<GangManager>>,
     pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
+    stream_deck_config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
     auto_update_on_recall: bool,
     console_snapshot_follow: bool,
     console_recall: ConsoleRecallConfig,
@@ -2180,6 +2196,7 @@ fn save_show_file(
     let pmgr_arc = palette_manager.clone();
     let gang_mgr = gang_manager.clone();
     let pl_bindings = pan_link_bindings.clone();
+    let sd_config = stream_deck_config.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
 
@@ -2215,9 +2232,10 @@ fn save_show_file(
         let pmgr = pmgr_arc.read().await;
         let gmgr = gang_mgr.read().await;
         let pl = pl_bindings.read().await;
+        let sd = sd_config.read().await;
 
         let show = ShowFile {
-            version: 14,
+            version: 15,
             console_config: state_guard.config.clone(),
             connection: conn_settings,
             scope_templates: mgr.scope_templates.values().cloned().collect(),
@@ -2229,6 +2247,7 @@ fn save_show_file(
             gang_groups: gmgr.groups.values().cloned().collect(),
             console_recall: console_recall.clone(),
             pan_link: pl.clone(),
+            stream_deck: sd.clone(),
         };
 
         drop(state_guard);
