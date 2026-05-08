@@ -122,20 +122,6 @@ impl IpadSender {
         debug!(path, "Sent iPad OSC message");
         Ok(())
     }
-
-    /// Send several iPad-protocol messages as a single OSC bundle.
-    /// Mirrors [`crate::osc::client::OscSender::send_bundle`] — see
-    /// the docs there for the timetag / chunking semantics.
-    pub async fn send_bundle(&self, messages: Vec<OscMessage>) -> std::io::Result<()> {
-        if messages.is_empty() {
-            return Ok(());
-        }
-        if self.is_offline() {
-            trace!(count = messages.len(), "iPad bundle dropped (offline mode)");
-            return Ok(());
-        }
-        crate::osc::client::send_bundle_chunked(&self.socket, self.console_addr, messages).await
-    }
 }
 
 /// Background receive loop for iPad protocol messages.
