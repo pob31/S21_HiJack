@@ -297,36 +297,48 @@ pub fn draw_macros_tab(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     // ── Top row: Learn Mode | Stream Deck ──
-                    // The Stream Deck card is pinned to a narrow fixed
-                    // width — just enough for its title and the
-                    // Enable + Setup… button pair — so it doesn't pad
-                    // the column with dead space. Learn takes the
-                    // remaining width.
+                    // Each card forces a vertical inner layout — the
+                    // outer `horizontal_top` would otherwise propagate
+                    // a left_to_right layout into the card body, which
+                    // puts the title and button on the *same* row
+                    // instead of stacking them.
                     let row_w = ui.available_width();
                     let inter = ui.spacing().item_spacing.x;
-                    const SD_W: f32 = 180.0;
+                    const SD_W: f32 = 160.0;
                     let learn_w = (row_w - SD_W - inter).max(160.0);
                     ui.horizontal_top(|ui| {
                         ui.allocate_ui(egui::Vec2::new(learn_w, 0.0), |ui| {
                             ui.set_min_width(learn_w);
                             ui.set_max_width(learn_w);
                             theme::card_frame().show(ui, |ui| {
-                                ui.set_min_width(learn_w - 24.0);
-                                draw_learn_section(ui, macros_state, macro_manager, runtime, ui_tx);
+                                ui.vertical(|ui| {
+                                    ui.set_min_width(learn_w - 24.0);
+                                    ui.set_max_width(learn_w - 24.0);
+                                    draw_learn_section(
+                                        ui,
+                                        macros_state,
+                                        macro_manager,
+                                        runtime,
+                                        ui_tx,
+                                    );
+                                });
                             });
                         });
                         ui.allocate_ui(egui::Vec2::new(SD_W, 0.0), |ui| {
                             ui.set_min_width(SD_W);
                             ui.set_max_width(SD_W);
                             theme::card_frame().show(ui, |ui| {
-                                ui.set_min_width(SD_W - 24.0);
-                                draw_streamdeck_launcher(
-                                    ui,
-                                    macros_state,
-                                    streamdeck_engine,
-                                    streamdeck_config,
-                                    runtime,
-                                );
+                                ui.vertical(|ui| {
+                                    ui.set_min_width(SD_W - 24.0);
+                                    ui.set_max_width(SD_W - 24.0);
+                                    draw_streamdeck_launcher(
+                                        ui,
+                                        macros_state,
+                                        streamdeck_engine,
+                                        streamdeck_config,
+                                        runtime,
+                                    );
+                                });
                             });
                         });
                     });
@@ -1701,7 +1713,7 @@ fn draw_streamdeck_launcher(
             .add(theme::action_button(
                 toggle_label,
                 toggle_color,
-                egui::Vec2::new(70.0, 28.0),
+                egui::Vec2::new(58.0, 28.0),
             ))
             .on_hover_text(if cfg_snapshot.enabled {
                 "Disable the Stream Deck integration. Disconnects the \
@@ -1735,7 +1747,7 @@ fn draw_streamdeck_launcher(
             .add(theme::action_button(
                 "Setup…",
                 theme::BG_ELEVATED,
-                egui::Vec2::new(70.0, 28.0),
+                egui::Vec2::new(58.0, 28.0),
             ))
             .on_hover_text(
                 "Open the Stream Deck panel — device selection, \
@@ -1798,41 +1810,11 @@ fn draw_streamdeck_panel(
         .unwrap_or_default();
     let connected = engine.connected_device();
     let available = engine.available_devices();
+    let enabled = cfg_snapshot.enabled;
 
-    // ── Enable toggle ──
-    let mut enabled = cfg_snapshot.enabled;
-    let toggle_label = if enabled { "Disable" } else { "Enable" };
-    let toggle_color = if enabled {
-        theme::ACCENT_RED
-    } else {
-        theme::ACCENT_GREEN
-    };
-    if ui
-        .add(theme::action_button(
-            toggle_label,
-            toggle_color,
-            egui::Vec2::new(100.0, 26.0),
-        ))
-        .clicked()
-    {
-        enabled = !enabled;
-        let cfg = config.clone();
-        runtime.spawn(async move {
-            cfg.write().await.enabled = enabled;
-        });
-        if enabled {
-            // Try connect to the saved serial if any (and present).
-            if let Some(serial) = cfg_snapshot.device_serial.clone() {
-                if available.iter().any(|d| d.serial == serial) {
-                    engine.connect(serial);
-                }
-            }
-        } else {
-            engine.disconnect();
-        }
-    }
-
-    ui.add_space(4.0);
+    // The Enable / Disable toggle lives in the Stream Deck card on
+    // the Macros tab itself — not duplicated here. This panel is
+    // strictly for device selection + per-button editing.
 
     // ── Device combo ──
     if enabled {
