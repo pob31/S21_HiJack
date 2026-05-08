@@ -382,37 +382,45 @@ pub fn draw_gangs_tab(
                                 //    interior reads as the same dark
                                 //    field as the surrounding TextEdits
                                 //    rather than a lighter button.
-                                ui.scope(|ui| {
-                                    // pad_y=3 → button 25 → row driven
-                                    // by label (26) → combobox content
-                                    // sat 0.5 px above label.
-                                    // pad_y=4 → button 27 → row driven
-                                    // by combobox (27) → combobox sat
-                                    // 0.5 px below label.
-                                    // pad_y=3.5 → button 26, matches
-                                    // label cell exactly → centres
-                                    // align on the same pixel.
-                                    ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 3.5);
-                                    let visuals = ui.visuals_mut();
-                                    visuals.widgets.inactive.bg_fill = theme::BG_INPUT;
-                                    visuals.widgets.inactive.weak_bg_fill = theme::BG_INPUT;
-                                    visuals.widgets.hovered.bg_fill = theme::BG_INPUT;
-                                    visuals.widgets.hovered.weak_bg_fill = theme::BG_INPUT;
-                                    visuals.widgets.open.bg_fill = theme::BG_INPUT;
-                                    visuals.widgets.open.weak_bg_fill = theme::BG_INPUT;
-                                    egui::ComboBox::from_id_salt("gang_channel_type")
-                                        .width(240.0)
-                                        .selected_text(tab.new_gang_channel_type.label())
-                                        .show_ui(ui, |ui| {
-                                            for ct in &ChannelTypeSelection::ALL {
-                                                ui.selectable_value(
-                                                    &mut tab.new_gang_channel_type,
-                                                    *ct,
-                                                    ct.label(),
-                                                );
-                                            }
-                                        });
-                                });
+                                // Wrap the combobox in a Frame with a
+                                // negative top inner_margin to nudge
+                                // the button visually upward by 2 px
+                                // without disturbing the row's height
+                                // or the label cell's positioning —
+                                // egui's auto-centring kept landing the
+                                // combobox content slightly low even
+                                // with matched cell heights, so we
+                                // override the y offset directly.
+                                egui::Frame::new()
+                                    .inner_margin(egui::Margin {
+                                        left: 0,
+                                        right: 0,
+                                        top: -2,
+                                        bottom: 0,
+                                    })
+                                    .show(ui, |ui| {
+                                        ui.spacing_mut().button_padding =
+                                            egui::Vec2::new(12.0, 3.5);
+                                        let visuals = ui.visuals_mut();
+                                        visuals.widgets.inactive.bg_fill = theme::BG_INPUT;
+                                        visuals.widgets.inactive.weak_bg_fill = theme::BG_INPUT;
+                                        visuals.widgets.hovered.bg_fill = theme::BG_INPUT;
+                                        visuals.widgets.hovered.weak_bg_fill = theme::BG_INPUT;
+                                        visuals.widgets.open.bg_fill = theme::BG_INPUT;
+                                        visuals.widgets.open.weak_bg_fill = theme::BG_INPUT;
+                                        egui::ComboBox::from_id_salt("gang_channel_type")
+                                            .width(240.0)
+                                            .selected_text(tab.new_gang_channel_type.label())
+                                            .show_ui(ui, |ui| {
+                                                for ct in &ChannelTypeSelection::ALL {
+                                                    ui.selectable_value(
+                                                        &mut tab.new_gang_channel_type,
+                                                        *ct,
+                                                        ct.label(),
+                                                    );
+                                                }
+                                            });
+                                    });
                                 ui.end_row();
 
                                 row_label(ui, "Members:");
