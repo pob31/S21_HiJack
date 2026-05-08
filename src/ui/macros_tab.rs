@@ -289,23 +289,31 @@ pub fn draw_macros_tab(
                     theme::card_frame().show(ui, |ui| {
                         theme::section_heading(ui, "Macros");
 
-                        // Create new macro — label, name field, and
-                        // New button vertically centred and aligned by
-                        // height so the row reads as one unit.
+                        // Create new macro — explicitly size every
+                        // element to the same row height so the
+                        // vertical centring math is unambiguous (the
+                        // default button_padding of 12×8 would render
+                        // the New button taller than the 28 px
+                        // TextEdit, breaking the row).
+                        const ROW_H: f32 = 28.0;
                         ui.horizontal(|ui| {
-                            ui.label("Name:");
+                            ui.add_sized([40.0, ROW_H], egui::Label::new("Name:"));
                             ui.add_sized(
-                                [200.0, 28.0],
+                                [200.0, ROW_H],
                                 egui::TextEdit::singleline(&mut macros_state.new_macro_name)
                                     .margin(theme::TEXT_EDIT_MARGIN),
                             );
-                            let new_btn = theme::action_button(
-                                "New",
-                                theme::ACCENT_GREEN,
-                                egui::Vec2::new(60.0, 28.0),
-                            );
-                            if ui.add(new_btn).clicked() && !macros_state.new_macro_name.is_empty()
-                            {
+                            let mut clicked = false;
+                            ui.scope(|ui| {
+                                ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
+                                let new_btn = theme::action_button(
+                                    "New",
+                                    theme::ACCENT_GREEN,
+                                    egui::Vec2::new(60.0, ROW_H),
+                                );
+                                clicked = ui.add(new_btn).clicked();
+                            });
+                            if clicked && !macros_state.new_macro_name.is_empty() {
                                 let name = macros_state.new_macro_name.clone();
                                 let mgr_clone = macro_manager.clone();
                                 runtime.spawn(async move {

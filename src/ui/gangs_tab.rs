@@ -334,19 +334,28 @@ pub fn draw_gangs_tab(
 
                                 ui.label("Channel type:");
                                 // Match the Name / Members text fields'
-                                // width so the right edges line up.
-                                egui::ComboBox::from_id_salt("gang_channel_type")
-                                    .width(240.0)
-                                    .selected_text(tab.new_gang_channel_type.label())
-                                    .show_ui(ui, |ui| {
-                                        for ct in &ChannelTypeSelection::ALL {
-                                            ui.selectable_value(
-                                                &mut tab.new_gang_channel_type,
-                                                *ct,
-                                                ct.label(),
-                                            );
-                                        }
-                                    });
+                                // width AND height. The default
+                                // button_padding (12×8) renders the
+                                // ComboBox button taller than
+                                // padded_text_edit's 26 px, so the row
+                                // looks taller than the surrounding
+                                // ones. Scope a tighter padding for
+                                // just this widget.
+                                ui.scope(|ui| {
+                                    ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 5.0);
+                                    egui::ComboBox::from_id_salt("gang_channel_type")
+                                        .width(240.0)
+                                        .selected_text(tab.new_gang_channel_type.label())
+                                        .show_ui(ui, |ui| {
+                                            for ct in &ChannelTypeSelection::ALL {
+                                                ui.selectable_value(
+                                                    &mut tab.new_gang_channel_type,
+                                                    *ct,
+                                                    ct.label(),
+                                                );
+                                            }
+                                        });
+                                });
                                 ui.end_row();
 
                                 ui.label("Members:");
