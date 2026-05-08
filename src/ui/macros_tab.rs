@@ -74,17 +74,20 @@ pub struct MacrosTabState {
     pub cached_steps: Option<CachedSteps>,
 
     // ─── Stream Deck ──────────────────────────────────────────────
-    /// Floating popup-window visibility. Operator opens it via the
-    /// "Stream Deck…" button in the left column; the popup hosts the
-    /// device combo, button grid, and per-button step editor so
-    /// nothing in the cramped left column gets pushed off-screen.
+    /// Right-column visibility for the Stream Deck setup panel.
+    /// Mutually exclusive with `selected_macro_id`: setting one
+    /// clears the other so only one occupies the right column.
     pub streamdeck_popup_open: bool,
-    /// Index of the currently-selected Stream Deck button slot inside
-    /// the popup — drives the inline step editor below the grid.
+    /// Index of the currently-selected Stream Deck button slot.
     pub selected_streamdeck_button: Option<usize>,
     /// Combo selection in the Stream Deck "Add step" form: pick from
     /// existing macros.
     pub streamdeck_add_step_target: Option<Uuid>,
+    /// Grid layout used when no device is connected — drives the
+    /// offline editor so the operator can prepare a button map
+    /// without the hardware on the desk. Defaults to `Original`
+    /// (3×5, 15 buttons).
+    pub streamdeck_virtual_kind: elgato_streamdeck::info::Kind,
 }
 
 /// Cached step data for the currently-selected macro. Read once when the
@@ -130,6 +133,7 @@ impl Default for MacrosTabState {
             streamdeck_popup_open: false,
             selected_streamdeck_button: None,
             streamdeck_add_step_target: None,
+            streamdeck_virtual_kind: elgato_streamdeck::info::Kind::Original,
             status_message: None,
             last_execution_info: None,
         }
@@ -1906,8 +1910,8 @@ fn draw_streamdeck_panel(
     // ── Status line ──
     let status = match (&connected, enabled) {
         (Some(c), _) => format!("Connected: {}", c.label),
-        (None, true) => "Disconnected".into(),
-        (None, false) => "Disabled — turn it on from the Macros tab.".into(),
+        (None, true) => "Disconnected — editing offline.".into(),
+        (None, false) => "OFF — editing offline.".into(),
     };
     ui.colored_label(
         if connected.is_some() {
@@ -1918,13 +1922,51 @@ fn draw_streamdeck_panel(
         status,
     );
 
-    // ── Button grid + Add-step panel side-by-side (when connected) ──
-    let Some(c) = connected else {
-        return;
+    // ── Grid kind: real device when connected, virtual when not ──
+    // This lets the operator prepare a button map offline. Connect
+    // a device later and the same indices light up — extra slots
+    // beyond the new device's button count just stay in the show
+    // file for next time.
+    use elgato_streamdeck::info::Kind as SdKind;
+    let kind = if let Some(c) = &connected {
+        c.kind
+    } else {
+        macros_state.streamdeck_virtual_kind
     };
+
+    if connected.is_none() {
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.add_sized([60.0, 26.0], egui::Label::new("Layout:"));
+            ui.scope(|ui| {
+                ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
+                let label = virtual_kind_label(macros_state.streamdeck_virtual_kind);
+                egui::ComboBox::from_id_salt("streamdeck_virtual_kind")
+                    .width(220.0)
+                    .selected_text(label)
+                    .show_ui(ui, |ui| {
+                        for k in [
+                            SdKind::Original,
+                            SdKind::Mini,
+                            SdKind::Mk2,
+                            SdKind::Xl,
+                            SdKind::Plus,
+                            SdKind::Pedal,
+                            SdKind::Neo,
+                        ] {
+                            let l = virtual_kind_label(k);
+                            ui.selectable_value(&mut macros_state.streamdeck_virtual_kind, k, l);
+                        }
+                    });
+            });
+        });
+    }
+
+    // ── Button grid + Add-step panel side-by-side ──
     ui.add_space(8.0);
-    let cols_f = c.column_count.max(1) as f32;
-    let rows = c.row_count.max(1) as usize;
+    let cols_f = kind.column_count().max(1) as f32;
+    let rows = kind.row_count().max(1) as usize;
+    let key_count = kind.key_count();
     let spacing = 4.0_f32;
     // Match the device's actual LCD pixel size (72 px on MK1) — no
     // point rendering bigger than the real button on screen.
@@ -1961,7 +2003,7 @@ fn draw_streamdeck_panel(
                     ui.horizontal(|ui| {
                         for col in 0..(cols_f as usize) {
                             let idx = r * cols_f as usize + col;
-                            if idx >= c.key_count as usize {
+                            if idx >= key_count as usize {
                                 break;
                             }
                             let label = buttons
@@ -2010,38 +2052,19 @@ fn draw_streamdeck_panel(
             });
         });
 
-        // Right: selection header + Add-step (when button selected)
+        // Right: Add-step (only when a button is selected). No
+        // "Button #N — Close" header — the selected button itself is
+        // the visual indicator of selection (highlighted blue), and
+        // re-clicking it on the grid deselects.
         if let Some(button_idx) = selected {
             ui.add_space(12.0);
             ui.vertical(|ui| {
                 ui.set_min_width(220.0);
                 ui.set_max_width(260.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!("Button #{}", button_idx + 1))
-                            .strong()
-                            .color(theme::TEXT_PRIMARY),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add(theme::action_button(
-                                "Close",
-                                theme::BG_ELEVATED,
-                                egui::Vec2::new(56.0, 24.0),
-                            ))
-                            .on_hover_text("Deselect this button — go back to editing macros.")
-                            .clicked()
-                        {
-                            macros_state.selected_streamdeck_button = None;
-                            macros_state.streamdeck_add_step_target = None;
-                        }
-                    });
-                });
-                ui.add_space(6.0);
 
                 theme::elevated_frame().show(ui, |ui| {
                     ui.label(
-                        egui::RichText::new("Add step")
+                        egui::RichText::new(format!("Add step to button #{}", button_idx + 1))
                             .strong()
                             .color(theme::TEXT_PRIMARY),
                     );
@@ -2112,8 +2135,16 @@ fn draw_streamdeck_panel(
     });
 
     if let Some(idx) = clicked_idx {
-        macros_state.selected_streamdeck_button = Some(idx);
-        macros_state.streamdeck_add_step_target = None;
+        // Re-clicking the already-selected button toggles selection
+        // off (replaces the dropped Close button). Otherwise select
+        // the newly-clicked button.
+        if macros_state.selected_streamdeck_button == Some(idx) {
+            macros_state.selected_streamdeck_button = None;
+            macros_state.streamdeck_add_step_target = None;
+        } else {
+            macros_state.selected_streamdeck_button = Some(idx);
+            macros_state.streamdeck_add_step_target = None;
+        }
     }
 
     // ── Below: explanation + step list (when button selected) ──
@@ -2164,12 +2195,27 @@ fn draw_streamdeck_panel(
         );
     }
 
-    // Drop selection if it points beyond the device's button count
-    // (e.g. swap to a smaller model or device disconnected).
+    // Drop selection if it points beyond the current grid's button
+    // count — swapping to a smaller virtual layout or connecting a
+    // smaller device shouldn't leave a stale out-of-range selection.
     if let Some(idx) = macros_state.selected_streamdeck_button {
-        if (idx as u8) >= c.key_count {
+        if (idx as u8) >= key_count {
             macros_state.selected_streamdeck_button = None;
         }
+    }
+}
+
+fn virtual_kind_label(kind: elgato_streamdeck::info::Kind) -> &'static str {
+    use elgato_streamdeck::info::Kind as K;
+    match kind {
+        K::Original | K::OriginalV2 => "Stream Deck Original — 3×5 (15 buttons)",
+        K::Mk2 => "Stream Deck Mk2 — 3×5 (15 buttons)",
+        K::Mini | K::MiniMk2 => "Stream Deck Mini — 2×3 (6 buttons)",
+        K::Xl | K::XlV2 => "Stream Deck XL — 4×8 (32 buttons)",
+        K::Plus => "Stream Deck Plus — 2×4 (8 keys + dials)",
+        K::Pedal => "Stream Deck Pedal — 1×3 (3 pedals)",
+        K::Neo => "Stream Deck Neo — 2×4 (8 keys)",
+        _ => "Stream Deck (custom)",
     }
 }
 
