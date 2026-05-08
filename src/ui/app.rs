@@ -520,6 +520,15 @@ impl eframe::App for HiJackApp {
         // Configure style on first frame
         super::theme::configure_style(ctx);
 
+        // egui only repaints on UI events by default — so OSC-driven
+        // state changes (faders moving on the desk, parameters arriving
+        // from the daemon, "track latest OSC" in the Macros tab) would
+        // only redraw when the operator nudges the mouse. Request a
+        // 20 ms tick (~50 Hz) so every tab reflects live state without
+        // each tab having to opt in. Cheap when nothing changed —
+        // egui's diff is layout-only.
+        ctx.request_repaint_after(std::time::Duration::from_millis(20));
+
         // Drain async events
         self.drain_events();
 

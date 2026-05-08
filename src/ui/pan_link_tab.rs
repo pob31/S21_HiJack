@@ -269,15 +269,6 @@ pub fn draw_pan_link_tab(
         });
 
     drop(state_guard);
-
-    // Pan moves on the desk arrive as inbound OSC and update the
-    // state mirror, but egui only repaints on UI events by default —
-    // so the bottom-of-tile pan sliders would freeze on whichever
-    // value happened to be present at the last repaint. Request a
-    // 20 ms refresh while the tab is on screen (≈50 Hz) so the
-    // sliders track the desk smoothly.
-    ui.ctx()
-        .request_repaint_after(std::time::Duration::from_millis(20));
 }
 
 struct AuxBusInfo {
