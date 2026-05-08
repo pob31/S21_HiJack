@@ -370,36 +370,43 @@ pub fn draw_gangs_tab(
                                 ui.end_row();
 
                                 row_label(ui, "Channel type:");
-                                // Apply spacing / visuals directly on
-                                // the cell ui (no `ui.scope` wrapper):
-                                // the wrapper was a candidate for the
-                                // mysterious vertical offset since it
-                                // adds an extra layer that participates
-                                // in cell-size measurement. Modifying
-                                // the cell ui's style affects only this
-                                // cell — Grid creates a fresh ui per
-                                // cell so the changes don't leak.
-                                ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 3.5);
-                                {
-                                    let visuals = ui.visuals_mut();
-                                    visuals.widgets.inactive.bg_fill = theme::BG_INPUT;
-                                    visuals.widgets.inactive.weak_bg_fill = theme::BG_INPUT;
-                                    visuals.widgets.hovered.bg_fill = theme::BG_INPUT;
-                                    visuals.widgets.hovered.weak_bg_fill = theme::BG_INPUT;
-                                    visuals.widgets.open.bg_fill = theme::BG_INPUT;
-                                    visuals.widgets.open.weak_bg_fill = theme::BG_INPUT;
-                                }
-                                egui::ComboBox::from_id_salt("gang_channel_type")
-                                    .width(240.0)
-                                    .selected_text(tab.new_gang_channel_type.label())
-                                    .show_ui(ui, |ui| {
-                                        for ct in &ChannelTypeSelection::ALL {
-                                            ui.selectable_value(
-                                                &mut tab.new_gang_channel_type,
-                                                *ct,
-                                                ct.label(),
-                                            );
-                                        }
+                                // Wrap the combobox in a Frame with a
+                                // negative top inner_margin to shift
+                                // the whole widget (fill + text + chevron)
+                                // up by 5 px relative to its cell —
+                                // user wants the combobox aligned with
+                                // the labels above and below, and the
+                                // increased inter-row spacing absorbs
+                                // the visual displacement.
+                                egui::Frame::new()
+                                    .inner_margin(egui::Margin {
+                                        left: 0,
+                                        right: 0,
+                                        top: -5,
+                                        bottom: 0,
+                                    })
+                                    .show(ui, |ui| {
+                                        ui.spacing_mut().button_padding =
+                                            egui::Vec2::new(12.0, 3.5);
+                                        let visuals = ui.visuals_mut();
+                                        visuals.widgets.inactive.bg_fill = theme::BG_INPUT;
+                                        visuals.widgets.inactive.weak_bg_fill = theme::BG_INPUT;
+                                        visuals.widgets.hovered.bg_fill = theme::BG_INPUT;
+                                        visuals.widgets.hovered.weak_bg_fill = theme::BG_INPUT;
+                                        visuals.widgets.open.bg_fill = theme::BG_INPUT;
+                                        visuals.widgets.open.weak_bg_fill = theme::BG_INPUT;
+                                        egui::ComboBox::from_id_salt("gang_channel_type")
+                                            .width(240.0)
+                                            .selected_text(tab.new_gang_channel_type.label())
+                                            .show_ui(ui, |ui| {
+                                                for ct in &ChannelTypeSelection::ALL {
+                                                    ui.selectable_value(
+                                                        &mut tab.new_gang_channel_type,
+                                                        *ct,
+                                                        ct.label(),
+                                                    );
+                                                }
+                                            });
                                     });
                                 ui.end_row();
 
