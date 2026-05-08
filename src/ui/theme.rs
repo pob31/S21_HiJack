@@ -414,14 +414,32 @@ pub fn long_press_button(
     enabled: bool,
     duration_ms: u64,
 ) -> bool {
-    let sense = if enabled {
+    // Render through `egui::Button` so the size, frame, padding, and
+    // press/hover tinting match `action_button` exactly. We just supply
+    // the base fill and let egui's WidgetVisuals handle the rest.
+    let now = ui.input(|i| i.time);
+    let fill = if enabled {
+        color
+    } else {
+        egui::Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), 80)
+    };
+
+    let button = egui::Button::new(
+        egui::RichText::new(text)
+            .color(if enabled { TEXT_PRIMARY } else { TEXT_DISABLED })
+            .strong(),
+    )
+    .fill(fill)
+    .min_size(size)
+    .corner_radius(6.0)
+    .sense(if enabled {
         egui::Sense::click()
     } else {
         egui::Sense::hover()
-    };
-    let (rect, response) = ui.allocate_exact_size(size, sense);
+    });
+    let response = ui.add(button);
+    let rect = response.rect;
     let id = response.id;
-    let now = ui.input(|i| i.time);
     let pointer_down = enabled && response.is_pointer_button_down_on();
     let on_button = response.contains_pointer();
 
@@ -467,30 +485,8 @@ pub fn long_press_button(
         ui.ctx().request_repaint();
     }
 
-    // ── Render ──
-    let painter = ui.painter_at(rect);
-
-    // Background: dimmed if disabled, slightly darkened while armed
-    // (gives a "pressed-in" feel), brightened on hover, plain otherwise.
-    let armed = state.map(|s| !s.cancelled).unwrap_or(false) && on_button;
-    let bg = if !enabled {
-        // Match the look of egui's add_enabled(false, ...) action button
-        egui::Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), 80)
-    } else if armed {
-        // Darken ~15% to signal "pressed in".
-        egui::Color32::from_rgb(
-            ((color.r() as f32) * 0.85) as u8,
-            ((color.g() as f32) * 0.85) as u8,
-            ((color.b() as f32) * 0.85) as u8,
-        )
-    } else if response.hovered() {
-        lighten(color, 20)
-    } else {
-        color
-    };
-    painter.rect_filled(rect, 6.0, bg);
-
-    // Progress bar: bottom edge of the button, filling left→right.
+    // Progress bar overlay along the bottom edge — only while a press
+    // is in progress AND the pointer is still on the button.
     if let Some(s) = state {
         if !s.cancelled && on_button {
             let elapsed = (now - s.start) as f32 * 1000.0;
@@ -500,19 +496,9 @@ pub fn long_press_button(
                 egui::pos2(rect.min.x, rect.max.y - bar_height),
                 egui::pos2(rect.min.x + rect.width() * progress, rect.max.y),
             );
-            painter.rect_filled(bar_rect, 0.0, TEXT_PRIMARY);
+            ui.painter_at(rect).rect_filled(bar_rect, 0.0, TEXT_PRIMARY);
         }
     }
-
-    // Text label (centred). Greyed-out when disabled.
-    let text_color = if enabled { TEXT_PRIMARY } else { TEXT_DISABLED };
-    let galley = painter.layout_no_wrap(
-        text.to_string(),
-        egui::FontId::proportional(FONT_SIZE_BODY),
-        text_color,
-    );
-    let text_pos = rect.center() - galley.size() / 2.0;
-    painter.galley(text_pos, galley, text_color);
 
     if enabled {
         response.on_hover_text(format!("Hold {duration_ms} ms to confirm"));
