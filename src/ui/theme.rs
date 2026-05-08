@@ -50,7 +50,6 @@ pub const COLOR_CONNECTING: egui::Color32 = ACCENT_AMBER;
 pub const COLOR_DISCONNECTED: egui::Color32 = ACCENT_RED;
 pub const COLOR_GO_BUTTON: egui::Color32 = ACCENT_GREEN;
 pub const COLOR_PREV_BUTTON: egui::Color32 = ACCENT_AMBER;
-pub const COLOR_MACRO_BUTTON: egui::Color32 = egui::Color32::from_rgb(100, 60, 180);
 pub const COLOR_RECORDING: egui::Color32 = egui::Color32::from_rgb(220, 0, 0);
 pub const COLOR_RECORDING_BG: egui::Color32 = egui::Color32::from_rgb(60, 0, 0);
 

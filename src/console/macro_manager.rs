@@ -6,14 +6,12 @@ use uuid::Uuid;
 use crate::model::macro_def::{MacroDef, MacroRecording};
 use crate::model::parameter::{ParameterAddress, ParameterValue};
 
-/// Manages the collection of macros, learn mode state, and quick-trigger configuration.
+/// Manages the collection of macros and learn mode state.
 pub struct MacroManager {
     /// All macros indexed by UUID.
     pub macros: HashMap<Uuid, MacroDef>,
     /// Active recording session. None when not in learn mode.
     recording: Option<MacroRecording>,
-    /// Ordered list of macro UUIDs pinned to the Live tab quick-trigger bar.
-    pub quick_trigger_ids: Vec<Uuid>,
 }
 
 impl MacroManager {
@@ -21,7 +19,6 @@ impl MacroManager {
         Self {
             macros: HashMap::new(),
             recording: None,
-            quick_trigger_ids: Vec::new(),
         }
     }
 
@@ -35,7 +32,6 @@ impl MacroManager {
     pub fn remove_macro(&mut self, id: Uuid) -> bool {
         let removed = self.macros.remove(&id).is_some();
         if removed {
-            self.quick_trigger_ids.retain(|qid| *qid != id);
             info!(%id, "Removed macro");
         }
         removed
@@ -125,21 +121,6 @@ impl MacroManager {
     pub fn recording_elapsed_ms(&self) -> u64 {
         self.recording.as_ref().map(|r| r.elapsed_ms()).unwrap_or(0)
     }
-
-    // ─── Quick Trigger ─────────────────────────────────────────────
-
-    /// Toggle whether a macro appears in the Live tab quick-trigger bar.
-    pub fn toggle_quick_trigger(&mut self, id: Uuid) {
-        if let Some(pos) = self.quick_trigger_ids.iter().position(|qid| *qid == id) {
-            self.quick_trigger_ids.remove(pos);
-        } else if self.macros.contains_key(&id) {
-            self.quick_trigger_ids.push(id);
-        }
-    }
-
-    pub fn is_quick_trigger(&self, id: &Uuid) -> bool {
-        self.quick_trigger_ids.contains(id)
-    }
 }
 
 #[cfg(test)]
@@ -180,11 +161,9 @@ mod tests {
         let m = make_macro("Test");
         let id = m.id;
         mgr.add_macro(m);
-        mgr.toggle_quick_trigger(id);
 
         assert!(mgr.remove_macro(id));
         assert!(mgr.get_macro(&id).is_none());
-        assert!(!mgr.quick_trigger_ids.contains(&id));
     }
 
     #[test]
@@ -251,30 +230,6 @@ mod tests {
             ParameterValue::Float(0.0),
         );
         assert!(!recorded);
-    }
-
-    #[test]
-    fn quick_trigger_toggle() {
-        let mut mgr = MacroManager::new();
-        let m = make_macro("Test");
-        let id = m.id;
-        mgr.add_macro(m);
-
-        assert!(!mgr.is_quick_trigger(&id));
-
-        mgr.toggle_quick_trigger(id);
-        assert!(mgr.is_quick_trigger(&id));
-
-        mgr.toggle_quick_trigger(id);
-        assert!(!mgr.is_quick_trigger(&id));
-    }
-
-    #[test]
-    fn quick_trigger_ignores_unknown_id() {
-        let mut mgr = MacroManager::new();
-        let fake_id = Uuid::new_v4();
-        mgr.toggle_quick_trigger(fake_id);
-        assert!(mgr.quick_trigger_ids.is_empty());
     }
 
     #[test]

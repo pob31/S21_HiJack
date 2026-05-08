@@ -1071,7 +1071,6 @@ pub fn draw_setup_tab(
                                 drop(mgr);
                                 let mut mmgr = macro_mgr.write().await;
                                 mmgr.macros.clear();
-                                mmgr.quick_trigger_ids.clear();
                                 drop(mmgr);
                                 let mut pmgr = pmgr_arc.write().await;
                                 pmgr.palettes.clear();
@@ -1979,7 +1978,6 @@ fn load_show_file(
                 for macro_def in show.macros {
                     mmgr.macros.insert(macro_def.id, macro_def);
                 }
-                mmgr.quick_trigger_ids = show.macro_quick_trigger_ids;
                 drop(mmgr);
 
                 // Restore palettes (EQ, Compressor, Gate)
@@ -2109,7 +2107,6 @@ fn save_show_file(
             snapshots: mgr.snapshots.values().cloned().collect(),
             cue_list: mgr.cue_list.clone(),
             macros: mmgr.macros.values().cloned().collect(),
-            macro_quick_trigger_ids: mmgr.quick_trigger_ids.clone(),
             palettes: pmgr.palettes.values().cloned().collect(),
             monitor_clients: monmgr.clients.values().cloned().collect(),
             gang_groups: gmgr.groups.values().cloned().collect(),

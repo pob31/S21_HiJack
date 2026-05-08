@@ -452,11 +452,7 @@ async fn run_headless(args: Args) {
     );
 
     let mmgr = macro_manager.read().await;
-    info!(
-        macros = mmgr.macros.len(),
-        quick_triggers = mmgr.quick_trigger_ids.len(),
-        "Final macro system state"
-    );
+    info!(macros = mmgr.macros.len(), "Final macro system state");
 
     let pmgr = palette_manager.read().await;
     info!(

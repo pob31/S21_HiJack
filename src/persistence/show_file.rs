@@ -159,9 +159,6 @@ pub struct ShowFile {
     /// All macros (Phase 4).
     #[serde(default)]
     pub macros: Vec<MacroDef>,
-    /// UUIDs of macros pinned to the Live tab quick-trigger bar.
-    #[serde(default)]
-    pub macro_quick_trigger_ids: Vec<uuid::Uuid>,
     /// Channel palettes (EQ / Compressor / Gate). New in v9; the
     /// `eq_palettes` alias lets v8 show files load — every legacy palette
     /// deserializes as a `ChannelPalette { kind: PaletteKind::Eq, .. }`.
@@ -191,7 +188,6 @@ impl ShowFile {
             snapshots: Vec::new(),
             cue_list: CueList::default(),
             macros: Vec::new(),
-            macro_quick_trigger_ids: Vec::new(),
             palettes: Vec::new(),
             monitor_clients: Vec::new(),
             gang_groups: Vec::new(),
@@ -361,7 +357,6 @@ mod tests {
             "snapshots": [],
             "cue_list": { "id": "00000000-0000-0000-0000-000000000000", "name": "Main", "cues": [] },
             "macros": [],
-            "macro_quick_trigger_ids": [],
             "eq_palettes": [],
             "monitor_clients": [],
             "gang_groups": []
@@ -435,7 +430,6 @@ mod tests {
             ],
             "cue_list": { "id": "00000000-0000-0000-0000-000000000000", "name": "Main", "cues": [] },
             "macros": [],
-            "macro_quick_trigger_ids": [],
             "eq_palettes": [
                 {
                     "id": "22222222-2222-2222-2222-222222222222",

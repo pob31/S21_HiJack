@@ -47,7 +47,7 @@ pub struct MacrosTabState {
     // values are reused so a contended lock (recording session, gang
     // propagation, etc.) doesn't blank the list mid-frame and make
     // selection feel sticky/unresponsive.
-    pub cached_list: Vec<(Uuid, String, bool, usize)>,
+    pub cached_list: Vec<(Uuid, String, usize)>,
     pub cached_steps: Option<CachedSteps>,
 }
 
@@ -433,14 +433,7 @@ fn draw_macro_list(
         macros_state.cached_list = mgr
             .sorted_macros()
             .into_iter()
-            .map(|m| {
-                (
-                    m.id,
-                    m.name.clone(),
-                    mgr.is_quick_trigger(&m.id),
-                    m.steps.len(),
-                )
-            })
+            .map(|m| (m.id, m.name.clone(), m.steps.len()))
             .collect();
     }
 
@@ -454,7 +447,7 @@ fn draw_macro_list(
         .id_salt("macro_list_scroll")
         .max_height(200.0)
         .show(ui, |ui| {
-            for (id, name, _is_qt, step_count) in list.iter() {
+            for (id, name, step_count) in list.iter() {
                 let selected = macros_state.selected_macro_id == Some(*id);
 
                 // Allocate the row rect first so we can interact with
@@ -548,13 +541,8 @@ fn draw_action_buttons(
             }
         }
 
-        // (The "Toggle QT" / Quick Trigger button used to live here.
-        // It surfaced macros in the now-removed Live tab's quick-
-        // trigger bar; without that bar, the toggle had no UI
-        // consumer. The flag itself stays in `MacroManager` /
-        // show files for backward-compat round-trips, but the
-        // button is gone since macros will be driven externally
-        // (e.g. Streamdeck) when that lands.)
+        // (Macros will be driven externally — e.g. Streamdeck —
+        // when that lands. No in-app quick-trigger control today.)
 
         // Delete
         let del_btn =
@@ -1051,7 +1039,7 @@ fn apply_step_action(
     }
 }
 
-/// Fire a macro by ID — used by both Macros tab and Live tab quick-trigger.
+/// Fire a macro by ID — used from the Macros tab Run button.
 pub fn fire_macro_by_id(
     id: Uuid,
     macro_manager: &Arc<RwLock<MacroManager>>,
