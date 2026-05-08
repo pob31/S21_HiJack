@@ -535,16 +535,14 @@ impl HiJackApp {
                         button_count,
                         "Stream Deck connected"
                     );
-                    self.macros.status_message = Some(format!("Stream Deck: {device_name}"));
-                    // Resize the per-button slots to match the new
-                    // device's button count, preserving overlap, then
-                    // push initial LCD labels for every slot.
+                    // No status_message — the green dot in the SD card
+                    // is enough; a yellow banner duplicates the signal
+                    // and clutters the column.
                     let labels = self.streamdeck_resize_and_collect_labels(button_count as usize);
                     self.stream_deck_engine.refresh_all(labels);
                 }
                 UiEvent::StreamDeckDisconnected => {
                     tracing::info!("Stream Deck disconnected");
-                    self.macros.status_message = Some("Stream Deck: disconnected".into());
                 }
                 UiEvent::StreamDeckError { message } => {
                     tracing::warn!("Stream Deck error: {message}");

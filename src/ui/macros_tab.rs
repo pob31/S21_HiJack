@@ -304,8 +304,8 @@ pub fn draw_macros_tab(
                     // instead of stacking them.
                     let row_w = ui.available_width();
                     let inter = ui.spacing().item_spacing.x;
-                    const SD_W: f32 = 160.0;
-                    let learn_w = (row_w - SD_W - inter).max(160.0);
+                    const SD_W: f32 = 175.0;
+                    let learn_w = (row_w - SD_W - inter).max(150.0);
                     ui.horizontal_top(|ui| {
                         ui.allocate_ui(egui::Vec2::new(learn_w, 0.0), |ui| {
                             ui.set_min_width(learn_w);
@@ -1713,23 +1713,29 @@ fn draw_streamdeck_launcher(
     ui.add_space(6.0);
 
     // ── Enable + Setup buttons on a single row ──
+    // Colour shows the *state* (green = enabled, red = disabled).
+    // The label is the *action* a click would perform. Fixed-width
+    // via `add_sized` so the button doesn't change size between
+    // "Enable" (6 char) and "Disable" (7) — the row would otherwise
+    // jiggle on every toggle.
     let toggle_label = if cfg_snapshot.enabled {
         "Disable"
     } else {
         "Enable"
     };
     let toggle_color = if cfg_snapshot.enabled {
-        theme::ACCENT_RED
-    } else {
         theme::ACCENT_GREEN
+    } else {
+        theme::ACCENT_RED
     };
+    const BTN_W: f32 = 64.0;
+    const BTN_H: f32 = 32.0;
     ui.horizontal(|ui| {
-        if ui
-            .add(theme::action_button(
-                toggle_label,
-                toggle_color,
-                egui::Vec2::new(58.0, 32.0),
-            ))
+        let toggle_resp = ui
+            .add_sized(
+                [BTN_W, BTN_H],
+                theme::action_button(toggle_label, toggle_color, egui::Vec2::new(BTN_W, BTN_H)),
+            )
             .on_hover_text(if cfg_snapshot.enabled {
                 "Disable the Stream Deck integration. Disconnects the \
                  device but preserves your button maps."
@@ -1737,17 +1743,14 @@ fn draw_streamdeck_launcher(
                 "Enable the Stream Deck integration. Auto-connects to \
                  the previously-selected device if it's plugged in; \
                  otherwise open Setup… to pick one."
-            })
-            .clicked()
-        {
+            });
+        if toggle_resp.clicked() {
             let new_enabled = !cfg_snapshot.enabled;
             let cfg = config.clone();
             runtime.spawn(async move {
                 cfg.write().await.enabled = new_enabled;
             });
             if new_enabled {
-                // Auto-connect to the saved serial if it's currently
-                // plugged in; otherwise stay in idle and let Setup pick.
                 if let Some(serial) = cfg_snapshot.device_serial.clone() {
                     let available = engine.available_devices();
                     if available.iter().any(|d| d.serial == serial) {
@@ -1759,11 +1762,10 @@ fn draw_streamdeck_launcher(
             }
         }
         if ui
-            .add(theme::action_button(
-                "Setup…",
-                theme::BG_ELEVATED,
-                egui::Vec2::new(58.0, 32.0),
-            ))
+            .add_sized(
+                [BTN_W, BTN_H],
+                theme::action_button("Setup…", theme::BG_ELEVATED, egui::Vec2::new(BTN_W, BTN_H)),
+            )
             .on_hover_text(
                 "Open the Stream Deck panel — device selection, \
                  button grid, per-button macro sequences.",
