@@ -418,35 +418,72 @@ pub fn draw_macros_tab(
 
         ui.add_space(4.0);
 
-        // ═══ RIGHT PANEL: Step Editor ═══
+        // ═══ RIGHT PANEL: Stream Deck setup OR Step editor ═══
+        // Mutually exclusive: clicking Setup… on the SD card opens
+        // the SD panel here (same right-column real estate); clicking
+        // a macro in the left-column list opens the step editor for
+        // that macro instead. Each click also flips the other side
+        // so we never show both.
         ui.vertical(|ui| {
             ui.set_min_height(panel_height);
 
             theme::card_frame().show(ui, |ui| {
-                draw_step_editor(
-                    ui,
-                    macros_state,
-                    macro_manager,
-                    state,
-                    cue_manager,
-                    palette_manager,
-                    last_received,
-                    runtime,
-                );
+                if macros_state.streamdeck_popup_open {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Stream Deck setup")
+                                .size(theme::FONT_SIZE_SECTION)
+                                .strong()
+                                .color(theme::TEXT_PRIMARY),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(theme::action_button(
+                                    "Close",
+                                    theme::BG_ELEVATED,
+                                    egui::Vec2::new(60.0, 24.0),
+                                ))
+                                .on_hover_text(
+                                    "Close Stream Deck setup and go back to the \
+                                         macro step editor.",
+                                )
+                                .clicked()
+                            {
+                                macros_state.streamdeck_popup_open = false;
+                                macros_state.selected_streamdeck_button = None;
+                            }
+                        });
+                    });
+                    ui.add_space(2.0);
+                    let sep_w = ui.available_width();
+                    let (sep_rect, _) =
+                        ui.allocate_exact_size(egui::Vec2::new(sep_w, 1.0), egui::Sense::hover());
+                    ui.painter()
+                        .rect_filled(sep_rect, 0.0, theme::BORDER_SUBTLE);
+                    ui.add_space(6.0);
+                    draw_streamdeck_panel(
+                        ui,
+                        macros_state,
+                        streamdeck_engine,
+                        streamdeck_config,
+                        macro_manager,
+                        runtime,
+                    );
+                } else {
+                    draw_step_editor(
+                        ui,
+                        macros_state,
+                        macro_manager,
+                        state,
+                        cue_manager,
+                        palette_manager,
+                        last_received,
+                        runtime,
+                    );
+                }
             });
         });
     });
-
-    // ─── Stream Deck popup window (independent of the two-column
-    // layout above so the device's button grid can be any size). ──
-    draw_streamdeck_popup(
-        ui.ctx(),
-        macros_state,
-        streamdeck_engine,
-        streamdeck_config,
-        macro_manager,
-        runtime,
-    );
 }
 
 fn draw_learn_section(
@@ -644,6 +681,10 @@ fn draw_macro_list(
 
                 if response.clicked() {
                     macros_state.selected_macro_id = Some(*id);
+                    // Selecting a macro takes the right column away
+                    // from any open Stream Deck setup.
+                    macros_state.streamdeck_popup_open = false;
+                    macros_state.selected_streamdeck_button = None;
                     macros_state.step_mode_edits.clear();
                     macros_state.step_value_edits.clear();
                     macros_state.step_delay_edits.clear();
@@ -1768,43 +1809,21 @@ fn draw_streamdeck_launcher(
             .clicked()
         {
             macros_state.streamdeck_popup_open = !macros_state.streamdeck_popup_open;
+            if macros_state.streamdeck_popup_open {
+                // Opening SD setup takes the right column from the
+                // step editor; clear macro selection so the two
+                // never compete.
+                macros_state.selected_macro_id = None;
+            } else {
+                macros_state.selected_streamdeck_button = None;
+            }
         }
     });
 }
 
-/// Floating window with the full Stream Deck UI: enable toggle,
-/// device combo, status, button grid, and (when a button is
-/// selected) the inline step editor below the grid.
-fn draw_streamdeck_popup(
-    ctx: &egui::Context,
-    macros_state: &mut MacrosTabState,
-    engine: &Arc<crate::console::streamdeck_engine::StreamDeckEngine>,
-    config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
-    macro_manager: &Arc<RwLock<MacroManager>>,
-    runtime: &tokio::runtime::Handle,
-) {
-    if !macros_state.streamdeck_popup_open {
-        // Drop selection when popup is closed so reopening doesn't
-        // surprise the operator with a previously-selected button.
-        macros_state.selected_streamdeck_button = None;
-        return;
-    }
-    let mut open = macros_state.streamdeck_popup_open;
-    egui::Window::new("Stream Deck")
-        .open(&mut open)
-        .resizable(true)
-        .collapsible(false)
-        .default_width(420.0)
-        .min_width(320.0)
-        .max_width(900.0)
-        .show(ctx, |ui| {
-            draw_streamdeck_panel(ui, macros_state, engine, config, macro_manager, runtime);
-        });
-    macros_state.streamdeck_popup_open = open;
-}
-
-/// Body of the Stream Deck panel — used by the popup. Header row
-/// has the enable toggle + status dot.
+/// Body of the Stream Deck setup panel. Rendered in the right
+/// column of the Macros tab when `streamdeck_popup_open` is true,
+/// taking over from the macro step editor (mutually exclusive).
 fn draw_streamdeck_panel(
     ui: &mut egui::Ui,
     macros_state: &mut MacrosTabState,
