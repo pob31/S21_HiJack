@@ -345,15 +345,7 @@ pub fn draw_gangs_tab(
                                 egui::Vec2::new(label_w, ROW_H),
                                 egui::Sense::hover(),
                             );
-                            // Empirical fudge: egui's combobox button
-                            // paints its text 1 px below the row's
-                            // mathematical centre (font metrics +
-                            // sub-pixel rounding on Align2::LEFT_CENTER).
-                            // Shift the label paint y by the same 1 px
-                            // so the label's baseline meets the
-                            // combobox text. Applied to every row's
-                            // label to keep the form consistent.
-                            let y = rect.min.y + (ROW_H - label_h) / 2.0 + 1.0;
+                            let y = rect.min.y + (ROW_H - label_h) / 2.0;
                             ui.painter().galley(
                                 egui::pos2(rect.min.x, y),
                                 galley,
@@ -375,23 +367,17 @@ pub fn draw_gangs_tab(
                                 ui.end_row();
 
                                 row_label(ui, "Channel type:");
-                                // Match the Name / Members text fields:
-                                //  * width 240 (set via `.width(240.0)`)
-                                //  * Combobox button height ~25 px so
-                                //    its content centre lines up with
-                                //    the label's content centre (both
-                                //    sit in a 26-tall row driven by
-                                //    the label cell). With pad_y=4 the
-                                //    button was 27 tall, the row grew
-                                //    to 27, the label cell got
-                                //    half-pixel-shifted, and the
-                                //    combobox text rendered off-centre.
-                                //  * fill `BG_INPUT` so the combobox
-                                //    interior reads as the same dark
-                                //    field as the surrounding TextEdits
-                                //    rather than a lighter button.
-                                ui.scope(|ui| {
-                                    ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 3.5);
+                                // Apply spacing / visuals directly on
+                                // the cell ui (no `ui.scope` wrapper):
+                                // the wrapper was a candidate for the
+                                // mysterious vertical offset since it
+                                // adds an extra layer that participates
+                                // in cell-size measurement. Modifying
+                                // the cell ui's style affects only this
+                                // cell — Grid creates a fresh ui per
+                                // cell so the changes don't leak.
+                                ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 3.5);
+                                {
                                     let visuals = ui.visuals_mut();
                                     visuals.widgets.inactive.bg_fill = theme::BG_INPUT;
                                     visuals.widgets.inactive.weak_bg_fill = theme::BG_INPUT;
@@ -399,19 +385,19 @@ pub fn draw_gangs_tab(
                                     visuals.widgets.hovered.weak_bg_fill = theme::BG_INPUT;
                                     visuals.widgets.open.bg_fill = theme::BG_INPUT;
                                     visuals.widgets.open.weak_bg_fill = theme::BG_INPUT;
-                                    egui::ComboBox::from_id_salt("gang_channel_type")
-                                        .width(240.0)
-                                        .selected_text(tab.new_gang_channel_type.label())
-                                        .show_ui(ui, |ui| {
-                                            for ct in &ChannelTypeSelection::ALL {
-                                                ui.selectable_value(
-                                                    &mut tab.new_gang_channel_type,
-                                                    *ct,
-                                                    ct.label(),
-                                                );
-                                            }
-                                        });
-                                });
+                                }
+                                egui::ComboBox::from_id_salt("gang_channel_type")
+                                    .width(240.0)
+                                    .selected_text(tab.new_gang_channel_type.label())
+                                    .show_ui(ui, |ui| {
+                                        for ct in &ChannelTypeSelection::ALL {
+                                            ui.selectable_value(
+                                                &mut tab.new_gang_channel_type,
+                                                *ct,
+                                                ct.label(),
+                                            );
+                                        }
+                                    });
                                 ui.end_row();
 
                                 row_label(ui, "Members:");
