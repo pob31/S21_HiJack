@@ -4,3 +4,11 @@ Builds
 .vs/
 .DS_Store
 **/.DS_Store
+
+# Operator-saved show files — don't commit personal show data.
+# Canonical extension is `.s21show`; legacy `.json` shows and the
+# pre-extension bare-name files some test sessions left behind are
+# also covered.
+*.s21show
+S21_test_*
+test_s21
