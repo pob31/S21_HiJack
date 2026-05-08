@@ -597,10 +597,17 @@ fn draw_action_buttons(
         // (Macros will be driven externally — e.g. Streamdeck —
         // when that lands. No in-app quick-trigger control today.)
 
-        // Delete
-        let del_btn =
-            theme::action_button("Delete", theme::ACCENT_RED, egui::Vec2::new(70.0, 28.0));
-        if ui.add_enabled(has_selection, del_btn).clicked() {
+        // Delete — long-press to confirm, matching the Connect /
+        // Disconnect transport buttons on the Setup tab. Hold for half
+        // a second; releasing early or dragging off cancels.
+        if theme::long_press_button(
+            ui,
+            "Delete",
+            theme::ACCENT_RED,
+            egui::Vec2::new(70.0, 28.0),
+            has_selection,
+            theme::LONG_PRESS_DURATION_MS,
+        ) {
             if let Some(id) = macros_state.selected_macro_id {
                 let mgr_clone = macro_manager.clone();
                 runtime.spawn(async move {
