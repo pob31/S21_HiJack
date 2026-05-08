@@ -292,10 +292,10 @@ const FRAME_STROKE_PAD: f32 = 2.0;
 /// right edge never quite reaches the Connection card's inner edge.
 const LAYOUT_SAFETY: f32 = 4.0;
 /// Min height for the three top-row sections (Console / Server / iPad).
-/// Sized to accommodate Console's max content (4 grid rows + iPad-protocol
-/// status + identity grid + 2 wrapped channel-config badge rows). Server +
-/// iPad fill any extra space below their content.
-const MIN_TOP_HEIGHT: f32 = 480.0;
+/// Trimmed from 480 to 420 to remove visible dead space below the content
+/// — Console's max content (4 grid rows + iPad-protocol status + identity
+/// grid + 2 wrapped channel-config badge rows) still fits comfortably.
+const MIN_TOP_HEIGHT: f32 = 420.0;
 /// Min height for the two bottom-row sections (QLab / Monitor).
 /// Sized to comfortably exceed both panels' natural content heights so
 /// they render at the same height — Monitor (Server↔Mobile/Web row only)
@@ -846,13 +846,25 @@ pub fn draw_setup_tab(
                             .spacing([GRID_SPACING_X, 8.0])
                             .min_col_width(LABEL_COL_W)
                     };
+                    // Single shared button width used by every button
+                    // row in this panel: Display-Mode toggles, Network
+                    // combo, Connection-Mode toggles, Parameter coverage,
+                    // Open…, Save / Save As… / New. With 3 buttons +
+                    // 2 gaps spanning (w_hub − subrow_indent), every
+                    // row reaches the same right edge — visually
+                    // regular at every window size.
+                    let item_spacing_x = ui.spacing().item_spacing.x;
+                    let action_btn_w = ((w_hub - subrow_indent - 2.0 * item_spacing_x) / 3.0)
+                        .max(50.0);
+                    let action_row_w = 3.0 * action_btn_w + 2.0 * item_spacing_x;
 
                     // ── Display Mode ──
                     server_grid("server_display_grid").show(ui, |ui| {
                         ui.label("Display Mode:");
                         ui.horizontal(|ui| {
-                            // Tighter button padding for toggle rows so the
-                            // three options fit alongside the label.
+                            // All 3 toggles share `action_btn_w` so the
+                            // row spans `action_row_w` — same width as
+                            // every other button row in this panel.
                             ui.spacing_mut().button_padding = egui::Vec2::new(10.0, 6.0);
                             for mode in UiMode::ALL {
                                 let is_active = setup.ui_mode == mode;
@@ -862,8 +874,13 @@ pub fn draw_setup_tab(
                                     egui::RichText::new(mode.label()).color(text_color),
                                 )
                                 .fill(fill)
-                                .corner_radius(4.0);
-                                if ui.add(btn).clicked() && setup.ui_mode != mode {
+                                .corner_radius(4.0)
+                                .min_size(egui::Vec2::new(action_btn_w, 28.0));
+                                if ui
+                                    .add_sized([action_btn_w, 28.0], btn)
+                                    .clicked()
+                                    && setup.ui_mode != mode
+                                {
                                     setup.ui_mode = mode;
                                     save_app_preferences(setup);
                                 }
@@ -959,8 +976,15 @@ pub fn draw_setup_tab(
                                     egui::RichText::new(mode.short_label()).color(text_color),
                                 )
                                 .fill(fill)
-                                .corner_radius(4.0);
-                                if ui.add_enabled(!is_connected, btn).clicked() {
+                                .corner_radius(4.0)
+                                .min_size(egui::Vec2::new(action_btn_w, 28.0));
+                                if ui
+                                    .add_enabled_ui(!is_connected, |ui| {
+                                        ui.add_sized([action_btn_w, 28.0], btn)
+                                    })
+                                    .inner
+                                    .clicked()
+                                {
                                     setup.operating_mode = mode;
                                 }
                             }
@@ -970,11 +994,15 @@ pub fn draw_setup_tab(
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.add_space(subrow_indent);
+                        // Parameter coverage spans the full action row
+                        // width — keeps the central panel's button
+                        // grid edges aligned even though this is one
+                        // button instead of three.
                         if ui
                             .add(theme::action_button(
                                 "Parameter coverage…",
                                 theme::BG_ELEVATED,
-                                egui::Vec2::new(180.0, 26.0),
+                                egui::Vec2::new(action_row_w, 28.0),
                             ))
                             .clicked()
                         {
@@ -998,16 +1026,12 @@ pub fn draw_setup_tab(
                             // the look matches an editable field, with
                             // the full path on hover.
                             let mut display = truncate_show_path(&setup.show_file_path);
-                            // Size the field + Open button so the row
-                            // matches the action row below: 3 buttons
-                            // sized from `w_hub` (so they always fit).
-                            // edit + gap + Open == 3*btn + 2*gaps  →
-                            // edit = 2*btn + 1*gap. Open's right edge
-                            // lines up with New's right edge.
-                            let spacing_x = ui.spacing().item_spacing.x;
-                            let action_btn_w =
-                                ((w_hub - subrow_indent - 2.0 * spacing_x) / 3.0).max(50.0);
-                            let edit_w = 2.0 * action_btn_w + spacing_x;
+                            // Field + Open span the same `action_row_w`
+                            // as the Save / Save As… / New row below,
+                            // so the grid lines up: edit + gap + Open
+                            // = 3*action_btn_w + 2*gaps  →
+                            // edit = 2*action_btn_w + 1*gap.
+                            let edit_w = 2.0 * action_btn_w + item_spacing_x;
                             let resp = ui.add_sized(
                                 [edit_w, theme::TEXT_EDIT_HEIGHT],
                                 egui::TextEdit::singleline(&mut display)
@@ -1055,19 +1079,10 @@ pub fn draw_setup_tab(
                         ui.end_row();
                     });
                     ui.add_space(4.0);
-                    // Action buttons indented to align with the path
-                    // TextEdit above, sized from `w_hub` so the row
-                    // never overflows the Server panel. (Pushing past
-                    // w_hub used to widen the Server frame, which
-                    // cascaded into iPad clipping the right edge of
-                    // the Connection card.)
-                    // 3 buttons (Save / Save As… / New). Load was
-                    // dropped — Open… now picks AND loads in one step,
-                    // which is what most operators expect from a file
-                    // picker anyway.
-                    let spacing_x = ui.spacing().item_spacing.x;
-                    let action_btn_w =
-                        ((w_hub - subrow_indent - 2.0 * spacing_x) / 3.0).max(50.0);
+                    // 3 buttons (Save / Save As… / New) reusing the
+                    // shared `action_btn_w` so the row mirrors every
+                    // other button row in this panel. Load was
+                    // dropped — Open… picks AND loads in one step.
                     ui.horizontal(|ui| {
                         ui.add_space(subrow_indent);
                         let save_btn = theme::action_button(

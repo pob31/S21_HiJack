@@ -333,16 +333,23 @@ pub fn draw_gangs_tab(
                                 ui.end_row();
 
                                 ui.label("Channel type:");
-                                // Match the Name / Members text fields'
-                                // width AND height. The Body font
-                                // renders at ~19 px tall (FONT_SIZE_BODY
-                                // = 16 plus egui's leading), so to hit
-                                // theme::TEXT_EDIT_HEIGHT (26 px) we
-                                // need button_padding.y ≈ 3.5; round
-                                // down to 3 since the ComboBox already
-                                // adds a 1 px stroke each side.
+                                // Match the Name / Members text fields:
+                                //  * width 240 (set via `.width(240.0)`)
+                                //  * height ≈ 26 via button_padding.y
+                                //    of 4 (Body font ~18 px + 2*4 = 26)
+                                //  * fill `BG_INPUT` so the combobox
+                                //    interior reads as the same dark
+                                //    field as the surrounding TextEdits
+                                //    rather than a lighter button.
                                 ui.scope(|ui| {
-                                    ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 3.0);
+                                    ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
+                                    let visuals = ui.visuals_mut();
+                                    visuals.widgets.inactive.bg_fill = theme::BG_INPUT;
+                                    visuals.widgets.inactive.weak_bg_fill = theme::BG_INPUT;
+                                    visuals.widgets.hovered.bg_fill = theme::BG_INPUT;
+                                    visuals.widgets.hovered.weak_bg_fill = theme::BG_INPUT;
+                                    visuals.widgets.open.bg_fill = theme::BG_INPUT;
+                                    visuals.widgets.open.weak_bg_fill = theme::BG_INPUT;
                                     egui::ComboBox::from_id_salt("gang_channel_type")
                                         .width(240.0)
                                         .selected_text(tab.new_gang_channel_type.label())
