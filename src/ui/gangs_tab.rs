@@ -318,15 +318,39 @@ pub fn draw_gangs_tab(
                     |ui| {
                         ui.set_min_width(LEFT_COL_W);
                         ui.set_max_width(LEFT_COL_W);
-                        // Wrap each row's label in add_sized to the
-                        // same row height (26 px) as the text field /
-                        // combobox so labels and inputs are vertically
-                        // centred — egui Grid otherwise top-aligns the
-                        // shorter label against the taller input,
-                        // making the input look offset downward.
+                        // Each row's label needs the cell to be the
+                        // full row height (26 px) AND the text painted
+                        // at the cell's vertical centre — otherwise
+                        // egui Grid top-aligns the natural-height
+                        // (~18 px) label cell against the 26 px input
+                        // cell and the input visibly drops below the
+                        // label's centreline.
+                        //
+                        // `add_sized` doesn't help here: it reports the
+                        // child's `min_rect` (label's natural ~18 px)
+                        // back to the parent, so the cell never grows
+                        // past 18 px. Instead we explicitly allocate
+                        // `label_w × 26` and paint the galley with a
+                        // y offset that centres it.
                         const ROW_H: f32 = 26.0;
                         let row_label = |ui: &mut egui::Ui, text: &str| {
-                            ui.add_sized([0.0, ROW_H], egui::Label::new(text));
+                            let galley = ui.painter().layout_no_wrap(
+                                text.to_string(),
+                                egui::FontId::proportional(theme::FONT_SIZE_BODY),
+                                theme::TEXT_SECONDARY,
+                            );
+                            let label_w = galley.size().x;
+                            let label_h = galley.size().y;
+                            let (rect, _) = ui.allocate_exact_size(
+                                egui::Vec2::new(label_w, ROW_H),
+                                egui::Sense::hover(),
+                            );
+                            let y = rect.min.y + (ROW_H - label_h) / 2.0;
+                            ui.painter().galley(
+                                egui::pos2(rect.min.x, y),
+                                galley,
+                                theme::TEXT_SECONDARY,
+                            );
                         };
                         egui::Grid::new("add_gang_grid")
                             .num_columns(2)
