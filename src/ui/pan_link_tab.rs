@@ -89,6 +89,10 @@ impl PanLinkTabState {
 const TILE_SIZE: egui::Vec2 = egui::Vec2::new(82.0, 52.0);
 const TILES_PER_INPUT_ROW: u8 = 10;
 const TILES_PER_AUX_ROW: u8 = 4;
+/// Fixed height reserved for both the Inputs and Auxes panel headers
+/// so the first tile row in each column starts at the same y. Tall
+/// enough to fit the 24 px action buttons in the inputs header.
+const PANEL_HEADER_H: f32 = 28.0;
 
 pub fn draw_pan_link_tab(
     ui: &mut egui::Ui,
@@ -251,32 +255,38 @@ fn draw_inputs_panel(
     ui.vertical(|ui| {
         ui.set_width(panel_width);
 
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("Inputs")
-                    .strong()
-                    .color(theme::TEXT_PRIMARY),
-            );
-            ui.label(
-                egui::RichText::new(format!("({} selected)", tab.selected_inputs.len()))
-                    .color(theme::TEXT_SECONDARY)
-                    .small(),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let clear_btn = theme::action_button(
-                    "Clear selection",
-                    theme::BG_ELEVATED,
-                    egui::Vec2::new(110.0, 24.0),
+        // Fixed-height header so the first tile row aligns with the
+        // aux panel's first tile row.
+        ui.allocate_ui_with_layout(
+            egui::Vec2::new(panel_width, PANEL_HEADER_H),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.label(
+                    egui::RichText::new("Inputs")
+                        .strong()
+                        .color(theme::TEXT_PRIMARY),
                 );
-                if ui
-                    .add_enabled(!tab.selected_inputs.is_empty(), clear_btn)
-                    .clicked()
-                {
-                    tab.selected_inputs.clear();
-                    tab.range_anchor = None;
-                }
-            });
-        });
+                ui.label(
+                    egui::RichText::new(format!("({} selected)", tab.selected_inputs.len()))
+                        .color(theme::TEXT_SECONDARY)
+                        .small(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let clear_btn = theme::action_button(
+                        "Clear selection",
+                        theme::BG_ELEVATED,
+                        egui::Vec2::new(110.0, 24.0),
+                    );
+                    if ui
+                        .add_enabled(!tab.selected_inputs.is_empty(), clear_btn)
+                        .clicked()
+                    {
+                        tab.selected_inputs.clear();
+                        tab.range_anchor = None;
+                    }
+                });
+            },
+        );
         ui.add_space(4.0);
 
         if input_count == 0 {
@@ -346,10 +356,18 @@ fn draw_auxes_panel(ui: &mut egui::Ui, tab: &mut PanLinkTabState, aux_buses: &[A
     let panel_width = TILE_SIZE.x * (TILES_PER_AUX_ROW as f32) + 24.0;
     ui.vertical(|ui| {
         ui.set_width(panel_width);
-        ui.label(
-            egui::RichText::new("Auxes")
-                .strong()
-                .color(theme::TEXT_PRIMARY),
+        // Fixed-height header so the first tile row aligns with the
+        // input panel's first tile row.
+        ui.allocate_ui_with_layout(
+            egui::Vec2::new(panel_width, PANEL_HEADER_H),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.label(
+                    egui::RichText::new("Auxes")
+                        .strong()
+                        .color(theme::TEXT_PRIMARY),
+                );
+            },
         );
         ui.add_space(4.0);
 
