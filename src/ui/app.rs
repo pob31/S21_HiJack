@@ -712,6 +712,35 @@ impl eframe::App for HiJackApp {
                 });
         }
 
+        // Snapshots-tab disconnected hint — same bottom-anchored amber
+        // banner pattern. Suppressed when the offline banner is already
+        // showing so they don't stack.
+        if self.active_tab == Tab::Snapshots
+            && !self.connected.load(Ordering::Relaxed)
+            && !self.offline_mode.load(Ordering::Relaxed)
+        {
+            egui::TopBottomPanel::bottom("snapshots_disconnected_banner")
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(super::theme::ACCENT_AMBER)
+                        .inner_margin(egui::Margin::symmetric(10, 6)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("⚠ DISCONNECTED")
+                                .strong()
+                                .color(super::theme::BG_DARK),
+                        );
+                        ui.label(
+                            egui::RichText::new("— connect to console to capture snapshots.")
+                                .color(super::theme::BG_DARK),
+                        );
+                    });
+                });
+        }
+
         // Main content
         egui::CentralPanel::default().show(ctx, |ui| {
             // Reset transient per-tab state when the user navigates away.

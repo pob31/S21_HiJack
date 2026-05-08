@@ -591,9 +591,12 @@ pub fn draw_snapshots_tab(
                             }
                         });
 
-                        if !is_connected {
-                            ui.label(egui::RichText::new("Connect to console to capture snapshots.").color(theme::TEXT_SECONDARY));
-                        } else if matches!(snap_state.pending_kind, SnapshotKind::ApplyOnSave)
+                        // Disconnected hint is rendered by `app.rs` as a
+                        // bottom-anchored amber banner so the tab's
+                        // vertical layout doesn't shift on connect/
+                        // disconnect — same pattern as the Gangs tab.
+                        if is_connected
+                            && matches!(snap_state.pending_kind, SnapshotKind::ApplyOnSave)
                             && snap_state.scope_editor.selection_count() == 0
                         {
                             ui.label(egui::RichText::new("Select scope parameters to capture (or switch to 'On recall').").color(theme::TEXT_SECONDARY));
