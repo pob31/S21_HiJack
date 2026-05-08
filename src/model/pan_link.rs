@@ -22,10 +22,21 @@ use serde::{Deserialize, Serialize};
 
 /// Active pan-link bindings, keyed by `(input_channel, aux_bus_index)`,
 /// both 1-based.
+///
+/// `mono_overrides` is the operator's manual list of aux buses that
+/// should be treated as mono for pan-link purposes regardless of the
+/// console-reported mode. GP OSC doesn't expose the bus mode at all
+/// (so every aux defaults to "stereo, linkable"), and even with the
+/// iPad protocol the operator may want to disable pan-link for a
+/// specific stereo aux — so the override is one-direction: marking
+/// an aux mono blocks linking. Default: empty (every aux linkable
+/// according to its discoverable mode).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PanLinkBindings {
     #[serde(default)]
     pub active: HashSet<(u8, u8)>,
+    #[serde(default)]
+    pub mono_overrides: HashSet<u8>,
 }
 
 impl PanLinkBindings {
@@ -59,6 +70,24 @@ impl PanLinkBindings {
     pub fn linked_inputs(&self) -> Vec<u8> {
         let set: BTreeSet<u8> = self.active.iter().map(|(i, _)| *i).collect();
         set.into_iter().collect()
+    }
+
+    /// Whether the operator has manually marked this aux as mono. When
+    /// true, the engine and UI both refuse to pan-link to this aux
+    /// regardless of any console-reported mode.
+    pub fn is_aux_mono_override(&self, aux: u8) -> bool {
+        self.mono_overrides.contains(&aux)
+    }
+
+    /// Toggle the mono override for the given aux. Returns the new
+    /// state (true = mono, false = stereo).
+    pub fn toggle_mono_override(&mut self, aux: u8) -> bool {
+        if !self.mono_overrides.insert(aux) {
+            self.mono_overrides.remove(&aux);
+            false
+        } else {
+            true
+        }
     }
 }
 

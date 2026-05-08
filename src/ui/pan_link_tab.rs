@@ -420,20 +420,26 @@ fn draw_auxes_panel(ui: &mut egui::Ui, tab: &mut PanLinkTabState, aux_buses: &[A
         }
 
         let mut clicked_aux: Option<u8> = None;
+        let mut toggled_mono: Option<u8> = None;
         for chunk in aux_buses.chunks(TILES_PER_AUX_ROW as usize) {
             ui.horizontal(|ui| {
                 for info in chunk {
                     let aux_state = compute_aux_state(tab, info);
-                    if draw_aux_tile(ui, &info.label, info.stereo, aux_state).clicked()
-                        && info.stereo
-                        && !tab.selected_inputs.is_empty()
-                    {
+                    let mono_override = tab.staged.is_aux_mono_override(info.bus);
+                    let clicks =
+                        draw_aux_tile(ui, &info.label, info.stereo, aux_state, mono_override);
+                    if clicks.mono {
+                        toggled_mono = Some(info.bus);
+                    } else if clicks.link && !tab.selected_inputs.is_empty() {
                         clicked_aux = Some(info.bus);
                     }
                 }
             });
         }
 
+        if let Some(bus) = toggled_mono {
+            tab.staged.toggle_mono_override(bus);
+        }
         if let Some(bus) = clicked_aux {
             // Click cycle: Mixed → All-linked, All-linked → None,
             // None → All-linked. Always promotes Mixed to All on first click.
@@ -447,6 +453,15 @@ fn draw_auxes_panel(ui: &mut egui::Ui, tab: &mut PanLinkTabState, aux_buses: &[A
     });
 }
 
+/// Click outcomes from a single aux tile. The tile has two
+/// independent click targets — the small M/S toggle in the top-left
+/// corner (mono override) and the rest of the tile body (link).
+#[derive(Clone, Copy, Debug, Default)]
+struct AuxTileClick {
+    link: bool,
+    mono: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AuxState {
     Mono,
@@ -457,7 +472,9 @@ enum AuxState {
 }
 
 fn compute_aux_state(tab: &PanLinkTabState, info: &AuxBusInfo) -> AuxState {
-    if !info.stereo {
+    // Operator's manual mono mark takes precedence over both the
+    // console-reported mode and the GP-OSC stereo assumption.
+    if !info.stereo || tab.staged.is_aux_mono_override(info.bus) {
         return AuxState::Mono;
     }
     if tab.selected_inputs.is_empty() {
@@ -580,17 +597,21 @@ fn draw_input_tile(
     response.on_hover_text(hover)
 }
 
-fn draw_aux_tile(ui: &mut egui::Ui, label: &str, stereo: bool, state: AuxState) -> egui::Response {
-    let clickable = matches!(
+fn draw_aux_tile(
+    ui: &mut egui::Ui,
+    label: &str,
+    stereo: bool,
+    state: AuxState,
+    mono_override: bool,
+) -> AuxTileClick {
+    let link_clickable = matches!(
         state,
         AuxState::NoneLinked | AuxState::AllLinked | AuxState::Mixed
     );
-    let sense = if clickable {
-        egui::Sense::click()
-    } else {
-        egui::Sense::hover()
-    };
-    let (rect, response) = ui.allocate_exact_size(TILE_SIZE, sense);
+    // Always sense clicks — even when the link is non-interactive
+    // (Mono state), the M/S corner toggle has to be reachable so the
+    // operator can flip an aux back from mono.
+    let (rect, response) = ui.allocate_exact_size(TILE_SIZE, egui::Sense::click());
     let painter = ui.painter_at(rect);
 
     let base = theme::CH_AUX;
@@ -601,7 +622,7 @@ fn draw_aux_tile(ui: &mut egui::Ui, label: &str, stereo: bool, state: AuxState) 
         AuxState::AllLinked => base,
         AuxState::Mixed => blend(base, theme::BG_ELEVATED, 0.55),
     };
-    let hover_fill = if clickable && response.hovered() {
+    let hover_fill = if link_clickable && response.hovered() {
         blend(fill, theme::TEXT_PRIMARY, 0.85)
     } else {
         fill
@@ -661,14 +682,66 @@ fn draw_aux_tile(ui: &mut egui::Ui, label: &str, stereo: bool, state: AuxState) 
         text_color,
     );
 
+    // Mono / stereo toggle in the top-left corner. Click toggles the
+    // operator's manual mono override for this aux. Always shown so
+    // the operator can both mark stereo auxes mono *and* unmark them
+    // — even when the tile is in Mono state and the rest of the
+    // tile is non-interactive.
+    let m_size = 16.0;
+    let m_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + 4.0, rect.min.y + 4.0),
+        egui::vec2(m_size, m_size),
+    );
+    let (m_fill, m_text_color, m_label_text) = if mono_override {
+        (theme::ACCENT_AMBER, theme::BG_DARK, "M")
+    } else {
+        (
+            blend(theme::BG_DARK, theme::TEXT_SECONDARY, 0.7),
+            theme::TEXT_SECONDARY,
+            "S",
+        )
+    };
+    painter.rect_filled(m_rect, 3.0, m_fill);
+    painter.rect_stroke(
+        m_rect,
+        3.0,
+        egui::Stroke::new(1.0, theme::BORDER_SUBTLE),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        m_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        m_label_text,
+        egui::FontId::proportional(10.0),
+        m_text_color,
+    );
+
     let hover = match state {
-        AuxState::Mono => format!("{label} — mono, can't pan-link"),
+        AuxState::Mono => {
+            if mono_override {
+                format!("{label} — marked mono (click M to allow linking)")
+            } else {
+                format!("{label} — mono per console, can't pan-link")
+            }
+        }
         AuxState::NoSelection => format!("{label} — select inputs to link"),
         AuxState::NoneLinked => format!("{label} — none of the selected inputs are linked"),
         AuxState::AllLinked => format!("{label} — all selected inputs linked"),
         AuxState::Mixed => format!("{label} — partially linked (click to link all)"),
     };
-    response.on_hover_text(hover)
+    let response_with_tooltip = response.on_hover_text(hover);
+
+    // Differentiate the click target by pointer position. Clicks
+    // inside the M corner button toggle the mono override; clicks
+    // anywhere else go to the link cycle.
+    let click_pos = response_with_tooltip.interact_pointer_pos();
+    let on_mono_btn = click_pos.is_some_and(|p| m_rect.contains(p));
+    let clicked = response_with_tooltip.clicked();
+
+    AuxTileClick {
+        link: clicked && !on_mono_btn && link_clickable,
+        mono: clicked && on_mono_btn,
+    }
 }
 
 fn blend(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {

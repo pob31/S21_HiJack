@@ -17,8 +17,17 @@
 //! Stereo / mono filter: mix-output buses must be stereo to be
 //! pan-linkable in Mode 2 / Mode 3 (iPad protocol active), since
 //! that's where the bus mode is discoverable. In Mode 1 (GP OSC only)
-//! the desk doesn't expose channel mode, so the filter is bypassed
-//! and every aux is allowed.
+//! the desk doesn't expose channel mode, so the auto-detection is
+//! bypassed and every aux is allowed. The operator can override on a
+//! per-aux basis via `PanLinkBindings.mono_overrides` — useful both
+//! in Mode 1 (where there's no auto-detection) and in Mode 2/3 (to
+//! disable pan-link for a specific stereo aux for any reason).
+//!
+//! Send-enable: the engine does NOT gate on `SendEnabled`. Writing
+//! the aux send pan when the send is disabled keeps the aux pan
+//! pre-staged so it's already in sync with the input main pan when
+//! the operator next enables the send — otherwise the aux pan would
+//! be whatever stale value it held while the send was off.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -118,10 +127,12 @@ impl PanLinkEngine {
             return Vec::new();
         }
 
-        // Snapshot the active aux list for the moved input.
-        let auxes: Vec<u8> = {
+        // Snapshot the active aux list for the moved input plus the
+        // operator's mono-override set. The override blocks pan-link
+        // for marked auxes regardless of console-reported mode.
+        let (auxes, mono_overrides) = {
             let b = self.bindings.read().await;
-            b.auxes_for(input_n)
+            (b.auxes_for(input_n), b.mono_overrides.clone())
         };
         if auxes.is_empty() {
             return Vec::new();
@@ -183,6 +194,10 @@ impl PanLinkEngine {
         let mut writes: Vec<(ParameterAddress, ParameterValue)> = Vec::new();
         for (ch_n, pan_value) in targets {
             for &aux in &auxes {
+                // Operator's manual mono-mark always wins.
+                if mono_overrides.contains(&aux) {
+                    continue;
+                }
                 let idx0 = aux.checked_sub(1).map(|i| i as usize);
                 let is_aux_bus = idx0.and_then(|i| mix_types.get(i)).copied().unwrap_or(true);
                 if !is_aux_bus {
@@ -196,23 +211,14 @@ impl PanLinkEngine {
                 if !is_stereo {
                     continue;
                 }
-                // Verify this channel is currently sending to this aux.
-                // If the SendEnabled state is unknown, default to
-                // allowing the push — better to over-send than to
-                // silently drop.
-                let send_enabled_addr = ParameterAddress {
-                    channel: ChannelId::Input(ch_n),
-                    parameter: ParameterPath::SendEnabled(aux),
-                };
-                let sending = match state.get(&send_enabled_addr) {
-                    Some(ParameterValue::Bool(b)) => *b,
-                    Some(ParameterValue::Int(i)) => *i != 0,
-                    Some(ParameterValue::Float(f)) => *f != 0.0,
-                    _ => true,
-                };
-                if !sending {
-                    continue;
-                }
+
+                // No `SendEnabled` gate: if we only wrote when the send
+                // was active, the bound aux's pan would be stale at
+                // the moment the operator next enables that send. The
+                // cost of always writing is negligible (one extra OSC
+                // message per inactive aux per pan move), and it
+                // keeps the bound auxes' pans in lockstep with the
+                // input main pan at all times.
 
                 let target = ParameterAddress {
                     channel: ChannelId::Input(ch_n),
@@ -506,7 +512,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skips_when_send_disabled() {
+    async fn writes_even_when_send_disabled() {
+        // Pre-staging the aux pan while the send is off keeps the
+        // bound aux in sync for when the operator next enables the
+        // send. The engine deliberately does NOT gate on SendEnabled.
         let engine = make_engine();
         engine.bindings.write().await.set_active(1, 5, true);
         engine.state.write().await.update(
@@ -516,6 +525,40 @@ mod tests {
             },
             ParameterValue::Bool(false),
         );
+
+        let writes = engine
+            .compute_pan_writes(&pan_addr(1), &ParameterValue::Float(0.5))
+            .await;
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, send_pan_addr(1, 5));
+    }
+
+    #[tokio::test]
+    async fn mono_override_blocks_link() {
+        // Even in GP-OSC mode (no iPad sender attached) where the
+        // stereo filter is bypassed, a manual mono-override blocks
+        // pan-link for that aux.
+        let engine = make_engine();
+        engine.bindings.write().await.set_active(1, 5, true);
+        engine.bindings.write().await.toggle_mono_override(5);
+
+        let writes = engine
+            .compute_pan_writes(&pan_addr(1), &ParameterValue::Float(0.5))
+            .await;
+        assert!(writes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mono_override_blocks_in_ipad_mode_even_for_stereo_aux() {
+        // Mode 2 / Mode 3: aux is reported as stereo by the desk,
+        // but the operator marked it mono via the override. Override
+        // wins.
+        let mut engine = make_engine();
+        attach_dummy_ipad_sender(&mut engine).await;
+        // Aux 5 → stereo per console.
+        engine.state.write().await.config.mix_output_modes[4] = ChannelMode::Stereo;
+        engine.bindings.write().await.set_active(1, 5, true);
+        engine.bindings.write().await.toggle_mono_override(5);
 
         let writes = engine
             .compute_pan_writes(&pan_addr(1), &ParameterValue::Float(0.5))
