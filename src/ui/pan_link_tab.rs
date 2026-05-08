@@ -93,6 +93,16 @@ const TILES_PER_AUX_ROW: u8 = 4;
 /// so the first tile row in each column starts at the same y. Tall
 /// enough to fit the 24 px action buttons in the inputs header.
 const PANEL_HEADER_H: f32 = 28.0;
+/// Total width of the input + aux grid content (input panel + 16 px
+/// gap + aux panel). The header card and the grids card both cap
+/// their content to this value so the Apply / Revert buttons in the
+/// header align with the right edge of the aux tiles, and the card
+/// frames close off at the same x.
+const GRIDS_CONTENT_W: f32 = TILE_SIZE.x * (TILES_PER_INPUT_ROW as f32)
+    + 24.0
+    + 16.0
+    + TILE_SIZE.x * (TILES_PER_AUX_ROW as f32)
+    + 24.0;
 
 pub fn draw_pan_link_tab(
     ui: &mut egui::Ui,
@@ -152,7 +162,14 @@ pub fn draw_pan_link_tab(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             // Header card: title + dirty indicator + Apply / Revert.
+            // Capped at `GRIDS_CONTENT_W` so the right_to_left
+            // Apply/Revert buttons end at the same x as the aux tiles
+            // in the grids card below — and so the card frame's right
+            // border closes off at that same x.
             theme::card_frame().show(ui, |ui| {
+                let card_w = GRIDS_CONTENT_W.min(ui.available_width());
+                ui.set_min_width(card_w);
+                ui.set_max_width(card_w);
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("Pan Link")
@@ -225,8 +242,13 @@ pub fn draw_pan_link_tab(
 
             ui.add_space(8.0);
 
-            // Input grid + aux grid, side-by-side.
+            // Input grid + aux grid, side-by-side. Capped at
+            // `GRIDS_CONTENT_W` so the card frame's right border ends
+            // exactly at the aux grid's right edge.
             theme::card_frame().show(ui, |ui| {
+                let card_w = GRIDS_CONTENT_W.min(ui.available_width());
+                ui.set_min_width(card_w);
+                ui.set_max_width(card_w);
                 ui.horizontal_top(|ui| {
                     draw_inputs_panel(ui, tab, state_guard.deref(), input_count);
                     ui.add_space(16.0);

@@ -270,6 +270,15 @@ const TILES_PER_AUX_ROW: u8 = 4;
 /// so their first tile row starts at the same y. Tall enough to fit
 /// the 24 px Ripple / Confirm / Cancel buttons in the inputs header.
 const PANEL_HEADER_H: f32 = 28.0;
+/// Total width of the input + aux grid content (input panel + 16 px
+/// gap + aux panel). The picker's title row, separators, and status
+/// row all cap their content to this so Save/Cancel align with the
+/// right edge of the aux tiles.
+const GRIDS_CONTENT_W: f32 = TILE_SIZE.x * (TILES_PER_INPUT_ROW as f32)
+    + 24.0
+    + 16.0
+    + TILE_SIZE.x * (TILES_PER_AUX_ROW as f32)
+    + 24.0;
 
 /// Draw the picker window for one frame. The caller owns the open/closed
 /// flag and the picker state; this function returns `Some(outcome)` when
@@ -288,12 +297,20 @@ pub fn draw_channel_picker(
         "Add Monitor Profile"
     };
 
+    // Window default width matches the grid content + a small chrome
+    // budget so the operator doesn't have to resize on first open.
     egui::Window::new(title)
         .collapsible(false)
         .resizable(true)
-        .default_width(1100.0)
+        .default_width(GRIDS_CONTENT_W + 32.0)
         .open(&mut still_open)
         .show(ctx, |ui| {
+            // Cap the entire picker content to the grid width so the
+            // header's Save / Cancel buttons (right_to_left) end at
+            // the same x as the aux tiles' right edge.
+            let content_w = GRIDS_CONTENT_W.min(ui.available_width());
+            ui.set_min_width(content_w);
+            ui.set_max_width(content_w);
             // Header row: name field + Save/Cancel buttons.
             ui.horizontal(|ui| {
                 ui.label("Name:");
