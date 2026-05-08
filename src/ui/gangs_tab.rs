@@ -345,7 +345,15 @@ pub fn draw_gangs_tab(
                                 egui::Vec2::new(label_w, ROW_H),
                                 egui::Sense::hover(),
                             );
-                            let y = rect.min.y + (ROW_H - label_h) / 2.0;
+                            // Empirical fudge: egui's combobox button
+                            // paints its text 1 px below the row's
+                            // mathematical centre (font metrics +
+                            // sub-pixel rounding on Align2::LEFT_CENTER).
+                            // Shift the label paint y by the same 1 px
+                            // so the label's baseline meets the
+                            // combobox text. Applied to every row's
+                            // label to keep the form consistent.
+                            let y = rect.min.y + (ROW_H - label_h) / 2.0 + 1.0;
                             ui.painter().galley(
                                 egui::pos2(rect.min.x, y),
                                 galley,
