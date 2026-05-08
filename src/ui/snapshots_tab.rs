@@ -397,8 +397,16 @@ pub fn draw_snapshots_tab(
                                 }
                             }
 
-                            let del_btn = theme::action_button("Delete", theme::ACCENT_RED, egui::Vec2::new(70.0, 28.0));
-                            if ui.add_enabled(snap_state.selected_cue_id.is_some(), del_btn).clicked() {
+                            // Long-press to confirm — matches the
+                            // Macros / Gangs / Setup transport buttons.
+                            if theme::long_press_button(
+                                ui,
+                                "Delete",
+                                theme::ACCENT_RED,
+                                egui::Vec2::new(70.0, 28.0),
+                                snap_state.selected_cue_id.is_some(),
+                                theme::LONG_PRESS_DURATION_MS,
+                            ) {
                                 if let Some(cue_id) = snap_state.selected_cue_id {
                                     let cue_mgr = cue_manager.clone();
                                     runtime.spawn(async move {
@@ -742,8 +750,14 @@ pub fn draw_snapshots_tab(
                             if ui.add_enabled(has_selection && is_connected, recapture_btn).clicked() {
                                 recapture_snapshot(snap_state, console_state, cue_manager, dirty_tracker, runtime, ui_tx);
                             }
-                            let del_btn = theme::action_button("Delete", theme::ACCENT_RED, egui::Vec2::new(80.0, 28.0));
-                            if ui.add_enabled(has_selection, del_btn).clicked() {
+                            if theme::long_press_button(
+                                ui,
+                                "Delete",
+                                theme::ACCENT_RED,
+                                egui::Vec2::new(80.0, 28.0),
+                                has_selection,
+                                theme::LONG_PRESS_DURATION_MS,
+                            ) {
                                 if let Some(id) = snap_state.selected_snapshot_id {
                                     let cue_mgr = cue_manager.clone();
                                     let pmgr = palette_manager.clone();
