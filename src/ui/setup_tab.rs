@@ -461,11 +461,15 @@ pub fn draw_setup_tab(
                         // per-peer state. Duplicating it next to the button
                         // adds noise without information.
                         if !is_connected {
+                            // Sized to fit "Disconnect" so the button
+                            // doesn't change width across the connect /
+                            // disconnect transition — keeps the right-
+                            // aligned controls anchored.
                             if theme::long_press_button(
                                 ui,
                                 "Connect",
                                 theme::ACCENT_GREEN,
-                                egui::Vec2::new(100.0, 32.0),
+                                egui::Vec2::new(120.0, 32.0),
                                 true,
                                 theme::LONG_PRESS_DURATION_MS,
                             ) {
