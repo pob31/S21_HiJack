@@ -139,26 +139,47 @@ pub fn draw_monitor_tab(
                                         .color(theme::TEXT_SECONDARY),
                                 );
                             } else {
+                                // Force the Ch # and Send # columns to
+                                // fixed widths so the Name column can
+                                // absorb whatever's left and push the
+                                // Send # column to the card's right
+                                // edge — matching the left padding.
+                                const CH_W: f32 = 60.0;
+                                const SEND_W: f32 = 50.0;
+                                const COL_SPACING: f32 = 16.0;
+                                let avail = ui.available_width();
+                                let name_w = (avail - CH_W - SEND_W - 2.0 * COL_SPACING).max(40.0);
+                                let row_h = 16.0;
+
                                 egui::Grid::new("aux_ref_grid")
                                     .num_columns(3)
-                                    .spacing([16.0, 4.0])
+                                    .spacing([COL_SPACING, 4.0])
                                     .striped(true)
                                     .show(ui, |ui| {
                                         // Header
-                                        ui.label(
-                                            egui::RichText::new("Ch #")
-                                                .strong()
-                                                .color(theme::TEXT_SECONDARY),
+                                        ui.add_sized(
+                                            [CH_W, row_h],
+                                            egui::Label::new(
+                                                egui::RichText::new("Ch #")
+                                                    .strong()
+                                                    .color(theme::TEXT_SECONDARY),
+                                            ),
                                         );
-                                        ui.label(
-                                            egui::RichText::new("Name")
-                                                .strong()
-                                                .color(theme::TEXT_SECONDARY),
+                                        ui.add_sized(
+                                            [name_w, row_h],
+                                            egui::Label::new(
+                                                egui::RichText::new("Name")
+                                                    .strong()
+                                                    .color(theme::TEXT_SECONDARY),
+                                            ),
                                         );
-                                        ui.label(
-                                            egui::RichText::new("Send #")
-                                                .strong()
-                                                .color(theme::TEXT_SECONDARY),
+                                        ui.add_sized(
+                                            [SEND_W, row_h],
+                                            egui::Label::new(
+                                                egui::RichText::new("Send #")
+                                                    .strong()
+                                                    .color(theme::TEXT_SECONDARY),
+                                            ),
                                         );
                                         ui.end_row();
 
@@ -178,21 +199,30 @@ pub fn draw_monitor_tab(
                                                 })
                                                 .unwrap_or_default();
 
-                                            ui.label(
-                                                egui::RichText::new(format!("Aux {aux}"))
-                                                    .color(theme::CH_AUX),
+                                            ui.add_sized(
+                                                [CH_W, row_h],
+                                                egui::Label::new(
+                                                    egui::RichText::new(format!("Aux {aux}"))
+                                                        .color(theme::CH_AUX),
+                                                ),
                                             );
-                                            ui.label(
-                                                egui::RichText::new(if name.is_empty() {
-                                                    "—"
-                                                } else {
-                                                    &name
-                                                })
-                                                .color(theme::TEXT_PRIMARY),
+                                            ui.add_sized(
+                                                [name_w, row_h],
+                                                egui::Label::new(
+                                                    egui::RichText::new(if name.is_empty() {
+                                                        "—"
+                                                    } else {
+                                                        &name
+                                                    })
+                                                    .color(theme::TEXT_PRIMARY),
+                                                ),
                                             );
-                                            ui.label(
-                                                egui::RichText::new(format!("{aux}"))
-                                                    .color(theme::TEXT_SECONDARY),
+                                            ui.add_sized(
+                                                [SEND_W, row_h],
+                                                egui::Label::new(
+                                                    egui::RichText::new(format!("{aux}"))
+                                                        .color(theme::TEXT_SECONDARY),
+                                                ),
                                             );
                                             ui.end_row();
                                         }
