@@ -60,6 +60,73 @@ impl GangManager {
             .filter(|g| g.enabled && g.contains_channel(channel) && g.links_section(section))
             .collect()
     }
+
+    /// True if any pair of *active* gangs (enabled + not paused) shares a
+    /// channel AND at least one linked section. Configurations like that
+    /// produce duplicate / fighting propagation: a parameter change on
+    /// the shared channel triggers writes via both gangs in the same
+    /// dispatch cycle, and any difference between the two propagation
+    /// paths becomes a race. The Gangs tab and the app-level warning
+    /// banner both consult this to nag the operator into untangling
+    /// the configuration.
+    pub fn has_overlap_conflicts(&self) -> bool {
+        let active: Vec<&GangGroup> = self
+            .groups
+            .values()
+            .filter(|g| g.enabled && !g.paused)
+            .collect();
+        for i in 0..active.len() {
+            for j in (i + 1)..active.len() {
+                let a = active[i];
+                let b = active[j];
+                let shared_channel = a.members.iter().any(|c| b.members.contains(c));
+                if !shared_channel {
+                    continue;
+                }
+                let shared_section = a
+                    .linked_sections
+                    .iter()
+                    .any(|s| b.linked_sections.contains(s));
+                if shared_section {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Count distinct channels that appear in two or more active gangs
+    /// where those gangs share at least one linked section. Used by the
+    /// warning banner to summarise the size of the problem ("⚠ N
+    /// channels…").
+    pub fn count_overlap_conflict_channels(&self) -> usize {
+        use std::collections::HashSet;
+        let active: Vec<&GangGroup> = self
+            .groups
+            .values()
+            .filter(|g| g.enabled && !g.paused)
+            .collect();
+        let mut conflicting: HashSet<ChannelId> = HashSet::new();
+        for i in 0..active.len() {
+            for j in (i + 1)..active.len() {
+                let a = active[i];
+                let b = active[j];
+                let shared_section = a
+                    .linked_sections
+                    .iter()
+                    .any(|s| b.linked_sections.contains(s));
+                if !shared_section {
+                    continue;
+                }
+                for ch in &a.members {
+                    if b.members.contains(ch) {
+                        conflicting.insert(ch.clone());
+                    }
+                }
+            }
+        }
+        conflicting.len()
+    }
 }
 
 #[cfg(test)]
@@ -161,5 +228,121 @@ mod tests {
             &ParameterSection::FaderMutePan,
         );
         assert!(found.is_empty());
+    }
+
+    fn gang_with_sections(
+        name: &str,
+        members: Vec<ChannelId>,
+        sections: HashSet<ParameterSection>,
+    ) -> GangGroup {
+        GangGroup::new(name.into(), members, sections)
+    }
+
+    #[test]
+    fn no_overlap_when_gangs_dont_share_channels() {
+        let mut mgr = GangManager::new();
+        mgr.add_group(gang_with_sections(
+            "A",
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        ));
+        mgr.add_group(gang_with_sections(
+            "B",
+            vec![ChannelId::Input(3), ChannelId::Input(4)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        ));
+        assert!(!mgr.has_overlap_conflicts());
+        assert_eq!(mgr.count_overlap_conflict_channels(), 0);
+    }
+
+    #[test]
+    fn no_overlap_when_gangs_share_channel_but_different_sections() {
+        let mut mgr = GangManager::new();
+        mgr.add_group(gang_with_sections(
+            "A",
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        ));
+        mgr.add_group(gang_with_sections(
+            "B",
+            vec![ChannelId::Input(2), ChannelId::Input(3)],
+            HashSet::from([ParameterSection::Eq]),
+        ));
+        assert!(!mgr.has_overlap_conflicts());
+        assert_eq!(mgr.count_overlap_conflict_channels(), 0);
+    }
+
+    #[test]
+    fn overlap_when_shared_channel_and_shared_section() {
+        let mut mgr = GangManager::new();
+        mgr.add_group(gang_with_sections(
+            "A",
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan, ParameterSection::Eq]),
+        ));
+        mgr.add_group(gang_with_sections(
+            "B",
+            vec![ChannelId::Input(2), ChannelId::Input(3)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        ));
+        assert!(mgr.has_overlap_conflicts());
+        // Only Input(2) is in both gangs.
+        assert_eq!(mgr.count_overlap_conflict_channels(), 1);
+    }
+
+    #[test]
+    fn paused_or_disabled_gang_does_not_count_as_overlap() {
+        let mut mgr = GangManager::new();
+        mgr.add_group(gang_with_sections(
+            "A",
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        ));
+        let mut b = gang_with_sections(
+            "B",
+            vec![ChannelId::Input(2), ChannelId::Input(3)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        );
+        b.paused = true;
+        mgr.add_group(b);
+        assert!(!mgr.has_overlap_conflicts());
+
+        // Same with disabled.
+        let mut mgr2 = GangManager::new();
+        mgr2.add_group(gang_with_sections(
+            "A",
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        ));
+        let mut c = gang_with_sections(
+            "C",
+            vec![ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        );
+        c.enabled = false;
+        mgr2.add_group(c);
+        assert!(!mgr2.has_overlap_conflicts());
+    }
+
+    #[test]
+    fn overlap_count_dedupes_channels_across_pairs() {
+        let mut mgr = GangManager::new();
+        mgr.add_group(gang_with_sections(
+            "A",
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        ));
+        mgr.add_group(gang_with_sections(
+            "B",
+            vec![ChannelId::Input(2), ChannelId::Input(3)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        ));
+        mgr.add_group(gang_with_sections(
+            "C",
+            vec![ChannelId::Input(2), ChannelId::Input(4)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        ));
+        // Input(2) is in all three; should be counted once.
+        assert_eq!(mgr.count_overlap_conflict_channels(), 1);
     }
 }

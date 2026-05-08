@@ -783,6 +783,46 @@ impl eframe::App for HiJackApp {
                 });
         }
 
+        // Gang overlap warning — fires (regardless of active tab)
+        // whenever two or more *active* gangs share a channel AND
+        // share at least one linked section. That's a configuration
+        // bug: a parameter change on the shared channel propagates
+        // through both gangs in the same dispatch cycle, and any
+        // difference between the two paths becomes a race. Always
+        // visible until the operator untangles the gangs in the
+        // Gangs tab.
+        let overlap_count = self
+            .runtime
+            .block_on(self.gang_manager.read())
+            .count_overlap_conflict_channels();
+        if overlap_count > 0 {
+            egui::TopBottomPanel::bottom("gangs_overlap_warning")
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(super::theme::ACCENT_AMBER)
+                        .inner_margin(egui::Margin::symmetric(10, 6)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("⚠ GANG OVERLAP")
+                                .strong()
+                                .color(super::theme::BG_DARK),
+                        );
+                        let plural = if overlap_count == 1 { "" } else { "s" };
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "— {overlap_count} channel{plural} appear in multiple active \
+                                 gangs sharing parameters. Propagation will fight; remove the \
+                                 overlap in the Gangs tab.",
+                            ))
+                            .color(super::theme::BG_DARK),
+                        );
+                    });
+                });
+        }
+
         // Main content
         egui::CentralPanel::default().show(ctx, |ui| {
             // Reset transient per-tab state when the user navigates away.
