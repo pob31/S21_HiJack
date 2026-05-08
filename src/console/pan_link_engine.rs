@@ -75,6 +75,16 @@ impl PanLinkEngine {
     /// channels is interesting; everything else is a no-op.
     pub async fn process_pan_update(&self, addr: &ParameterAddress, new_value: &ParameterValue) {
         let writes = self.compute_pan_writes(addr, new_value).await;
+        if !writes.is_empty() {
+            // info-level so it's visible without enabling debug, but
+            // doesn't fire on every parameter — only when we actually
+            // have aux pan writes to push.
+            tracing::info!(
+                source = %addr,
+                writes = writes.len(),
+                "PanLink: propagating to aux send pan(s)",
+            );
+        }
         for (target, value) in writes {
             self.send_to_console(&target, &value).await;
         }

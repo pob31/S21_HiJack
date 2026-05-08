@@ -349,7 +349,17 @@ fn draw_inputs_panel(
                             _ => None,
                         })
                         .unwrap_or_default();
-                    if draw_input_tile(ui, ch, &name, selected, has_link).clicked() {
+                    let pan = state
+                        .get(&ParameterAddress {
+                            channel: ChannelId::Input(ch),
+                            parameter: ParameterPath::Pan,
+                        })
+                        .and_then(|v| match v {
+                            ParameterValue::Float(f) => Some(*f),
+                            ParameterValue::Int(i) => Some(*i as f32),
+                            _ => None,
+                        });
+                    if draw_input_tile(ui, ch, &name, selected, has_link, pan).clicked() {
                         clicked_input = Some(ch);
                     }
                 }
@@ -474,6 +484,7 @@ fn draw_input_tile(
     name: &str,
     selected: bool,
     has_link: bool,
+    pan: Option<f32>,
 ) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(TILE_SIZE, egui::Sense::click());
     let painter = ui.painter_at(rect);
@@ -499,7 +510,7 @@ fn draw_input_tile(
 
     // Channel number — top line.
     painter.text(
-        egui::pos2(rect.center().x, rect.min.y + 14.0),
+        egui::pos2(rect.center().x, rect.min.y + 13.0),
         egui::Align2::CENTER_CENTER,
         format!("Input {ch}"),
         egui::FontId::proportional(13.0),
@@ -507,7 +518,7 @@ fn draw_input_tile(
     );
     if !name.is_empty() {
         painter.text(
-            egui::pos2(rect.center().x, rect.min.y + 34.0),
+            egui::pos2(rect.center().x, rect.min.y + 29.0),
             egui::Align2::CENTER_CENTER,
             name,
             egui::FontId::proportional(11.0),
@@ -515,21 +526,56 @@ fn draw_input_tile(
         );
     }
 
-    // Has-link dot — small green disc in the bottom-right corner. Visible
-    // regardless of selection so the operator sees which inputs are wired
-    // even when nothing is currently selected. Outlined with the dark
-    // background so it stays legible on both the saturated (selected)
+    // Has-link dot — small green disc in the top-right corner. Moved
+    // up from the bottom-right so it doesn't collide with the pan
+    // slider rendered along the bottom edge. Outlined with the dark
+    // background so it stays legible on both saturated (selected)
     // and dimmed (unselected) tile fills.
     if has_link {
-        let center = egui::pos2(rect.max.x - 9.0, rect.max.y - 9.0);
-        painter.circle_filled(center, 5.0, theme::ACCENT_GREEN);
-        painter.circle_stroke(center, 5.0, egui::Stroke::new(1.0, theme::BG_DARK));
+        let center = egui::pos2(rect.max.x - 8.0, rect.min.y + 8.0);
+        painter.circle_filled(center, 4.0, theme::ACCENT_GREEN);
+        painter.circle_stroke(center, 4.0, egui::Stroke::new(1.0, theme::BG_DARK));
     }
 
-    let hover = if name.is_empty() {
-        format!("Input {ch}")
-    } else {
-        format!("Input {ch} — {name}")
+    // Pan slider — bidirectional, mirrors the desk's tile graphic:
+    // black inactive track, white active track from centre to thumb,
+    // white thumb dot. Rendered along the bottom edge of the tile.
+    if let Some(pan_val) = pan {
+        let track_h = 4.0;
+        let track_y = rect.max.y - 7.0;
+        let pad_x = 8.0;
+        let track_left = rect.min.x + pad_x;
+        let track_right = rect.max.x - pad_x;
+        let track_center_x = rect.center().x;
+        let track_rect = egui::Rect::from_min_max(
+            egui::pos2(track_left, track_y - track_h / 2.0),
+            egui::pos2(track_right, track_y + track_h / 2.0),
+        );
+        painter.rect_filled(track_rect, track_h / 2.0, theme::BG_DARK);
+
+        let pan_clamped = pan_val.clamp(-1.0, 1.0);
+        let half_w = (track_right - track_left) / 2.0;
+        let thumb_x = track_center_x + half_w * pan_clamped;
+        if pan_clamped.abs() > 0.001 {
+            let (active_left, active_right) = if pan_clamped > 0.0 {
+                (track_center_x, thumb_x)
+            } else {
+                (thumb_x, track_center_x)
+            };
+            let active_rect = egui::Rect::from_min_max(
+                egui::pos2(active_left, track_y - track_h / 2.0),
+                egui::pos2(active_right, track_y + track_h / 2.0),
+            );
+            painter.rect_filled(active_rect, 0.0, theme::TEXT_PRIMARY);
+        }
+        painter.circle_filled(egui::pos2(thumb_x, track_y), 3.5, theme::TEXT_PRIMARY);
+    }
+
+    let hover = match (name.is_empty(), pan) {
+        (true, Some(p)) => format!("Input {ch} — pan {p:+.2}"),
+        (true, None) => format!("Input {ch}"),
+        (false, Some(p)) => format!("Input {ch} — {name} (pan {p:+.2})"),
+        (false, None) => format!("Input {ch} — {name}"),
     };
     response.on_hover_text(hover)
 }
