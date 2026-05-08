@@ -753,18 +753,37 @@ pub fn draw_setup_tab(
 
                         ui.label(egui::RichText::new("Channel Configuration").color(theme::TEXT_SECONDARY).small());
                         ui.add_space(2.0);
-                        ui.horizontal_wrapped(|ui| {
-                            theme::colored_badge(ui, &format!("Inputs: {}", cfg.input_channel_count), theme::CH_INPUT);
-                            theme::colored_badge(ui, &format!("Aux: {}", cfg.aux_output_count), theme::CH_AUX);
-                            theme::colored_badge(ui, &format!("Groups: {}", cfg.group_output_count), theme::CH_GROUP);
-                            theme::colored_badge(ui, &format!("Matrix: {}", cfg.matrix_output_count), theme::CH_MATRIX);
-                            theme::colored_badge(ui, &format!("CGs: {}", cfg.control_group_count), theme::CH_CG);
-                        });
-                        ui.add_space(2.0);
-                        ui.horizontal_wrapped(|ui| {
-                            theme::colored_badge(ui, &format!("GEQ: {}", cfg.graphic_eq_count), theme::CH_MATRIX);
-                            theme::colored_badge(ui, &format!("Mtx In: {}", cfg.matrix_input_count), theme::CH_MATRIX);
-                            theme::colored_badge(ui, &format!("Params: {}", st.parameter_count()), theme::ACCENT_BLUE);
+                        // 5 channel-count pills sized to fit 3 per row
+                        // with the panel's item_spacing as the gutter,
+                        // then a Params pill on its own right-justified
+                        // row at half the panel width (room for 5-digit
+                        // values up to ~12000).
+                        let panel_w = ui.available_width();
+                        let item_spacing = ui.spacing().item_spacing.x;
+                        let badge_w = ((panel_w - 2.0 * item_spacing) / 3.0).max(40.0);
+                        let badges = [
+                            (format!("Inputs: {}", cfg.input_channel_count), theme::CH_INPUT),
+                            (format!("Aux: {}", cfg.aux_output_count), theme::CH_AUX),
+                            (format!("Groups: {}", cfg.group_output_count), theme::CH_GROUP),
+                            (format!("Matrix: {}", cfg.matrix_output_count), theme::CH_MATRIX),
+                            (format!("CGs: {}", cfg.control_group_count), theme::CH_CG),
+                        ];
+                        for chunk in badges.chunks(3) {
+                            ui.horizontal(|ui| {
+                                for (text, color) in chunk {
+                                    theme::colored_badge_sized(ui, text, *color, badge_w);
+                                }
+                            });
+                            ui.add_space(2.0);
+                        }
+                        // Params on its own row, right-justified.
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            theme::colored_badge_sized(
+                                ui,
+                                &format!("Params: {}", st.parameter_count()),
+                                theme::ACCENT_BLUE,
+                                panel_w * 0.5,
+                            );
                         });
                     }
                 });

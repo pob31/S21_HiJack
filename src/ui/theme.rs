@@ -228,6 +228,24 @@ pub fn colored_badge(ui: &mut egui::Ui, text: &str, bg_color: egui::Color32) {
     ui.painter().galley(text_pos, text_galley, TEXT_PRIMARY);
 }
 
+/// Same as [`colored_badge`] but with an explicit width — useful for
+/// laying out N evenly-sized badges per row. Height is derived from the
+/// font + standard vertical padding so badges in the same row line up.
+pub fn colored_badge_sized(ui: &mut egui::Ui, text: &str, bg_color: egui::Color32, width: f32) {
+    let padding_y = 4.0;
+    let text_galley = ui.painter().layout_no_wrap(
+        text.to_string(),
+        egui::FontId::proportional(FONT_SIZE_BADGE),
+        TEXT_PRIMARY,
+    );
+    let height = text_galley.size().y + padding_y * 2.0;
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(width, height), egui::Sense::hover());
+
+    ui.painter().rect_filled(rect, 4.0, bg_color);
+    let text_pos = rect.center() - text_galley.size() / 2.0;
+    ui.painter().galley(text_pos, text_galley, TEXT_PRIMARY);
+}
+
 /// DiGiCo-style action button with colored fill.
 pub fn action_button(text: &str, color: egui::Color32, size: egui::Vec2) -> egui::Button<'_> {
     egui::Button::new(egui::RichText::new(text).color(TEXT_PRIMARY).strong())
