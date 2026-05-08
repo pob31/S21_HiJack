@@ -919,7 +919,7 @@ pub fn draw_setup_tab(
                             };
                             egui::ComboBox::from_id_salt("nic_select")
                                 .selected_text(&current_label)
-                                .width(w_hub - LABEL_COL_W - 30.0)
+                                .width(action_row_w)
                                 .show_ui(ui, |ui| {
                                     if ui
                                         .selectable_label(

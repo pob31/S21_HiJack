@@ -318,11 +318,21 @@ pub fn draw_gangs_tab(
                     |ui| {
                         ui.set_min_width(LEFT_COL_W);
                         ui.set_max_width(LEFT_COL_W);
+                        // Wrap each row's label in add_sized to the
+                        // same row height (26 px) as the text field /
+                        // combobox so labels and inputs are vertically
+                        // centred — egui Grid otherwise top-aligns the
+                        // shorter label against the taller input,
+                        // making the input look offset downward.
+                        const ROW_H: f32 = 26.0;
+                        let row_label = |ui: &mut egui::Ui, text: &str| {
+                            ui.add_sized([0.0, ROW_H], egui::Label::new(text));
+                        };
                         egui::Grid::new("add_gang_grid")
                             .num_columns(2)
                             .spacing([10.0, 6.0])
                             .show(ui, |ui| {
-                                ui.label("Name:");
+                                row_label(ui, "Name:");
                                 theme::padded_text_edit(
                                     ui,
                                     &mut tab.new_gang_name,
@@ -332,7 +342,7 @@ pub fn draw_gangs_tab(
                                 );
                                 ui.end_row();
 
-                                ui.label("Channel type:");
+                                row_label(ui, "Channel type:");
                                 // Match the Name / Members text fields:
                                 //  * width 240 (set via `.width(240.0)`)
                                 //  * height ≈ 26 via button_padding.y
@@ -365,7 +375,7 @@ pub fn draw_gangs_tab(
                                 });
                                 ui.end_row();
 
-                                ui.label("Members:");
+                                row_label(ui, "Members:");
                                 let hint =
                                     if tab.new_gang_channel_type == ChannelTypeSelection::Mixed {
                                         "I1-4,A1-2,G5"
