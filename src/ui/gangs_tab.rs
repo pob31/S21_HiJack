@@ -383,7 +383,16 @@ pub fn draw_gangs_tab(
                                 //    field as the surrounding TextEdits
                                 //    rather than a lighter button.
                                 ui.scope(|ui| {
-                                    ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 3.0);
+                                    // pad_y=3 → button 25 → row driven
+                                    // by label (26) → combobox content
+                                    // sat 0.5 px above label.
+                                    // pad_y=4 → button 27 → row driven
+                                    // by combobox (27) → combobox sat
+                                    // 0.5 px below label.
+                                    // pad_y=3.5 → button 26, matches
+                                    // label cell exactly → centres
+                                    // align on the same pixel.
+                                    ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 3.5);
                                     let visuals = ui.visuals_mut();
                                     visuals.widgets.inactive.bg_fill = theme::BG_INPUT;
                                     visuals.widgets.inactive.weak_bg_fill = theme::BG_INPUT;
