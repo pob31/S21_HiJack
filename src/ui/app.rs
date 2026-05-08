@@ -514,6 +514,12 @@ impl HiJackApp {
 
 impl eframe::App for HiJackApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // First-frame init: install embedded fonts (NotoSans fallback so
+        // Unicode arrows / symbols don't tofu) before the style pass.
+        // `OnceLock` keeps it cheap on subsequent frames.
+        static FONTS_INSTALLED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        FONTS_INSTALLED.get_or_init(|| super::fonts::install_fonts(ctx));
+
         // Store context on first frame for async repaint
         let _ = self.egui_ctx.set(ctx.clone());
 

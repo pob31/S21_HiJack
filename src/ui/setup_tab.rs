@@ -282,6 +282,15 @@ const SAT_FRAME_PAD: f32 = 20.0;
 /// Total horizontal padding consumed by `theme::card_frame()` with
 /// `outer_margin = 0` (Server hub: `inner_margin = 12` per side).
 const HUB_FRAME_PAD: f32 = 24.0;
+/// Per-frame stroke overhead — `Frame::stroke` draws 1 px on each side
+/// outside the allocated content rect. egui's `allocate_rect` reserves
+/// only `inner_margin + outer_margin`, so stroke effectively pushes the
+/// rendered footprint 2 px wider than the math suggests. Counted three
+/// times (Console + Server + iPad) when sizing the top row.
+const FRAME_STROKE_PAD: f32 = 2.0;
+/// Small safety pad for AA / sub-pixel rounding so the iPad section's
+/// right edge never quite reaches the Connection card's inner edge.
+const LAYOUT_SAFETY: f32 = 4.0;
 /// Min height for the three top-row sections (Console / Server / iPad).
 /// Sized to accommodate Console's max content (4 grid rows + iPad-protocol
 /// status + identity grid + 2 wrapped channel-config badge rows). Server +
@@ -362,11 +371,13 @@ fn port_edit_visible(
 /// constants block above for the scaling rules.
 ///
 /// `available_width` is the *outer* card-body width that the diagram must fit
-/// inside. The 3 top-row frames consume an extra `2 * SAT_FRAME_PAD +
-/// HUB_FRAME_PAD = 64 px` of inner-margin padding on top of the content
-/// widths, so we subtract that overhead before solving for `w_sat`/`w_hub`.
+/// inside. The 3 top-row frames consume an overhead of inner-margin plus 1 px
+/// stroke each side, plus a small AA / rounding pad, on top of the content
+/// widths — see `frame_overhead` below.
 fn compute_diagram_widths(available_width: f32) -> (f32, f32, f32) {
-    let frame_overhead = 2.0 * SAT_FRAME_PAD + HUB_FRAME_PAD;
+    let frame_overhead = 2.0 * (SAT_FRAME_PAD + FRAME_STROKE_PAD)
+        + (HUB_FRAME_PAD + FRAME_STROKE_PAD)
+        + LAYOUT_SAFETY;
     let avail = (available_width - frame_overhead).max(0.0);
     let target = (avail - 2.0 * SECT_GAP).max(0.0);
     let max_total = 2.0 * MAX_W_SAT + MAX_W_HUB;
@@ -669,12 +680,12 @@ pub fn draw_setup_tab(
                                 "",
                                 "Console port — daemon sends GP OSC here.",
                             );
-                            ui.label(egui::RichText::new("<").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("←").color(theme::TEXT_SECONDARY));
                             ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
                             ui.end_row();
 
                             ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
-                            ui.label(egui::RichText::new(">").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("→").color(theme::TEXT_SECONDARY));
                             port_edit_enabled(
                                 ui,
                                 &mut setup.local_port,
@@ -698,7 +709,7 @@ pub fn draw_setup_tab(
                             );
                             ui.add_visible(
                                 uses_ipad,
-                                egui::Label::new(egui::RichText::new("<").color(theme::TEXT_SECONDARY)),
+                                egui::Label::new(egui::RichText::new("←").color(theme::TEXT_SECONDARY)),
                             );
                             ui.add_visible(
                                 uses_ipad,
@@ -712,7 +723,7 @@ pub fn draw_setup_tab(
                             );
                             ui.add_visible(
                                 uses_ipad,
-                                egui::Label::new(egui::RichText::new(">").color(theme::TEXT_SECONDARY)),
+                                egui::Label::new(egui::RichText::new("→").color(theme::TEXT_SECONDARY)),
                             );
                             port_edit_visible(
                                 ui,
@@ -1213,7 +1224,7 @@ pub fn draw_setup_tab(
                                     ui.end_row();
 
                                     ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
-                                    ui.label(egui::RichText::new(">").color(theme::TEXT_SECONDARY));
+                                    ui.label(egui::RichText::new("→").color(theme::TEXT_SECONDARY));
                                     port_edit_enabled(
                                         ui,
                                         &mut setup.ipad_reply_port,
@@ -1230,7 +1241,7 @@ pub fn draw_setup_tab(
                                         "",
                                         "Local port the daemon listens on for iPad→daemon traffic.",
                                     );
-                                    ui.label(egui::RichText::new("<").color(theme::TEXT_SECONDARY));
+                                    ui.label(egui::RichText::new("←").color(theme::TEXT_SECONDARY));
                                     ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
                                     ui.end_row();
                                 });
@@ -1259,15 +1270,20 @@ pub fn draw_setup_tab(
                 // Same zero-item-spacing trick as the top row so the offset
                 // arithmetic below matches the actual rendered positions.
                 ui.spacing_mut().item_spacing.x = 0.0;
-                // Bottom row inherits the top row's `gap` so QLab / Monitor
-                // stay anchored to the centers of the Console–Server and
-                // Server–iPad gaps regardless of window width. Offsets use
-                // *rendered* section widths (content + frame inner_margin)
-                // so the bottom alignment matches the top row pixel-exact.
-                let sat_rendered = w_sat + SAT_FRAME_PAD;
-                let hub_rendered = w_hub + HUB_FRAME_PAD;
-                let qlab_lead = (sat_rendered + gap) / 2.0;
-                let inner_gap = hub_rendered - sat_rendered + gap;
+                // Bottom row anchors QLab / Monitor at the *boundaries* of
+                // the central Server hub:
+                //   QLab.center    = Server.left_edge
+                //   Monitor.center = Server.right_edge
+                // Top-row x layout:  Console=[0, S], gap, Server=[S+g, S+g+H],
+                //                    gap, iPad=[S+2g+H, 2S+2g+H].
+                // QLab.left = (S+g) − S/2 = S/2 + g
+                // Monitor.left − QLab.right = (S/2 + g + H) − (3S/2 + g) = H − S
+                // Rendered widths include inner_margin + stroke so they
+                // match what egui actually allocates.
+                let sat_rendered = w_sat + SAT_FRAME_PAD + FRAME_STROKE_PAD;
+                let hub_rendered = w_hub + HUB_FRAME_PAD + FRAME_STROKE_PAD;
+                let qlab_lead = sat_rendered / 2.0 + gap;
+                let inner_gap = (hub_rendered - sat_rendered).max(0.0);
 
                 if show_qlab {
                     ui.add_space(qlab_lead);
@@ -1309,12 +1325,12 @@ pub fn draw_setup_tab(
                                 "",
                                 "Local port the daemon listens on for cue triggers from QLab.",
                             );
-                            ui.label(egui::RichText::new("<").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("←").color(theme::TEXT_SECONDARY));
                             ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
                             ui.end_row();
 
                             ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
-                            ui.label(egui::RichText::new(">").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("→").color(theme::TEXT_SECONDARY));
                             port_edit_enabled(
                                 ui,
                                 &mut setup.qlab_port,
@@ -1356,7 +1372,7 @@ pub fn draw_setup_tab(
                                 "off",
                                 "Local port for the Flutter monitor app — leave blank to disable.",
                             );
-                            ui.label(egui::RichText::new("<->").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("↔").color(theme::TEXT_SECONDARY));
                             ui.label(
                                 egui::RichText::new("any LAN client").color(theme::TEXT_SECONDARY),
                             );

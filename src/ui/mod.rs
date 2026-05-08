@@ -1,5 +1,6 @@
 pub mod app;
 pub mod cue_transport;
+pub mod fonts;
 pub mod gangs_tab;
 pub mod inspector_tab;
 pub mod macros_tab;
