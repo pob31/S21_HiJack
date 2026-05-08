@@ -230,6 +230,30 @@ pub fn ensure_show_file_extension(path: &mut String) {
     path.push_str(".s21show");
 }
 
+/// Compact a show-file path for display: `…/<filename>` when the path
+/// has a parent directory, just the filename otherwise. Empty paths
+/// pass through unchanged so the field reads as empty in the UI.
+pub fn truncate_show_path(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    let p = std::path::Path::new(path);
+    match p.file_name() {
+        Some(name) => {
+            let has_parent = p
+                .parent()
+                .map(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(false);
+            if has_parent {
+                format!("…/{}", name.to_string_lossy())
+            } else {
+                name.to_string_lossy().into_owned()
+            }
+        }
+        None => path.to_string(),
+    }
+}
+
 // ── Connection diagram layout constants ──
 //
 // Five framed sections form a W: Console + Server + iPad on top,
@@ -952,33 +976,60 @@ pub fn draw_setup_tab(
                     server_grid("server_show_file_grid").show(ui, |ui| {
                         ui.label("Show file:");
                         ui.horizontal(|ui| {
-                            theme::padded_text_edit(
-                                ui,
-                                &mut setup.show_file_path,
-                                w_hub - LABEL_COL_W - 120.0,
-                                true,
-                                "",
+                            // Display only the filename with a leading
+                            // "…/" so a long path doesn't blow out the
+                            // panel. The full path stays in
+                            // `setup.show_file_path` (source of truth);
+                            // we render a non-interactive TextEdit so
+                            // the look matches an editable field, with
+                            // the full path on hover.
+                            let mut display = truncate_show_path(&setup.show_file_path);
+                            // Size the field so [Open…] lands directly
+                            // above the rightmost button (New) in the
+                            // action row below: edit + gap + Open
+                            // equals 4*button + 3*gaps.
+                            let spacing_x = ui.spacing().item_spacing.x;
+                            const ACTION_BTN_W: f32 = 80.0;
+                            let action_row_w = 4.0 * ACTION_BTN_W + 3.0 * spacing_x;
+                            let edit_w = action_row_w - ACTION_BTN_W - spacing_x;
+                            let resp = ui.add_sized(
+                                [edit_w, theme::TEXT_EDIT_HEIGHT],
+                                egui::TextEdit::singleline(&mut display)
+                                    .margin(theme::TEXT_EDIT_MARGIN)
+                                    .interactive(false),
                             );
-                            if ui
-                                .add(theme::action_button(
-                                    "Open…",
-                                    theme::BG_ELEVATED,
-                                    egui::Vec2::new(80.0, 26.0),
-                                ))
-                                .on_hover_text(
-                                    "Pick an existing show file to load. Use Load to \
-                                     actually load it; Save As… to save to a new path.",
-                                )
-                                .clicked()
-                            {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Show files", &["s21show", "json"])
-                                    .add_filter("All files", &["*"])
-                                    .pick_file()
-                                {
-                                    setup.show_file_path = path.display().to_string();
-                                }
+                            if !setup.show_file_path.is_empty() {
+                                resp.on_hover_text(setup.show_file_path.clone());
                             }
+                            // Compact button padding here so the Open
+                            // button renders at the same height as the
+                            // text field above (default button_padding
+                            // of 12x8 makes it ~30 px tall, breaking
+                            // the row's vertical centring).
+                            ui.scope(|ui| {
+                                ui.spacing_mut().button_padding =
+                                    egui::Vec2::new(8.0, 4.0);
+                                if ui
+                                    .add(theme::action_button(
+                                        "Open…",
+                                        theme::BG_ELEVATED,
+                                        egui::Vec2::new(80.0, theme::TEXT_EDIT_HEIGHT),
+                                    ))
+                                    .on_hover_text(
+                                        "Pick an existing show file to load. Use Load to \
+                                         actually load it; Save As… to save to a new path.",
+                                    )
+                                    .clicked()
+                                {
+                                    if let Some(path) = rfd::FileDialog::new()
+                                        .add_filter("Show files", &["s21show", "json"])
+                                        .add_filter("All files", &["*"])
+                                        .pick_file()
+                                    {
+                                        setup.show_file_path = path.display().to_string();
+                                    }
+                                }
+                            });
                         });
                         ui.end_row();
                     });
