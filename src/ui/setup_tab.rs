@@ -297,7 +297,10 @@ const LAYOUT_SAFETY: f32 = 4.0;
 /// iPad fill any extra space below their content.
 const MIN_TOP_HEIGHT: f32 = 480.0;
 /// Min height for the two bottom-row sections (QLab / Monitor).
-const MIN_BOT_HEIGHT: f32 = 140.0;
+/// Sized to comfortably exceed both panels' natural content heights so
+/// they render at the same height — Monitor (Server↔Mobile/Web row only)
+/// would otherwise be much shorter than QLab (IP + 3-row port grid).
+const MIN_BOT_HEIGHT: f32 = 180.0;
 /// Width of every port-number `TextEdit` in the W-diagram. Chosen wide
 /// enough to display 5-digit ports (53000, 8001, 8025, …) plus the
 /// 6 px inner margin without truncation. Forced via `ui.add_sized`
@@ -995,14 +998,16 @@ pub fn draw_setup_tab(
                             // the look matches an editable field, with
                             // the full path on hover.
                             let mut display = truncate_show_path(&setup.show_file_path);
-                            // Size the field so [Open…] lands directly
-                            // above the rightmost button (New) in the
-                            // action row below: edit + gap + Open
-                            // equals 4*button + 3*gaps.
+                            // Size the field + Open button so the row
+                            // matches the action row below: 3 buttons
+                            // sized from `w_hub` (so they always fit).
+                            // edit + gap + Open == 3*btn + 2*gaps  →
+                            // edit = 2*btn + 1*gap. Open's right edge
+                            // lines up with New's right edge.
                             let spacing_x = ui.spacing().item_spacing.x;
-                            const ACTION_BTN_W: f32 = 80.0;
-                            let action_row_w = 4.0 * ACTION_BTN_W + 3.0 * spacing_x;
-                            let edit_w = action_row_w - ACTION_BTN_W - spacing_x;
+                            let action_btn_w =
+                                ((w_hub - subrow_indent - 2.0 * spacing_x) / 3.0).max(50.0);
+                            let edit_w = 2.0 * action_btn_w + spacing_x;
                             let resp = ui.add_sized(
                                 [edit_w, theme::TEXT_EDIT_HEIGHT],
                                 egui::TextEdit::singleline(&mut display)
@@ -1024,11 +1029,11 @@ pub fn draw_setup_tab(
                                     .add(theme::action_button(
                                         "Open…",
                                         theme::BG_ELEVATED,
-                                        egui::Vec2::new(80.0, theme::TEXT_EDIT_HEIGHT),
+                                        egui::Vec2::new(action_btn_w, theme::TEXT_EDIT_HEIGHT),
                                     ))
                                     .on_hover_text(
-                                        "Pick an existing show file to load. Use Load to \
-                                         actually load it; Save As… to save to a new path.",
+                                        "Pick a show file and load it. Save As… to save to \
+                                         a new path.",
                                     )
                                     .clicked()
                                 {
@@ -1038,6 +1043,11 @@ pub fn draw_setup_tab(
                                         .pick_file()
                                     {
                                         setup.show_file_path = path.display().to_string();
+                                        load_show_file(
+                                            setup, state, cue_manager, macro_manager,
+                                            monitor_manager, palette_manager, gang_manager,
+                                            pan_link_bindings, connected, runtime, ui_tx,
+                                        );
                                     }
                                 }
                             });
@@ -1045,25 +1055,25 @@ pub fn draw_setup_tab(
                         ui.end_row();
                     });
                     ui.add_space(4.0);
-                    // Action buttons indented to align with the path TextEdit
-                    // above. Single-word labels keep them compact; the
-                    // "Show file:" header plus their accent colours convey
-                    // intent without redundant "Show" suffix.
+                    // Action buttons indented to align with the path
+                    // TextEdit above, sized from `w_hub` so the row
+                    // never overflows the Server panel. (Pushing past
+                    // w_hub used to widen the Server frame, which
+                    // cascaded into iPad clipping the right edge of
+                    // the Connection card.)
+                    // 3 buttons (Save / Save As… / New). Load was
+                    // dropped — Open… now picks AND loads in one step,
+                    // which is what most operators expect from a file
+                    // picker anyway.
+                    let spacing_x = ui.spacing().item_spacing.x;
+                    let action_btn_w =
+                        ((w_hub - subrow_indent - 2.0 * spacing_x) / 3.0).max(50.0);
                     ui.horizontal(|ui| {
                         ui.add_space(subrow_indent);
-                        let load_btn = theme::action_button(
-                            "Load",
-                            theme::ACCENT_BLUE,
-                            egui::Vec2::new(80.0, 28.0),
-                        );
-                        if ui.add(load_btn).clicked() {
-                            load_show_file(setup, state, cue_manager, macro_manager, monitor_manager, palette_manager, gang_manager, pan_link_bindings, connected, runtime, ui_tx);
-                        }
-
                         let save_btn = theme::action_button(
                             "Save",
                             theme::ACCENT_GREEN,
-                            egui::Vec2::new(80.0, 28.0),
+                            egui::Vec2::new(action_btn_w, 28.0),
                         );
                         if ui
                             .add(save_btn)
@@ -1097,7 +1107,7 @@ pub fn draw_setup_tab(
                         let save_as_btn = theme::action_button(
                             "Save As…",
                             theme::ACCENT_GREEN,
-                            egui::Vec2::new(80.0, 28.0),
+                            egui::Vec2::new(action_btn_w, 28.0),
                         );
                         if ui
                             .add(save_as_btn)
@@ -1140,7 +1150,7 @@ pub fn draw_setup_tab(
                         let new_btn = theme::action_button(
                             "New",
                             theme::ACCENT_ORANGE,
-                            egui::Vec2::new(80.0, 28.0),
+                            egui::Vec2::new(action_btn_w, 28.0),
                         );
                         if ui.add(new_btn).clicked() {
                             let cue_mgr = cue_manager.clone();
