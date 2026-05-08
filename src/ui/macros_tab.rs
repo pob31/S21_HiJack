@@ -454,50 +454,73 @@ fn draw_macro_list(
         .id_salt("macro_list_scroll")
         .max_height(200.0)
         .show(ui, |ui| {
-            for (id, name, is_qt, step_count) in list.iter() {
+            for (id, name, _is_qt, step_count) in list.iter() {
                 let selected = macros_state.selected_macro_id == Some(*id);
+
+                // Allocate the row rect first so we can interact with
+                // the whole strip — gives us precise hover detection
+                // without the click-target / hover-area mismatch the
+                // earlier `interact` chain produced.
+                let row_height = 24.0;
+                let row_w = ui.available_width();
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(row_w, row_height), egui::Sense::click());
+
+                // Background: bright when selected, hover-highlight
+                // when the pointer is over the row, faint panel
+                // otherwise. Selection also gets a blue left border
+                // to make the active row unmistakable.
                 let bg = if selected {
+                    theme::BG_ELEVATED
+                } else if response.hovered() {
+                    // Halfway between panel and elevated so the row
+                    // visibly responds to the pointer without
+                    // looking selected.
                     theme::BG_ELEVATED
                 } else {
                     theme::BG_PANEL
                 };
+                let painter = ui.painter_at(rect);
+                painter.rect_filled(rect, 4.0, bg);
+                if selected {
+                    painter.rect_stroke(
+                        rect,
+                        4.0,
+                        egui::Stroke::new(1.5, theme::ACCENT_BLUE),
+                        egui::StrokeKind::Inside,
+                    );
+                }
 
-                egui::Frame::new()
-                    .fill(bg)
-                    .stroke(if selected {
-                        egui::Stroke::new(1.0, theme::ACCENT_BLUE)
-                    } else {
-                        egui::Stroke::NONE
-                    })
-                    .corner_radius(4.0)
-                    .inner_margin(egui::Margin::symmetric(8, 3))
-                    .show(ui, |ui| {
-                        let response = ui
-                            .horizontal(|ui| {
-                                if *is_qt {
-                                    theme::colored_badge(ui, "QT", theme::COLOR_MACRO_BUTTON);
-                                }
-                                ui.label(
-                                    egui::RichText::new(name)
-                                        .strong()
-                                        .color(theme::TEXT_PRIMARY),
-                                );
-                                ui.label(
-                                    egui::RichText::new(format!("{} steps", step_count))
-                                        .color(theme::TEXT_SECONDARY)
-                                        .small(),
-                                );
-                            })
-                            .response;
+                // Pointer cursor on hover so the row feels clickable.
+                if response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
 
-                        if response.interact(egui::Sense::click()).clicked() {
-                            macros_state.selected_macro_id = Some(*id);
-                            macros_state.step_mode_edits.clear();
-                            macros_state.step_value_edits.clear();
-                            macros_state.step_delay_edits.clear();
-                        }
-                    });
-                ui.add_space(1.0);
+                // Render the label + step count inside the row rect.
+                let text_y = rect.center().y;
+                painter.text(
+                    egui::pos2(rect.min.x + 10.0, text_y),
+                    egui::Align2::LEFT_CENTER,
+                    name,
+                    egui::FontId::proportional(14.0),
+                    theme::TEXT_PRIMARY,
+                );
+                let count_label = format!("{} steps", step_count);
+                painter.text(
+                    egui::pos2(rect.max.x - 10.0, text_y),
+                    egui::Align2::RIGHT_CENTER,
+                    count_label,
+                    egui::FontId::proportional(12.0),
+                    theme::TEXT_SECONDARY,
+                );
+
+                if response.clicked() {
+                    macros_state.selected_macro_id = Some(*id);
+                    macros_state.step_mode_edits.clear();
+                    macros_state.step_value_edits.clear();
+                    macros_state.step_delay_edits.clear();
+                }
+                ui.add_space(2.0);
             }
         });
 }
@@ -525,21 +548,13 @@ fn draw_action_buttons(
             }
         }
 
-        // Toggle Quick Trigger
-        let qt_btn = theme::action_button(
-            "Toggle QT",
-            theme::COLOR_MACRO_BUTTON,
-            egui::Vec2::new(90.0, 28.0),
-        );
-        if ui.add_enabled(has_selection, qt_btn).clicked() {
-            if let Some(id) = macros_state.selected_macro_id {
-                let mgr_clone = macro_manager.clone();
-                runtime.spawn(async move {
-                    let mut mgr = mgr_clone.write().await;
-                    mgr.toggle_quick_trigger(id);
-                });
-            }
-        }
+        // (The "Toggle QT" / Quick Trigger button used to live here.
+        // It surfaced macros in the now-removed Live tab's quick-
+        // trigger bar; without that bar, the toggle had no UI
+        // consumer. The flag itself stays in `MacroManager` /
+        // show files for backward-compat round-trips, but the
+        // button is gone since macros will be driven externally
+        // (e.g. Streamdeck) when that lands.)
 
         // Delete
         let del_btn =
@@ -660,9 +675,13 @@ fn draw_step_editor(
                 .color(theme::TEXT_SECONDARY),
         );
     } else {
+        // Reserve enough vertical room below the scroll for the
+        // Add Step section (heading + 2 horizontal rows + button +
+        // elevated_frame margins ≈ 160 px). 200 leaves a comfortable
+        // gap so the Add Step button is never clipped at the bottom.
         egui::ScrollArea::vertical()
             .id_salt("step_editor_scroll")
-            .max_height(ui.available_height() - 140.0)
+            .max_height((ui.available_height() - 200.0).max(80.0))
             .show(ui, |ui| {
                 for (i, (addr, _mode, _delay)) in steps.iter().enumerate() {
                     theme::elevated_frame().show(ui, |ui| {
@@ -723,27 +742,50 @@ fn draw_step_editor(
                             }
                         });
 
-                        // Reorder + delete + keep-only buttons
+                        // Reorder + delete + keep-only buttons. Use
+                        // text labels rather than `▲ ▼ ✕ ⊙` glyphs —
+                        // the bundled egui font doesn't ship with
+                        // those characters and they render as empty
+                        // boxes on this build.
                         ui.horizontal(|ui| {
-                            if i > 0 && ui.small_button("▲").clicked() {
+                            if i > 0
+                                && ui
+                                    .small_button("Up")
+                                    .on_hover_text("Move this step up")
+                                    .clicked()
+                            {
                                 action = Some(StepAction::MoveUp(i));
                             }
-                            if i < step_count - 1 && ui.small_button("▼").clicked() {
+                            if i < step_count - 1
+                                && ui
+                                    .small_button("Dn")
+                                    .on_hover_text("Move this step down")
+                                    .clicked()
+                            {
                                 action = Some(StepAction::MoveDown(i));
                             }
-                            if ui.small_button("✕").clicked() {
+                            if ui
+                                .small_button("Del")
+                                .on_hover_text("Delete this step")
+                                .clicked()
+                            {
                                 action = Some(StepAction::Delete(i));
                             }
-                            // Keep only this step's value for its (channel,
-                            // parameter) — drops every other step in the
-                            // macro that targets the same address. Useful
-                            // when a Learn-mode recording captured several
-                            // intermediate fader positions and the operator
-                            // only wants to keep the final one.
-                            let keep_btn = ui.small_button("⊙").on_hover_text(
-                                "Keep only this step for its (channel, parameter); remove the rest",
-                            );
-                            if keep_btn.clicked() {
+                            // Keep only this step's value for its
+                            // (channel, parameter) — drops every other
+                            // step in the macro that targets the same
+                            // address. Useful when a Learn-mode
+                            // recording captured several intermediate
+                            // fader positions and the operator only
+                            // wants to keep the final one.
+                            if ui
+                                .small_button("Keep")
+                                .on_hover_text(
+                                    "Keep only this step for its (channel, parameter); \
+                                     remove the rest",
+                                )
+                                .clicked()
+                            {
                                 action = Some(StepAction::KeepOnly(i));
                             }
                         });
