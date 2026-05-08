@@ -395,7 +395,7 @@ pub fn draw_gangs_tab(
                                     .inner_margin(egui::Margin {
                                         left: 0,
                                         right: 0,
-                                        top: -2,
+                                        top: -5,
                                         bottom: 0,
                                     })
                                     .show(ui, |ui| {
