@@ -509,24 +509,31 @@ pub fn draw_gangs_tab(
 
         ui.add_space(8.0);
 
-        // ── Gang list card ── wrapped in its own ScrollArea so the list
-        // can grow without pushing the form above it off-screen.
-        // `set_min_width(available)` is applied at every nesting level
-        // — Frames in egui size to their content by default, so without
-        // these explicit hints the gang-list card and each per-gang
-        // frame would shrink to the width of their longest row instead
-        // of spanning the window.
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let scroll_w = ui.available_width();
-                ui.set_min_width(scroll_w);
-                ui.set_max_width(scroll_w);
-                theme::card_frame().show(ui, |ui| {
-                    let card_w = ui.available_width();
-                    ui.set_min_width(card_w);
-                    ui.set_max_width(card_w);
-                    theme::section_heading(ui, "Gang Groups");
+        // ── Gang list card ── card_frame wraps a fixed "Gang Groups"
+        // heading at the top with an embedded ScrollArea below it, so
+        // the heading stays visible while the list scrolls. Putting
+        // the ScrollArea inside the card (instead of wrapping the
+        // card in the scroll) is what keeps the heading sticky —
+        // when the operator scrolls through many gangs they still see
+        // which section they're in.
+        //
+        // `set_min_width(available)` is applied at every nesting
+        // level — Frames in egui size to their content by default, so
+        // without these explicit hints the gang-list card and each
+        // per-gang frame would shrink to the width of their longest
+        // row instead of spanning the window.
+        theme::card_frame().show(ui, |ui| {
+            let card_w = ui.available_width();
+            ui.set_min_width(card_w);
+            ui.set_max_width(card_w);
+            theme::section_heading(ui, "Gang Groups");
+
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let scroll_w = ui.available_width();
+                    ui.set_min_width(scroll_w);
+                    ui.set_max_width(scroll_w);
 
                     let groups: Vec<GangGroup> = mgr.sorted_groups().into_iter().cloned().collect();
                     drop(mgr);
@@ -737,7 +744,7 @@ pub fn draw_gangs_tab(
                         }
                     }
                 });
-            });
+        });
     });
 }
 
