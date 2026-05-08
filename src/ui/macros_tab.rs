@@ -296,9 +296,38 @@ pub fn draw_macros_tab(
                 .id_salt("macros_left_scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    // Learn mode card
-                    theme::card_frame().show(ui, |ui| {
-                        draw_learn_section(ui, macros_state, macro_manager, runtime, ui_tx);
+                    // ── Top row: Learn Mode | Stream Deck ──
+                    // Two compact cards side-by-side, each ~half the
+                    // column. The Learn card has a single tall button
+                    // (Learn Mode otherwise wastes vertical space on
+                    // its own row); the Stream Deck card sits in the
+                    // empty gap with Enable + Setup…
+                    let row_w = ui.available_width();
+                    let inter = ui.spacing().item_spacing.x;
+                    let cell_w = ((row_w - inter) / 2.0).max(120.0);
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui(egui::Vec2::new(cell_w, 0.0), |ui| {
+                            ui.set_min_width(cell_w);
+                            ui.set_max_width(cell_w);
+                            theme::card_frame().show(ui, |ui| {
+                                ui.set_min_width(cell_w - 24.0);
+                                draw_learn_section(ui, macros_state, macro_manager, runtime, ui_tx);
+                            });
+                        });
+                        ui.allocate_ui(egui::Vec2::new(cell_w, 0.0), |ui| {
+                            ui.set_min_width(cell_w);
+                            ui.set_max_width(cell_w);
+                            theme::card_frame().show(ui, |ui| {
+                                ui.set_min_width(cell_w - 24.0);
+                                draw_streamdeck_launcher(
+                                    ui,
+                                    macros_state,
+                                    streamdeck_engine,
+                                    streamdeck_config,
+                                    runtime,
+                                );
+                            });
+                        });
                     });
 
                     ui.add_space(8.0);
@@ -371,22 +400,6 @@ pub fn draw_macros_tab(
                         ui.add_space(2.0);
                         ui.colored_label(theme::TEXT_WARNING, msg);
                     }
-
-                    ui.add_space(8.0);
-
-                    // Stream Deck launcher: tiny status dot + button
-                    // that opens the popup. The full Stream Deck UI
-                    // lives in a floating window — keeps the (narrow,
-                    // scrollable) left column clean and works at any
-                    // device size including XL's 4×8 grid which would
-                    // never fit inline.
-                    draw_streamdeck_launcher(
-                        ui,
-                        macros_state,
-                        streamdeck_engine,
-                        streamdeck_config,
-                        runtime,
-                    );
                 });
         });
 
@@ -1647,14 +1660,15 @@ fn draw_streamdeck_launcher(
     macros_state: &mut MacrosTabState,
     engine: &Arc<crate::console::streamdeck_engine::StreamDeckEngine>,
     config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
-    _runtime: &tokio::runtime::Handle,
+    runtime: &tokio::runtime::Handle,
 ) {
     let cfg_snapshot = config
         .try_read()
         .ok()
         .map(|c| c.clone())
         .unwrap_or_default();
-    let dot_color = if engine.is_connected() {
+    let connected = engine.is_connected();
+    let dot_color = if connected {
         theme::COLOR_CONNECTED
     } else if cfg_snapshot.enabled {
         theme::COLOR_CONNECTING
@@ -1662,24 +1676,77 @@ fn draw_streamdeck_launcher(
         theme::TEXT_DISABLED
     };
 
+    // Card heading with right-aligned status dot.
     ui.horizontal(|ui| {
-        theme::status_dot(ui, dot_color);
-        ui.add_space(4.0);
-        if ui
-            .add(theme::action_button(
-                "Stream Deck…",
-                theme::BG_ELEVATED,
-                egui::Vec2::new(140.0, 28.0),
-            ))
-            .on_hover_text(
-                "Open the Stream Deck control panel — \
-                 device selection, button grid, per-button macro sequences.",
-            )
-            .clicked()
-        {
-            macros_state.streamdeck_popup_open = !macros_state.streamdeck_popup_open;
-        }
+        theme::section_heading(ui, "Stream Deck");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            theme::status_dot(ui, dot_color);
+        });
     });
+
+    // ── Enable / Disable toggle ──
+    let toggle_label = if cfg_snapshot.enabled {
+        "Disable"
+    } else {
+        "Enable"
+    };
+    let toggle_color = if cfg_snapshot.enabled {
+        theme::ACCENT_RED
+    } else {
+        theme::ACCENT_GREEN
+    };
+    if ui
+        .add(theme::action_button(
+            toggle_label,
+            toggle_color,
+            egui::Vec2::new(120.0, 32.0),
+        ))
+        .on_hover_text(if cfg_snapshot.enabled {
+            "Disable the Stream Deck integration. Disconnects the \
+             device but preserves your button maps."
+        } else {
+            "Enable the Stream Deck integration. Auto-connects to the \
+             previously-selected device if it's plugged in; otherwise \
+             open Setup… to pick one."
+        })
+        .clicked()
+    {
+        let new_enabled = !cfg_snapshot.enabled;
+        let cfg = config.clone();
+        runtime.spawn(async move {
+            cfg.write().await.enabled = new_enabled;
+        });
+        if new_enabled {
+            // Auto-connect to the saved serial if it's currently
+            // plugged in; otherwise stay in idle and let Setup pick.
+            if let Some(serial) = cfg_snapshot.device_serial.clone() {
+                let available = engine.available_devices();
+                if available.iter().any(|d| d.serial == serial) {
+                    engine.connect(serial);
+                }
+            }
+        } else {
+            engine.disconnect();
+        }
+    }
+
+    ui.add_space(4.0);
+
+    // ── Setup… opens the floating panel ──
+    if ui
+        .add(theme::action_button(
+            "Setup…",
+            theme::BG_ELEVATED,
+            egui::Vec2::new(120.0, 28.0),
+        ))
+        .on_hover_text(
+            "Open the Stream Deck panel — device selection, button \
+             grid, per-button macro sequences.",
+        )
+        .clicked()
+    {
+        macros_state.streamdeck_popup_open = !macros_state.streamdeck_popup_open;
+    }
 }
 
 /// Floating window with the full Stream Deck UI: enable toggle,
@@ -1704,8 +1771,9 @@ fn draw_streamdeck_popup(
         .open(&mut open)
         .resizable(true)
         .collapsible(false)
-        .default_width(520.0)
+        .default_width(420.0)
         .min_width(320.0)
+        .max_width(900.0)
         .show(ctx, |ui| {
             draw_streamdeck_panel(ui, macros_state, engine, config, macro_manager, runtime);
         });
@@ -1841,7 +1909,9 @@ fn draw_streamdeck_panel(
         let cols = c.column_count.max(1) as f32;
         let rows = c.row_count.max(1) as usize;
         let spacing = 4.0_f32;
-        let cell_w = ((avail_w - spacing * (cols - 1.0)) / cols).clamp(40.0, 96.0);
+        // Match the device's actual LCD pixel size (72 px on MK1) —
+        // no point rendering bigger than the real button on screen.
+        let cell_w = ((avail_w - spacing * (cols - 1.0)) / cols).clamp(40.0, 72.0);
         let cell_h = cell_w;
 
         // Cache macro names for the labels.
