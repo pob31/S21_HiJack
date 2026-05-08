@@ -332,7 +332,7 @@ pub fn draw_gangs_tab(
                                 );
                                 ui.end_row();
 
-                                ui.label("Channel Type:");
+                                ui.label("Channel type:");
                                 egui::ComboBox::from_id_salt("gang_channel_type")
                                     .selected_text(tab.new_gang_channel_type.label())
                                     .show_ui(ui, |ui| {
