@@ -1689,13 +1689,28 @@ fn draw_streamdeck_launcher(
         theme::TEXT_DISABLED
     };
 
-    // Card heading with right-aligned status dot.
+    // Card heading: title text + right-aligned status dot, then a
+    // separator line below — mirrors `theme::section_heading`'s look
+    // but inlines the dot so the separator paints across the full row
+    // (a plain `section_heading` inside a `ui.horizontal` runs the
+    // separator next to the title on the same row instead).
     ui.horizontal(|ui| {
-        theme::section_heading(ui, "Stream Deck");
+        ui.label(
+            egui::RichText::new("Stream Deck")
+                .size(theme::FONT_SIZE_SECTION)
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             theme::status_dot(ui, dot_color);
         });
     });
+    ui.add_space(2.0);
+    let sep_w = ui.available_width();
+    let (sep_rect, _) = ui.allocate_exact_size(egui::Vec2::new(sep_w, 1.0), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(sep_rect, 0.0, theme::BORDER_SUBTLE);
+    ui.add_space(6.0);
 
     // ── Enable + Setup buttons on a single row ──
     let toggle_label = if cfg_snapshot.enabled {
@@ -1713,7 +1728,7 @@ fn draw_streamdeck_launcher(
             .add(theme::action_button(
                 toggle_label,
                 toggle_color,
-                egui::Vec2::new(58.0, 28.0),
+                egui::Vec2::new(58.0, 32.0),
             ))
             .on_hover_text(if cfg_snapshot.enabled {
                 "Disable the Stream Deck integration. Disconnects the \
@@ -1747,7 +1762,7 @@ fn draw_streamdeck_launcher(
             .add(theme::action_button(
                 "Setup…",
                 theme::BG_ELEVATED,
-                egui::Vec2::new(58.0, 28.0),
+                egui::Vec2::new(58.0, 32.0),
             ))
             .on_hover_text(
                 "Open the Stream Deck panel — device selection, \
@@ -1817,62 +1832,66 @@ fn draw_streamdeck_panel(
     // strictly for device selection + per-button editing.
 
     // ── Device combo ──
-    if enabled {
-        let selected_label = match (cfg_snapshot.device_serial.as_deref(), connected.as_ref()) {
-            (_, Some(c)) => c.label.clone(),
-            (Some(s), None) => available
-                .iter()
-                .find(|d| d.serial == s)
-                .map(|d| format!("{} (not connected)", d.label))
-                .unwrap_or_else(|| format!("{s} (unplugged)")),
-            (None, None) => {
-                if available.is_empty() {
-                    "No device detected".into()
-                } else {
-                    "Select device…".into()
-                }
+    // Always rendered, regardless of `enabled`. Selecting a device
+    // here saves the serial to config; the actual `engine.connect`
+    // only fires when the integration is enabled (otherwise the
+    // selection just persists for next time).
+    let selected_label = match (cfg_snapshot.device_serial.as_deref(), connected.as_ref()) {
+        (_, Some(c)) => c.label.clone(),
+        (Some(s), None) => available
+            .iter()
+            .find(|d| d.serial == s)
+            .map(|d| format!("{} (not connected)", d.label))
+            .unwrap_or_else(|| format!("{s} (unplugged)")),
+        (None, None) => {
+            if available.is_empty() {
+                "No device detected".into()
+            } else {
+                "Select device…".into()
             }
-        };
-        ui.horizontal(|ui| {
-            ui.add_sized([60.0, 26.0], egui::Label::new("Device:"));
-            ui.scope(|ui| {
-                ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
-                egui::ComboBox::from_id_salt("streamdeck_device")
-                    .width(200.0)
-                    .selected_text(selected_label)
-                    .show_ui(ui, |ui| {
-                        for dev in &available {
-                            let is_selected =
-                                cfg_snapshot.device_serial.as_deref() == Some(dev.serial.as_str());
-                            let label = format!("{}  ({})", dev.label, dev.serial);
-                            if ui.selectable_label(is_selected, label).clicked() {
-                                let serial = dev.serial.clone();
-                                let cfg = config.clone();
-                                let s = serial.clone();
-                                runtime.spawn(async move {
-                                    cfg.write().await.device_serial = Some(s);
-                                });
+        }
+    };
+    ui.horizontal(|ui| {
+        ui.add_sized([60.0, 26.0], egui::Label::new("Device:"));
+        ui.scope(|ui| {
+            ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
+            egui::ComboBox::from_id_salt("streamdeck_device")
+                .width(220.0)
+                .selected_text(selected_label)
+                .show_ui(ui, |ui| {
+                    for dev in &available {
+                        let is_selected =
+                            cfg_snapshot.device_serial.as_deref() == Some(dev.serial.as_str());
+                        let label = format!("{}  ({})", dev.label, dev.serial);
+                        if ui.selectable_label(is_selected, label).clicked() {
+                            let serial = dev.serial.clone();
+                            let cfg = config.clone();
+                            let s = serial.clone();
+                            runtime.spawn(async move {
+                                cfg.write().await.device_serial = Some(s);
+                            });
+                            if enabled {
                                 engine.connect(serial);
                             }
                         }
-                        if available.is_empty() {
-                            ui.colored_label(
-                                theme::TEXT_SECONDARY,
-                                "(no Stream Deck found — plug one in)",
-                            );
-                        }
-                    });
-            });
+                    }
+                    if available.is_empty() {
+                        ui.colored_label(
+                            theme::TEXT_SECONDARY,
+                            "(no Stream Deck found — plug one in)",
+                        );
+                    }
+                });
         });
-    }
+    });
 
     ui.add_space(4.0);
 
     // ── Status line ──
-    let status = match &connected {
-        Some(c) => format!("Connected: {}", c.label),
-        None if enabled => "Disconnected".into(),
-        None => "Off".into(),
+    let status = match (&connected, enabled) {
+        (Some(c), _) => format!("Connected: {}", c.label),
+        (None, true) => "Disconnected".into(),
+        (None, false) => "Disabled — turn it on from the Macros tab.".into(),
     };
     ui.colored_label(
         if connected.is_some() {
