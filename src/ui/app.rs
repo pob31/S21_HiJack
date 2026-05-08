@@ -741,6 +741,48 @@ impl eframe::App for HiJackApp {
                 });
         }
 
+        // Setup-tab console-IP / NIC mismatch warning — fires when a
+        // specific NIC is selected and the console IP isn't reachable
+        // from it under a /16 mask (first two octets differ). Click
+        // anywhere on the strip to dismiss; same as clicking the ⚠
+        // icon next to the IP edit. Re-evaluated whenever the IP or
+        // NIC changes.
+        if self.active_tab == Tab::Setup
+            && super::setup_tab::console_ip_mismatch(&self.setup)
+            && !self.setup.console_ip_warning_dismissed
+        {
+            egui::TopBottomPanel::bottom("setup_console_ip_warning")
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(super::theme::ACCENT_AMBER)
+                        .inner_margin(egui::Margin::symmetric(10, 6)),
+                )
+                .show(ctx, |ui| {
+                    let inner = ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("⚠ NETWORK")
+                                .strong()
+                                .color(super::theme::BG_DARK),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                "— console IP is not on the selected NIC's network. \
+                                 Pick a different NIC or change the console IP to match. \
+                                 Click here to dismiss.",
+                            )
+                            .color(super::theme::BG_DARK),
+                        );
+                    });
+                    // Make the whole strip clickable so the operator
+                    // can dismiss without aiming at the small ⚠ icon.
+                    let dismiss_resp = inner.response.interact(egui::Sense::click());
+                    if dismiss_resp.clicked() {
+                        self.setup.console_ip_warning_dismissed = true;
+                    }
+                });
+        }
+
         // Main content
         egui::CentralPanel::default().show(ctx, |ui| {
             // Reset transient per-tab state when the user navigates away.

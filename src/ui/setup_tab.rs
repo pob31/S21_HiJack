@@ -92,6 +92,12 @@ pub struct SetupTabState {
     /// Phase 3 — drives the centered "Parameter coverage" popup window.
     /// Runtime-only; not persisted.
     pub show_coverage_popup: bool,
+    /// Suppresses the "console IP not on the selected NIC's network"
+    /// warning (red ⚠ next to the IP edit + amber strip at the
+    /// bottom). Set when the operator clicks either dismissal site;
+    /// cleared whenever the console IP or selected NIC changes so the
+    /// warning re-evaluates. Runtime-only; not persisted.
+    pub console_ip_warning_dismissed: bool,
 }
 
 impl SetupTabState {
@@ -145,8 +151,61 @@ impl SetupTabState {
             show_diagnostics: prefs.show_diagnostics,
             show_first_run_popup: prefs.ui_mode.is_none(),
             show_coverage_popup: false,
+            console_ip_warning_dismissed: false,
         }
     }
+}
+
+/// CLI default for the console IP — used as a sentinel by the
+/// NIC-selection auto-fill: if the operator hasn't customised the
+/// console IP yet, picking a NIC will rewrite the first three octets
+/// to match the chosen interface.
+pub const DEFAULT_CONSOLE_IP: &str = "192.168.1.1";
+
+/// Split an IPv4 address into its four octets as string slices.
+/// Returns `None` if the input doesn't have exactly four
+/// dot-separated parts (e.g. while the user is mid-edit).
+fn ipv4_parts(ip: &str) -> Option<[&str; 4]> {
+    let mut iter = ip.splitn(4, '.');
+    let a = iter.next()?;
+    let b = iter.next()?;
+    let c = iter.next()?;
+    let d = iter.next()?;
+    if a.is_empty() || b.is_empty() || c.is_empty() || d.is_empty() {
+        return None;
+    }
+    Some([a, b, c, d])
+}
+
+/// True when both `a` and `b` parse as IPv4 and share their first two
+/// octets — i.e. they're reachable from each other under a /16 mask
+/// (lenient bound; /24 is the common case but /16 catches more).
+fn first_two_octets_match(a: &str, b: &str) -> bool {
+    match (ipv4_parts(a), ipv4_parts(b)) {
+        (Some(pa), Some(pb)) => pa[0] == pb[0] && pa[1] == pb[1],
+        _ => false,
+    }
+}
+
+/// Replace the first three octets of `target` with those of `source`,
+/// preserving `target`'s last octet. Used by the NIC auto-fill so
+/// picking a NIC like `10.0.5.20` rewrites the default `192.168.1.1`
+/// to `10.0.5.1`. Returns `target` unchanged if either side isn't a
+/// valid four-octet IPv4 string.
+fn align_first_three_octets(target: &str, source: &str) -> String {
+    let Some(t) = ipv4_parts(target) else {
+        return target.to_string();
+    };
+    let Some(s) = ipv4_parts(source) else {
+        return target.to_string();
+    };
+    format!("{}.{}.{}.{}", s[0], s[1], s[2], t[3])
+}
+
+/// True when the operator has selected a specific NIC and the console
+/// IP is on a different /16 — i.e. the warning should fire.
+pub fn console_ip_mismatch(setup: &SetupTabState) -> bool {
+    !setup.local_ip.is_empty() && !first_two_octets_match(&setup.local_ip, &setup.console_ip)
 }
 
 // ── Connection diagram layout constants ──
@@ -477,14 +536,46 @@ pub fn draw_setup_tab(
                 peer_section(ui, "Console (S21)", theme::ACCENT_BLUE, w_sat, MIN_TOP_HEIGHT, false, console_status, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("IP:");
-                        theme::padded_text_edit(
+                        let mismatch = console_ip_mismatch(setup);
+                        let show_warn_icon = mismatch && !setup.console_ip_warning_dismissed;
+                        // Reserve 24 px on the right of the edit for the
+                        // warning icon button. Keeping it constant avoids
+                        // the edit width jumping when the warning appears
+                        // or is dismissed.
+                        let edit_w = w_sat - 100.0 - 24.0;
+                        let resp = theme::padded_text_edit(
                             ui,
                             &mut setup.console_ip,
-                            w_sat - 100.0,
+                            edit_w,
                             !is_connected,
                             "",
                         )
                         .on_hover_text("S21 console IP address.");
+                        if resp.changed() {
+                            // Operator edited the IP — let the warning
+                            // re-evaluate against the new value.
+                            setup.console_ip_warning_dismissed = false;
+                        }
+                        if show_warn_icon {
+                            let warn_btn = egui::Button::new(
+                                egui::RichText::new("⚠")
+                                    .color(theme::ACCENT_RED)
+                                    .strong(),
+                            )
+                            .frame(false)
+                            .min_size(egui::Vec2::new(20.0, 20.0));
+                            if ui
+                                .add(warn_btn)
+                                .on_hover_text(
+                                    "Console IP isn't on the selected NIC's network \
+                                     (first two octets differ — unreachable even with /16). \
+                                     Click to dismiss.",
+                                )
+                                .clicked()
+                            {
+                                setup.console_ip_warning_dismissed = true;
+                            }
+                        }
                     });
                     ui.add_space(6.0);
 
@@ -715,6 +806,9 @@ pub fn draw_setup_tab(
                                     {
                                         setup.local_ip.clear();
                                         setup.interface_name = None;
+                                        // Selection changed — let the
+                                        // mismatch warning re-evaluate.
+                                        setup.console_ip_warning_dismissed = false;
                                     }
                                     for iface in &interfaces {
                                         let label = iface.label();
@@ -722,6 +816,18 @@ pub fn draw_setup_tab(
                                         if ui.selectable_label(selected, &label).clicked() {
                                             setup.local_ip = iface.ip.to_string();
                                             setup.interface_name = Some(iface.name.clone());
+                                            // If the operator hasn't
+                                            // customised the console IP
+                                            // yet, rewrite the first
+                                            // three octets to match
+                                            // the chosen NIC.
+                                            if setup.console_ip == DEFAULT_CONSOLE_IP {
+                                                setup.console_ip = align_first_three_octets(
+                                                    &setup.console_ip,
+                                                    &setup.local_ip,
+                                                );
+                                            }
+                                            setup.console_ip_warning_dismissed = false;
                                         }
                                     }
                                 });
@@ -1996,4 +2102,43 @@ fn draw_first_run_popup(ui: &mut egui::Ui, setup: &mut SetupTabState) {
                 });
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_two_octets_match_under_slash_16() {
+        assert!(first_two_octets_match("192.168.1.1", "192.168.5.42"));
+        assert!(first_two_octets_match("10.0.5.20", "10.0.99.1"));
+        assert!(!first_two_octets_match("192.168.1.1", "10.0.0.1"));
+        assert!(!first_two_octets_match("192.168.1.1", "192.169.1.1"));
+        // Garbage / partial input → no match.
+        assert!(!first_two_octets_match("not-an-ip", "192.168.1.1"));
+        assert!(!first_two_octets_match("", "192.168.1.1"));
+    }
+
+    #[test]
+    fn align_first_three_octets_preserves_last() {
+        assert_eq!(
+            align_first_three_octets("192.168.1.1", "10.0.5.20"),
+            "10.0.5.1"
+        );
+        assert_eq!(
+            align_first_three_octets("192.168.1.42", "172.16.99.1"),
+            "172.16.99.42"
+        );
+        // No-op when source already matches.
+        assert_eq!(
+            align_first_three_octets("192.168.1.1", "192.168.1.10"),
+            "192.168.1.1"
+        );
+        // Bad input → return target unchanged.
+        assert_eq!(align_first_three_octets("garbage", "10.0.0.1"), "garbage");
+        assert_eq!(
+            align_first_three_octets("192.168.1.1", "garbage"),
+            "192.168.1.1"
+        );
+    }
 }
