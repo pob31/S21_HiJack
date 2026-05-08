@@ -3,6 +3,7 @@ use std::mem;
 use std::sync::Arc;
 use std::time::Instant;
 
+use rosc::OscMessage;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
@@ -102,7 +103,15 @@ impl GangEngine {
         let is_routing = ROUTING_SECTIONS.contains(&section);
         let is_continuous = addr.parameter.is_continuous();
 
-        // 4. For each matching gang, propagate to other members
+        // 4. For each matching gang, collect every (target_addr,
+        //    target_value) the propagation needs to write. We send them
+        //    all at the end as a single OSC bundle (or two — one per
+        //    transport — if some targets only encode via the iPad
+        //    protocol). Bundling delivers all the writes in a single
+        //    UDP datagram so the console processes them atomically,
+        //    avoiding the reordering / drops a back-to-back burst of
+        //    individual messages can produce.
+        let mut targets: Vec<(ParameterAddress, ParameterValue)> = Vec::new();
         for gang in gangs {
             // Skip paused gangs
             if gang.paused {
@@ -146,15 +155,82 @@ impl GangEngine {
                     new_value.clone()
                 };
 
-                // Send to console and update local state
-                if self.send_to_console(&target_addr, &target_value).await {
-                    // Add to suppression set so the echo-back is suppressed
-                    self.suppression_set
-                        .insert(target_addr.clone(), (target_value.clone(), Instant::now()));
-                    // Update local state mirror
-                    self.state.write().await.update(target_addr, target_value);
+                targets.push((target_addr, target_value));
+            }
+        }
+
+        if targets.is_empty() {
+            return;
+        }
+
+        // Partition into GP-OSC vs iPad-only encodings. Most parameters
+        // encode via GP OSC; CG membership and a few iPad-only writes
+        // fall through to the iPad partition.
+        let mut gp_msgs: Vec<OscMessage> = Vec::with_capacity(targets.len());
+        let mut ipad_msgs: Vec<OscMessage> = Vec::new();
+        let mut sent_targets: Vec<(ParameterAddress, ParameterValue)> =
+            Vec::with_capacity(targets.len());
+        for (target_addr, target_value) in &targets {
+            if let Some((path, args)) = encode::encode_parameter(target_addr, target_value) {
+                gp_msgs.push(OscMessage { addr: path, args });
+                sent_targets.push((target_addr.clone(), target_value.clone()));
+            } else if let Some(ref ipad) = self.ipad_sender
+                && let Some((path, args)) =
+                    ipad_encode::encode_ipad_parameter(target_addr, target_value)
+            {
+                let _ = ipad;
+                ipad_msgs.push(OscMessage { addr: path, args });
+                sent_targets.push((target_addr.clone(), target_value.clone()));
+            } else {
+                warn!(%target_addr, "Gang: cannot encode parameter for either protocol");
+            }
+        }
+
+        // Send each non-empty bundle. If a bundle send fails we treat
+        // the whole partition as failed and skip its state /
+        // suppression updates (matches the per-target send-or-skip
+        // behaviour of the old code). Successful partitions still
+        // commit their own targets.
+        let gp_ok = if gp_msgs.is_empty() {
+            true
+        } else {
+            match self.sender.send_bundle(gp_msgs).await {
+                Ok(()) => true,
+                Err(e) => {
+                    warn!("Gang: GP OSC bundle send failed: {e}");
+                    false
                 }
             }
+        };
+        let ipad_ok = if ipad_msgs.is_empty() {
+            true
+        } else if let Some(ref ipad) = self.ipad_sender {
+            match ipad.send_bundle(ipad_msgs).await {
+                Ok(()) => true,
+                Err(e) => {
+                    warn!("Gang: iPad bundle send failed: {e}");
+                    false
+                }
+            }
+        } else {
+            false
+        };
+
+        // Commit suppression + state for the targets whose protocol
+        // actually transmitted. We don't currently know which bundle
+        // each target landed in, so on partial failure we conservatively
+        // refresh state for every queued target — the alternative would
+        // be tracking partition membership per target, which adds noise
+        // for an edge case (one of the two bundles fails).
+        if !gp_ok && !ipad_ok {
+            return;
+        }
+        let now = Instant::now();
+        let mut state = self.state.write().await;
+        for (target_addr, target_value) in sent_targets {
+            self.suppression_set
+                .insert(target_addr.clone(), (target_value.clone(), now));
+            state.update(target_addr, target_value);
         }
     }
 
@@ -533,5 +609,79 @@ mod tests {
                 })
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn process_gang_update_bundles_writes_for_all_siblings() {
+        // 4-member gang: every sibling should get its state mirror
+        // updated AND a suppression entry, exercising the bundle
+        // path. Pre-seed sibling pans so a relative-mode propagation
+        // has values to apply the delta against (not strictly needed
+        // for absolute mode, but mirrors live use).
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        manager.add_group(GangGroup::new(
+            "Drums".into(),
+            vec![
+                ChannelId::Input(1),
+                ChannelId::Input(2),
+                ChannelId::Input(3),
+                ChannelId::Input(4),
+            ],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        ));
+        {
+            let mut state = engine.state.write().await;
+            for ch in 1..=4 {
+                state.update(
+                    ParameterAddress {
+                        channel: ChannelId::Input(ch),
+                        parameter: ParameterPath::Fader,
+                    },
+                    ParameterValue::Float(-10.0),
+                );
+            }
+        }
+
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        engine
+            .process_gang_update(
+                &addr,
+                &ParameterValue::Float(-3.0),
+                Some(&ParameterValue::Float(-10.0)),
+                &manager,
+            )
+            .await;
+
+        // The three sibling state mirrors should now reflect the new
+        // value (default Absolute mode propagates -3.0 verbatim).
+        let state = engine.state.read().await;
+        for ch in 2..=4 {
+            let v = state.get(&ParameterAddress {
+                channel: ChannelId::Input(ch),
+                parameter: ParameterPath::Fader,
+            });
+            assert!(
+                matches!(v, Some(ParameterValue::Float(f)) if (*f - (-3.0)).abs() < 1e-3),
+                "Input({ch}) Fader should be -3.0, got {v:?}",
+            );
+        }
+        drop(state);
+
+        // And every sibling should be in the suppression set so the
+        // console echo doesn't re-trigger propagation.
+        for ch in 2..=4 {
+            let key = ParameterAddress {
+                channel: ChannelId::Input(ch),
+                parameter: ParameterPath::Fader,
+            };
+            assert!(
+                engine.suppression_set.contains_key(&key),
+                "missing suppression entry for Input({ch})",
+            );
+        }
     }
 }

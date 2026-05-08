@@ -84,18 +84,42 @@ impl PanLinkEngine {
     /// channels is interesting; everything else is a no-op.
     pub async fn process_pan_update(&self, addr: &ParameterAddress, new_value: &ParameterValue) {
         let writes = self.compute_pan_writes(addr, new_value).await;
-        if !writes.is_empty() {
-            // info-level so it's visible without enabling debug, but
-            // doesn't fire on every parameter — only when we actually
-            // have aux pan writes to push.
-            tracing::info!(
-                source = %addr,
-                writes = writes.len(),
-                "PanLink: propagating to aux send pan(s)",
-            );
+        if writes.is_empty() {
+            return;
         }
-        for (target, value) in writes {
-            self.send_to_console(&target, &value).await;
+        tracing::info!(
+            source = %addr,
+            writes = writes.len(),
+            "PanLink: propagating to aux send pan(s)",
+        );
+        // Partition writes by transport so we can send each protocol's
+        // chunk as a single OSC bundle. Bundling delivers all the
+        // aux send-pan writes in one UDP datagram so the console
+        // processes them atomically — avoiding the inter-packet
+        // reordering that produced the jumping aux pans operators saw.
+        let mut gp_msgs: Vec<rosc::OscMessage> = Vec::with_capacity(writes.len());
+        let mut ipad_msgs: Vec<rosc::OscMessage> = Vec::new();
+        for (target, value) in &writes {
+            if let Some((path, args)) = encode::encode_parameter(target, value) {
+                gp_msgs.push(rosc::OscMessage { addr: path, args });
+            } else if self.ipad_sender.is_some()
+                && let Some((path, args)) = ipad_encode::encode_ipad_parameter(target, value)
+            {
+                ipad_msgs.push(rosc::OscMessage { addr: path, args });
+            } else {
+                warn!(target = %target, "PanLink: cannot encode for either protocol");
+            }
+        }
+        if !gp_msgs.is_empty()
+            && let Err(e) = self.sender.send_bundle(gp_msgs).await
+        {
+            warn!("PanLink: GP OSC bundle send failed: {e}");
+        }
+        if let Some(ref ipad) = self.ipad_sender
+            && !ipad_msgs.is_empty()
+            && let Err(e) = ipad.send_bundle(ipad_msgs).await
+        {
+            warn!("PanLink: iPad bundle send failed: {e}");
         }
     }
 
