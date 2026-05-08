@@ -297,28 +297,29 @@ pub fn draw_macros_tab(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     // ── Top row: Learn Mode | Stream Deck ──
-                    // Two compact cards side-by-side, each ~half the
-                    // column. The Learn card has a single tall button
-                    // (Learn Mode otherwise wastes vertical space on
-                    // its own row); the Stream Deck card sits in the
-                    // empty gap with Enable + Setup…
+                    // The Stream Deck card is pinned to a narrow fixed
+                    // width — just enough for its title and the
+                    // Enable + Setup… button pair — so it doesn't pad
+                    // the column with dead space. Learn takes the
+                    // remaining width.
                     let row_w = ui.available_width();
                     let inter = ui.spacing().item_spacing.x;
-                    let cell_w = ((row_w - inter) / 2.0).max(120.0);
+                    const SD_W: f32 = 180.0;
+                    let learn_w = (row_w - SD_W - inter).max(160.0);
                     ui.horizontal_top(|ui| {
-                        ui.allocate_ui(egui::Vec2::new(cell_w, 0.0), |ui| {
-                            ui.set_min_width(cell_w);
-                            ui.set_max_width(cell_w);
+                        ui.allocate_ui(egui::Vec2::new(learn_w, 0.0), |ui| {
+                            ui.set_min_width(learn_w);
+                            ui.set_max_width(learn_w);
                             theme::card_frame().show(ui, |ui| {
-                                ui.set_min_width(cell_w - 24.0);
+                                ui.set_min_width(learn_w - 24.0);
                                 draw_learn_section(ui, macros_state, macro_manager, runtime, ui_tx);
                             });
                         });
-                        ui.allocate_ui(egui::Vec2::new(cell_w, 0.0), |ui| {
-                            ui.set_min_width(cell_w);
-                            ui.set_max_width(cell_w);
+                        ui.allocate_ui(egui::Vec2::new(SD_W, 0.0), |ui| {
+                            ui.set_min_width(SD_W);
+                            ui.set_max_width(SD_W);
                             theme::card_frame().show(ui, |ui| {
-                                ui.set_min_width(cell_w - 24.0);
+                                ui.set_min_width(SD_W - 24.0);
                                 draw_streamdeck_launcher(
                                     ui,
                                     macros_state,
@@ -1684,7 +1685,7 @@ fn draw_streamdeck_launcher(
         });
     });
 
-    // ── Enable / Disable toggle ──
+    // ── Enable + Setup buttons on a single row ──
     let toggle_label = if cfg_snapshot.enabled {
         "Disable"
     } else {
@@ -1695,58 +1696,56 @@ fn draw_streamdeck_launcher(
     } else {
         theme::ACCENT_GREEN
     };
-    if ui
-        .add(theme::action_button(
-            toggle_label,
-            toggle_color,
-            egui::Vec2::new(120.0, 32.0),
-        ))
-        .on_hover_text(if cfg_snapshot.enabled {
-            "Disable the Stream Deck integration. Disconnects the \
-             device but preserves your button maps."
-        } else {
-            "Enable the Stream Deck integration. Auto-connects to the \
-             previously-selected device if it's plugged in; otherwise \
-             open Setup… to pick one."
-        })
-        .clicked()
-    {
-        let new_enabled = !cfg_snapshot.enabled;
-        let cfg = config.clone();
-        runtime.spawn(async move {
-            cfg.write().await.enabled = new_enabled;
-        });
-        if new_enabled {
-            // Auto-connect to the saved serial if it's currently
-            // plugged in; otherwise stay in idle and let Setup pick.
-            if let Some(serial) = cfg_snapshot.device_serial.clone() {
-                let available = engine.available_devices();
-                if available.iter().any(|d| d.serial == serial) {
-                    engine.connect(serial);
+    ui.horizontal(|ui| {
+        if ui
+            .add(theme::action_button(
+                toggle_label,
+                toggle_color,
+                egui::Vec2::new(70.0, 28.0),
+            ))
+            .on_hover_text(if cfg_snapshot.enabled {
+                "Disable the Stream Deck integration. Disconnects the \
+                 device but preserves your button maps."
+            } else {
+                "Enable the Stream Deck integration. Auto-connects to \
+                 the previously-selected device if it's plugged in; \
+                 otherwise open Setup… to pick one."
+            })
+            .clicked()
+        {
+            let new_enabled = !cfg_snapshot.enabled;
+            let cfg = config.clone();
+            runtime.spawn(async move {
+                cfg.write().await.enabled = new_enabled;
+            });
+            if new_enabled {
+                // Auto-connect to the saved serial if it's currently
+                // plugged in; otherwise stay in idle and let Setup pick.
+                if let Some(serial) = cfg_snapshot.device_serial.clone() {
+                    let available = engine.available_devices();
+                    if available.iter().any(|d| d.serial == serial) {
+                        engine.connect(serial);
+                    }
                 }
+            } else {
+                engine.disconnect();
             }
-        } else {
-            engine.disconnect();
         }
-    }
-
-    ui.add_space(4.0);
-
-    // ── Setup… opens the floating panel ──
-    if ui
-        .add(theme::action_button(
-            "Setup…",
-            theme::BG_ELEVATED,
-            egui::Vec2::new(120.0, 28.0),
-        ))
-        .on_hover_text(
-            "Open the Stream Deck panel — device selection, button \
-             grid, per-button macro sequences.",
-        )
-        .clicked()
-    {
-        macros_state.streamdeck_popup_open = !macros_state.streamdeck_popup_open;
-    }
+        if ui
+            .add(theme::action_button(
+                "Setup…",
+                theme::BG_ELEVATED,
+                egui::Vec2::new(70.0, 28.0),
+            ))
+            .on_hover_text(
+                "Open the Stream Deck panel — device selection, \
+                 button grid, per-button macro sequences.",
+            )
+            .clicked()
+        {
+            macros_state.streamdeck_popup_open = !macros_state.streamdeck_popup_open;
+        }
+    });
 }
 
 /// Floating window with the full Stream Deck UI: enable toggle,
