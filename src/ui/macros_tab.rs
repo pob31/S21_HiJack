@@ -952,7 +952,11 @@ fn draw_step_editor(
                     };
                     let mut frame = theme::elevated_frame();
                     if is_keep_match {
-                        frame = frame.stroke(egui::Stroke::new(1.5, theme::ACCENT_RED));
+                        // Only the *color* of the stroke changes —
+                        // keeping the width at 1.0 means the highlight
+                        // doesn't shift surrounding rows or change the
+                        // box's outer size.
+                        frame = frame.stroke(egui::Stroke::new(1.0, theme::ACCENT_RED));
                     }
                     let row_inner = frame.show(ui, |ui| {
                         ui.horizontal(|ui| {
@@ -1039,12 +1043,13 @@ fn draw_step_editor(
                             if delay_resp.changed() || delay_resp.lost_focus() {
                                 action = Some(StepAction::UpdateDelay(i));
                             }
-                        });
 
-                        // Delete + Keep-only buttons. Up/Dn dropped —
-                        // the dot-grip on the row's left edge replaces
-                        // them via drag-and-drop reorder.
-                        ui.horizontal(|ui| {
+                            // Delete + Keep on the same row — Up/Dn
+                            // dropped (drag handle replaces them), so
+                            // there's plenty of horizontal room and
+                            // packing them in keeps more steps visible
+                            // without scrolling.
+                            ui.separator();
                             if ui
                                 .small_button("Del")
                                 .on_hover_text("Delete this step")
@@ -1065,7 +1070,7 @@ fn draw_step_editor(
                             // a quick "what does this do?" preview.
                             let keep_resp = ui.small_button("Keep").on_hover_text(
                                 "Keep only this step for its (channel, parameter); \
-                                     remove the rest",
+                                 remove the rest",
                             );
                             if keep_resp.hovered() {
                                 new_keep_hover_idx = Some(i);
