@@ -14,6 +14,7 @@ use crate::osc::ipad_client::{IpadClient, IpadSender};
 use crate::osc::ipad_parse::{self, ParsedIpadMessage};
 
 use super::ipad_handshake::{self, HandshakeResult};
+use super::macro_manager::MacroManager;
 
 /// Default handshake timeout.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -59,6 +60,7 @@ pub async fn connect_mode2(
     local_addr: SocketAddr,
     state: Arc<RwLock<ConsoleState>>,
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
+    macro_manager: Arc<RwLock<MacroManager>>,
     offline_mode: Arc<AtomicBool>,
     snapshot_event_tx: Option<mpsc::Sender<i32>>,
     interface_name: Option<&str>,
@@ -86,10 +88,19 @@ pub async fn connect_mode2(
     // Start background state mirror loop
     let state_clone = state.clone();
     let dirty_clone = dirty_tracker.clone();
+    let macro_clone = macro_manager.clone();
     let offline_clone = offline_mode.clone();
     let snap_tx = snapshot_event_tx.clone();
     let handle = tokio::spawn(async move {
-        ipad_state_mirror_loop(rx, state_clone, dirty_clone, offline_clone, snap_tx).await;
+        ipad_state_mirror_loop(
+            rx,
+            state_clone,
+            dirty_clone,
+            macro_clone,
+            offline_clone,
+            snap_tx,
+        )
+        .await;
     });
 
     Ok((sender, handshake_result, handle))
@@ -111,6 +122,7 @@ pub async fn connect_mode3_proxy(
     ipad_reply_port: u16,
     state: Arc<RwLock<ConsoleState>>,
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
+    macro_manager: Arc<RwLock<MacroManager>>,
     offline_mode: Arc<AtomicBool>,
     snapshot_event_tx: Option<mpsc::Sender<i32>>,
     cancel: tokio_util::sync::CancellationToken,
@@ -164,6 +176,7 @@ pub async fn connect_mode3_proxy(
 
     let capture_state = state.clone();
     let capture_dt = dirty_tracker.clone();
+    let capture_mgr = macro_manager.clone();
     let capture_snap_tx = snapshot_event_tx.clone();
     let capture_cancel = cancel.clone();
     tokio::spawn(async move {
@@ -171,6 +184,7 @@ pub async fn connect_mode3_proxy(
             capture_rx,
             capture_state,
             capture_dt,
+            capture_mgr,
             capture_snap_tx,
             capture_cancel,
         )
@@ -212,6 +226,7 @@ async fn state_capture_loop(
     mut rx: mpsc::Receiver<ProxyCapture>,
     state: Arc<RwLock<ConsoleState>>,
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
+    macro_manager: Arc<RwLock<MacroManager>>,
     snapshot_event_tx: Option<mpsc::Sender<i32>>,
     cancel: tokio_util::sync::CancellationToken,
 ) {
@@ -226,6 +241,7 @@ async fn state_capture_loop(
                         capture.direction,
                         &state,
                         &dirty_tracker,
+                        &macro_manager,
                         &snapshot_event_tx,
                     )
                     .await;
@@ -242,6 +258,7 @@ async fn ipad_state_mirror_loop(
     mut rx: tokio::sync::mpsc::Receiver<ReceivedOscMessage>,
     state: Arc<RwLock<ConsoleState>>,
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
+    macro_manager: Arc<RwLock<MacroManager>>,
     offline_mode: Arc<AtomicBool>,
     snapshot_event_tx: Option<mpsc::Sender<i32>>,
 ) {
@@ -266,6 +283,16 @@ async fn ipad_state_mirror_loop(
                 if let Some(prev) = &old {
                     if prev != &value {
                         dirty_tracker.write().await.mark(&addr);
+                    }
+                }
+                // Feed Learn-mode recording from the iPad path too.
+                // Without this the macro-recording UI would only ever
+                // capture changes that arrived via GP OSC — for an S21
+                // driven via the iPad protocol, that's nothing.
+                {
+                    let mut mgr = macro_manager.write().await;
+                    if mgr.is_recording() {
+                        mgr.record_change(addr.clone(), value.clone());
                     }
                 }
             }
@@ -446,6 +473,7 @@ async fn log_and_capture_packet(
     direction: &str,
     state: &Arc<RwLock<ConsoleState>>,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
+    macro_manager: &Arc<RwLock<MacroManager>>,
     snapshot_event_tx: &Option<mpsc::Sender<i32>>,
 ) {
     // Try standard OSC first
@@ -466,6 +494,16 @@ async fn log_and_capture_packet(
                     if let Some(prev) = &old {
                         if prev != value {
                             dirty_tracker.write().await.mark(addr);
+                        }
+                    }
+                    // Feed Learn-mode recording (Mode 3 path). Without
+                    // this, an S21 driven through the iPad proxy never
+                    // hands captured parameter changes to the macro
+                    // manager and Learn ends with zero steps.
+                    {
+                        let mut mgr = macro_manager.write().await;
+                        if mgr.is_recording() {
+                            mgr.record_change(addr.clone(), value.clone());
                         }
                     }
                 }
