@@ -1447,7 +1447,13 @@ fn draw_step_editor(
         let pad = (ui.available_height() - measured - 8.0).max(0.0);
         ui.add_space(pad);
 
+        // Stretch the frame to match the step rows above. Without
+        // this the frame sized to its content (the cascaded wizard's
+        // intrinsic width), leaving an awkward narrow box. A wider
+        // frame also makes the inner row-collapse below worthwhile.
+        let frame_w = ui.available_width();
         let add_step_resp = theme::elevated_frame().show(ui, |ui| {
+            ui.set_min_width(frame_w - 24.0);
             draw_add_step(
                 ui,
                 macros_state,
@@ -1484,32 +1490,44 @@ fn draw_add_step(
     last_received: &Arc<RwLock<Option<ParameterAddress>>>,
     runtime: &tokio::runtime::Handle,
 ) {
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("Add Step")
-                .strong()
-                .color(theme::TEXT_PRIMARY),
-        );
-        ui.add_space(8.0);
-        ui.checkbox(&mut macros_state.track_latest_osc, "Track latest OSC")
-            .on_hover_text(
-                "Mirror the most-recent inbound parameter from the console into \
-                 the form below so you can hit Add Step without retyping.",
+    // Header row: title + Kind selector + Track-latest-OSC checkbox
+    // packed onto a single line. The wider frame buys enough horizontal
+    // space for all three; collapsing them halves the section's height.
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 24.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().interact_size.y = 22.0;
+            ui.spacing_mut().button_padding = egui::vec2(8.0, 2.0);
+            ui.label(
+                egui::RichText::new("Add Step")
+                    .strong()
+                    .color(theme::TEXT_PRIMARY),
             );
-    });
-
-    // Step kind selector — drives which sub-form is rendered below.
-    ui.horizontal(|ui| {
-        ui.label("Kind:");
-        egui::ComboBox::from_id_salt("add_step_kind")
-            .width(180.0)
-            .selected_text(macros_state.add_step_kind.label())
-            .show_ui(ui, |ui| {
-                for k in AddStepKindChoice::ALL {
-                    ui.selectable_value(&mut macros_state.add_step_kind, k, k.label());
-                }
-            });
-    });
+            ui.add_space(8.0);
+            ui.label("Kind:");
+            ui.allocate_ui_with_layout(
+                egui::vec2(180.0, 22.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    egui::ComboBox::from_id_salt("add_step_kind")
+                        .width(180.0)
+                        .selected_text(macros_state.add_step_kind.label())
+                        .show_ui(ui, |ui| {
+                            for k in AddStepKindChoice::ALL {
+                                ui.selectable_value(&mut macros_state.add_step_kind, k, k.label());
+                            }
+                        });
+                },
+            );
+            ui.add_space(8.0);
+            ui.checkbox(&mut macros_state.track_latest_osc, "Track latest OSC")
+                .on_hover_text(
+                    "Mirror the most-recent inbound parameter from the console into \
+                     the form below so you can hit Add Step without retyping.",
+                );
+        },
+    );
 
     match macros_state.add_step_kind {
         AddStepKindChoice::Parameter => {
@@ -1551,26 +1569,74 @@ fn draw_add_step(
         }
     }
 
-    // Delay applies to every kind. Same fixed-height pattern as the
-    // wizard rows above so labels and TextEdit share a midline.
+    // Bottom row: Mode + Value (Parameter only) | Delay | Add Step
+    // button. Combining these saves two vertical lines vs. having
+    // them stacked; the wider frame makes packing them comfortable.
+    let mut add_clicked = false;
     ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), 24.0),
+        egui::vec2(ui.available_width(), 26.0),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             ui.spacing_mut().interact_size.y = 22.0;
             ui.spacing_mut().button_padding = egui::vec2(8.0, 2.0);
+
+            // Mode + Value only for Parameter kind.
+            if matches!(macros_state.add_step_kind, AddStepKindChoice::Parameter) {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(80.0, 22.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        egui::ComboBox::from_id_salt("add_mode")
+                            .width(80.0)
+                            .selected_text(macros_state.add_step_mode.label())
+                            .show_ui(ui, |ui| {
+                                for m in StepModeChoice::ALL {
+                                    ui.selectable_value(
+                                        &mut macros_state.add_step_mode,
+                                        m,
+                                        m.label(),
+                                    );
+                                }
+                            });
+                    },
+                );
+                if matches!(
+                    macros_state.add_step_mode,
+                    StepModeChoice::Fixed | StepModeChoice::Relative
+                ) {
+                    ui.label("Value:");
+                    ui.add_sized(
+                        [60.0, 22.0],
+                        egui::TextEdit::singleline(&mut macros_state.add_step_value),
+                    );
+                }
+                ui.separator();
+            }
+
             ui.label("Delay:");
             ui.add_sized(
                 [50.0, 22.0],
                 egui::TextEdit::singleline(&mut macros_state.add_step_delay),
             );
             ui.label("ms");
+
+            // Add Step button right-anchored so the row's left side
+            // (Mode/Value/Delay) keeps its natural left-to-right order
+            // and the green button sits at the row's far right.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let add_btn = theme::action_button(
+                    "Add Step",
+                    theme::ACCENT_GREEN,
+                    egui::Vec2::new(90.0, 24.0),
+                );
+                if ui.add(add_btn).clicked() {
+                    add_clicked = true;
+                }
+            });
         },
     );
 
-    let add_btn =
-        theme::action_button("Add Step", theme::ACCENT_GREEN, egui::Vec2::new(90.0, 28.0));
-    if ui.add(add_btn).clicked() {
+    if add_clicked {
         let delay_ms: u32 = macros_state.add_step_delay.parse().unwrap_or(0);
 
         let Some(kind) = build_step_kind(macros_state, macro_id) else {
@@ -1766,42 +1832,9 @@ fn draw_parameter_wizard(
         },
     );
 
-    ui.allocate_ui_with_layout(
-        egui::vec2(row_w, 24.0),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.spacing_mut().interact_size.y = W_H;
-            ui.spacing_mut().button_padding = egui::vec2(8.0, 2.0);
-
-            // Mode
-            ui.allocate_ui_with_layout(
-                egui::vec2(80.0, W_H),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    egui::ComboBox::from_id_salt("add_mode")
-                        .width(80.0)
-                        .selected_text(macros_state.add_step_mode.label())
-                        .show_ui(ui, |ui| {
-                            for m in StepModeChoice::ALL {
-                                ui.selectable_value(&mut macros_state.add_step_mode, m, m.label());
-                            }
-                        });
-                },
-            );
-
-            // Value (for Fixed/Relative)
-            match macros_state.add_step_mode {
-                StepModeChoice::Fixed | StepModeChoice::Relative => {
-                    ui.label("Value:");
-                    ui.add_sized(
-                        [60.0, W_H],
-                        egui::TextEdit::singleline(&mut macros_state.add_step_value),
-                    );
-                }
-                StepModeChoice::Toggle => {}
-            }
-        },
-    );
+    // Mode / Value moved to the bottom row in `draw_add_step` so they
+    // share the line with Delay + the Add Step button — the wizard
+    // here only renders the cascaded parameter-address pickers.
 }
 
 /// Mirror an inbound parameter address into the Add Step form's
