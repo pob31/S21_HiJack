@@ -300,14 +300,17 @@ mod tests {
                     steps: vec![
                         StreamDeckStep {
                             macro_id: uuid::Uuid::from_bytes([1; 16]),
+                            ..Default::default()
                         },
                         StreamDeckStep {
                             macro_id: uuid::Uuid::from_bytes([2; 16]),
+                            ..Default::default()
                         },
                     ],
                     current_step: 1,
                 },
             ],
+            user_swatches: vec![],
         };
 
         let dir = std::env::temp_dir().join("s21_hijack_test");

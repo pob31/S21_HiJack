@@ -642,49 +642,60 @@ impl HiJackApp {
                     "Stream Deck: macro engine not initialised — connect to console first".into(),
                 ));
             }
-            // Refresh the LCD with the new next-to-fire label.
-            let label = {
+            // Refresh the LCD with the new next-to-fire label + color.
+            let (label, bg) = {
                 let cfg_r = cfg.read().await;
                 let mgr = macro_mgr.read().await;
-                cfg_r
-                    .buttons
-                    .get(button_idx)
-                    .and_then(|b| b.next_step())
+                let next = cfg_r.buttons.get(button_idx).and_then(|b| b.next_step());
+                let label = next
                     .map(|s| {
                         mgr.get_macro(&s.macro_id)
                             .map(|m| m.name.clone())
                             .unwrap_or_else(|| "(deleted)".into())
                     })
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                let bg = next
+                    .map(|s| s.color)
+                    .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
+                (label, bg)
             };
-            sd_engine.refresh_button(button_idx as u8, label);
+            sd_engine.refresh_button(button_idx as u8, label, bg);
         });
     }
 
-    /// Resize the StreamDeck per-button vector to `count` (preserving
-    /// overlap), then build the per-slot label strings (next-to-fire
-    /// macro name, or "" for empty slots / deleted macros).
-    fn streamdeck_resize_and_collect_labels(&self, count: usize) -> Vec<String> {
+    /// Grow the StreamDeck per-button vector up to `count` (never
+    /// truncating — assignments past the connected device's button
+    /// count persist in the show file so switching to a smaller device
+    /// doesn't destroy them), then build the per-slot label + bg color
+    /// list for the device's visible buttons.
+    fn streamdeck_resize_and_collect_labels(
+        &self,
+        count: usize,
+    ) -> Vec<(String, crate::model::streamdeck::StepColor)> {
         // Synchronously block on the runtime to read+write — this
         // runs on the UI thread but operations are quick (memory only).
         let cfg = self.stream_deck_config.clone();
         let macro_mgr = self.macro_manager.clone();
         self.runtime.block_on(async move {
             let mut cfg_w = cfg.write().await;
-            cfg_w.buttons.resize_with(count, Default::default);
+            if cfg_w.buttons.len() < count {
+                cfg_w.buttons.resize_with(count, Default::default);
+            }
             let mgr = macro_mgr.read().await;
             (0..count)
                 .map(|i| {
-                    cfg_w
-                        .buttons
-                        .get(i)
-                        .and_then(|b| b.next_step())
+                    let next = cfg_w.buttons.get(i).and_then(|b| b.next_step());
+                    let label = next
                         .map(|s| {
                             mgr.get_macro(&s.macro_id)
                                 .map(|m| m.name.clone())
                                 .unwrap_or_else(|| "(deleted)".into())
                         })
-                        .unwrap_or_default()
+                        .unwrap_or_default();
+                    let bg = next
+                        .map(|s| s.color)
+                        .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
+                    (label, bg)
                 })
                 .collect()
         })

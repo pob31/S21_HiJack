@@ -91,6 +91,12 @@ pub struct MacrosTabState {
     /// without the hardware on the desk. Defaults to `Original`
     /// (3×5, 15 buttons).
     pub streamdeck_virtual_kind: elgato_streamdeck::info::Kind,
+    /// User explicitly picked a template from the unified device combo.
+    /// Forces the editor into template mode regardless of whether a
+    /// device serial is configured. `None` means "follow the configured
+    /// serial / connected device". Cleared when the user picks a real
+    /// device row.
+    pub streamdeck_explicit_template: Option<elgato_streamdeck::info::Kind>,
 }
 
 /// Cached step data for the currently-selected macro. Read once when the
@@ -138,6 +144,7 @@ impl Default for MacrosTabState {
             selected_streamdeck_button: None,
             streamdeck_add_step_target: None,
             streamdeck_virtual_kind: elgato_streamdeck::info::Kind::Original,
+            streamdeck_explicit_template: None,
             status_message: None,
             last_execution_info: None,
         }
@@ -1910,38 +1917,95 @@ fn draw_streamdeck_panel(
     // the Macros tab itself — not duplicated here. This panel is
     // strictly for device selection + per-button editing.
 
-    // ── Device combo ──
-    // Always rendered, regardless of `enabled`. Selecting a device
-    // here saves the serial to config; the actual `engine.connect`
-    // only fires when the integration is enabled (otherwise the
-    // selection just persists for next time).
-    let selected_label = match (cfg_snapshot.device_serial.as_deref(), connected.as_ref()) {
-        (_, Some(c)) => c.label.clone(),
-        (Some(s), None) => available
+    // ── Unified device combo: connected/available devices on top,
+    // separator, offline templates below. Selecting a real device
+    // saves the serial and (when enabled) connects; selecting a
+    // template forces template mode for offline editing without
+    // touching the configured serial — so the auto-reconnect still
+    // works when the device is plugged back in.
+    use elgato_streamdeck::info::Kind as SdKind;
+
+    let template_kinds: [SdKind; 7] = [
+        SdKind::Original,
+        SdKind::Mini,
+        SdKind::Mk2,
+        SdKind::Xl,
+        SdKind::Plus,
+        SdKind::Pedal,
+        SdKind::Neo,
+    ];
+
+    let saved_serial_kind: Option<SdKind> = cfg_snapshot
+        .device_serial
+        .as_deref()
+        .and_then(|s| available.iter().find(|d| d.serial == s).map(|d| d.kind));
+
+    // Editing layout precedence: connected > explicit template >
+    // saved serial's kind (when available) > virtual_kind fallback.
+    let kind = if let Some(c) = &connected {
+        c.kind
+    } else if let Some(k) = macros_state.streamdeck_explicit_template {
+        k
+    } else if let Some(k) = saved_serial_kind {
+        k
+    } else {
+        macros_state.streamdeck_virtual_kind
+    };
+
+    let selected_label: String = if let Some(c) = &connected {
+        c.label.clone()
+    } else if let Some(k) = macros_state.streamdeck_explicit_template {
+        format!("Template: {}", virtual_kind_label(k))
+    } else if let Some(s) = cfg_snapshot.device_serial.as_deref() {
+        available
             .iter()
             .find(|d| d.serial == s)
             .map(|d| format!("{} (not connected)", d.label))
-            .unwrap_or_else(|| format!("{s} (unplugged)")),
-        (None, None) => {
-            if available.is_empty() {
-                "No device detected".into()
-            } else {
-                "Select device…".into()
-            }
-        }
+            .unwrap_or_else(|| format!("{s} (unplugged)"))
+    } else if available.is_empty() {
+        "No device detected".into()
+    } else {
+        "Select device…".into()
     };
+
     ui.horizontal(|ui| {
         ui.add_sized([60.0, 26.0], egui::Label::new("Device:"));
         ui.scope(|ui| {
             ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
             egui::ComboBox::from_id_salt("streamdeck_device")
-                .width(220.0)
+                .width(260.0)
                 .selected_text(selected_label)
                 .show_ui(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new("Connected / Available")
+                            .small()
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                    if available.is_empty() {
+                        ui.label(
+                            egui::RichText::new("(none — plug one in)")
+                                .small()
+                                .color(theme::TEXT_SECONDARY),
+                        );
+                    }
                     for dev in &available {
-                        let is_selected =
-                            cfg_snapshot.device_serial.as_deref() == Some(dev.serial.as_str());
-                        let label = format!("{}  ({})", dev.label, dev.serial);
+                        let is_selected = connected.is_none()
+                            && macros_state.streamdeck_explicit_template.is_none()
+                            && cfg_snapshot.device_serial.as_deref() == Some(dev.serial.as_str())
+                            || connected
+                                .as_ref()
+                                .map(|c| c.serial == dev.serial)
+                                .unwrap_or(false);
+                        let suffix = if connected
+                            .as_ref()
+                            .map(|c| c.serial == dev.serial)
+                            .unwrap_or(false)
+                        {
+                            "  ● connected"
+                        } else {
+                            ""
+                        };
+                        let label = format!("{}  ({}){suffix}", dev.label, dev.serial);
                         if ui.selectable_label(is_selected, label).clicked() {
                             let serial = dev.serial.clone();
                             let cfg = config.clone();
@@ -1949,16 +2013,35 @@ fn draw_streamdeck_panel(
                             runtime.spawn(async move {
                                 cfg.write().await.device_serial = Some(s);
                             });
+                            macros_state.streamdeck_explicit_template = None;
                             if enabled {
                                 engine.connect(serial);
                             }
                         }
                     }
-                    if available.is_empty() {
-                        ui.colored_label(
-                            theme::TEXT_SECONDARY,
-                            "(no Stream Deck found — plug one in)",
-                        );
+
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("Templates (offline editing)")
+                            .small()
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                    for k in template_kinds {
+                        let is_selected = connected.is_none()
+                            && macros_state.streamdeck_explicit_template == Some(k);
+                        let label = format!("Template: {}", virtual_kind_label(k));
+                        if ui.selectable_label(is_selected, label).clicked() {
+                            macros_state.streamdeck_explicit_template = Some(k);
+                            macros_state.streamdeck_virtual_kind = k;
+                            // If a real device is currently connected,
+                            // disconnect so the template view actually
+                            // takes effect. The configured `device_serial`
+                            // is kept so plugging the device back in
+                            // auto-reconnects.
+                            if connected.is_some() {
+                                engine.disconnect();
+                            }
+                        }
                     }
                 });
         });
@@ -1980,46 +2063,6 @@ fn draw_streamdeck_panel(
         },
         status,
     );
-
-    // ── Grid kind: real device when connected, virtual when not ──
-    // This lets the operator prepare a button map offline. Connect
-    // a device later and the same indices light up — extra slots
-    // beyond the new device's button count just stay in the show
-    // file for next time.
-    use elgato_streamdeck::info::Kind as SdKind;
-    let kind = if let Some(c) = &connected {
-        c.kind
-    } else {
-        macros_state.streamdeck_virtual_kind
-    };
-
-    if connected.is_none() {
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.add_sized([60.0, 26.0], egui::Label::new("Layout:"));
-            ui.scope(|ui| {
-                ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
-                let label = virtual_kind_label(macros_state.streamdeck_virtual_kind);
-                egui::ComboBox::from_id_salt("streamdeck_virtual_kind")
-                    .width(220.0)
-                    .selected_text(label)
-                    .show_ui(ui, |ui| {
-                        for k in [
-                            SdKind::Original,
-                            SdKind::Mini,
-                            SdKind::Mk2,
-                            SdKind::Xl,
-                            SdKind::Plus,
-                            SdKind::Pedal,
-                            SdKind::Neo,
-                        ] {
-                            let l = virtual_kind_label(k);
-                            ui.selectable_value(&mut macros_state.streamdeck_virtual_kind, k, l);
-                        }
-                    });
-            });
-        });
-    }
 
     // ── Button grid + Add-step panel side-by-side ──
     ui.add_space(8.0);
@@ -2065,9 +2108,8 @@ fn draw_streamdeck_panel(
                             if idx >= key_count as usize {
                                 break;
                             }
-                            let label = buttons
-                                .get(idx)
-                                .and_then(|b| b.next_step())
+                            let next = buttons.get(idx).and_then(|b| b.next_step());
+                            let label = next
                                 .map(|s| {
                                     macro_names
                                         .get(&s.macro_id)
@@ -2075,8 +2117,20 @@ fn draw_streamdeck_panel(
                                         .unwrap_or_else(|| "(deleted)".into())
                                 })
                                 .unwrap_or_else(|| "—".into());
+                            let step_color = next
+                                .map(|s| s.color)
+                                .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
+                            let has_step = next.is_some();
                             let is_selected = selected == Some(idx);
-                            let fill = if is_selected {
+                            // Empty cell → keep the existing UI tone so
+                            // it reads as a placeholder. A populated
+                            // cell uses the step's chosen LCD color, so
+                            // the on-screen grid mirrors what shows on
+                            // the deck. Selection adds a blue stroke
+                            // ring so the active cell still pops.
+                            let fill = if has_step {
+                                step_color_to_color32(step_color)
+                            } else if is_selected {
                                 theme::ACCENT_BLUE
                             } else {
                                 theme::BG_INPUT
@@ -2086,13 +2140,17 @@ fn draw_streamdeck_panel(
                             } else {
                                 theme::BORDER_SUBTLE
                             };
+                            let text_color = if has_step {
+                                let t = step_color.contrast_text();
+                                egui::Color32::from_rgb(t.r, t.g, t.b)
+                            } else {
+                                theme::TEXT_PRIMARY
+                            };
                             let btn = egui::Button::new(
-                                egui::RichText::new(label)
-                                    .color(theme::TEXT_PRIMARY)
-                                    .small(),
+                                egui::RichText::new(label).color(text_color).small(),
                             )
                             .fill(fill)
-                            .stroke(egui::Stroke::new(1.0, stroke_color))
+                            .stroke(egui::Stroke::new(if is_selected { 2.0 } else { 1.0 }, stroke_color))
                             .corner_radius(4.0)
                             .min_size(egui::Vec2::new(cell_w, cell_h))
                             .truncate();
@@ -2172,18 +2230,32 @@ fn draw_streamdeck_panel(
                             let eng = engine.clone();
                             runtime.spawn(async move {
                                 let mut cfg_w = cfg.write().await;
+                                // Grow on demand: when editing a
+                                // template offline (no device connect
+                                // path triggered), the buttons vec may
+                                // not yet cover this index.
+                                if cfg_w.buttons.len() <= button_idx {
+                                    cfg_w
+                                        .buttons
+                                        .resize_with(button_idx + 1, Default::default);
+                                }
                                 if let Some(b) = cfg_w.buttons.get_mut(button_idx) {
                                     b.steps.push(crate::model::streamdeck::StreamDeckStep {
                                         macro_id,
+                                        ..Default::default()
                                     });
                                     let mgr_r = mgr.read().await;
-                                    let label = b
-                                        .next_step()
-                                        .and_then(|s| mgr_r.get_macro(&s.macro_id))
-                                        .map(|m| m.name.clone())
+                                    let next = b.next_step();
+                                    let label = next
+                                        .and_then(|s| {
+                                            mgr_r.get_macro(&s.macro_id).map(|m| m.name.clone())
+                                        })
                                         .unwrap_or_default();
+                                    let bg = next
+                                        .map(|s| s.color)
+                                        .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
                                     drop(mgr_r);
-                                    eng.refresh_button(button_idx as u8, label);
+                                    eng.refresh_button(button_idx as u8, label, bg);
                                 }
                             });
                         }
@@ -2241,12 +2313,13 @@ fn draw_streamdeck_panel(
         });
         ui.add_space(6.0);
 
-        // Step list with drag-handles + × delete.
+        // Step list with drag-handles + × delete + color picker.
         draw_streamdeck_step_list(
             ui,
             button_idx,
             &button,
             &macro_names,
+            cfg_snapshot.user_swatches.clone(),
             config,
             macro_manager,
             engine,
@@ -2280,14 +2353,17 @@ fn virtual_kind_label(kind: elgato_streamdeck::info::Kind) -> &'static str {
 
 /// Step list for the currently-selected Stream Deck button.
 /// Each row is a drag-source: drag onto another row to reorder.
-/// `×` deletes the step. Step changes refresh the LCD label
-/// asynchronously via the engine.
+/// `×` deletes the step. The colored chip on each row opens the
+/// swatch picker, persisting changes (and the user_swatches set)
+/// back to the show file. Step changes refresh the LCD label +
+/// background asynchronously via the engine.
 #[allow(clippy::too_many_arguments)]
 fn draw_streamdeck_step_list(
     ui: &mut egui::Ui,
     button_idx: usize,
     button: &crate::model::streamdeck::StreamDeckButton,
     macro_names: &std::collections::HashMap<Uuid, String>,
+    mut user_swatches: Vec<crate::model::streamdeck::StepColor>,
     config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
     engine: &Arc<crate::console::streamdeck_engine::StreamDeckEngine>,
@@ -2304,61 +2380,65 @@ fn draw_streamdeck_step_list(
     // Deferred actions so we mutate after the loop.
     let mut delete_at: Option<usize> = None;
     let mut move_from_to: Option<(usize, usize)> = None;
+    let mut color_change: Option<(usize, crate::model::streamdeck::StepColor)> = None;
+    let user_swatches_initial = user_swatches.clone();
 
     egui::ScrollArea::vertical()
         .id_salt("sd_button_step_scroll")
         .max_height((ui.available_height() - 24.0).max(80.0))
         .show(ui, |ui| {
             for (i, step) in button.steps.iter().enumerate() {
-                let row_id = ui.id().with(("sd_step_row", i));
                 let is_current = i == button.current_step as usize;
-                let response = ui
-                    .dnd_drag_source(row_id, i, |ui| {
-                        theme::elevated_frame().show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                // Drag handle glyph — visual cue
-                                // that the row is draggable. The
-                                // entire row is the drag source.
-                                ui.label(
-                                    egui::RichText::new("⋮⋮")
-                                        .color(theme::TEXT_SECONDARY)
-                                        .strong(),
-                                )
-                                .on_hover_text("Drag to reorder");
-                                theme::colored_badge(
-                                    ui,
-                                    &format!("#{}", i + 1),
-                                    if is_current {
-                                        theme::ACCENT_BLUE
-                                    } else {
-                                        theme::BG_ELEVATED
-                                    },
-                                );
-                                let name = macro_names
-                                    .get(&step.macro_id)
-                                    .cloned()
-                                    .unwrap_or_else(|| "(deleted)".into());
-                                ui.label(egui::RichText::new(name).color(theme::TEXT_PRIMARY));
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if ui
-                                            .small_button(
-                                                egui::RichText::new("×")
-                                                    .strong()
-                                                    .color(theme::ACCENT_RED),
-                                            )
-                                            .on_hover_text("Delete this step")
-                                            .clicked()
-                                        {
-                                            delete_at = Some(i);
-                                        }
-                                    },
-                                );
-                            });
-                        });
-                    })
-                    .response;
+                let row_inner = theme::elevated_frame().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        // Drag handle. Only this region initiates a
+                        // drag — clicks on the swatch, name, and Del
+                        // elsewhere in the row work normally. The
+                        // bundled font lacks `⋮` and `≡`, so we
+                        // paint a 2×3 dot grip ourselves.
+                        draw_drag_handle(ui, i);
+                        theme::colored_badge(
+                            ui,
+                            &format!("#{}", i + 1),
+                            if is_current {
+                                theme::ACCENT_BLUE
+                            } else {
+                                theme::BG_ELEVATED
+                            },
+                        );
+                        // LCD background color for this step.
+                        let mut color = step.color;
+                        if color_swatch_picker(
+                            ui,
+                            ("sd_step_color", button_idx, i),
+                            &mut color,
+                            &mut user_swatches,
+                        ) && color != step.color
+                        {
+                            color_change = Some((i, color));
+                        }
+                        let name = macro_names
+                            .get(&step.macro_id)
+                            .cloned()
+                            .unwrap_or_else(|| "(deleted)".into());
+                        ui.label(egui::RichText::new(name).color(theme::TEXT_PRIMARY));
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui
+                                    .small_button(
+                                        egui::RichText::new("Del").color(theme::ACCENT_RED),
+                                    )
+                                    .on_hover_text("Delete this step")
+                                    .clicked()
+                                {
+                                    delete_at = Some(i);
+                                }
+                            },
+                        );
+                    });
+                });
+                let response = row_inner.response;
 
                 // If a drag is hovering over this row, draw a thin
                 // accent line to show where it would land on drop.
@@ -2394,13 +2474,15 @@ fn draw_streamdeck_step_list(
                     }
                 }
                 let mgr_r = mgr.read().await;
-                let label = b
-                    .next_step()
-                    .and_then(|s| mgr_r.get_macro(&s.macro_id))
-                    .map(|m| m.name.clone())
+                let next = b.next_step();
+                let label = next
+                    .and_then(|s| mgr_r.get_macro(&s.macro_id).map(|m| m.name.clone()))
                     .unwrap_or_default();
+                let bg = next
+                    .map(|s| s.color)
+                    .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
                 drop(mgr_r);
-                eng.refresh_button(button_idx as u8, label);
+                eng.refresh_button(button_idx as u8, label, bg);
             }
         });
     }
@@ -2417,16 +2499,221 @@ fn draw_streamdeck_step_list(
                     b.steps.insert(to, item);
                 }
                 let mgr_r = mgr.read().await;
-                let label = b
-                    .next_step()
-                    .and_then(|s| mgr_r.get_macro(&s.macro_id))
-                    .map(|m| m.name.clone())
+                let next = b.next_step();
+                let label = next
+                    .and_then(|s| mgr_r.get_macro(&s.macro_id).map(|m| m.name.clone()))
                     .unwrap_or_default();
+                let bg = next
+                    .map(|s| s.color)
+                    .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
                 drop(mgr_r);
-                eng.refresh_button(button_idx as u8, label);
+                eng.refresh_button(button_idx as u8, label, bg);
             }
         });
     }
+
+    if let Some((idx, new_color)) = color_change {
+        let cfg = config.clone();
+        let mgr = macro_manager.clone();
+        let eng = engine.clone();
+        runtime.spawn(async move {
+            let mut cfg_w = cfg.write().await;
+            if let Some(b) = cfg_w.buttons.get_mut(button_idx) {
+                if let Some(s) = b.steps.get_mut(idx) {
+                    s.color = new_color;
+                }
+                let mgr_r = mgr.read().await;
+                let next = b.next_step();
+                let label = next
+                    .and_then(|s| mgr_r.get_macro(&s.macro_id).map(|m| m.name.clone()))
+                    .unwrap_or_default();
+                let bg = next
+                    .map(|s| s.color)
+                    .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
+                drop(mgr_r);
+                eng.refresh_button(button_idx as u8, label, bg);
+            }
+        });
+    }
+
+    if user_swatches != user_swatches_initial {
+        let cfg = config.clone();
+        let new_swatches = user_swatches.clone();
+        runtime.spawn(async move {
+            cfg.write().await.user_swatches = new_swatches;
+        });
+    }
+}
+
+/// Painted drag-handle: a 2×3 dot grip the user can grab to reorder a
+/// step row. Returns the response so callers can read drag state if
+/// they need to. Sets the dnd payload to `payload` while being dragged.
+///
+/// The bundled NotoSans build lacks `⋮`, `≡` and friends — those
+/// glyphs render as empty boxes — so we paint dots ourselves.
+fn draw_drag_handle(ui: &mut egui::Ui, payload: usize) -> egui::Response {
+    let size = egui::Vec2::new(14.0, 22.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::Grab);
+    let painter = ui.painter();
+    let dot_color = if resp.hovered() || resp.dragged() {
+        theme::TEXT_PRIMARY
+    } else {
+        theme::TEXT_SECONDARY
+    };
+    let center = rect.center();
+    for &dx in &[-3.0_f32, 3.0] {
+        for &dy in &[-6.5_f32, 0.0, 6.5] {
+            painter.circle_filled(center + egui::vec2(dx, dy), 1.6, dot_color);
+        }
+    }
+    resp.dnd_set_drag_payload(payload);
+    resp
+}
+
+// ─── Stream Deck color swatch picker ─────────────────────────────────
+
+/// The eleven hard-coded standard swatches: black, white, then the
+/// rainbow. One row in the picker popup.
+fn standard_swatches() -> [(crate::model::streamdeck::StepColor, &'static str); 11] {
+    use crate::model::streamdeck::StepColor;
+    [
+        (StepColor::new(0, 0, 0), "Black"),
+        (StepColor::new(255, 255, 255), "White"),
+        (StepColor::new(255, 0, 0), "Red"),
+        (StepColor::new(255, 140, 0), "Orange"),
+        (StepColor::new(255, 230, 0), "Yellow"),
+        (StepColor::new(0, 200, 0), "Green"),
+        (StepColor::new(0, 200, 200), "Cyan"),
+        (StepColor::new(0, 90, 255), "Blue"),
+        (StepColor::new(75, 0, 200), "Indigo"),
+        (StepColor::new(170, 0, 255), "Violet"),
+        (StepColor::new(255, 0, 200), "Magenta"),
+    ]
+}
+
+fn step_color_to_color32(c: crate::model::streamdeck::StepColor) -> egui::Color32 {
+    egui::Color32::from_rgb(c.r, c.g, c.b)
+}
+
+/// Render a swatch button. `selected` draws a brighter border so the
+/// operator can see which swatch is currently active. The chip is
+/// generously sized at 22×22 so it reads clearly against the row
+/// frame and is an easy click target.
+fn swatch_button(
+    ui: &mut egui::Ui,
+    color: crate::model::streamdeck::StepColor,
+    selected: bool,
+) -> egui::Response {
+    let size = egui::Vec2::new(22.0, 22.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 3.0, step_color_to_color32(color));
+    let stroke = if selected {
+        egui::Stroke::new(2.0, theme::ACCENT_BLUE)
+    } else {
+        egui::Stroke::new(1.0, theme::TEXT_SECONDARY)
+    };
+    painter.rect_stroke(rect, 3.0, stroke, egui::StrokeKind::Inside);
+    resp
+}
+
+/// Color picker triggered by clicking a small colored chip. Returns
+/// `true` iff `current` was modified by user interaction this frame
+/// (so the caller can persist the change).
+///
+/// Layout inside the popup, top-to-bottom:
+///   • Standard swatches row (black, white, rainbow)
+///   • User swatches row (right-click to remove) + "Save" button to add
+///     the current color
+///   • egui's built-in RGB color picker for ad-hoc colors
+pub fn color_swatch_picker(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash,
+    current: &mut crate::model::streamdeck::StepColor,
+    user_swatches: &mut Vec<crate::model::streamdeck::StepColor>,
+) -> bool {
+    use crate::model::streamdeck::StepColor;
+
+    let popup_id = ui.id().with(("sd_color_picker", &id_salt));
+    let chip_resp = swatch_button(ui, *current, false).on_hover_text("Pick a color");
+    let mut changed = false;
+    egui::Popup::from_toggle_button_response(&chip_resp)
+        .id(popup_id)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(220.0);
+
+            ui.label(egui::RichText::new("Standard").color(theme::TEXT_SECONDARY).small());
+            ui.horizontal_wrapped(|ui| {
+                for (color, name) in standard_swatches() {
+                    if swatch_button(ui, color, color == *current)
+                        .on_hover_text(name)
+                        .clicked()
+                    {
+                        *current = color;
+                        changed = true;
+                    }
+                }
+            });
+
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("Yours (right-click to remove)")
+                    .color(theme::TEXT_SECONDARY)
+                    .small(),
+            );
+            let mut remove_idx: Option<usize> = None;
+            ui.horizontal_wrapped(|ui| {
+                if user_swatches.is_empty() {
+                    ui.label(
+                        egui::RichText::new("(none yet — pick a color below and Save)")
+                            .small()
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                }
+                for (i, color) in user_swatches.iter().enumerate() {
+                    let resp = swatch_button(ui, *color, *color == *current);
+                    if resp.clicked() {
+                        *current = *color;
+                        changed = true;
+                    }
+                    if resp.secondary_clicked() {
+                        remove_idx = Some(i);
+                    }
+                }
+            });
+            if let Some(i) = remove_idx {
+                user_swatches.remove(i);
+                changed = true;
+            }
+
+            ui.add_space(4.0);
+            ui.separator();
+            ui.label(
+                egui::RichText::new("Custom")
+                    .color(theme::TEXT_SECONDARY)
+                    .small(),
+            );
+            ui.horizontal(|ui| {
+                let mut rgb = [current.r, current.g, current.b];
+                if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).changed() {
+                    *current = StepColor::new(rgb[0], rgb[1], rgb[2]);
+                    changed = true;
+                }
+                if ui
+                    .small_button("Save swatch")
+                    .on_hover_text("Add the current color to your saved swatches (per show)")
+                    .clicked()
+                    && !user_swatches.contains(current)
+                {
+                    user_swatches.push(*current);
+                    changed = true;
+                }
+            });
+        });
+
+    changed
 }
 
 /// Parse a string as a ParameterValue, trying bool, int, then float.

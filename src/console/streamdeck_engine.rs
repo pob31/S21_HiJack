@@ -36,6 +36,7 @@ use elgato_streamdeck::{StreamDeck, StreamDeckInput, list_devices, new_hidapi};
 use image::{DynamicImage, Rgb, RgbImage};
 use tracing::{debug, info, warn};
 
+use crate::model::streamdeck::StepColor;
 use crate::ui::UiEvent;
 
 /// Embedded NotoSans Regular for LCD text. Loaded once on engine
@@ -74,17 +75,22 @@ pub struct EngineState {
 }
 
 /// Commands sent from the UI to the device thread.
-#[allow(clippy::large_enum_variant)] // RefreshAll's Vec<String> is fine
+#[allow(clippy::large_enum_variant)] // RefreshAll's Vec<…> is fine
 enum DeviceCmd {
     /// Connect to the device with the given HID serial.
     Connect(String),
     /// Disconnect (if connected) and return to idle enumeration.
     Disconnect,
-    /// Re-render and push a single button's LCD label.
-    RefreshButton { idx: u8, label: String },
-    /// Re-render every button's LCD label. Vector indexed by button
-    /// index, length matched to the connected device's key count.
-    RefreshAll(Vec<String>),
+    /// Re-render and push a single button's LCD: macro label on top of
+    /// `bg` background color.
+    RefreshButton {
+        idx: u8,
+        label: String,
+        bg: StepColor,
+    },
+    /// Re-render every button's LCD. Indexed by button index, length
+    /// matched to the connected device's key count.
+    RefreshAll(Vec<(String, StepColor)>),
     /// Tell the worker thread to exit cleanly.
     Shutdown,
 }
@@ -151,11 +157,13 @@ impl StreamDeckEngine {
         let _ = self.cmd_tx.send(DeviceCmd::Disconnect);
     }
 
-    pub fn refresh_button(&self, idx: u8, label: String) {
-        let _ = self.cmd_tx.send(DeviceCmd::RefreshButton { idx, label });
+    pub fn refresh_button(&self, idx: u8, label: String, bg: StepColor) {
+        let _ = self
+            .cmd_tx
+            .send(DeviceCmd::RefreshButton { idx, label, bg });
     }
 
-    pub fn refresh_all(&self, labels: Vec<String>) {
+    pub fn refresh_all(&self, labels: Vec<(String, StepColor)>) {
         let _ = self.cmd_tx.send(DeviceCmd::RefreshAll(labels));
     }
 }
@@ -198,7 +206,7 @@ fn run_device_thread(
     let mut connected_meta: Option<ConnectedDevice> = None;
     // Pending labels; populated by RefreshAll while disconnected so we
     // can apply them after a successful connect.
-    let mut pending_labels: Option<Vec<String>> = None;
+    let mut pending_labels: Option<Vec<(String, StepColor)>> = None;
     let mut last_enum = Instant::now()
         .checked_sub(Duration::from_secs(60))
         .unwrap_or_else(Instant::now);
@@ -276,9 +284,9 @@ fn run_device_thread(
                         let _ = ui_tx.send(UiEvent::StreamDeckDisconnected);
                     }
                 }
-                Ok(DeviceCmd::RefreshButton { idx, label }) => {
+                Ok(DeviceCmd::RefreshButton { idx, label, bg }) => {
                     if let (Some(deck), Some(meta)) = (&connected, &connected_meta) {
-                        push_button_label(deck, meta, font.as_ref(), idx, &label);
+                        push_button_label(deck, meta, font.as_ref(), idx, &label, bg);
                     }
                 }
                 Ok(DeviceCmd::RefreshAll(labels)) => {
@@ -400,13 +408,13 @@ fn push_all_labels(
     deck: &StreamDeck,
     meta: &ConnectedDevice,
     font: Option<&FontRef<'_>>,
-    labels: &[String],
+    labels: &[(String, StepColor)],
 ) {
     let count = meta.key_count as usize;
+    let empty = (String::new(), StepColor::BLACK);
     for idx in 0..count {
-        let empty = String::new();
-        let label = labels.get(idx).unwrap_or(&empty);
-        push_button_label(deck, meta, font, idx as u8, label);
+        let (label, bg) = labels.get(idx).unwrap_or(&empty);
+        push_button_label(deck, meta, font, idx as u8, label, *bg);
     }
     let _ = deck.flush();
 }
@@ -417,10 +425,11 @@ fn push_button_label(
     font: Option<&FontRef<'_>>,
     idx: u8,
     label: &str,
+    bg: StepColor,
 ) {
     let format = meta.kind.key_image_format();
     let (w, h) = format.size;
-    let img = render_label(w as u32, h as u32, label, font);
+    let img = render_label(w as u32, h as u32, label, font, bg);
     if let Err(e) = deck.set_button_image(idx, DynamicImage::ImageRgb8(img)) {
         warn!("Stream Deck: set_button_image({idx}) failed: {e}");
         return;
@@ -428,15 +437,24 @@ fn push_button_label(
     let _ = deck.flush();
 }
 
-/// Render a Stream Deck button face: black background, white centred
-/// text wrapped to fit the box. `label.is_empty()` → solid black.
-fn render_label(w: u32, h: u32, label: &str, font: Option<&FontRef<'_>>) -> RgbImage {
-    let mut img = RgbImage::from_pixel(w, h, Rgb([0u8, 0, 0]));
+/// Render a Stream Deck button face: `bg` background, contrast-chosen
+/// text wrapped to fit the box. `label.is_empty()` → solid `bg`.
+fn render_label(
+    w: u32,
+    h: u32,
+    label: &str,
+    font: Option<&FontRef<'_>>,
+    bg: StepColor,
+) -> RgbImage {
+    let mut img = RgbImage::from_pixel(w, h, Rgb([bg.r, bg.g, bg.b]));
     let trimmed = label.trim();
     if trimmed.is_empty() {
         return img;
     }
     let Some(font) = font else { return img };
+
+    let text = bg.contrast_text();
+    let text_rgb = Rgb([text.r, text.g, text.b]);
 
     let scale = PxScale::from(18.0);
     let lines = wrap_text(trimmed, font, scale, w);
@@ -458,7 +476,7 @@ fn render_label(w: u32, h: u32, label: &str, font: Option<&FontRef<'_>>) -> RgbI
         let draw_y = baseline_y - scaled_font.ascent() as i32;
         imageproc::drawing::draw_text_mut(
             &mut img,
-            Rgb([255u8, 255, 255]),
+            text_rgb,
             x,
             draw_y,
             scale,
@@ -548,7 +566,7 @@ mod tests {
     #[test]
     fn render_label_returns_correct_dimensions() {
         let font = FontRef::try_from_slice(NOTO_SANS_REGULAR).ok();
-        let img = render_label(72, 72, "Mute Toggle", font.as_ref());
+        let img = render_label(72, 72, "Mute Toggle", font.as_ref(), StepColor::BLACK);
         assert_eq!(img.width(), 72);
         assert_eq!(img.height(), 72);
     }
@@ -556,10 +574,20 @@ mod tests {
     #[test]
     fn render_label_handles_empty_string() {
         let font = FontRef::try_from_slice(NOTO_SANS_REGULAR).ok();
-        let img = render_label(72, 72, "", font.as_ref());
-        // All black.
+        let img = render_label(72, 72, "", font.as_ref(), StepColor::BLACK);
+        // All black (default bg).
         assert_eq!(img.get_pixel(0, 0).0, [0, 0, 0]);
         assert_eq!(img.get_pixel(35, 35).0, [0, 0, 0]);
+    }
+
+    #[test]
+    fn render_label_uses_supplied_background_color() {
+        let font = FontRef::try_from_slice(NOTO_SANS_REGULAR).ok();
+        let red = StepColor::new(255, 0, 0);
+        // Empty label → solid fill of the background color.
+        let img = render_label(72, 72, "", font.as_ref(), red);
+        assert_eq!(img.get_pixel(0, 0).0, [255, 0, 0]);
+        assert_eq!(img.get_pixel(35, 35).0, [255, 0, 0]);
     }
 
     #[test]
