@@ -75,6 +75,11 @@ pub struct MacrosTabState {
     // selection feel sticky/unresponsive.
     pub cached_list: Vec<(Uuid, String, usize)>,
     pub cached_steps: Option<CachedSteps>,
+    /// Index of the step whose "Keep" button was hovered last frame.
+    /// Used to highlight every other step targeting the same
+    /// (channel, parameter) — those are the rows Keep would remove.
+    /// One frame stale, which is acceptable for a hover affordance.
+    pub step_keep_hover_idx: Option<usize>,
 
     // ─── Stream Deck ──────────────────────────────────────────────
     /// Right-column visibility for the Stream Deck setup panel.
@@ -140,6 +145,7 @@ impl Default for MacrosTabState {
             step_delay_edits: Vec::new(),
             cached_list: Vec::new(),
             cached_steps: None,
+            step_keep_hover_idx: None,
             streamdeck_popup_open: false,
             selected_streamdeck_button: None,
             streamdeck_add_step_target: None,
@@ -896,6 +902,20 @@ fn draw_step_editor(
                 .color(theme::TEXT_SECONDARY),
         );
     } else {
+        // Address of the step whose "Keep" button was hovered last
+        // frame, if any. Rows targeting the same address get a tinted
+        // border this frame so the operator can see which steps Keep
+        // would remove. Cleared when nothing is hovered.
+        let keep_hover_address: Option<ParameterAddress> = macros_state
+            .step_keep_hover_idx
+            .and_then(|idx| steps.get(idx))
+            .and_then(|(kind, _)| match kind {
+                MacroStepKind::Parameter { address, .. } => Some(address.clone()),
+                _ => None,
+            });
+        let mut new_keep_hover_idx: Option<usize> = None;
+        let mut hovered_drop_idx: Option<usize> = None;
+
         // Reserve enough vertical room below the scroll for the
         // Add Step section (heading + 2 horizontal rows + button +
         // elevated_frame margins ≈ 160 px). 200 leaves a comfortable
@@ -905,8 +925,27 @@ fn draw_step_editor(
             .max_height((ui.available_height() - 200.0).max(80.0))
             .show(ui, |ui| {
                 for (i, (kind, _delay)) in steps.iter().enumerate() {
-                    theme::elevated_frame().show(ui, |ui| {
+                    // Tint this row's frame when its address matches
+                    // the Keep-hovered step's address (and isn't itself
+                    // the hovered step — the operator already knows
+                    // which row their pointer is on).
+                    let is_keep_match = match (kind, &keep_hover_address) {
+                        (MacroStepKind::Parameter { address, .. }, Some(target)) => {
+                            address == target && macros_state.step_keep_hover_idx != Some(i)
+                        }
+                        _ => false,
+                    };
+                    let mut frame = theme::elevated_frame();
+                    if is_keep_match {
+                        frame = frame.stroke(egui::Stroke::new(1.5, theme::ACCENT_RED));
+                    }
+                    let row_inner = frame.show(ui, |ui| {
                         ui.horizontal(|ui| {
+                            // Drag handle replaces the old Up/Dn
+                            // buttons — same painted dot grip the SD
+                            // step list uses. Rest of the row is not
+                            // a drag source.
+                            draw_drag_handle(ui, i);
                             theme::colored_badge(ui, &format!("#{}", i + 1), theme::BG_ELEVATED);
                             match kind {
                                 MacroStepKind::Parameter { address, .. } => {
@@ -937,7 +976,14 @@ fn draw_step_editor(
                                             }
                                         });
 
-                                    // Value field (for Fixed/Relative)
+                                    // Value field (for Fixed/Relative).
+                                    // Commit on every keystroke AND on
+                                    // focus loss — `lost_focus()` alone
+                                    // missed in-place edits when the
+                                    // user moved between fields without
+                                    // an explicit click-out, so the
+                                    // last value entered was sometimes
+                                    // dropped.
                                     match macros_state.step_mode_edits[i] {
                                         StepModeChoice::Fixed | StepModeChoice::Relative => {
                                             let resp = ui.add(
@@ -946,7 +992,7 @@ fn draw_step_editor(
                                                 )
                                                 .desired_width(60.0),
                                             );
-                                            if resp.lost_focus() {
+                                            if resp.changed() || resp.lost_focus() {
                                                 action = Some(StepAction::UpdateMode(i));
                                             }
                                         }
@@ -969,38 +1015,21 @@ fn draw_step_editor(
                             ui.separator();
 
                             // Delay field — applies to every kind.
+                            // Same commit pattern as the value field.
                             ui.label("ms:");
                             let delay_resp = ui.add(
                                 egui::TextEdit::singleline(&mut macros_state.step_delay_edits[i])
                                     .desired_width(50.0),
                             );
-                            if delay_resp.lost_focus() {
+                            if delay_resp.changed() || delay_resp.lost_focus() {
                                 action = Some(StepAction::UpdateDelay(i));
                             }
                         });
 
-                        // Reorder + delete + keep-only buttons. Use
-                        // text labels rather than `▲ ▼ ✕ ⊙` glyphs —
-                        // the bundled egui font doesn't ship with
-                        // those characters and they render as empty
-                        // boxes on this build.
+                        // Delete + Keep-only buttons. Up/Dn dropped —
+                        // the dot-grip on the row's left edge replaces
+                        // them via drag-and-drop reorder.
                         ui.horizontal(|ui| {
-                            if i > 0
-                                && ui
-                                    .small_button("Up")
-                                    .on_hover_text("Move this step up")
-                                    .clicked()
-                            {
-                                action = Some(StepAction::MoveUp(i));
-                            }
-                            if i < step_count - 1
-                                && ui
-                                    .small_button("Dn")
-                                    .on_hover_text("Move this step down")
-                                    .clicked()
-                            {
-                                action = Some(StepAction::MoveDown(i));
-                            }
                             if ui
                                 .small_button("Del")
                                 .on_hover_text("Delete this step")
@@ -1015,21 +1044,50 @@ fn draw_step_editor(
                             // recording captured several intermediate
                             // fader positions and the operator only
                             // wants to keep the final one.
-                            if ui
-                                .small_button("Keep")
-                                .on_hover_text(
-                                    "Keep only this step for its (channel, parameter); \
+                            //
+                            // Hovering this button paints a red border
+                            // around the rows that would be removed —
+                            // a quick "what does this do?" preview.
+                            let keep_resp = ui.small_button("Keep").on_hover_text(
+                                "Keep only this step for its (channel, parameter); \
                                      remove the rest",
-                                )
-                                .clicked()
-                            {
+                            );
+                            if keep_resp.hovered() {
+                                new_keep_hover_idx = Some(i);
+                            }
+                            if keep_resp.clicked() {
                                 action = Some(StepAction::KeepOnly(i));
                             }
                         });
                     });
+                    let row_resp = row_inner.response;
+
+                    // Drop-target hover marker — same pattern as the
+                    // SD step list. A blue line at the top of the row
+                    // tells the operator where the dragged step would
+                    // land on release.
+                    if let Some(payload) = row_resp.dnd_hover_payload::<usize>() {
+                        if *payload != i {
+                            hovered_drop_idx = Some(i);
+                            let stroke = egui::Stroke::new(2.0, theme::ACCENT_BLUE);
+                            ui.painter().hline(
+                                row_resp.rect.x_range(),
+                                row_resp.rect.top(),
+                                stroke,
+                            );
+                        }
+                    }
+                    if let Some(payload) = row_resp.dnd_release_payload::<usize>() {
+                        let from = *payload;
+                        if from != i {
+                            action = Some(StepAction::Reorder { from, to: i });
+                        }
+                    }
+                    let _ = hovered_drop_idx; // silence unused warning when no drop active
                     ui.add_space(2.0);
                 }
             });
+        macros_state.step_keep_hover_idx = new_keep_hover_idx;
     }
 
     // Process deferred action
@@ -1557,6 +1615,12 @@ fn build_step_kind(
 enum StepAction {
     MoveUp(usize),
     MoveDown(usize),
+    /// Drag-to-reorder: take the step at `from` and re-insert it at
+    /// `to` (after removal). `from == to` is a no-op.
+    Reorder {
+        from: usize,
+        to: usize,
+    },
     Delete(usize),
     UpdateMode(usize),
     UpdateDelay(usize),
@@ -1606,6 +1670,33 @@ fn apply_step_action(
                 macros_state.step_mode_edits.swap(i, i + 1);
                 macros_state.step_value_edits.swap(i, i + 1);
                 macros_state.step_delay_edits.swap(i, i + 1);
+            }
+        }
+        StepAction::Reorder { from, to } => {
+            if from != to {
+                let mgr_clone = macro_manager.clone();
+                runtime.spawn(async move {
+                    let mut mgr = mgr_clone.write().await;
+                    if let Some(m) = mgr.get_macro_mut(&macro_id) {
+                        if from < m.steps.len() && to < m.steps.len() {
+                            let item = m.steps.remove(from);
+                            m.steps.insert(to, item);
+                            m.touch();
+                        }
+                    }
+                });
+                // Mirror the reorder onto the edit buffers so the UI
+                // doesn't flash a stale value/mode/delay on the next
+                // frame before the manager write lands.
+                let len = macros_state.step_mode_edits.len();
+                if from < len && to < len {
+                    let m = macros_state.step_mode_edits.remove(from);
+                    macros_state.step_mode_edits.insert(to, m);
+                    let v = macros_state.step_value_edits.remove(from);
+                    macros_state.step_value_edits.insert(to, v);
+                    let d = macros_state.step_delay_edits.remove(from);
+                    macros_state.step_delay_edits.insert(to, d);
+                }
             }
         }
         StepAction::Delete(i) => {
