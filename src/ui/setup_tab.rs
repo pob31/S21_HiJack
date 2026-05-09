@@ -1040,8 +1040,15 @@ pub fn draw_setup_tab(
                             // = 3*action_btn_w + 2*gaps  →
                             // edit = 2*action_btn_w + 1*gap.
                             let edit_w = 2.0 * action_btn_w + item_spacing_x;
+                            // Match the action-button height (28 px)
+                            // used by Open… / Save / Save As… / New
+                            // so the entire show-file area shares one
+                            // baseline. The default TEXT_EDIT_HEIGHT
+                            // of 26 px would leave the field 2 px
+                            // shorter than the buttons next to it.
+                            let row_h = 28.0;
                             let resp = ui.add_sized(
-                                [edit_w, theme::TEXT_EDIT_HEIGHT],
+                                [edit_w, row_h],
                                 egui::TextEdit::singleline(&mut display)
                                     .margin(theme::TEXT_EDIT_MARGIN)
                                     .interactive(false),
@@ -1061,7 +1068,7 @@ pub fn draw_setup_tab(
                                     .add(theme::action_button(
                                         "Open…",
                                         theme::ACCENT_GREEN,
-                                        egui::Vec2::new(action_btn_w, theme::TEXT_EDIT_HEIGHT),
+                                        egui::Vec2::new(action_btn_w, 28.0),
                                     ))
                                     .on_hover_text(
                                         "Pick a show file and load it. Save As… to save to \
