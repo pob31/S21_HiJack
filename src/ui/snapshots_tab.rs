@@ -871,19 +871,22 @@ pub fn draw_snapshots_tab(
                             }
 
                             ui.add_space(16.0);
-                            ui.label("Pace (μs):");
-                            let mut pace_val = snapshot_engine
+                            // Pacing now lives in Setup → Advanced…
+                            // (single shared setting that also paces
+                            // macro OSC sends). Surface the live value
+                            // here so operators who used to tune it
+                            // from this tab can still see it.
+                            let pace = snapshot_engine
                                 .as_ref()
-                                .map(|e| e.pace_us() as f32)
-                                .unwrap_or(0.0);
-                            let slider = egui::Slider::new(&mut pace_val, 0.0..=5000.0)
-                                .step_by(100.0)
-                                .clamping(egui::SliderClamping::Always);
-                            if ui.add_enabled(engine_ready, slider).changed() {
-                                if let Some(engine) = snapshot_engine.as_ref() {
-                                    engine.set_pace_us(pace_val as u64);
-                                }
-                            }
+                                .map(|e| e.pace_us())
+                                .unwrap_or(0);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Pacing: {pace} μs (Setup → Advanced…)"
+                                ))
+                                .small()
+                                .color(theme::TEXT_SECONDARY),
+                            );
                         });
 
                         // ── Phase D: QLab export buttons ──

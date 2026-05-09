@@ -92,6 +92,10 @@ pub struct SetupTabState {
     /// Phase 3 — drives the centered "Parameter coverage" popup window.
     /// Runtime-only; not persisted.
     pub show_coverage_popup: bool,
+    /// Drives the bottom-left "Advanced…" footer button on the Setup
+    /// tab. When true, the Advanced Settings window is open. Runtime-
+    /// only; not persisted.
+    pub show_advanced_panel: bool,
     /// Suppresses the "console IP not on the selected NIC's network"
     /// warning (red ⚠ next to the IP edit + amber strip at the
     /// bottom). Set when the operator clicks either dismissal site;
@@ -149,13 +153,14 @@ impl SetupTabState {
             },
             qlab_ip: "127.0.0.1".to_string(),
             qlab_port: "53000".to_string(),
-            send_pace_us: 0,
+            send_pace_us: prefs.send_pace_us,
             monitor_allow_cidrs: Vec::new(),
             trigger_allow_cidrs: Vec::new(),
             ui_mode: prefs.ui_mode.unwrap_or_default(),
             show_diagnostics: prefs.show_diagnostics,
             show_first_run_popup: prefs.ui_mode.is_none(),
             show_coverage_popup: false,
+            show_advanced_panel: false,
             console_ip_warning_dismissed: false,
             pending_initial_load: None,
         }
@@ -483,6 +488,7 @@ pub fn draw_setup_tab(
     connected: &Arc<AtomicBool>,
     cancel_token: &mut Option<CancellationToken>,
     osc_log: &OscLog,
+    send_pace_us: &Arc<std::sync::atomic::AtomicU64>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
     egui_ctx: &Arc<std::sync::OnceLock<egui::Context>>,
@@ -517,6 +523,14 @@ pub fn draw_setup_tab(
         draw_first_run_popup(ui, setup);
     }
 
+    // Reserve a fixed strip at the bottom of the tab for the "Advanced…"
+    // footer button so it stays anchored regardless of scroll position.
+    // The body is the existing ScrollArea, sized to (avail - footer_h).
+    let avail_h = ui.available_height();
+    let footer_h: f32 = 36.0;
+    let body_h = (avail_h - footer_h - 6.0).max(120.0);
+
+    ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         // ── Connection card (W-diagram: hub + 4 satellites) ──
         // Phase 2: the Server hub absorbs Display Mode + Connection Mode +
@@ -565,6 +579,7 @@ pub fn draw_setup_tab(
                                     last_received,
                                     pending_engines,
                                     connected, cancel_token, osc_log,
+                                    send_pace_us,
                                     runtime, ui_tx, egui_ctx,
                                 );
                             }
@@ -890,17 +905,8 @@ pub fn draw_setup_tab(
                         });
                         ui.end_row();
                     });
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.add_space(subrow_indent);
-                        let diag_resp = ui
-                            .checkbox(&mut setup.show_diagnostics, "Show diagnostic tabs")
-                            .on_hover_text("Adds OSC Log and Inspector tabs to the main tab bar.");
-                        if diag_resp.changed() {
-                            save_app_preferences(setup);
-                        }
-                    });
 
+                    // (Diagnostics toggle moved to Setup → Advanced…)
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(6.0);
@@ -1505,6 +1511,35 @@ pub fn draw_setup_tab(
             }
         }
     });
+    });
+
+    // ── Footer: Advanced Settings button anchored bottom-left ──
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        if ui
+            .add(theme::action_button(
+                "Advanced…",
+                theme::BG_ELEVATED,
+                egui::Vec2::new(110.0, 28.0),
+            ))
+            .on_hover_text("Pacing, diagnostics, and other application preferences.")
+            .clicked()
+        {
+            setup.show_advanced_panel = !setup.show_advanced_panel;
+        }
+    });
+
+    // The window floats above everything via `ui.ctx()`; not clipped
+    // by the body's allocated rect. Copy the open flag out and write
+    // back so we don't double-borrow `setup` for the window's content.
+    let mut open = setup.show_advanced_panel;
+    super::advanced_settings::draw_advanced_settings_window(
+        ui.ctx(),
+        &mut open,
+        setup,
+        send_pace_us,
+    );
+    setup.show_advanced_panel = open;
 }
 
 /// Disconnect from the console: cancel all tasks and reset state.
@@ -1540,6 +1575,7 @@ pub(crate) fn start_connection(
     connected: &Arc<AtomicBool>,
     cancel_token: &mut Option<CancellationToken>,
     osc_log: &OscLog,
+    send_pace_us: &Arc<std::sync::atomic::AtomicU64>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
     egui_ctx: &Arc<std::sync::OnceLock<egui::Context>>,
@@ -1659,7 +1695,7 @@ pub(crate) fn start_connection(
     let tx = ui_tx.clone();
     let ctx = egui_ctx.clone();
     let console_ip = setup.console_ip.clone();
-    let send_pace_us = setup.send_pace_us;
+    let send_pace_us = send_pace_us.clone();
     let monitor_allow_cidrs = setup.monitor_allow_cidrs.clone();
     let trigger_allow_cidrs = setup.trigger_allow_cidrs.clone();
     let log = osc_log.clone();
@@ -1709,10 +1745,13 @@ pub(crate) fn start_connection(
         info!("Connected to console via UI");
         conn_flag.store(true, Ordering::Relaxed);
 
-        // Create SnapshotEngine (mut so we can set iPad sender before wrapping in Arc)
-        let mut snapshot_engine = SnapshotEngine::new(st.clone(), manager.sender());
+        // Create SnapshotEngine (mut so we can set iPad sender before wrapping in Arc).
+        // Pacing is shared via the Arc<AtomicU64> handed in — owned by
+        // HiJackApp, written by the Advanced Settings UI, read by both
+        // engines on each loop iteration.
+        let mut snapshot_engine =
+            SnapshotEngine::new(st.clone(), manager.sender(), send_pace_us.clone());
         snapshot_engine.set_dirty_tracker(dirty.clone());
-        snapshot_engine.set_pace_us(send_pace_us);
         snapshot_engine.set_cue_manager(cue_mgr.clone());
         snapshot_engine.set_auto_update_flag(auto_update_flag.clone());
         let console_fire_suppression = snapshot_engine.console_fire_suppression();
@@ -1839,8 +1878,13 @@ pub(crate) fn start_connection(
         // still has an engine to work with. Previously this lived inside the
         // trigger-listener `Ok` arm and was lost on bind failure, leaving
         // `App.macro_engine` permanently `None`.
-        let mut macro_eng =
-            MacroEngine::new(st.clone(), manager.sender(), macro_mgr.clone(), tx.clone());
+        let mut macro_eng = MacroEngine::new(
+            st.clone(),
+            manager.sender(),
+            macro_mgr.clone(),
+            tx.clone(),
+            send_pace_us.clone(),
+        );
         macro_eng.set_dirty_tracker(dirty.clone());
         let macro_eng = Arc::new(macro_eng);
 
@@ -2286,10 +2330,11 @@ fn save_show_file(
 /// Persist the current UI mode + diagnostic toggle as the application
 /// default. Failure is logged at warn level — the in-memory state still
 /// applies for the session.
-fn save_app_preferences(setup: &SetupTabState) {
+pub(crate) fn save_app_preferences(setup: &SetupTabState) {
     let prefs = AppPreferences {
         ui_mode: Some(setup.ui_mode),
         show_diagnostics: setup.show_diagnostics,
+        send_pace_us: setup.send_pace_us,
     };
     if let Err(e) = prefs.save() {
         tracing::warn!(error = %e, "Failed to save app preferences");

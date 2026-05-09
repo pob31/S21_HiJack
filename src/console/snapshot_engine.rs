@@ -69,7 +69,9 @@ pub struct SnapshotEngine {
     dirty_tracker: Option<Arc<RwLock<DirtyTracker>>>,
     /// Inter-message pacing delay in microseconds. 0 = no pacing.
     /// Prevents flooding the console's ARM chip during large recalls.
-    pace_us: AtomicU64,
+    /// Shared with `MacroEngine` and the Advanced Settings UI via the
+    /// `HiJackApp::send_pace_us` handle so all three see one value.
+    pace_us: Arc<AtomicU64>,
     /// One-level undo: stores the pre-recall live values so the operator
     /// can revert if a recall was triggered by mistake.
     undo: RwLock<Option<UndoState>>,
@@ -89,7 +91,11 @@ pub struct SnapshotEngine {
 }
 
 impl SnapshotEngine {
-    pub fn new(state: Arc<RwLock<ConsoleState>>, sender: OscSender) -> Self {
+    pub fn new(
+        state: Arc<RwLock<ConsoleState>>,
+        sender: OscSender,
+        pace_us: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             state,
             sender,
@@ -97,7 +103,7 @@ impl SnapshotEngine {
             fade_controller: FadeController::new(),
             multi_fade: MultiFadeController::new(),
             dirty_tracker: None,
-            pace_us: AtomicU64::new(0),
+            pace_us,
             undo: RwLock::new(None),
             cue_manager: None,
             auto_update_on_recall: None,
@@ -1313,7 +1319,8 @@ mod tests {
         let (sender, _rx) = client.into_parts();
 
         let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
-        let engine = SnapshotEngine::new(state.clone(), sender);
+        let pace = Arc::new(AtomicU64::new(0));
+        let engine = SnapshotEngine::new(state.clone(), sender, pace);
         (engine, state)
     }
 
@@ -1333,7 +1340,8 @@ mod tests {
 
         let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
         let dirty = Arc::new(RwLock::new(DirtyTracker::new()));
-        let mut engine = SnapshotEngine::new(state.clone(), sender);
+        let pace = Arc::new(AtomicU64::new(0));
+        let mut engine = SnapshotEngine::new(state.clone(), sender, pace);
         engine.set_dirty_tracker(dirty.clone());
         (engine, state, dirty)
     }

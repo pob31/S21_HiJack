@@ -54,6 +54,11 @@ pub struct HiJackApp {
     pub auto_update_on_recall: Arc<AtomicBool>,
     /// Follow console snapshot recalls. Mirrored from `ConnectionSettings`.
     pub console_snapshot_follow: Arc<AtomicBool>,
+    /// Inter-message pacing (μs) shared between snapshot recall and
+    /// macro OSC sends. 0 = no pacing. Owned at the app level so the
+    /// Advanced Settings panel and both engines see one consistent
+    /// value; persisted in `AppPreferences`.
+    pub send_pace_us: Arc<std::sync::atomic::AtomicU64>,
     pub snapshot_engine: Option<Arc<SnapshotEngine>>,
     pub macro_engine: Option<Arc<MacroEngine>>,
     /// Hand-off slot the connect-console async task uses to deliver the OSC
@@ -157,6 +162,7 @@ impl HiJackApp {
             offline_mode: Arc::new(AtomicBool::new(false)),
             auto_update_on_recall: Arc::new(AtomicBool::new(false)),
             console_snapshot_follow: Arc::new(AtomicBool::new(false)),
+            send_pace_us: Arc::new(std::sync::atomic::AtomicU64::new(prefs.send_pace_us)),
             snapshot_engine: None,
             macro_engine: None,
             pending_engines: Arc::new(std::sync::Mutex::new(None)),
@@ -342,7 +348,21 @@ impl HiJackApp {
                         if conn.qlab_port > 0 {
                             self.setup.qlab_port = conn.qlab_port.to_string();
                         }
-                        self.setup.send_pace_us = conn.send_pace_us;
+                        // One-time migration: pacing used to live on
+                        // the show file. If the user opens an old show
+                        // and prefs has no pacing yet, adopt the show's
+                        // value as the new app-wide default. After this
+                        // first migration, prefs is authoritative and
+                        // `conn.send_pace_us` is ignored on load.
+                        let current_pace =
+                            self.send_pace_us.load(std::sync::atomic::Ordering::Relaxed);
+                        if current_pace == 0 && conn.send_pace_us != 0 {
+                            self.send_pace_us
+                                .store(conn.send_pace_us, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        let pace_to_save =
+                            self.send_pace_us.load(std::sync::atomic::Ordering::Relaxed);
+                        self.setup.send_pace_us = pace_to_save;
                         self.setup.monitor_allow_cidrs = conn.monitor_allow_cidrs;
                         self.setup.trigger_allow_cidrs = conn.trigger_allow_cidrs;
                         self.setup.ui_mode = conn.ui_mode;
@@ -351,6 +371,7 @@ impl HiJackApp {
                         let prefs = AppPreferences {
                             ui_mode: Some(self.setup.ui_mode),
                             show_diagnostics: self.setup.show_diagnostics,
+                            send_pace_us: pace_to_save,
                         };
                         if let Err(e) = prefs.save() {
                             tracing::warn!(error = %e, "Failed to save app preferences after show load");
@@ -432,6 +453,7 @@ impl HiJackApp {
                         &self.connected,
                         &mut self.cancel_token,
                         &self.osc_log,
+                        &self.send_pace_us,
                         &self.runtime,
                         &self.ui_tx,
                         &self.egui_ctx,
@@ -1215,6 +1237,7 @@ impl eframe::App for HiJackApp {
                         &self.connected,
                         &mut self.cancel_token,
                         &self.osc_log,
+                        &self.send_pace_us,
                         &self.runtime,
                         &self.ui_tx,
                         &self.egui_ctx,

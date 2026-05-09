@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 
 use tokio::sync::RwLock;
@@ -43,6 +44,12 @@ pub struct MacroEngine {
     /// it just sends a `UiEvent` and lets `HiJackApp::drain_events`
     /// dispatch to the appropriate existing handler.
     ui_tx: mpsc::Sender<UiEvent>,
+    /// Inter-message pacing (μs) shared with `SnapshotEngine` and the
+    /// Advanced Settings UI via `HiJackApp::send_pace_us`. Applied
+    /// after each successful Parameter send so a long-step macro
+    /// doesn't flood the console any more than a snapshot recall does.
+    /// 0 = no pacing.
+    pace_us: Arc<AtomicU64>,
 }
 
 impl MacroEngine {
@@ -51,6 +58,7 @@ impl MacroEngine {
         sender: OscSender,
         macro_manager: Arc<RwLock<MacroManager>>,
         ui_tx: mpsc::Sender<UiEvent>,
+        pace_us: Arc<AtomicU64>,
     ) -> Self {
         Self {
             state,
@@ -58,6 +66,7 @@ impl MacroEngine {
             dirty_tracker: None,
             macro_manager,
             ui_tx,
+            pace_us,
         }
     }
 
@@ -151,6 +160,16 @@ impl MacroEngine {
                                         "Macro step sent"
                                     );
                                     executed += 1;
+                                    // Inter-message pacing: protects
+                                    // the console's ARM chip during a
+                                    // long-step macro the same way
+                                    // snapshot recall does. Independent
+                                    // of `delay_ms`, which is the
+                                    // user-controlled pre-step gap.
+                                    let pace = self.pace_us.load(Ordering::Relaxed);
+                                    if pace > 0 {
+                                        time::sleep(time::Duration::from_micros(pace)).await;
+                                    }
                                 }
                             }
                             None => {
@@ -489,8 +508,44 @@ mod tests {
         let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
         let macro_manager = Arc::new(RwLock::new(MacroManager::new()));
         let (ui_tx, ui_rx) = std::sync::mpsc::channel();
-        let engine = MacroEngine::new(state.clone(), sender, macro_manager.clone(), ui_tx);
+        let pace = Arc::new(AtomicU64::new(0));
+        let engine = MacroEngine::new(state.clone(), sender, macro_manager.clone(), ui_tx, pace);
         (engine, state, macro_manager, ui_rx)
+    }
+
+    #[tokio::test]
+    async fn pacing_delays_consecutive_parameter_sends() {
+        // Two Parameter steps with `delay_ms = 0` and pacing = 50 ms
+        // should still take at least ~50 ms total — the pacing fires
+        // *after* the first send, before the second. We measure
+        // generously (>= 40 ms) to absorb scheduler jitter.
+        let (engine, _state, _mgr, _rx) = setup_test().await;
+        engine.pace_us.store(50_000, Ordering::Relaxed);
+
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        let macro_def = MacroDef::new(
+            "Two-step paced".into(),
+            vec![
+                MacroStep::parameter(
+                    addr.clone(),
+                    MacroStepMode::Fixed(ParameterValue::Float(-10.0)),
+                    0,
+                ),
+                MacroStep::parameter(addr, MacroStepMode::Fixed(ParameterValue::Float(-12.0)), 0),
+            ],
+        );
+
+        let start = std::time::Instant::now();
+        let result = engine.execute(&macro_def).await;
+        let elapsed = start.elapsed();
+        assert_eq!(result.steps_executed, 2);
+        assert!(
+            elapsed >= std::time::Duration::from_millis(40),
+            "expected pacing to delay second send by ~50 ms, got {elapsed:?}"
+        );
     }
 
     #[tokio::test]

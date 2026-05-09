@@ -1,3 +1,4 @@
+pub mod advanced_settings;
 pub mod app;
 pub mod cue_transport;
 pub mod fonts;

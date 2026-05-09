@@ -200,7 +200,8 @@ mod tests {
         let client = OscClient::new(local, sink_addr, None).await.unwrap();
         let (sender, _rx) = client.into_parts();
         let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
-        let engine = SnapshotEngine::new(state.clone(), sender);
+        let pace = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let engine = SnapshotEngine::new(state.clone(), sender, pace);
         (Arc::new(engine), state, sink)
     }
 
@@ -237,7 +238,8 @@ mod tests {
             crate::console::macro_manager::MacroManager::new(),
         ));
         let (ui_tx, _ui_rx) = std::sync::mpsc::channel::<crate::ui::UiEvent>();
-        Arc::new(MacroEngine::new(state, sender, macro_mgr, ui_tx))
+        let pace = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        Arc::new(MacroEngine::new(state, sender, macro_mgr, ui_tx, pace))
     }
 
     #[tokio::test]

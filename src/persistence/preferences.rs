@@ -21,6 +21,12 @@ pub struct AppPreferences {
     pub ui_mode: Option<UiMode>,
     #[serde(default)]
     pub show_diagnostics: bool,
+    /// Inter-message pacing (μs) shared between snapshot recall and
+    /// macro OSC sends. 0 = no pacing. Migrated from the per-show
+    /// `ConnectionSettings::send_pace_us` field on first load if
+    /// the prefs file doesn't carry a value yet.
+    #[serde(default)]
+    pub send_pace_us: u64,
 }
 
 impl AppPreferences {
@@ -84,5 +90,42 @@ impl AppPreferences {
             return Err(e);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_prefs_without_send_pace_us_loads_as_zero() {
+        // Before the Advanced Settings work, preferences.json had no
+        // send_pace_us field. Verify that file still loads and pacing
+        // defaults to 0 (i.e. "no pacing", same as before).
+        let json = r#"{"ui_mode":null,"show_diagnostics":true}"#;
+        let prefs: AppPreferences = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.send_pace_us, 0);
+        assert!(prefs.show_diagnostics);
+    }
+
+    #[test]
+    fn empty_prefs_loads_as_default() {
+        let prefs: AppPreferences = serde_json::from_str("{}").unwrap();
+        assert!(prefs.ui_mode.is_none());
+        assert!(!prefs.show_diagnostics);
+        assert_eq!(prefs.send_pace_us, 0);
+    }
+
+    #[test]
+    fn prefs_round_trip_through_json() {
+        let prefs = AppPreferences {
+            ui_mode: None,
+            show_diagnostics: true,
+            send_pace_us: 1500,
+        };
+        let json = serde_json::to_string(&prefs).unwrap();
+        let back: AppPreferences = serde_json::from_str(&json).unwrap();
+        assert_eq!(prefs.send_pace_us, back.send_pace_us);
+        assert_eq!(prefs.show_diagnostics, back.show_diagnostics);
     }
 }

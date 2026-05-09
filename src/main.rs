@@ -222,7 +222,12 @@ async fn run_headless(args: Args) {
     // Set up snapshot, macro, and palette systems
     let cue_manager = Arc::new(RwLock::new(CueManager::new(CueList::default())));
     let palette_manager = Arc::new(RwLock::new(PaletteManager::new()));
-    let mut snapshot_engine = SnapshotEngine::new(manager.state(), manager.sender());
+    // Shared pacing: same Arc handed to both engines. Headless mode
+    // doesn't load AppPreferences (no UI), so start at zero — pacing
+    // is mainly a UI-tweakable affordance for live operation.
+    let send_pace_us = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut snapshot_engine =
+        SnapshotEngine::new(manager.state(), manager.sender(), send_pace_us.clone());
     snapshot_engine.set_dirty_tracker(dirty_tracker.clone());
     // Headless path: no UI thread to consume macro app-action
     // events (Go / Prev / Connect / Disconnect / RecallSnapshot /
@@ -235,6 +240,7 @@ async fn run_headless(args: Args) {
         manager.sender(),
         macro_manager.clone(),
         headless_macro_tx,
+        send_pace_us.clone(),
     );
     macro_engine.set_dirty_tracker(dirty_tracker.clone());
     let macro_engine = Arc::new(macro_engine);
