@@ -474,15 +474,7 @@ fn render_label(
         // our `y`.
         let baseline_y = (y + scaled_font.ascent()).round() as i32;
         let draw_y = baseline_y - scaled_font.ascent() as i32;
-        imageproc::drawing::draw_text_mut(
-            &mut img,
-            text_rgb,
-            x,
-            draw_y,
-            scale,
-            font,
-            line,
-        );
+        imageproc::drawing::draw_text_mut(&mut img, text_rgb, x, draw_y, scale, font, line);
         y += line_h;
     }
     img

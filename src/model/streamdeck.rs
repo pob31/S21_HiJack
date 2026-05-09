@@ -260,11 +260,23 @@ mod tests {
 
     #[test]
     fn step_color_contrast_text_is_white_on_dark_and_black_on_light() {
-        assert_eq!(StepColor::BLACK.contrast_text(), StepColor::new(255, 255, 255));
-        assert_eq!(StepColor::new(255, 255, 255).contrast_text(), StepColor::BLACK);
+        assert_eq!(
+            StepColor::BLACK.contrast_text(),
+            StepColor::new(255, 255, 255)
+        );
+        assert_eq!(
+            StepColor::new(255, 255, 255).contrast_text(),
+            StepColor::BLACK
+        );
         // A saturated yellow has high luma → black text.
-        assert_eq!(StepColor::new(255, 255, 0).contrast_text(), StepColor::BLACK);
+        assert_eq!(
+            StepColor::new(255, 255, 0).contrast_text(),
+            StepColor::BLACK
+        );
         // Saturated blue is dark → white text.
-        assert_eq!(StepColor::new(0, 0, 255).contrast_text(), StepColor::new(255, 255, 255));
+        assert_eq!(
+            StepColor::new(0, 0, 255).contrast_text(),
+            StepColor::new(255, 255, 255)
+        );
     }
 }

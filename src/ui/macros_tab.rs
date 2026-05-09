@@ -2150,7 +2150,10 @@ fn draw_streamdeck_panel(
                                 egui::RichText::new(label).color(text_color).small(),
                             )
                             .fill(fill)
-                            .stroke(egui::Stroke::new(if is_selected { 2.0 } else { 1.0 }, stroke_color))
+                            .stroke(egui::Stroke::new(
+                                if is_selected { 2.0 } else { 1.0 },
+                                stroke_color,
+                            ))
                             .corner_radius(4.0)
                             .min_size(egui::Vec2::new(cell_w, cell_h))
                             .truncate();
@@ -2235,9 +2238,7 @@ fn draw_streamdeck_panel(
                                 // path triggered), the buttons vec may
                                 // not yet cover this index.
                                 if cfg_w.buttons.len() <= button_idx {
-                                    cfg_w
-                                        .buttons
-                                        .resize_with(button_idx + 1, Default::default);
+                                    cfg_w.buttons.resize_with(button_idx + 1, Default::default);
                                 }
                                 if let Some(b) = cfg_w.buttons.get_mut(button_idx) {
                                     b.steps.push(crate::model::streamdeck::StreamDeckStep {
@@ -2422,20 +2423,15 @@ fn draw_streamdeck_step_list(
                             .cloned()
                             .unwrap_or_else(|| "(deleted)".into());
                         ui.label(egui::RichText::new(name).color(theme::TEXT_PRIMARY));
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if ui
-                                    .small_button(
-                                        egui::RichText::new("Del").color(theme::ACCENT_RED),
-                                    )
-                                    .on_hover_text("Delete this step")
-                                    .clicked()
-                                {
-                                    delete_at = Some(i);
-                                }
-                            },
-                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .small_button(egui::RichText::new("Del").color(theme::ACCENT_RED))
+                                .on_hover_text("Delete this step")
+                                .clicked()
+                            {
+                                delete_at = Some(i);
+                            }
+                        });
                     });
                 });
                 let response = row_inner.response;
@@ -2644,7 +2640,11 @@ pub fn color_swatch_picker(
         .show(|ui| {
             ui.set_min_width(220.0);
 
-            ui.label(egui::RichText::new("Standard").color(theme::TEXT_SECONDARY).small());
+            ui.label(
+                egui::RichText::new("Standard")
+                    .color(theme::TEXT_SECONDARY)
+                    .small(),
+            );
             ui.horizontal_wrapped(|ui| {
                 for (color, name) in standard_swatches() {
                     if swatch_button(ui, color, color == *current)
