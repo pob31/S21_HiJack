@@ -1045,89 +1045,100 @@ fn draw_step_editor(
                             // doesn't shift surrounding rows or change the
                             // box's outer size.
                             frame = frame.stroke(egui::Stroke::new(1.0, theme::ACCENT_RED));
+                        } else if is_selected {
+                            // Yellow-tinted background fill so the
+                            // selection is impossible to miss; the
+                            // dashed yellow border (painted below) adds
+                            // a second redundant cue. A border alone
+                            // proved too subtle in the previous pass.
+                            frame = frame.fill(egui::Color32::from_rgb(60, 52, 12)).stroke(
+                                egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 230, 0)),
+                            );
                         }
-                        // Multi-selection draws a dashed yellow border
-                        // *after* the frame renders (see below) — solid
-                        // styling looked too similar to the Keep-hover red
-                        // and the operator couldn't tell selection apart.
-                        let row_inner = frame.show(ui, |ui| {
-                            ui.set_min_width(row_inner_w);
-                            ui.horizontal(|ui| {
-                                // Force every interactive widget on the
-                                // row to target the same height — egui's
-                                // `Align::Center` only centers within
-                                // the natural-height bounding box, so a
-                                // ComboBox at 26 px next to a small
-                                // button at 22 px would center each
-                                // separately and look misaligned. Pinning
-                                // interact_size.y locks them all to a
-                                // common midline.
-                                ui.spacing_mut().interact_size.y = 24.0;
-                                // Drag handle replaces the old Up/Dn
-                                // buttons — same painted dot grip the SD
-                                // step list uses. Rest of the row is not
-                                // a drag source.
-                                draw_drag_handle(ui, i);
-                                // Clickable `#N` badge doubles as a
-                                // multi-select toggle. Plain click
-                                // selects only this step; Shift-click
-                                // toggles without clearing the rest.
-                                let badge_resp = step_number_badge(
-                                    ui,
-                                    &format!("#{}", i + 1),
-                                    theme::BG_ELEVATED,
-                                    is_selected,
-                                )
-                                .on_hover_text(
-                                    "Click to select; Shift-click to add to multi-select.",
-                                );
-                                if badge_resp.clicked() {
-                                    let shift = ui.ctx().input(|input| input.modifiers.shift);
-                                    if shift {
-                                        if !macros_state.step_selection.insert(i) {
-                                            macros_state.step_selection.remove(&i);
+                        let row_inner =
+                            frame.show(ui, |ui| {
+                                ui.set_min_width(row_inner_w);
+                                // Pre-allocate a fixed-height strip with
+                                // `Align::Center` on the cross axis so every
+                                // widget on the row is positioned with its
+                                // vertical centre at the same y. Without an
+                                // explicit row height, ComboBoxes /
+                                // TextEdits / labels each pick their own
+                                // natural height and `Align::Center` only
+                                // centres each one inside its own box —
+                                // which left them landing on slightly
+                                // different midlines.
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(row_inner_w, 28.0),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.spacing_mut().interact_size.y = 24.0;
+                                        // Drag handle replaces the old Up/Dn
+                                        // buttons — same painted dot grip the SD
+                                        // step list uses. Rest of the row is not
+                                        // a drag source.
+                                        draw_drag_handle(ui, i);
+                                        // Clickable `#N` badge doubles as a
+                                        // multi-select toggle. Plain click
+                                        // selects only this step; Shift-click
+                                        // toggles without clearing the rest.
+                                        let badge_resp = step_number_badge(
+                                            ui,
+                                            &format!("#{}", i + 1),
+                                            theme::BG_ELEVATED,
+                                            is_selected,
+                                        )
+                                        .on_hover_text(
+                                            "Click to select; Shift-click to add to multi-select.",
+                                        );
+                                        if badge_resp.clicked() {
+                                            let shift =
+                                                ui.ctx().input(|input| input.modifiers.shift);
+                                            if shift {
+                                                if !macros_state.step_selection.insert(i) {
+                                                    macros_state.step_selection.remove(&i);
+                                                }
+                                            } else {
+                                                macros_state.step_selection.clear();
+                                                macros_state.step_selection.insert(i);
+                                            }
                                         }
-                                    } else {
-                                        macros_state.step_selection.clear();
-                                        macros_state.step_selection.insert(i);
-                                    }
-                                }
-                                // ── Left side: address (or kind) ──
-                                // Fixed-width slot so addresses align
-                                // column-wise across rows; long ones
-                                // truncate with an ellipsis instead
-                                // of stretching the row.
-                                match kind {
-                                    MacroStepKind::Parameter { address, .. } => {
-                                        ui.add_sized(
-                                            [200.0, 20.0],
-                                            egui::Label::new(
-                                                egui::RichText::new(format!("{}", address))
-                                                    .color(theme::TEXT_PRIMARY),
-                                            )
-                                            .truncate(),
-                                        );
-                                    }
-                                    _ => {
-                                        // App-action steps render as a
-                                        // single descriptive label — no
-                                        // mode / value editor.
-                                        ui.label(
-                                            egui::RichText::new(describe_step_kind(kind))
-                                                .color(theme::TEXT_PRIMARY)
-                                                .strong(),
-                                        );
-                                    }
-                                }
+                                        // ── Left side: address (or kind) ──
+                                        // Fixed-width slot so addresses align
+                                        // column-wise across rows; long ones
+                                        // truncate with an ellipsis instead
+                                        // of stretching the row.
+                                        match kind {
+                                            MacroStepKind::Parameter { address, .. } => {
+                                                ui.add_sized(
+                                                    [200.0, 20.0],
+                                                    egui::Label::new(
+                                                        egui::RichText::new(format!("{}", address))
+                                                            .color(theme::TEXT_PRIMARY),
+                                                    )
+                                                    .truncate(),
+                                                );
+                                            }
+                                            _ => {
+                                                // App-action steps render as a
+                                                // single descriptive label — no
+                                                // mode / value editor.
+                                                ui.label(
+                                                    egui::RichText::new(describe_step_kind(kind))
+                                                        .color(theme::TEXT_PRIMARY)
+                                                        .strong(),
+                                                );
+                                            }
+                                        }
 
-                                // ── Right side: mode/value/ms/▶0◀/Del/Keep ──
-                                // Anchored to the row's right edge so the
-                                // varying width of the address (left side)
-                                // doesn't shift the controls horizontally.
-                                // Items are added in reverse visual order
-                                // because `right_to_left` lays out from
-                                // the right edge inward.
-                                ui.with_layout(
+                                        // ── Right side: mode/value/ms/▶0◀/Del/Keep ──
+                                        // Anchored to the row's right edge so the
+                                        // varying width of the address (left side)
+                                        // doesn't shift the controls horizontally.
+                                        // Items are added in reverse visual order
+                                        // because `right_to_left` lays out from
+                                        // the right edge inward.
+                                        ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         // Keep (rightmost)
@@ -1227,8 +1238,9 @@ fn draw_step_editor(
                                         }
                                     },
                                 );
+                                    },
+                                );
                             });
-                        });
                         let row_resp = row_inner.response;
 
                         // Paint the dashed yellow border *after* the
