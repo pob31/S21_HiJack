@@ -1045,9 +1045,11 @@ fn draw_step_editor(
                             // doesn't shift surrounding rows or change the
                             // box's outer size.
                             frame = frame.stroke(egui::Stroke::new(1.0, theme::ACCENT_RED));
-                        } else if is_selected {
-                            frame = frame.stroke(egui::Stroke::new(1.0, theme::ACCENT_BLUE));
                         }
+                        // Multi-selection draws a dashed yellow border
+                        // *after* the frame renders (see below) — solid
+                        // styling looked too similar to the Keep-hover red
+                        // and the operator couldn't tell selection apart.
                         let row_inner = frame.show(ui, |ui| {
                             ui.set_min_width(row_inner_w);
                             ui.horizontal(|ui| {
@@ -1080,12 +1082,13 @@ fn draw_step_editor(
                                         macros_state.step_selection.insert(i);
                                     }
                                 }
+                                // ── Left side: address (or kind) ──
+                                // Fixed-width slot so addresses align
+                                // column-wise across rows; long ones
+                                // truncate with an ellipsis instead
+                                // of stretching the row.
                                 match kind {
                                     MacroStepKind::Parameter { address, .. } => {
-                                        // Fixed-width slot so addresses align
-                                        // column-wise across rows; long ones
-                                        // truncate with an ellipsis instead
-                                        // of stretching the row.
                                         ui.add_sized(
                                             [200.0, 20.0],
                                             egui::Label::new(
@@ -1094,57 +1097,11 @@ fn draw_step_editor(
                                             )
                                             .truncate(),
                                         );
-
-                                        ui.separator();
-
-                                        // Mode ComboBox
-                                        let mode_id = ui.id().with(("step_mode", i));
-                                        egui::ComboBox::from_id_salt(mode_id)
-                                            .width(80.0)
-                                            .selected_text(macros_state.step_mode_edits[i].label())
-                                            .show_ui(ui, |ui| {
-                                                for choice in StepModeChoice::ALL {
-                                                    if ui
-                                                        .selectable_value(
-                                                            &mut macros_state.step_mode_edits[i],
-                                                            choice,
-                                                            choice.label(),
-                                                        )
-                                                        .changed()
-                                                    {
-                                                        action = Some(StepAction::UpdateMode(i));
-                                                    }
-                                                }
-                                            });
-
-                                        // Value field (for Fixed/Relative).
-                                        // Commit on every keystroke AND on
-                                        // focus loss — `lost_focus()` alone
-                                        // missed in-place edits when the
-                                        // user moved between fields without
-                                        // an explicit click-out, so the
-                                        // last value entered was sometimes
-                                        // dropped.
-                                        match macros_state.step_mode_edits[i] {
-                                            StepModeChoice::Fixed | StepModeChoice::Relative => {
-                                                let resp = ui.add(
-                                                    egui::TextEdit::singleline(
-                                                        &mut macros_state.step_value_edits[i],
-                                                    )
-                                                    .desired_width(60.0),
-                                                );
-                                                if resp.changed() || resp.lost_focus() {
-                                                    action = Some(StepAction::UpdateMode(i));
-                                                }
-                                            }
-                                            StepModeChoice::Toggle => {}
-                                        }
                                     }
                                     _ => {
                                         // App-action steps render as a
                                         // single descriptive label — no
-                                        // mode / value editor. Delay is
-                                        // still editable below.
+                                        // mode / value editor.
                                         ui.label(
                                             egui::RichText::new(describe_step_kind(kind))
                                                 .color(theme::TEXT_PRIMARY)
@@ -1153,74 +1110,132 @@ fn draw_step_editor(
                                     }
                                 }
 
-                                ui.separator();
-
-                                // Delay field — applies to every kind.
-                                // Same commit pattern as the value field.
-                                ui.label("ms:");
-                                let delay_resp = ui.add(
-                                    egui::TextEdit::singleline(
-                                        &mut macros_state.step_delay_edits[i],
-                                    )
-                                    .desired_width(50.0),
+                                // ── Right side: mode/value/ms/▶0◀/Del/Keep ──
+                                // Anchored to the row's right edge so the
+                                // varying width of the address (left side)
+                                // doesn't shift the controls horizontally.
+                                // Items are added in reverse visual order
+                                // because `right_to_left` lays out from
+                                // the right edge inward.
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        // Keep (rightmost)
+                                        let keep_resp = ui.small_button("Keep").on_hover_text(
+                                            "Keep only this step for its (channel, parameter); \
+                                                 remove the rest",
+                                        );
+                                        if keep_resp.hovered() {
+                                            new_keep_hover_idx = Some(i);
+                                        }
+                                        if keep_resp.clicked() {
+                                            action = Some(StepAction::KeepOnly(i));
+                                        }
+                                        // Del
+                                        if ui
+                                            .small_button("Del")
+                                            .on_hover_text("Delete this step")
+                                            .clicked()
+                                        {
+                                            action = Some(StepAction::Delete(i));
+                                        }
+                                        ui.separator();
+                                        // ▶0◀ reset (U+25B6 / U+25C0 from
+                                        // NotoSansSymbols)
+                                        if ui
+                                            .small_button("\u{25B6}0\u{25C0}")
+                                            .on_hover_text("Reset this step's delay to 0 ms")
+                                            .clicked()
+                                        {
+                                            macros_state.step_delay_edits[i] = "0".into();
+                                            action = Some(StepAction::UpdateDelay(i));
+                                        }
+                                        // Delay TextEdit
+                                        let delay_resp = ui.add(
+                                            egui::TextEdit::singleline(
+                                                &mut macros_state.step_delay_edits[i],
+                                            )
+                                            .desired_width(50.0),
+                                        );
+                                        if delay_resp.changed() || delay_resp.lost_focus() {
+                                            action = Some(StepAction::UpdateDelay(i));
+                                        }
+                                        ui.label("ms:");
+                                        // Mode + Value (Parameter only).
+                                        // The inner left_to_right wrapper
+                                        // keeps Mode left of Value within
+                                        // the right-anchored group, which
+                                        // is the natural reading order.
+                                        if let MacroStepKind::Parameter { .. } = kind {
+                                            ui.with_layout(
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                                |ui| {
+                                                    // Mode ComboBox
+                                                    let mode_id = ui.id().with(("step_mode", i));
+                                                    egui::ComboBox::from_id_salt(mode_id)
+                                                        .width(80.0)
+                                                        .selected_text(
+                                                            macros_state.step_mode_edits[i].label(),
+                                                        )
+                                                        .show_ui(ui, |ui| {
+                                                            for choice in StepModeChoice::ALL {
+                                                                if ui
+                                                                    .selectable_value(
+                                                                        &mut macros_state
+                                                                            .step_mode_edits[i],
+                                                                        choice,
+                                                                        choice.label(),
+                                                                    )
+                                                                    .changed()
+                                                                {
+                                                                    action = Some(
+                                                                        StepAction::UpdateMode(i),
+                                                                    );
+                                                                }
+                                                            }
+                                                        });
+                                                    // Value field (Fixed / Relative)
+                                                    if matches!(
+                                                        macros_state.step_mode_edits[i],
+                                                        StepModeChoice::Fixed
+                                                            | StepModeChoice::Relative
+                                                    ) {
+                                                        let resp = ui.add(
+                                                            egui::TextEdit::singleline(
+                                                                &mut macros_state.step_value_edits
+                                                                    [i],
+                                                            )
+                                                            .desired_width(60.0),
+                                                        );
+                                                        if resp.changed() || resp.lost_focus() {
+                                                            action =
+                                                                Some(StepAction::UpdateMode(i));
+                                                        }
+                                                    }
+                                                },
+                                            );
+                                        }
+                                    },
                                 );
-                                if delay_resp.changed() || delay_resp.lost_focus() {
-                                    action = Some(StepAction::UpdateDelay(i));
-                                }
-                                // One-click reset to 0 ms — common when
-                                // chaining steps with no inter-step gap.
-                                // Triangle glyphs (U+25B6 / U+25C0) sit
-                                // on either side of the 0 to read as
-                                // "snap to zero". Both characters live
-                                // in NotoSansSymbols (loaded as a
-                                // fallback in `fonts.rs`), so they
-                                // render rather than tofu.
-                                if ui
-                                    .small_button("\u{25B6}0\u{25C0}")
-                                    .on_hover_text("Reset this step's delay to 0 ms")
-                                    .clicked()
-                                {
-                                    macros_state.step_delay_edits[i] = "0".into();
-                                    action = Some(StepAction::UpdateDelay(i));
-                                }
-
-                                // Delete + Keep on the same row — Up/Dn
-                                // dropped (drag handle replaces them), so
-                                // there's plenty of horizontal room and
-                                // packing them in keeps more steps visible
-                                // without scrolling.
-                                ui.separator();
-                                if ui
-                                    .small_button("Del")
-                                    .on_hover_text("Delete this step")
-                                    .clicked()
-                                {
-                                    action = Some(StepAction::Delete(i));
-                                }
-                                // Keep only this step's value for its
-                                // (channel, parameter) — drops every other
-                                // step in the macro that targets the same
-                                // address. Useful when a Learn-mode
-                                // recording captured several intermediate
-                                // fader positions and the operator only
-                                // wants to keep the final one.
-                                //
-                                // Hovering this button paints a red border
-                                // around the rows that would be removed —
-                                // a quick "what does this do?" preview.
-                                let keep_resp = ui.small_button("Keep").on_hover_text(
-                                    "Keep only this step for its (channel, parameter); \
-                                 remove the rest",
-                                );
-                                if keep_resp.hovered() {
-                                    new_keep_hover_idx = Some(i);
-                                }
-                                if keep_resp.clicked() {
-                                    action = Some(StepAction::KeepOnly(i));
-                                }
                             });
                         });
                         let row_resp = row_inner.response;
+
+                        // Paint the dashed yellow border *after* the
+                        // frame renders so it stands out from the 1 px
+                        // solid red Keep-hover stroke. Skipped when the
+                        // row is also a Keep-match — letting the red
+                        // signal win avoids a tug-of-war between the
+                        // two highlights.
+                        if is_selected && !is_keep_match {
+                            paint_dashed_rect_border(
+                                ui.painter(),
+                                row_resp.rect,
+                                6.0,
+                                4.0,
+                                egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                            );
+                        }
 
                         // Drop-target hover marker — same pattern as the
                         // SD step list. A blue line at the top of the row
@@ -2894,6 +2909,52 @@ fn draw_streamdeck_step_list(
 /// multi-select toggle (Shift-click extends without clearing). The
 /// theme helper is hover-only and we don't want to widen its API
 /// surface for this one site.
+/// Paint a dashed rectangle border. egui's `Frame::stroke` paints
+/// solid lines only; we want a clearly different look for multi-
+/// selected rows so they don't get mistaken for the 1 px solid red
+/// Keep-hover highlight. `dash_len` and `gap` are pixel lengths
+/// applied identically on every edge.
+fn paint_dashed_rect_border(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    dash_len: f32,
+    gap: f32,
+    stroke: egui::Stroke,
+) {
+    let step = dash_len + gap;
+    // Horizontal edges
+    let mut x = rect.left();
+    while x < rect.right() {
+        let end_x = (x + dash_len).min(rect.right());
+        painter.line_segment(
+            [egui::pos2(x, rect.top()), egui::pos2(end_x, rect.top())],
+            stroke,
+        );
+        painter.line_segment(
+            [
+                egui::pos2(x, rect.bottom()),
+                egui::pos2(end_x, rect.bottom()),
+            ],
+            stroke,
+        );
+        x += step;
+    }
+    // Vertical edges
+    let mut y = rect.top();
+    while y < rect.bottom() {
+        let end_y = (y + dash_len).min(rect.bottom());
+        painter.line_segment(
+            [egui::pos2(rect.left(), y), egui::pos2(rect.left(), end_y)],
+            stroke,
+        );
+        painter.line_segment(
+            [egui::pos2(rect.right(), y), egui::pos2(rect.right(), end_y)],
+            stroke,
+        );
+        y += step;
+    }
+}
+
 fn step_number_badge(
     ui: &mut egui::Ui,
     text: &str,
