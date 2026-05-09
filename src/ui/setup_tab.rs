@@ -1199,19 +1199,21 @@ pub fn draw_setup_tab(
                 // iPad satellite — slot stays a constant w_sat × MIN_TOP_HEIGHT
                 // box across all modes (so centering math doesn't change), but
                 // the visible content varies:
-                //   Mode 1 → no frame, vacant space (the console handles iPad-protocol directly).
+                //   Mode 1 → greyed-out frame (the console handles iPad-protocol directly).
                 //   Mode 2 → frame with explanatory text only (no IP / ports / status).
                 //   Mode 3 → full IP + Tx/Rx + status content.
                 match setup.operating_mode {
                     OperatingMode::Mode1 => {
-                        // Match Mode-2/3's rendered width (inner content +
-                        // frame inner_margin) so the top row's total width
-                        // is mode-independent and the bottom-row centering
-                        // math doesn't shift.
-                        ui.allocate_exact_size(
-                            egui::Vec2::new(w_sat + SAT_FRAME_PAD, MIN_TOP_HEIGHT),
-                            egui::Sense::hover(),
-                        );
+                        peer_section(ui, "iPad", theme::TEXT_DISABLED, w_sat, MIN_TOP_HEIGHT, false, None, |ui| {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Mode 1 is GP OSC only — the iPad protocol is not used. \
+                                     Switch to Mode 2 or Mode 3 to expose iPad-protocol features.",
+                                )
+                                .color(theme::TEXT_DISABLED)
+                                .small(),
+                            );
+                        });
                     }
                     OperatingMode::Mode2 => {
                         peer_section(ui, "iPad", theme::ACCENT_ORANGE, w_sat, MIN_TOP_HEIGHT, false, None, |ui| {
@@ -1280,22 +1282,19 @@ pub fn draw_setup_tab(
                 }
             });
 
-            // Bottom-row visibility follows the Display Mode tab rules:
-            //   LiveMusic hides Snapshots → no cueing → hide QLab.
-            //   Theatre hides Monitor → no mobile clients → hide Monitor.
-            //   Full shows both.
-            let show_qlab = setup.ui_mode != UiMode::LiveMusic;
-            let show_monitor = setup.ui_mode != UiMode::Theatre;
+            // Bottom-row activity follows the Display Mode tab rules:
+            //   LiveMusic hides Snapshots → no cueing → grey out QLab.
+            //   Theatre hides Monitor → no mobile clients → grey out Monitor.
+            //   Full shows both fully active.
+            // Both boxes always render so the diagram stays balanced; the
+            // inactive one shows as a greyed-out shell rather than vanishing.
+            let qlab_active = setup.ui_mode != UiMode::LiveMusic;
+            let monitor_active = setup.ui_mode != UiMode::Theatre;
 
-            if show_qlab || show_monitor {
-                ui.add_space(SECT_GAP);
-            }
+            ui.add_space(SECT_GAP);
 
             // ── Bottom row: QLab (offset left) | Monitor (offset right) ──
             // Offsets land each box in the gap between the top-row sections.
-            // When one box is hidden, the leading offset for the other is
-            // adjusted so the visible box still lands in its proper gap.
-            if show_qlab || show_monitor {
             ui.horizontal(|ui| {
                 // Same zero-item-spacing trick as the top row so the offset
                 // arithmetic below matches the actual rendered positions.
@@ -1315,15 +1314,9 @@ pub fn draw_setup_tab(
                 let qlab_lead = sat_rendered / 2.0 + gap;
                 let inner_gap = (hub_rendered - sat_rendered).max(0.0);
 
-                if show_qlab {
-                    ui.add_space(qlab_lead);
-                } else {
-                    // QLab hidden: skip its slot entirely so Monitor sits
-                    // alone in the Server↔iPad gap.
-                    ui.add_space(qlab_lead + sat_rendered + inner_gap);
-                }
+                ui.add_space(qlab_lead);
 
-                if show_qlab {
+                if qlab_active {
                 // QLab satellite — bottom-left
                 peer_section(ui, "QLab", theme::ACCENT_AMBER, w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
                     ui.horizontal(|ui| {
@@ -1371,16 +1364,24 @@ pub fn draw_setup_tab(
                             ui.end_row();
                         });
                 });
+                } else {
+                    peer_section(ui, "QLab", theme::TEXT_DISABLED, w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
+                        ui.label(
+                            egui::RichText::new(
+                                "Live Music mode hides Snapshots, so QLab cue triggering is \
+                                 disabled. Switch to Full or Theatre mode to enable QLab.",
+                            )
+                            .color(theme::TEXT_DISABLED)
+                            .small(),
+                        );
+                    });
                 }
 
                 // Inner gap: span the Server's extra width plus gaps so
-                // Monitor lands in the Server↔iPad gap. Only needed when
-                // both bottom satellites are visible.
-                if show_qlab && show_monitor {
-                    ui.add_space(inner_gap);
-                }
+                // Monitor lands in the Server↔iPad gap.
+                ui.add_space(inner_gap);
 
-                if show_monitor {
+                if monitor_active {
                 // Monitor satellite — bottom-right
                 peer_section(ui, "Monitor", theme::TEXT_SECONDARY, w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
                     egui::Grid::new("monitor_flow_grid")
@@ -1409,9 +1410,20 @@ pub fn draw_setup_tab(
                             ui.end_row();
                         });
                 });
+                } else {
+                    peer_section(ui, "Monitor", theme::TEXT_DISABLED, w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
+                        ui.label(
+                            egui::RichText::new(
+                                "Theatre mode targets a single operator on this machine, so the \
+                                 mobile / web monitor is disabled. Switch to Full or Live Music \
+                                 mode to enable it.",
+                            )
+                            .color(theme::TEXT_DISABLED)
+                            .small(),
+                        );
+                    });
                 }
             });
-            }
 
             // Status message — one-line warning when the daemon couldn't bring
             // a port up, etc. The Connect button itself moved to the top-strip.
