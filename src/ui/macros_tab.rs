@@ -1026,6 +1026,10 @@ fn draw_step_editor(
                     // viewport's width — leaves a small gutter for the
                     // scrollbar and the frame's inner_margin.
                     let row_inner_w = (ui.available_width() - 28.0).max(120.0);
+                    // Fixed badge width so the `#N` column doesn't
+                    // jiggle as numbers grow (`#1` vs `#999`) and the
+                    // OSC path always starts at the same x.
+                    let badge_w = step_badge_fixed_width(ui);
                     for (i, (kind, _delay)) in steps.iter().enumerate() {
                         // Tint this row's frame when its address matches
                         // the Keep-hovered step's address (and isn't itself
@@ -1086,6 +1090,7 @@ fn draw_step_editor(
                                         &format!("#{}", i + 1),
                                         theme::BG_ELEVATED,
                                         is_selected,
+                                        badge_w,
                                     )
                                     .on_hover_text(
                                         "Click to select; Shift-click to add to multi-select.",
@@ -3022,15 +3027,16 @@ fn step_number_badge(
     text: &str,
     bg_color: egui::Color32,
     selected: bool,
+    width: f32,
 ) -> egui::Response {
-    let padding = egui::Vec2::new(8.0, 4.0);
+    let padding_y = 4.0;
     let text_galley = ui.painter().layout_no_wrap(
         text.to_string(),
         egui::FontId::proportional(theme::FONT_SIZE_BADGE),
         theme::TEXT_PRIMARY,
     );
-    let desired_size = text_galley.size() + padding * 2.0;
-    let (rect, resp) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+    let height = text_galley.size().y + padding_y * 2.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::new(width, height), egui::Sense::click());
     ui.painter().rect_filled(rect, 4.0, bg_color);
     if selected {
         ui.painter().rect_stroke(
@@ -3044,6 +3050,19 @@ fn step_number_badge(
     ui.painter()
         .galley(text_pos, text_galley, theme::TEXT_PRIMARY);
     resp
+}
+
+/// Width of the `#N` badge needed to comfortably fit step numbers up
+/// to `#10000`. Computed from the badge font once per frame in the
+/// step editor so every row's badge has the same width and the OSC
+/// path column lines up across all rows regardless of step index.
+fn step_badge_fixed_width(ui: &egui::Ui) -> f32 {
+    let g = ui.painter().layout_no_wrap(
+        "#10000".into(),
+        egui::FontId::proportional(theme::FONT_SIZE_BADGE),
+        theme::TEXT_PRIMARY,
+    );
+    g.size().x + 16.0
 }
 
 fn draw_drag_handle(ui: &mut egui::Ui, payload: usize) -> egui::Response {
