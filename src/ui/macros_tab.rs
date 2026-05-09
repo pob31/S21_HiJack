@@ -1861,14 +1861,24 @@ fn draw_fire_macro_picker(
         .unwrap_or_else(|| "— select macro —".into());
 
     ui.label("Macro:");
-    egui::ComboBox::from_id_salt("add_step_target_macro")
-        .width(220.0)
-        .selected_text(selected_label)
-        .show_ui(ui, |ui| {
-            for (id, name) in &macros {
-                ui.selectable_value(&mut macros_state.add_step_target_macro, Some(*id), name);
-            }
-        });
+    ui.allocate_ui_with_layout(
+        egui::vec2(220.0, 22.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            egui::ComboBox::from_id_salt("add_step_target_macro")
+                .width(220.0)
+                .selected_text(selected_label)
+                .show_ui(ui, |ui| {
+                    for (id, name) in &macros {
+                        ui.selectable_value(
+                            &mut macros_state.add_step_target_macro,
+                            Some(*id),
+                            name,
+                        );
+                    }
+                });
+        },
+    );
 }
 
 fn draw_snapshot_picker(
@@ -1898,14 +1908,24 @@ fn draw_snapshot_picker(
         .unwrap_or_else(|| "— select snapshot —".into());
 
     ui.label("Snapshot:");
-    egui::ComboBox::from_id_salt("add_step_target_snapshot")
-        .width(220.0)
-        .selected_text(selected_label)
-        .show_ui(ui, |ui| {
-            for (id, name) in &snapshots {
-                ui.selectable_value(&mut macros_state.add_step_target_snapshot, Some(*id), name);
-            }
-        });
+    ui.allocate_ui_with_layout(
+        egui::vec2(220.0, 22.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            egui::ComboBox::from_id_salt("add_step_target_snapshot")
+                .width(220.0)
+                .selected_text(selected_label)
+                .show_ui(ui, |ui| {
+                    for (id, name) in &snapshots {
+                        ui.selectable_value(
+                            &mut macros_state.add_step_target_snapshot,
+                            Some(*id),
+                            name,
+                        );
+                    }
+                });
+        },
+    );
 }
 
 fn draw_palette_picker(
@@ -1935,30 +1955,46 @@ fn draw_palette_picker(
         .unwrap_or_else(|| "— select palette —".into());
 
     ui.label("Palette:");
-    egui::ComboBox::from_id_salt("add_step_target_palette")
-        .width(220.0)
-        .selected_text(selected_label)
-        .show_ui(ui, |ui| {
-            for (id, name) in &palettes {
-                ui.selectable_value(&mut macros_state.add_step_target_palette, Some(*id), name);
-            }
-        });
+    ui.allocate_ui_with_layout(
+        egui::vec2(220.0, 22.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            egui::ComboBox::from_id_salt("add_step_target_palette")
+                .width(220.0)
+                .selected_text(selected_label)
+                .show_ui(ui, |ui| {
+                    for (id, name) in &palettes {
+                        ui.selectable_value(
+                            &mut macros_state.add_step_target_palette,
+                            Some(*id),
+                            name,
+                        );
+                    }
+                });
+        },
+    );
     ui.label("Target channel:");
-    egui::ComboBox::from_id_salt("add_step_palette_ch_type")
-        .width(70.0)
-        .selected_text(macros_state.add_step_palette_channel_type.label())
-        .show_ui(ui, |ui| {
-            for ch in ChannelTypeChoice::ALL {
-                ui.selectable_value(
-                    &mut macros_state.add_step_palette_channel_type,
-                    ch,
-                    ch.label(),
-                );
-            }
-        });
-    ui.add(
-        egui::TextEdit::singleline(&mut macros_state.add_step_palette_channel_number)
-            .desired_width(30.0),
+    ui.allocate_ui_with_layout(
+        egui::vec2(70.0, 22.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            egui::ComboBox::from_id_salt("add_step_palette_ch_type")
+                .width(70.0)
+                .selected_text(macros_state.add_step_palette_channel_type.label())
+                .show_ui(ui, |ui| {
+                    for ch in ChannelTypeChoice::ALL {
+                        ui.selectable_value(
+                            &mut macros_state.add_step_palette_channel_type,
+                            ch,
+                            ch.label(),
+                        );
+                    }
+                });
+        },
+    );
+    ui.add_sized(
+        [40.0, 22.0],
+        egui::TextEdit::singleline(&mut macros_state.add_step_palette_channel_number),
     );
 }
 
