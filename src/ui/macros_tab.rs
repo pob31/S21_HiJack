@@ -1055,192 +1055,222 @@ fn draw_step_editor(
                                 egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 230, 0)),
                             );
                         }
-                        let row_inner =
-                            frame.show(ui, |ui| {
-                                ui.set_min_width(row_inner_w);
-                                // Pre-allocate a fixed-height strip with
-                                // `Align::Center` on the cross axis so every
-                                // widget on the row is positioned with its
-                                // vertical centre at the same y. Without an
-                                // explicit row height, ComboBoxes /
-                                // TextEdits / labels each pick their own
-                                // natural height and `Align::Center` only
-                                // centres each one inside its own box —
-                                // which left them landing on slightly
-                                // different midlines.
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(row_inner_w, 28.0),
-                                    egui::Layout::left_to_right(egui::Align::Center),
-                                    |ui| {
-                                        ui.spacing_mut().interact_size.y = 24.0;
-                                        // Drag handle replaces the old Up/Dn
-                                        // buttons — same painted dot grip the SD
-                                        // step list uses. Rest of the row is not
-                                        // a drag source.
-                                        draw_drag_handle(ui, i);
-                                        // Clickable `#N` badge doubles as a
-                                        // multi-select toggle. Plain click
-                                        // selects only this step; Shift-click
-                                        // toggles without clearing the rest.
-                                        let badge_resp = step_number_badge(
-                                            ui,
-                                            &format!("#{}", i + 1),
-                                            theme::BG_ELEVATED,
-                                            is_selected,
-                                        )
-                                        .on_hover_text(
-                                            "Click to select; Shift-click to add to multi-select.",
-                                        );
-                                        if badge_resp.clicked() {
-                                            let shift =
-                                                ui.ctx().input(|input| input.modifiers.shift);
-                                            if shift {
-                                                if !macros_state.step_selection.insert(i) {
-                                                    macros_state.step_selection.remove(&i);
-                                                }
-                                            } else {
-                                                macros_state.step_selection.clear();
-                                                macros_state.step_selection.insert(i);
+                        let row_inner = frame.show(ui, |ui| {
+                            ui.set_min_width(row_inner_w);
+                            // Pre-allocate a fixed-height strip with
+                            // `Align::Center` on the cross axis so every
+                            // widget on the row is positioned with its
+                            // vertical centre at the same y. Without an
+                            // explicit row height, ComboBoxes /
+                            // TextEdits / labels each pick their own
+                            // natural height and `Align::Center` only
+                            // centres each one inside its own box —
+                            // which left them landing on slightly
+                            // different midlines.
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(row_inner_w, 28.0),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.spacing_mut().interact_size.y = 24.0;
+                                    // Drag handle replaces the old Up/Dn
+                                    // buttons — same painted dot grip the SD
+                                    // step list uses. Rest of the row is not
+                                    // a drag source.
+                                    draw_drag_handle(ui, i);
+                                    // Clickable `#N` badge doubles as a
+                                    // multi-select toggle. Plain click
+                                    // selects only this step; Shift-click
+                                    // toggles without clearing the rest.
+                                    let badge_resp = step_number_badge(
+                                        ui,
+                                        &format!("#{}", i + 1),
+                                        theme::BG_ELEVATED,
+                                        is_selected,
+                                    )
+                                    .on_hover_text(
+                                        "Click to select; Shift-click to add to multi-select.",
+                                    );
+                                    if badge_resp.clicked() {
+                                        let shift = ui.ctx().input(|input| input.modifiers.shift);
+                                        if shift {
+                                            if !macros_state.step_selection.insert(i) {
+                                                macros_state.step_selection.remove(&i);
                                             }
+                                        } else {
+                                            macros_state.step_selection.clear();
+                                            macros_state.step_selection.insert(i);
                                         }
-                                        // ── Left side: address (or kind) ──
-                                        // Fixed-width slot so addresses align
-                                        // column-wise across rows; long ones
-                                        // truncate with an ellipsis instead
-                                        // of stretching the row.
-                                        match kind {
-                                            MacroStepKind::Parameter { address, .. } => {
-                                                ui.add_sized(
-                                                    [200.0, 20.0],
-                                                    egui::Label::new(
-                                                        egui::RichText::new(format!("{}", address))
-                                                            .color(theme::TEXT_PRIMARY),
-                                                    )
-                                                    .truncate(),
-                                                );
-                                            }
-                                            _ => {
-                                                // App-action steps render as a
-                                                // single descriptive label — no
-                                                // mode / value editor.
-                                                ui.label(
-                                                    egui::RichText::new(describe_step_kind(kind))
-                                                        .color(theme::TEXT_PRIMARY)
-                                                        .strong(),
-                                                );
-                                            }
-                                        }
-
-                                        // ── Right side: mode/value/ms/▶0◀/Del/Keep ──
-                                        // Anchored to the row's right edge so the
-                                        // varying width of the address (left side)
-                                        // doesn't shift the controls horizontally.
-                                        // Items are added in reverse visual order
-                                        // because `right_to_left` lays out from
-                                        // the right edge inward.
-                                        ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        // Keep (rightmost)
-                                        let keep_resp = ui.small_button("Keep").on_hover_text(
-                                            "Keep only this step for its (channel, parameter); \
-                                                 remove the rest",
-                                        );
-                                        if keep_resp.hovered() {
-                                            new_keep_hover_idx = Some(i);
-                                        }
-                                        if keep_resp.clicked() {
-                                            action = Some(StepAction::KeepOnly(i));
-                                        }
-                                        // Del
-                                        if ui
-                                            .small_button("Del")
-                                            .on_hover_text("Delete this step")
-                                            .clicked()
-                                        {
-                                            action = Some(StepAction::Delete(i));
-                                        }
-                                        ui.separator();
-                                        // ▶0◀ reset (U+25B6 / U+25C0 from
-                                        // NotoSansSymbols)
-                                        if ui
-                                            .small_button("\u{25B6}0\u{25C0}")
-                                            .on_hover_text("Reset this step's delay to 0 ms")
-                                            .clicked()
-                                        {
-                                            macros_state.step_delay_edits[i] = "0".into();
-                                            action = Some(StepAction::UpdateDelay(i));
-                                        }
-                                        // Delay TextEdit
-                                        let delay_resp = ui.add(
-                                            egui::TextEdit::singleline(
-                                                &mut macros_state.step_delay_edits[i],
-                                            )
-                                            .desired_width(50.0),
-                                        );
-                                        if delay_resp.changed() || delay_resp.lost_focus() {
-                                            action = Some(StepAction::UpdateDelay(i));
-                                        }
-                                        ui.label("ms:");
-                                        // Mode + Value (Parameter only).
-                                        // The inner left_to_right wrapper
-                                        // keeps Mode left of Value within
-                                        // the right-anchored group, which
-                                        // is the natural reading order.
-                                        if let MacroStepKind::Parameter { .. } = kind {
-                                            ui.with_layout(
-                                                egui::Layout::left_to_right(egui::Align::Center),
-                                                |ui| {
-                                                    // Mode ComboBox
-                                                    let mode_id = ui.id().with(("step_mode", i));
-                                                    egui::ComboBox::from_id_salt(mode_id)
-                                                        .width(80.0)
-                                                        .selected_text(
-                                                            macros_state.step_mode_edits[i].label(),
-                                                        )
-                                                        .show_ui(ui, |ui| {
-                                                            for choice in StepModeChoice::ALL {
-                                                                if ui
-                                                                    .selectable_value(
-                                                                        &mut macros_state
-                                                                            .step_mode_edits[i],
-                                                                        choice,
-                                                                        choice.label(),
-                                                                    )
-                                                                    .changed()
-                                                                {
-                                                                    action = Some(
-                                                                        StepAction::UpdateMode(i),
-                                                                    );
-                                                                }
-                                                            }
-                                                        });
-                                                    // Value field (Fixed / Relative)
-                                                    if matches!(
-                                                        macros_state.step_mode_edits[i],
-                                                        StepModeChoice::Fixed
-                                                            | StepModeChoice::Relative
-                                                    ) {
-                                                        let resp = ui.add(
-                                                            egui::TextEdit::singleline(
-                                                                &mut macros_state.step_value_edits
-                                                                    [i],
-                                                            )
-                                                            .desired_width(60.0),
-                                                        );
-                                                        if resp.changed() || resp.lost_focus() {
-                                                            action =
-                                                                Some(StepAction::UpdateMode(i));
-                                                        }
-                                                    }
-                                                },
+                                    }
+                                    // ── Left side: address (or kind) ──
+                                    // Fixed-width slot so addresses align
+                                    // column-wise across rows; long ones
+                                    // truncate with an ellipsis instead
+                                    // of stretching the row.
+                                    match kind {
+                                        MacroStepKind::Parameter { address, .. } => {
+                                            ui.add_sized(
+                                                [200.0, 20.0],
+                                                egui::Label::new(
+                                                    egui::RichText::new(format!("{}", address))
+                                                        .color(theme::TEXT_PRIMARY),
+                                                )
+                                                .truncate(),
                                             );
                                         }
-                                    },
-                                );
-                                    },
-                                );
-                            });
+                                        _ => {
+                                            // App-action steps render as a
+                                            // single descriptive label — no
+                                            // mode / value editor.
+                                            ui.label(
+                                                egui::RichText::new(describe_step_kind(kind))
+                                                    .color(theme::TEXT_PRIMARY)
+                                                    .strong(),
+                                            );
+                                        }
+                                    }
+
+                                    // ── Right side: mode/value/ms/▶0◀/Del/Keep ──
+                                    // Anchored to the row's right edge so the
+                                    // varying width of the address (left side)
+                                    // doesn't shift the controls horizontally.
+                                    // Items are added in reverse visual order
+                                    // because `right_to_left` lays out from
+                                    // the right edge inward.
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            // Lock the height *and* the
+                                            // padding for every interactive
+                                            // widget on this row so the box
+                                            // edges (not just the centres)
+                                            // line up. ComboBox and TextEdit
+                                            // pick different intrinsic
+                                            // heights from these two values
+                                            // — overriding both pins them
+                                            // to the same outline.
+                                            const W_H: f32 = 22.0;
+                                            ui.spacing_mut().interact_size.y = W_H;
+                                            ui.spacing_mut().button_padding = egui::vec2(8.0, 2.0);
+
+                                            // Keep (rightmost)
+                                            let keep_resp = ui
+                                            .add_sized(
+                                                [44.0, W_H],
+                                                egui::Button::new("Keep").small(),
+                                            )
+                                            .on_hover_text(
+                                                "Keep only this step for its (channel, parameter); \
+                                                 remove the rest",
+                                            );
+                                            if keep_resp.hovered() {
+                                                new_keep_hover_idx = Some(i);
+                                            }
+                                            if keep_resp.clicked() {
+                                                action = Some(StepAction::KeepOnly(i));
+                                            }
+                                            // Del
+                                            if ui
+                                                .add_sized(
+                                                    [40.0, W_H],
+                                                    egui::Button::new("Del").small(),
+                                                )
+                                                .on_hover_text("Delete this step")
+                                                .clicked()
+                                            {
+                                                action = Some(StepAction::Delete(i));
+                                            }
+                                            ui.separator();
+                                            // ▶0◀ reset (U+25B6 / U+25C0 from
+                                            // NotoSansSymbols)
+                                            if ui
+                                                .add_sized(
+                                                    [40.0, W_H],
+                                                    egui::Button::new("\u{25B6}0\u{25C0}").small(),
+                                                )
+                                                .on_hover_text("Reset this step's delay to 0 ms")
+                                                .clicked()
+                                            {
+                                                macros_state.step_delay_edits[i] = "0".into();
+                                                action = Some(StepAction::UpdateDelay(i));
+                                            }
+                                            // Delay TextEdit
+                                            let delay_resp = ui.add_sized(
+                                                [50.0, W_H],
+                                                egui::TextEdit::singleline(
+                                                    &mut macros_state.step_delay_edits[i],
+                                                ),
+                                            );
+                                            if delay_resp.changed() || delay_resp.lost_focus() {
+                                                action = Some(StepAction::UpdateDelay(i));
+                                            }
+                                            ui.label("ms:");
+                                            // Mode + Value (Parameter only).
+                                            // Order in code = right-to-left,
+                                            // so Value is added first (right
+                                            // of Mode visually) and Mode last
+                                            // (leftmost).
+                                            if let MacroStepKind::Parameter { .. } = kind {
+                                                if matches!(
+                                                    macros_state.step_mode_edits[i],
+                                                    StepModeChoice::Fixed
+                                                        | StepModeChoice::Relative
+                                                ) {
+                                                    let resp = ui.add_sized(
+                                                        [60.0, W_H],
+                                                        egui::TextEdit::singleline(
+                                                            &mut macros_state.step_value_edits[i],
+                                                        ),
+                                                    );
+                                                    if resp.changed() || resp.lost_focus() {
+                                                        action = Some(StepAction::UpdateMode(i));
+                                                    }
+                                                }
+                                                // Mode ComboBox — wrap in a
+                                                // fixed-size allocation so the
+                                                // combo's button matches the
+                                                // height of the surrounding
+                                                // widgets.
+                                                ui.allocate_ui_with_layout(
+                                                    egui::vec2(80.0, W_H),
+                                                    egui::Layout::left_to_right(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        let mode_id =
+                                                            ui.id().with(("step_mode", i));
+                                                        egui::ComboBox::from_id_salt(mode_id)
+                                                            .width(80.0)
+                                                            .selected_text(
+                                                                macros_state.step_mode_edits[i]
+                                                                    .label(),
+                                                            )
+                                                            .show_ui(ui, |ui| {
+                                                                for choice in StepModeChoice::ALL {
+                                                                    if ui
+                                                                        .selectable_value(
+                                                                            &mut macros_state
+                                                                                .step_mode_edits[i],
+                                                                            choice,
+                                                                            choice.label(),
+                                                                        )
+                                                                        .changed()
+                                                                    {
+                                                                        action = Some(
+                                                                            StepAction::UpdateMode(
+                                                                                i,
+                                                                            ),
+                                                                        );
+                                                                    }
+                                                                }
+                                                            });
+                                                    },
+                                                );
+                                            }
+                                        },
+                                    );
+                                },
+                            );
+                        });
                         let row_resp = row_inner.response;
 
                         // Paint the dashed yellow border *after* the
