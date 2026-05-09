@@ -80,11 +80,20 @@ pub struct MacrosTabState {
     /// (channel, parameter) — those are the rows Keep would remove.
     /// One frame stale, which is acceptable for a hover affordance.
     pub step_keep_hover_idx: Option<usize>,
-    /// Multi-selected step indices (click the `#N` badge to add /
-    /// remove single, Shift-click to toggle without losing the rest).
+    /// Multi-selected step indices. Selection model follows the
+    /// platform-standard convention:
+    ///
+    /// - plain click             → single-select
+    /// - Ctrl-click / Cmd-click  → toggle this index
+    /// - Shift-click             → range from `step_selection_anchor`
+    ///   to this index (inclusive)
+    ///
     /// Drives the batch action bar (Reset delays / Delete / Keep)
     /// shown above the step list when non-empty.
     pub step_selection: std::collections::HashSet<usize>,
+    /// Anchor for Shift-click range selection — set on every plain or
+    /// Ctrl/Cmd-click. Cleared with the rest of the selection state.
+    pub step_selection_anchor: Option<usize>,
     /// Height of the Add Step section frame measured on the previous
     /// frame, used to anchor that frame to the bottom of the editor's
     /// allocated area on the current frame. `None` on first render
@@ -157,6 +166,7 @@ impl Default for MacrosTabState {
             cached_steps: None,
             step_keep_hover_idx: None,
             step_selection: std::collections::HashSet::new(),
+            step_selection_anchor: None,
             last_add_step_height: None,
             streamdeck_popup_open: false,
             selected_streamdeck_button: None,
@@ -981,6 +991,7 @@ fn draw_step_editor(
                     .clicked()
                 {
                     macros_state.step_selection.clear();
+                    macros_state.step_selection_anchor = None;
                 }
             });
             ui.add_space(4.0);
@@ -1093,11 +1104,12 @@ fn draw_step_editor(
                                         badge_w,
                                     )
                                     .on_hover_text(
-                                        "Click to select; Shift-click to add to multi-select.",
+                                        "Click to select; Ctrl/Cmd-click to toggle; \
+                                         Shift-click to range-select.",
                                     );
-                                    let mut selection_click: Option<egui::Response> = None;
+                                    let mut selection_click = false;
                                     if badge_resp.clicked() {
-                                        selection_click = Some(badge_resp.clone());
+                                        selection_click = true;
                                     }
                                     // ── Left side: address (or kind) ──
                                     // Left-justified inside a fixed-width
@@ -1132,7 +1144,7 @@ fn draw_step_editor(
                                                 )
                                                 .inner;
                                             if addr_resp.clicked() {
-                                                selection_click = Some(addr_resp);
+                                                selection_click = true;
                                             }
                                         }
                                         _ => {
@@ -1148,22 +1160,10 @@ fn draw_step_editor(
                                                 .sense(egui::Sense::click()),
                                             );
                                             if kind_resp.clicked() {
-                                                selection_click = Some(kind_resp);
+                                                selection_click = true;
                                             }
                                         }
                                     }
-                                    if let Some(_resp) = selection_click {
-                                        let shift = ui.ctx().input(|input| input.modifiers.shift);
-                                        if shift {
-                                            if !macros_state.step_selection.insert(i) {
-                                                macros_state.step_selection.remove(&i);
-                                            }
-                                        } else {
-                                            macros_state.step_selection.clear();
-                                            macros_state.step_selection.insert(i);
-                                        }
-                                    }
-
                                     // ── Right side: mode/value/ms/▶0◀/Del/Keep ──
                                     // Anchored to the row's right edge so the
                                     // varying width of the address (left side)
@@ -1303,6 +1303,80 @@ fn draw_step_editor(
                                             }
                                         },
                                     );
+
+                                    // Click anywhere on the row's
+                                    // background (i.e. outside any of
+                                    // the interactive widgets above) is
+                                    // also a selection target. This
+                                    // uses egui's deprecated `interact_bg`
+                                    // because it correctly registers the
+                                    // sensor at the ui's *initial* widget
+                                    // rect — i.e. *behind* the widgets
+                                    // added during this frame — so
+                                    // clicks on Mode / Value / Del /
+                                    // Keep still fire those widgets.
+                                    #[allow(deprecated)]
+                                    let bg_resp = ui.interact_bg(egui::Sense::click());
+                                    if bg_resp.clicked() {
+                                        selection_click = true;
+                                    }
+
+                                    // ── Apply selection click ──
+                                    // Funnels the badge / address /
+                                    // background-click into one
+                                    // modifier-aware decision so all
+                                    // selection paths share the same
+                                    // semantics.
+                                    if selection_click {
+                                        let mods = ui.ctx().input(|input| input.modifiers);
+                                        let shift = mods.shift;
+                                        // `command` = Cmd on macOS, Ctrl
+                                        // elsewhere — the platform-
+                                        // standard "individual toggle"
+                                        // modifier.
+                                        let cmd = mods.command;
+                                        match (shift, cmd, macros_state.step_selection_anchor) {
+                                            // Shift-click with a known
+                                            // anchor → range select.
+                                            // Adding Cmd preserves the
+                                            // existing selection set
+                                            // outside the new range.
+                                            (true, _, Some(anchor)) => {
+                                                let (lo, hi) = if anchor <= i {
+                                                    (anchor, i)
+                                                } else {
+                                                    (i, anchor)
+                                                };
+                                                if !cmd {
+                                                    macros_state.step_selection.clear();
+                                                }
+                                                for j in lo..=hi {
+                                                    macros_state.step_selection.insert(j);
+                                                }
+                                                // Anchor unchanged so
+                                                // subsequent Shift-clicks
+                                                // grow / contract from
+                                                // the same start point.
+                                            }
+                                            // Cmd-click (no Shift) →
+                                            // toggle this index; move
+                                            // anchor here.
+                                            (false, true, _) => {
+                                                if !macros_state.step_selection.insert(i) {
+                                                    macros_state.step_selection.remove(&i);
+                                                }
+                                                macros_state.step_selection_anchor = Some(i);
+                                            }
+                                            // Plain click (or Shift-click
+                                            // with no anchor yet) → single
+                                            // select, set anchor.
+                                            _ => {
+                                                macros_state.step_selection.clear();
+                                                macros_state.step_selection.insert(i);
+                                                macros_state.step_selection_anchor = Some(i);
+                                            }
+                                        }
+                                    }
                                 },
                             );
                         });
