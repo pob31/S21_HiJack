@@ -1021,6 +1021,11 @@ fn draw_step_editor(
                 .auto_shrink([false, false])
                 .max_height(scroll_h)
                 .show(ui, |ui| {
+                    // Force every row to render at the same width by
+                    // sizing the inner horizontal layout to the scroll
+                    // viewport's width — leaves a small gutter for the
+                    // scrollbar and the frame's inner_margin.
+                    let row_inner_w = (ui.available_width() - 28.0).max(120.0);
                     for (i, (kind, _delay)) in steps.iter().enumerate() {
                         // Tint this row's frame when its address matches
                         // the Keep-hovered step's address (and isn't itself
@@ -1044,6 +1049,7 @@ fn draw_step_editor(
                             frame = frame.stroke(egui::Stroke::new(1.0, theme::ACCENT_BLUE));
                         }
                         let row_inner = frame.show(ui, |ui| {
+                            ui.set_min_width(row_inner_w);
                             ui.horizontal(|ui| {
                                 // Drag handle replaces the old Up/Dn
                                 // buttons — same painted dot grip the SD
@@ -1076,9 +1082,17 @@ fn draw_step_editor(
                                 }
                                 match kind {
                                     MacroStepKind::Parameter { address, .. } => {
-                                        ui.label(
-                                            egui::RichText::new(format!("{}", address))
-                                                .color(theme::TEXT_PRIMARY),
+                                        // Fixed-width slot so addresses align
+                                        // column-wise across rows; long ones
+                                        // truncate with an ellipsis instead
+                                        // of stretching the row.
+                                        ui.add_sized(
+                                            [200.0, 20.0],
+                                            egui::Label::new(
+                                                egui::RichText::new(format!("{}", address))
+                                                    .color(theme::TEXT_PRIMARY),
+                                            )
+                                            .truncate(),
                                         );
 
                                         ui.separator();
@@ -1155,8 +1169,14 @@ fn draw_step_editor(
                                 }
                                 // One-click reset to 0 ms — common when
                                 // chaining steps with no inter-step gap.
+                                // Triangle glyphs (U+25B6 / U+25C0) sit
+                                // on either side of the 0 to read as
+                                // "snap to zero". Both characters live
+                                // in NotoSansSymbols (loaded as a
+                                // fallback in `fonts.rs`), so they
+                                // render rather than tofu.
                                 if ui
-                                    .small_button("0")
+                                    .small_button("\u{25B6}0\u{25C0}")
                                     .on_hover_text("Reset this step's delay to 0 ms")
                                     .clicked()
                                 {
