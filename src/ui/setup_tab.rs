@@ -1060,7 +1060,7 @@ pub fn draw_setup_tab(
                                 if ui
                                     .add(theme::action_button(
                                         "Open…",
-                                        theme::BG_ELEVATED,
+                                        theme::ACCENT_GREEN,
                                         egui::Vec2::new(action_btn_w, theme::TEXT_EDIT_HEIGHT),
                                     ))
                                     .on_hover_text(
@@ -1096,7 +1096,7 @@ pub fn draw_setup_tab(
                         ui.add_space(subrow_indent);
                         let save_btn = theme::action_button(
                             "Save",
-                            theme::ACCENT_GREEN,
+                            theme::ACCENT_RED,
                             egui::Vec2::new(action_btn_w, 28.0),
                         );
                         if ui
@@ -1131,7 +1131,7 @@ pub fn draw_setup_tab(
 
                         let save_as_btn = theme::action_button(
                             "Save As…",
-                            theme::ACCENT_GREEN,
+                            theme::ACCENT_RED,
                             egui::Vec2::new(action_btn_w, 28.0),
                         );
                         if ui
