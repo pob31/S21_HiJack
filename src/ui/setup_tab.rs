@@ -847,6 +847,16 @@ pub fn draw_setup_tab(
 
                 // Server (This Computer) — central hub
                 peer_section(ui, "This Computer", theme::ACCENT_GREEN, w_hub, MIN_TOP_HEIGHT, true, None, |ui| {
+                    // Unified button padding for the whole panel —
+                    // keeps every action row (Display / Connection
+                    // Mode toggles, Parameter coverage…, Open…, Save /
+                    // Save As… / New) at the same rendered height by
+                    // ensuring no button's natural size (text + 2 *
+                    // padding.y) exceeds the shared 28 px min_size.
+                    // Default button_padding (~12, 8) made bare-row
+                    // buttons render at ~30 px while grid-row buttons
+                    // sat at exactly 28 — visible 2 px misalignment.
+                    ui.spacing_mut().button_padding = egui::Vec2::new(10.0, 6.0);
                     // Each main labeled row is its own 2-column grid that shares
                     // a fixed `LABEL_COL_W`, so labels line up across sections
                     // and widgets all start at the same X. Sub-rows
@@ -882,7 +892,7 @@ pub fn draw_setup_tab(
                             // All 3 toggles share `action_btn_w` so the
                             // row spans `action_row_w` — same width as
                             // every other button row in this panel.
-                            ui.spacing_mut().button_padding = egui::Vec2::new(10.0, 6.0);
+                            // button_padding is set panel-wide above.
                             for mode in UiMode::ALL {
                                 let is_active = setup.ui_mode == mode;
                                 let fill = if is_active { theme::ACCENT_BLUE } else { theme::BG_ELEVATED };
@@ -975,7 +985,7 @@ pub fn draw_setup_tab(
                     server_grid("server_conn_grid").show(ui, |ui| {
                         ui.label("Connection Mode:");
                         ui.horizontal(|ui| {
-                            ui.spacing_mut().button_padding = egui::Vec2::new(10.0, 6.0);
+                            // button_padding is set panel-wide above.
                             for mode in [OperatingMode::Mode1, OperatingMode::Mode2, OperatingMode::Mode3] {
                                 let is_active = setup.operating_mode == mode;
                                 let fill = if is_active { theme::ACCENT_BLUE } else { theme::BG_ELEVATED };
@@ -1056,41 +1066,35 @@ pub fn draw_setup_tab(
                             if !setup.show_file_path.is_empty() {
                                 resp.on_hover_text(setup.show_file_path.clone());
                             }
-                            // Compact button padding here so the Open
-                            // button renders at the same height as the
-                            // text field above (default button_padding
-                            // of 12x8 makes it ~30 px tall, breaking
-                            // the row's vertical centring).
-                            ui.scope(|ui| {
-                                ui.spacing_mut().button_padding =
-                                    egui::Vec2::new(8.0, 4.0);
-                                if ui
-                                    .add(theme::action_button(
-                                        "Open…",
-                                        theme::ACCENT_GREEN,
-                                        egui::Vec2::new(action_btn_w, 28.0),
-                                    ))
-                                    .on_hover_text(
-                                        "Pick a show file and load it. Save As… to save to \
-                                         a new path.",
-                                    )
-                                    .clicked()
+                            // Open button — inherits the panel-level
+                            // button_padding so it lands at the same
+                            // 28 px height as every other action row.
+                            if ui
+                                .add(theme::action_button(
+                                    "Open…",
+                                    theme::ACCENT_GREEN,
+                                    egui::Vec2::new(action_btn_w, 28.0),
+                                ))
+                                .on_hover_text(
+                                    "Pick a show file and load it. Save As… to save to \
+                                     a new path.",
+                                )
+                                .clicked()
+                            {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("Show files", &["s21show", "json"])
+                                    .add_filter("All files", &["*"])
+                                    .pick_file()
                                 {
-                                    if let Some(path) = rfd::FileDialog::new()
-                                        .add_filter("Show files", &["s21show", "json"])
-                                        .add_filter("All files", &["*"])
-                                        .pick_file()
-                                    {
-                                        setup.show_file_path = path.display().to_string();
-                                        load_show_file(
-                                            setup, state, cue_manager, macro_manager,
-                                            monitor_manager, palette_manager, gang_manager,
-                                            pan_link_bindings, stream_deck_config, connected,
-                                            runtime, ui_tx,
-                                        );
-                                    }
+                                    setup.show_file_path = path.display().to_string();
+                                    load_show_file(
+                                        setup, state, cue_manager, macro_manager,
+                                        monitor_manager, palette_manager, gang_manager,
+                                        pan_link_bindings, stream_deck_config, connected,
+                                        runtime, ui_tx,
+                                    );
                                 }
-                            });
+                            }
                         });
                         ui.end_row();
                     });
