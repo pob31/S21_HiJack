@@ -1053,6 +1053,16 @@ fn draw_step_editor(
                         let row_inner = frame.show(ui, |ui| {
                             ui.set_min_width(row_inner_w);
                             ui.horizontal(|ui| {
+                                // Force every interactive widget on the
+                                // row to target the same height — egui's
+                                // `Align::Center` only centers within
+                                // the natural-height bounding box, so a
+                                // ComboBox at 26 px next to a small
+                                // button at 22 px would center each
+                                // separately and look misaligned. Pinning
+                                // interact_size.y locks them all to a
+                                // common midline.
+                                ui.spacing_mut().interact_size.y = 24.0;
                                 // Drag handle replaces the old Up/Dn
                                 // buttons — same painted dot grip the SD
                                 // step list uses. Rest of the row is not
@@ -1223,17 +1233,18 @@ fn draw_step_editor(
 
                         // Paint the dashed yellow border *after* the
                         // frame renders so it stands out from the 1 px
-                        // solid red Keep-hover stroke. Skipped when the
-                        // row is also a Keep-match — letting the red
-                        // signal win avoids a tug-of-war between the
-                        // two highlights.
+                        // solid red Keep-hover stroke. Insets the rect
+                        // by 2 px so the dashes sit clearly inside the
+                        // existing 1 px frame stroke rather than
+                        // overlapping it (the overlap was the reason
+                        // the previous border was hard to spot).
                         if is_selected && !is_keep_match {
                             paint_dashed_rect_border(
                                 ui.painter(),
-                                row_resp.rect,
-                                6.0,
-                                4.0,
-                                egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                                row_resp.rect.shrink(2.0),
+                                7.0,
+                                5.0,
+                                egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 230, 0)),
                             );
                         }
 
@@ -2909,11 +2920,11 @@ fn draw_streamdeck_step_list(
 /// multi-select toggle (Shift-click extends without clearing). The
 /// theme helper is hover-only and we don't want to widen its API
 /// surface for this one site.
-/// Paint a dashed rectangle border. egui's `Frame::stroke` paints
-/// solid lines only; we want a clearly different look for multi-
-/// selected rows so they don't get mistaken for the 1 px solid red
-/// Keep-hover highlight. `dash_len` and `gap` are pixel lengths
-/// applied identically on every edge.
+/// Paint a dashed rectangle border. Uses `Shape::dashed_line` so the
+/// dashes share antialiasing with the rest of the painter's output;
+/// paints into a fresh layer above the parent so the dashed border
+/// always wins the z-order against the solid 1 px frame stroke
+/// underneath.
 fn paint_dashed_rect_border(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -2921,37 +2932,16 @@ fn paint_dashed_rect_border(
     gap: f32,
     stroke: egui::Stroke,
 ) {
-    let step = dash_len + gap;
-    // Horizontal edges
-    let mut x = rect.left();
-    while x < rect.right() {
-        let end_x = (x + dash_len).min(rect.right());
-        painter.line_segment(
-            [egui::pos2(x, rect.top()), egui::pos2(end_x, rect.top())],
-            stroke,
-        );
-        painter.line_segment(
-            [
-                egui::pos2(x, rect.bottom()),
-                egui::pos2(end_x, rect.bottom()),
-            ],
-            stroke,
-        );
-        x += step;
-    }
-    // Vertical edges
-    let mut y = rect.top();
-    while y < rect.bottom() {
-        let end_y = (y + dash_len).min(rect.bottom());
-        painter.line_segment(
-            [egui::pos2(rect.left(), y), egui::pos2(rect.left(), end_y)],
-            stroke,
-        );
-        painter.line_segment(
-            [egui::pos2(rect.right(), y), egui::pos2(rect.right(), end_y)],
-            stroke,
-        );
-        y += step;
+    let pts = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+        rect.left_top(),
+    ];
+    for w in pts.windows(2) {
+        let shapes = egui::Shape::dashed_line(&[w[0], w[1]], stroke, dash_len, gap);
+        painter.extend(shapes);
     }
 }
 
