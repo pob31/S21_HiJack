@@ -226,6 +226,58 @@ impl MacroEngine {
                     });
                     executed += 1;
                 }
+                MacroStepKind::QLabGo => {
+                    let _ = self.ui_tx.send(UiEvent::MacroQLabSend {
+                        addr: "/go".into(),
+                        string_arg: None,
+                        label: "QLab Go".into(),
+                    });
+                    executed += 1;
+                }
+                MacroStepKind::QLabGoCue { cue_number } => {
+                    // Argument-form `/go {cue_number}` (per QLab 5 OSC
+                    // dictionary) — safer than `/go/{cue_number}` when
+                    // cue numbers contain characters that aren't valid
+                    // in an OSC address (slashes, spaces, etc.).
+                    let _ = self.ui_tx.send(UiEvent::MacroQLabSend {
+                        addr: "/go".into(),
+                        string_arg: Some(cue_number.clone()),
+                        label: format!("QLab Go Cue #{cue_number}"),
+                    });
+                    executed += 1;
+                }
+                MacroStepKind::QLabPanic => {
+                    let _ = self.ui_tx.send(UiEvent::MacroQLabSend {
+                        addr: "/panic".into(),
+                        string_arg: None,
+                        label: "QLab Panic".into(),
+                    });
+                    executed += 1;
+                }
+                MacroStepKind::QLabStop => {
+                    let _ = self.ui_tx.send(UiEvent::MacroQLabSend {
+                        addr: "/stop".into(),
+                        string_arg: None,
+                        label: "QLab Stop".into(),
+                    });
+                    executed += 1;
+                }
+                MacroStepKind::QLabPause => {
+                    let _ = self.ui_tx.send(UiEvent::MacroQLabSend {
+                        addr: "/pause".into(),
+                        string_arg: None,
+                        label: "QLab Pause".into(),
+                    });
+                    executed += 1;
+                }
+                MacroStepKind::QLabResume => {
+                    let _ = self.ui_tx.send(UiEvent::MacroQLabSend {
+                        addr: "/resume".into(),
+                        string_arg: None,
+                        label: "QLab Resume".into(),
+                    });
+                    executed += 1;
+                }
             }
         }
 

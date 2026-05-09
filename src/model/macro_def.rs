@@ -124,6 +124,22 @@ pub enum MacroStepKind {
     RecallSnapshot { id: Uuid },
     /// Apply a palette to the given channel.
     RecallPalette { id: Uuid, channel: ChannelId },
+    /// Send a `/go` OSC message to QLab — fires QLab's next cue,
+    /// independent of this app's internal cue list. Useful in Theatre
+    /// setups where QLab is running its own cue stack.
+    QLabGo,
+    /// Send `/go {cue_number}` to QLab — fires a specific QLab cue by
+    /// number. Cue numbers are QLab's own free-form strings (e.g. "1",
+    /// "2.5", "Q12"), not numeric IDs.
+    QLabGoCue { cue_number: String },
+    /// Send `/panic` to QLab — fade out and hard-stop everything.
+    QLabPanic,
+    /// Send `/stop` to QLab — stop playback but let audio tails decay.
+    QLabStop,
+    /// Send `/pause` to QLab — pause all running cues.
+    QLabPause,
+    /// Send `/resume` to QLab — un-pause all paused cues.
+    QLabResume,
 }
 
 impl MacroStep {

@@ -55,6 +55,9 @@ pub struct MacrosTabState {
     pub add_step_target_palette: Option<Uuid>,
     pub add_step_palette_channel_type: ChannelTypeChoice,
     pub add_step_palette_channel_number: String,
+    /// QLab cue number for the QLabGoCue step kind. Stored as a string
+    /// because QLab cue numbers are free-form (e.g. "1", "2.5", "Q12").
+    pub add_step_qlab_cue_number: String,
 
     // Per-step edit buffers (indexed by step position)
     pub step_mode_edits: Vec<StepModeChoice>,
@@ -125,6 +128,7 @@ impl Default for MacrosTabState {
             add_step_target_palette: None,
             add_step_palette_channel_type: ChannelTypeChoice::Input,
             add_step_palette_channel_number: "1".into(),
+            add_step_qlab_cue_number: "1".into(),
             step_mode_edits: Vec::new(),
             step_value_edits: Vec::new(),
             step_delay_edits: Vec::new(),
@@ -210,10 +214,16 @@ pub enum AddStepKindChoice {
     FireMacro,
     RecallSnapshot,
     RecallPalette,
+    QLabGo,
+    QLabGoCue,
+    QLabPanic,
+    QLabStop,
+    QLabPause,
+    QLabResume,
 }
 
 impl AddStepKindChoice {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 14] = [
         Self::Parameter,
         Self::GoNextCue,
         Self::GoPreviousCue,
@@ -222,6 +232,12 @@ impl AddStepKindChoice {
         Self::FireMacro,
         Self::RecallSnapshot,
         Self::RecallPalette,
+        Self::QLabGo,
+        Self::QLabGoCue,
+        Self::QLabPanic,
+        Self::QLabStop,
+        Self::QLabPause,
+        Self::QLabResume,
     ];
 
     fn label(&self) -> &'static str {
@@ -234,6 +250,12 @@ impl AddStepKindChoice {
             Self::FireMacro => "Run Macro",
             Self::RecallSnapshot => "Recall Snapshot",
             Self::RecallPalette => "Recall Palette",
+            Self::QLabGo => "QLab Go",
+            Self::QLabGoCue => "QLab Go Cue #",
+            Self::QLabPanic => "QLab Panic",
+            Self::QLabStop => "QLab Stop",
+            Self::QLabPause => "QLab Pause",
+            Self::QLabResume => "QLab Resume",
         }
     }
 }
@@ -1079,10 +1101,29 @@ fn draw_add_step(
         AddStepKindChoice::RecallPalette => {
             draw_palette_picker(ui, macros_state, palette_manager);
         }
+        AddStepKindChoice::QLabGoCue => {
+            ui.horizontal(|ui| {
+                ui.label("Cue #:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut macros_state.add_step_qlab_cue_number)
+                        .desired_width(80.0)
+                        .hint_text("e.g. 1, 2.5, Q12"),
+                )
+                .on_hover_text(
+                    "QLab cue number — free-form string (numbers, letters, dots). \
+                     Sent as `/cue/<number>/start`.",
+                );
+            });
+        }
         AddStepKindChoice::GoNextCue
         | AddStepKindChoice::GoPreviousCue
         | AddStepKindChoice::Connect
-        | AddStepKindChoice::Disconnect => {
+        | AddStepKindChoice::Disconnect
+        | AddStepKindChoice::QLabGo
+        | AddStepKindChoice::QLabPanic
+        | AddStepKindChoice::QLabStop
+        | AddStepKindChoice::QLabPause
+        | AddStepKindChoice::QLabResume => {
             // No additional fields for these kinds.
         }
     }
@@ -1472,6 +1513,18 @@ fn build_step_kind(
         AddStepKindChoice::GoPreviousCue => Some(MacroStepKind::GoPreviousCue),
         AddStepKindChoice::Connect => Some(MacroStepKind::Connect),
         AddStepKindChoice::Disconnect => Some(MacroStepKind::Disconnect),
+        AddStepKindChoice::QLabGo => Some(MacroStepKind::QLabGo),
+        AddStepKindChoice::QLabGoCue => {
+            let cue_number = macros_state.add_step_qlab_cue_number.trim().to_string();
+            if cue_number.is_empty() {
+                return None;
+            }
+            Some(MacroStepKind::QLabGoCue { cue_number })
+        }
+        AddStepKindChoice::QLabPanic => Some(MacroStepKind::QLabPanic),
+        AddStepKindChoice::QLabStop => Some(MacroStepKind::QLabStop),
+        AddStepKindChoice::QLabPause => Some(MacroStepKind::QLabPause),
+        AddStepKindChoice::QLabResume => Some(MacroStepKind::QLabResume),
         AddStepKindChoice::FireMacro => macros_state
             .add_step_target_macro
             .map(|id| MacroStepKind::FireMacro { id }),
@@ -1688,6 +1741,12 @@ fn describe_step_kind(kind: &MacroStepKind) -> String {
         MacroStepKind::RecallPalette { id, channel } => {
             format!("Recall Palette {id} on {channel}")
         }
+        MacroStepKind::QLabGo => "QLab Go".into(),
+        MacroStepKind::QLabGoCue { cue_number } => format!("QLab Go Cue #{cue_number}"),
+        MacroStepKind::QLabPanic => "QLab Panic".into(),
+        MacroStepKind::QLabStop => "QLab Stop".into(),
+        MacroStepKind::QLabPause => "QLab Pause".into(),
+        MacroStepKind::QLabResume => "QLab Resume".into(),
     }
 }
 

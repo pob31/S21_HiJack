@@ -523,6 +523,17 @@ impl HiJackApp {
                         }
                     });
                 }
+                UiEvent::MacroQLabSend {
+                    addr,
+                    string_arg,
+                    label,
+                } => {
+                    let args = match string_arg {
+                        Some(s) => vec![rosc::OscType::String(s)],
+                        None => vec![],
+                    };
+                    self.spawn_qlab_send(addr, args, &label);
+                }
                 UiEvent::StreamDeckButtonPressed { button_idx } => {
                     self.handle_streamdeck_button(button_idx);
                 }
@@ -550,6 +561,37 @@ impl HiJackApp {
                 }
             }
         }
+    }
+
+    /// Fire-and-forget OSC message to QLab using the current Setup-tab
+    /// IP / port (falls back to 127.0.0.1:53000 if empty/unset). `label`
+    /// is the human-readable action name used in failure messages.
+    fn spawn_qlab_send(&self, addr: String, args: Vec<rosc::OscType>, label: &str) {
+        let qlab_port: u16 = self.setup.qlab_port.parse().unwrap_or(53000);
+        let qlab_ip = if self.setup.qlab_ip.is_empty() {
+            "127.0.0.1".to_string()
+        } else {
+            self.setup.qlab_ip.clone()
+        };
+        let tx = self.ui_tx.clone();
+        let label = label.to_string();
+        self.runtime.spawn(async move {
+            match crate::osc::qlab_client::QLabClient::new(&qlab_ip, qlab_port).await {
+                Ok(client) => {
+                    let msg = rosc::OscMessage { addr, args };
+                    if let Err(e) = client.send_message(msg).await {
+                        let _ = tx.send(UiEvent::MacroExecutionFailed(format!(
+                            "{label} failed: {e}"
+                        )));
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(UiEvent::MacroExecutionFailed(format!(
+                        "{label}: connect failed: {e}"
+                    )));
+                }
+            }
+        });
     }
 
     /// Handle a Stream Deck button press: fire the next-to-fire macro

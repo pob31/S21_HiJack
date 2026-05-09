@@ -139,6 +139,17 @@ pub enum UiEvent {
         palette_id: uuid::Uuid,
         channel: crate::model::channel::ChannelId,
     },
+    /// Macro step requested a QLab OSC action — send `addr` (with the
+    /// optional `string_arg`) to the configured QLab destination.
+    /// `label` is the human-readable action name shown in failure
+    /// messages. The macro engine constructs the address; the app
+    /// thread just routes it to QLab using the current Setup-tab
+    /// QLab IP / port.
+    MacroQLabSend {
+        addr: String,
+        string_arg: Option<String>,
+        label: String,
+    },
 
     // ─── Stream Deck integration ─────────────────────────────────────
     //
