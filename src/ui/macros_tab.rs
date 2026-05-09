@@ -2678,6 +2678,229 @@ fn draw_drag_handle(ui: &mut egui::Ui, payload: usize) -> egui::Response {
     resp
 }
 
+// ─── HSL ↔ RGB helpers (used by the custom-color pad below) ──────────
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
+    if s == 0.0 {
+        let v = (l * 255.0).round().clamp(0.0, 255.0) as u8;
+        return (v, v, v);
+    }
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
+    let p = 2.0 * l - q;
+    let h_norm = (h / 360.0).rem_euclid(1.0);
+    let r = hue_to_rgb_component(p, q, h_norm + 1.0 / 3.0);
+    let g = hue_to_rgb_component(p, q, h_norm);
+    let b = hue_to_rgb_component(p, q, h_norm - 1.0 / 3.0);
+    (
+        (r * 255.0).round().clamp(0.0, 255.0) as u8,
+        (g * 255.0).round().clamp(0.0, 255.0) as u8,
+        (b * 255.0).round().clamp(0.0, 255.0) as u8,
+    )
+}
+
+fn hue_to_rgb_component(p: f32, q: f32, mut t: f32) -> f32 {
+    if t < 0.0 {
+        t += 1.0;
+    }
+    if t > 1.0 {
+        t -= 1.0;
+    }
+    if t < 1.0 / 6.0 {
+        return p + (q - p) * 6.0 * t;
+    }
+    if t < 1.0 / 2.0 {
+        return q;
+    }
+    if t < 2.0 / 3.0 {
+        return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+    }
+    p
+}
+
+fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    let rf = r as f32 / 255.0;
+    let gf = g as f32 / 255.0;
+    let bf = b as f32 / 255.0;
+    let max = rf.max(gf).max(bf);
+    let min = rf.min(gf).min(bf);
+    let l = (max + min) / 2.0;
+    if (max - min).abs() < f32::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let d = max - min;
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+    let h = if (max - rf).abs() < f32::EPSILON {
+        ((gf - bf) / d) + (if gf < bf { 6.0 } else { 0.0 })
+    } else if (max - gf).abs() < f32::EPSILON {
+        (bf - rf) / d + 2.0
+    } else {
+        (rf - gf) / d + 4.0
+    };
+    (h * 60.0, s, l)
+}
+
+/// Click-and-drag hue/lightness pad. The X axis sweeps hue (0..360°),
+/// the Y axis sweeps lightness (top → white, middle → saturated,
+/// bottom → black). A small marker shows the currently-selected
+/// color's position.
+///
+/// Replaces the egui built-in color_edit_button_srgb popup, which
+/// didn't dispatch its events reliably when nested inside our own
+/// swatch-picker popup — clicks on its sliders silently dropped.
+fn hue_lightness_pad(ui: &mut egui::Ui, current: &mut crate::model::streamdeck::StepColor) -> bool {
+    use crate::model::streamdeck::StepColor;
+    let size = egui::Vec2::new(220.0, 90.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+
+    // Build the gradient as a Mesh — one column per hue strip, each
+    // a top-half (white→hue) and bottom-half (hue→black) quad with
+    // vertex colors interpolated by the renderer.
+    let cols: usize = 60;
+    let mut mesh = egui::Mesh::default();
+    let mid_y = rect.min.y + rect.height() / 2.0;
+    for c in 0..cols {
+        let h0 = (c as f32 / cols as f32) * 360.0;
+        let h1 = ((c + 1) as f32 / cols as f32) * 360.0;
+        let hue_left = h0;
+        let hue_right = h1;
+        let x0 = rect.min.x + (c as f32 / cols as f32) * rect.width();
+        let x1 = rect.min.x + ((c + 1) as f32 / cols as f32) * rect.width();
+        let top_l = {
+            let (r, g, b) = hsl_to_rgb(hue_left, 1.0, 1.0);
+            egui::Color32::from_rgb(r, g, b)
+        };
+        let top_r = {
+            let (r, g, b) = hsl_to_rgb(hue_right, 1.0, 1.0);
+            egui::Color32::from_rgb(r, g, b)
+        };
+        let mid_l = {
+            let (r, g, b) = hsl_to_rgb(hue_left, 1.0, 0.5);
+            egui::Color32::from_rgb(r, g, b)
+        };
+        let mid_r = {
+            let (r, g, b) = hsl_to_rgb(hue_right, 1.0, 0.5);
+            egui::Color32::from_rgb(r, g, b)
+        };
+        let bot_l = {
+            let (r, g, b) = hsl_to_rgb(hue_left, 1.0, 0.0);
+            egui::Color32::from_rgb(r, g, b)
+        };
+        let bot_r = {
+            let (r, g, b) = hsl_to_rgb(hue_right, 1.0, 0.0);
+            egui::Color32::from_rgb(r, g, b)
+        };
+
+        let push_quad = |mesh: &mut egui::Mesh,
+                         tl_pos: egui::Pos2,
+                         tr_pos: egui::Pos2,
+                         bl_pos: egui::Pos2,
+                         br_pos: egui::Pos2,
+                         tl_c: egui::Color32,
+                         tr_c: egui::Color32,
+                         bl_c: egui::Color32,
+                         br_c: egui::Color32| {
+            let v0 = mesh.vertices.len() as u32;
+            let uv = egui::epaint::WHITE_UV;
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: tl_pos,
+                uv,
+                color: tl_c,
+            });
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: tr_pos,
+                uv,
+                color: tr_c,
+            });
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: bl_pos,
+                uv,
+                color: bl_c,
+            });
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: br_pos,
+                uv,
+                color: br_c,
+            });
+            mesh.indices
+                .extend(&[v0, v0 + 1, v0 + 2, v0 + 1, v0 + 2, v0 + 3]);
+        };
+
+        // Top half: white → mid.
+        push_quad(
+            &mut mesh,
+            egui::pos2(x0, rect.min.y),
+            egui::pos2(x1, rect.min.y),
+            egui::pos2(x0, mid_y),
+            egui::pos2(x1, mid_y),
+            top_l,
+            top_r,
+            mid_l,
+            mid_r,
+        );
+        // Bottom half: mid → black.
+        push_quad(
+            &mut mesh,
+            egui::pos2(x0, mid_y),
+            egui::pos2(x1, mid_y),
+            egui::pos2(x0, rect.max.y),
+            egui::pos2(x1, rect.max.y),
+            mid_l,
+            mid_r,
+            bot_l,
+            bot_r,
+        );
+    }
+    ui.painter().add(egui::Shape::mesh(mesh));
+
+    // Outer border so the pad reads as a discrete control.
+    ui.painter().rect_stroke(
+        rect,
+        3.0,
+        egui::Stroke::new(1.0, theme::BORDER_SUBTLE),
+        egui::StrokeKind::Inside,
+    );
+
+    // Current-color marker. Convert StepColor → HSL and project onto
+    // the pad. Skip when the current color isn't representable on the
+    // pad (e.g. a desaturated grey only sits on the H = 0 column,
+    // which is fine but the marker would look wrong).
+    let (h, s, l) = rgb_to_hsl(current.r, current.g, current.b);
+    if s > 0.05 || !(0.02..=0.98).contains(&l) {
+        let x = rect.min.x + (h / 360.0) * rect.width();
+        let y = rect.min.y + (1.0 - l) * rect.height();
+        let center = egui::pos2(x, y);
+        ui.painter()
+            .circle_stroke(center, 5.0, egui::Stroke::new(2.0, egui::Color32::WHITE));
+        ui.painter()
+            .circle_stroke(center, 5.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
+    }
+
+    // Drag interaction — every frame the pointer is held inside the
+    // rect we re-derive the color from its position. `dragged()`
+    // covers click-and-drag; `clicked()` covers a single click.
+    let mut changed = false;
+    if resp.dragged() || resp.clicked() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            let x_norm = ((pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+            let y_norm = ((pos.y - rect.min.y) / rect.height()).clamp(0.0, 1.0);
+            let hue = x_norm * 360.0;
+            let lightness = 1.0 - y_norm;
+            let (r, g, b) = hsl_to_rgb(hue, 1.0, lightness);
+            *current = StepColor::new(r, g, b);
+            changed = true;
+        }
+    }
+    changed
+}
+
 // ─── Stream Deck color swatch picker ─────────────────────────────────
 
 /// The eleven hard-coded standard swatches: black, white, then the
@@ -2740,8 +2963,6 @@ pub fn color_swatch_picker(
     current: &mut crate::model::streamdeck::StepColor,
     user_swatches: &mut Vec<crate::model::streamdeck::StepColor>,
 ) -> bool {
-    use crate::model::streamdeck::StepColor;
-
     let popup_id = ui.id().with(("sd_color_picker", &id_salt));
     let chip_resp = swatch_button(ui, *current, false).on_hover_text("Pick a color");
     let mut changed = false;
@@ -2802,16 +3023,21 @@ pub fn color_swatch_picker(
             ui.add_space(4.0);
             ui.separator();
             ui.label(
-                egui::RichText::new("Custom")
+                egui::RichText::new("Custom — drag to pick")
                     .color(theme::TEXT_SECONDARY)
                     .small(),
             );
+            ui.label(
+                egui::RichText::new(
+                    "Left/right = hue, top = lighter (white), bottom = darker (black).",
+                )
+                .small()
+                .color(theme::TEXT_SECONDARY),
+            );
+            if hue_lightness_pad(ui, current) {
+                changed = true;
+            }
             ui.horizontal(|ui| {
-                let mut rgb = [current.r, current.g, current.b];
-                if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).changed() {
-                    *current = StepColor::new(rgb[0], rgb[1], rgb[2]);
-                    changed = true;
-                }
                 if ui
                     .small_button("Save swatch")
                     .on_hover_text("Add the current color to your saved swatches (per show)")
