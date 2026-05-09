@@ -1068,10 +1068,10 @@ fn draw_step_editor(
                             // which left them landing on slightly
                             // different midlines.
                             ui.allocate_ui_with_layout(
-                                egui::vec2(row_inner_w, 28.0),
+                                egui::vec2(row_inner_w, 24.0),
                                 egui::Layout::left_to_right(egui::Align::Center),
                                 |ui| {
-                                    ui.spacing_mut().interact_size.y = 24.0;
+                                    ui.spacing_mut().interact_size.y = 20.0;
                                     // Drag handle replaces the old Up/Dn
                                     // buttons — same painted dot grip the SD
                                     // step list uses. Rest of the row is not
@@ -1090,7 +1090,64 @@ fn draw_step_editor(
                                     .on_hover_text(
                                         "Click to select; Shift-click to add to multi-select.",
                                     );
+                                    let mut selection_click: Option<egui::Response> = None;
                                     if badge_resp.clicked() {
+                                        selection_click = Some(badge_resp.clone());
+                                    }
+                                    // ── Left side: address (or kind) ──
+                                    // Left-justified inside a fixed-width
+                                    // slot so addresses align column-wise
+                                    // across rows; long ones truncate with
+                                    // an ellipsis instead of stretching the
+                                    // row. The label senses clicks so it
+                                    // doubles as a wide selection target —
+                                    // aiming at the small `#N` badge was
+                                    // fiddly.
+                                    match kind {
+                                        MacroStepKind::Parameter { address, .. } => {
+                                            let addr_resp = ui
+                                                .allocate_ui_with_layout(
+                                                    egui::vec2(200.0, 20.0),
+                                                    egui::Layout::left_to_right(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        ui.add(
+                                                            egui::Label::new(
+                                                                egui::RichText::new(format!(
+                                                                    "{}",
+                                                                    address
+                                                                ))
+                                                                .color(theme::TEXT_PRIMARY),
+                                                            )
+                                                            .truncate()
+                                                            .sense(egui::Sense::click()),
+                                                        )
+                                                    },
+                                                )
+                                                .inner;
+                                            if addr_resp.clicked() {
+                                                selection_click = Some(addr_resp);
+                                            }
+                                        }
+                                        _ => {
+                                            // App-action steps render as a
+                                            // single descriptive label,
+                                            // also clickable for selection.
+                                            let kind_resp = ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(describe_step_kind(kind))
+                                                        .color(theme::TEXT_PRIMARY)
+                                                        .strong(),
+                                                )
+                                                .sense(egui::Sense::click()),
+                                            );
+                                            if kind_resp.clicked() {
+                                                selection_click = Some(kind_resp);
+                                            }
+                                        }
+                                    }
+                                    if let Some(_resp) = selection_click {
                                         let shift = ui.ctx().input(|input| input.modifiers.shift);
                                         if shift {
                                             if !macros_state.step_selection.insert(i) {
@@ -1099,33 +1156,6 @@ fn draw_step_editor(
                                         } else {
                                             macros_state.step_selection.clear();
                                             macros_state.step_selection.insert(i);
-                                        }
-                                    }
-                                    // ── Left side: address (or kind) ──
-                                    // Fixed-width slot so addresses align
-                                    // column-wise across rows; long ones
-                                    // truncate with an ellipsis instead
-                                    // of stretching the row.
-                                    match kind {
-                                        MacroStepKind::Parameter { address, .. } => {
-                                            ui.add_sized(
-                                                [200.0, 20.0],
-                                                egui::Label::new(
-                                                    egui::RichText::new(format!("{}", address))
-                                                        .color(theme::TEXT_PRIMARY),
-                                                )
-                                                .truncate(),
-                                            );
-                                        }
-                                        _ => {
-                                            // App-action steps render as a
-                                            // single descriptive label — no
-                                            // mode / value editor.
-                                            ui.label(
-                                                egui::RichText::new(describe_step_kind(kind))
-                                                    .color(theme::TEXT_PRIMARY)
-                                                    .strong(),
-                                            );
                                         }
                                     }
 
@@ -1148,7 +1178,7 @@ fn draw_step_editor(
                                             // heights from these two values
                                             // — overriding both pins them
                                             // to the same outline.
-                                            const W_H: f32 = 22.0;
+                                            const W_H: f32 = 20.0;
                                             ui.spacing_mut().interact_size.y = W_H;
                                             ui.spacing_mut().button_padding = egui::vec2(8.0, 2.0);
 
