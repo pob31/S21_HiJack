@@ -926,76 +926,86 @@ fn draw_step_editor(
     {
         theme::section_heading(ui, &format!("Steps: {macro_name}"));
 
-        // Mark-dirty toggle
-        let mut dirty_toggle = mark_dirty;
-        if ui
-            .checkbox(&mut dirty_toggle, "Track as modified parameters")
-            .changed()
-        {
-            let mgr = macro_manager.clone();
-            let new_val = dirty_toggle;
-            runtime.spawn(async move {
-                let mut mgr = mgr.write().await;
-                if let Some(m) = mgr.get_macro_mut(&selected_id) {
-                    m.mark_dirty = new_val;
-                    m.touch();
-                }
-            });
-        }
-
         // Drop selections that point past the current step
         // count — a previous Delete or load may have shrunk
         // the list.
         macros_state.step_selection.retain(|&i| i < steps.len());
 
-        // Multi-select action bar. Only shows when at least
-        // one step is in the selection. Buttons drive batch
-        // versions of the per-row Reset / Delete / Keep actions.
-        if !macros_state.step_selection.is_empty() {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("Selected: {}", macros_state.step_selection.len()))
+        // Toggle + multi-select action bar share the same row so the
+        // batch buttons appearing when a selection exists doesn't
+        // shove the steps area (and therefore Add Step) down. Action
+        // buttons right-anchor; the checkbox sits on the left where
+        // it always was.
+        ui.horizontal(|ui| {
+            let mut dirty_toggle = mark_dirty;
+            if ui
+                .checkbox(&mut dirty_toggle, "Track as modified parameters")
+                .changed()
+            {
+                let mgr = macro_manager.clone();
+                let new_val = dirty_toggle;
+                runtime.spawn(async move {
+                    let mut mgr = mgr.write().await;
+                    if let Some(m) = mgr.get_macro_mut(&selected_id) {
+                        m.mark_dirty = new_val;
+                        m.touch();
+                    }
+                });
+            }
+            if !macros_state.step_selection.is_empty() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Right-to-left: add buttons in reverse visual
+                    // order so they read [Selected: N] [Reset…]
+                    // [Delete] [Keep] [Clear] from left to right.
+                    if ui
+                        .small_button("Clear")
+                        .on_hover_text("Clear the multi-selection")
+                        .clicked()
+                    {
+                        macros_state.step_selection.clear();
+                        macros_state.step_selection_anchor = None;
+                    }
+                    if ui
+                        .small_button("Keep")
+                        .on_hover_text(
+                            "For every selected step, drop other steps with \
+                                 the same (channel, parameter)",
+                        )
+                        .clicked()
+                    {
+                        let indices: Vec<usize> =
+                            macros_state.step_selection.iter().copied().collect();
+                        action = Some(StepAction::BatchKeepOnly(indices));
+                    }
+                    if ui
+                        .small_button("Delete")
+                        .on_hover_text("Remove every selected step")
+                        .clicked()
+                    {
+                        let indices: Vec<usize> =
+                            macros_state.step_selection.iter().copied().collect();
+                        action = Some(StepAction::BatchDelete(indices));
+                    }
+                    if ui
+                        .small_button("Reset delays to 0")
+                        .on_hover_text("Set delay to 0 ms on every selected step")
+                        .clicked()
+                    {
+                        let indices: Vec<usize> =
+                            macros_state.step_selection.iter().copied().collect();
+                        action = Some(StepAction::BatchResetDelays(indices));
+                    }
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Selected: {}",
+                            macros_state.step_selection.len()
+                        ))
                         .strong()
                         .color(theme::ACCENT_BLUE),
-                );
-                if ui
-                    .small_button("Reset delays to 0")
-                    .on_hover_text("Set delay to 0 ms on every selected step")
-                    .clicked()
-                {
-                    let indices: Vec<usize> = macros_state.step_selection.iter().copied().collect();
-                    action = Some(StepAction::BatchResetDelays(indices));
-                }
-                if ui
-                    .small_button("Delete")
-                    .on_hover_text("Remove every selected step")
-                    .clicked()
-                {
-                    let indices: Vec<usize> = macros_state.step_selection.iter().copied().collect();
-                    action = Some(StepAction::BatchDelete(indices));
-                }
-                if ui
-                    .small_button("Keep")
-                    .on_hover_text(
-                        "For every selected step, drop other steps with the \
-                                 same (channel, parameter)",
-                    )
-                    .clicked()
-                {
-                    let indices: Vec<usize> = macros_state.step_selection.iter().copied().collect();
-                    action = Some(StepAction::BatchKeepOnly(indices));
-                }
-                if ui
-                    .small_button("Clear")
-                    .on_hover_text("Clear the multi-selection")
-                    .clicked()
-                {
-                    macros_state.step_selection.clear();
-                    macros_state.step_selection_anchor = None;
-                }
-            });
-            ui.add_space(4.0);
-        }
+                    );
+                });
+            }
+        });
 
         if steps.is_empty() {
             ui.label(
@@ -1541,12 +1551,22 @@ fn draw_add_step(
         }
     }
 
-    // Delay applies to every kind.
-    ui.horizontal(|ui| {
-        ui.label("Delay:");
-        ui.add(egui::TextEdit::singleline(&mut macros_state.add_step_delay).desired_width(50.0));
-        ui.label("ms");
-    });
+    // Delay applies to every kind. Same fixed-height pattern as the
+    // wizard rows above so labels and TextEdit share a midline.
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 24.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().interact_size.y = 22.0;
+            ui.spacing_mut().button_padding = egui::vec2(8.0, 2.0);
+            ui.label("Delay:");
+            ui.add_sized(
+                [50.0, 22.0],
+                egui::TextEdit::singleline(&mut macros_state.add_step_delay),
+            );
+            ui.label("ms");
+        },
+    );
 
     let add_btn =
         theme::action_button("Add Step", theme::ACCENT_GREEN, egui::Vec2::new(90.0, 28.0));
@@ -1617,127 +1637,171 @@ fn draw_parameter_wizard(
         .map(|s| s.config.clone())
         .unwrap_or_default();
 
-    ui.horizontal(|ui| {
-        // Channel type
-        egui::ComboBox::from_id_salt("add_ch_type")
-            .width(70.0)
-            .selected_text(macros_state.add_step_channel_type.label())
-            .show_ui(ui, |ui| {
-                for ch in ChannelTypeChoice::ALL {
-                    if ui
-                        .selectable_value(&mut macros_state.add_step_channel_type, ch, ch.label())
-                        .changed()
-                    {
-                        // Reset the section + parameter so they're
-                        // valid for the new channel type.
-                        macros_state.add_step_section = None;
-                        macros_state.add_step_parameter_path = None;
-                    }
+    // Cascaded menu row: same `add_sized` + uniform interact_size /
+    // button_padding pattern as the step rows so the ComboBox and
+    // TextEdit boxes have matching heights.
+    const W_H: f32 = 22.0;
+    let row_w = ui.available_width();
+    ui.allocate_ui_with_layout(
+        egui::vec2(row_w, 24.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().interact_size.y = W_H;
+            ui.spacing_mut().button_padding = egui::vec2(8.0, 2.0);
+
+            // Channel type
+            ui.allocate_ui_with_layout(
+                egui::vec2(70.0, W_H),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    egui::ComboBox::from_id_salt("add_ch_type")
+                        .width(70.0)
+                        .selected_text(macros_state.add_step_channel_type.label())
+                        .show_ui(ui, |ui| {
+                            for ch in ChannelTypeChoice::ALL {
+                                if ui
+                                    .selectable_value(
+                                        &mut macros_state.add_step_channel_type,
+                                        ch,
+                                        ch.label(),
+                                    )
+                                    .changed()
+                                {
+                                    macros_state.add_step_section = None;
+                                    macros_state.add_step_parameter_path = None;
+                                }
+                            }
+                        });
+                },
+            );
+
+            // Channel number
+            ui.add_sized(
+                [40.0, W_H],
+                egui::TextEdit::singleline(&mut macros_state.add_step_channel_number),
+            );
+
+            // Section
+            let ch_num: u8 = macros_state
+                .add_step_channel_number
+                .parse()
+                .unwrap_or(1)
+                .max(1);
+            let channel = macros_state.add_step_channel_type.to_channel_id(ch_num);
+            let sections = ParameterSection::applicable_to(&channel);
+            if let Some(sec) = &macros_state.add_step_section {
+                if !sections.contains(sec) {
+                    macros_state.add_step_section = None;
+                    macros_state.add_step_parameter_path = None;
                 }
-            });
-
-        // Channel number
-        ui.add(
-            egui::TextEdit::singleline(&mut macros_state.add_step_channel_number)
-                .desired_width(30.0),
-        );
-
-        // Section
-        let ch_num: u8 = macros_state
-            .add_step_channel_number
-            .parse()
-            .unwrap_or(1)
-            .max(1);
-        let channel = macros_state.add_step_channel_type.to_channel_id(ch_num);
-        let sections = ParameterSection::applicable_to(&channel);
-        // Clamp section if it's no longer applicable.
-        if let Some(sec) = &macros_state.add_step_section {
-            if !sections.contains(sec) {
-                macros_state.add_step_section = None;
-                macros_state.add_step_parameter_path = None;
             }
-        }
-        if macros_state.add_step_section.is_none() {
-            macros_state.add_step_section = sections.first().cloned();
-        }
-        let section_label = macros_state
-            .add_step_section
-            .as_ref()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "—".into());
-        egui::ComboBox::from_id_salt("add_section")
-            .width(140.0)
-            .selected_text(section_label)
-            .show_ui(ui, |ui| {
-                for sec in &sections {
-                    let label = sec.to_string();
-                    let mut tmp = macros_state.add_step_section.clone();
-                    if ui
-                        .selectable_value(&mut tmp, Some(sec.clone()), label)
-                        .changed()
-                    {
-                        macros_state.add_step_section = tmp;
-                        macros_state.add_step_parameter_path = None;
-                    }
-                }
-            });
-
-        // Parameter (within section)
-        let paths = match &macros_state.add_step_section {
-            Some(sec) => sec.paths_for(&channel, &config),
-            None => Vec::new(),
-        };
-        if let Some(p) = &macros_state.add_step_parameter_path {
-            if !paths.contains(p) {
-                macros_state.add_step_parameter_path = None;
+            if macros_state.add_step_section.is_none() {
+                macros_state.add_step_section = sections.first().cloned();
             }
-        }
-        if macros_state.add_step_parameter_path.is_none() {
-            macros_state.add_step_parameter_path = paths.first().cloned();
-        }
-        let path_label = macros_state
-            .add_step_parameter_path
-            .as_ref()
-            .map(|p| p.label_with_config(&config))
-            .unwrap_or_else(|| "—".into());
-        egui::ComboBox::from_id_salt("add_param")
-            .width(220.0)
-            .selected_text(path_label)
-            .show_ui(ui, |ui| {
-                for p in &paths {
-                    let label = p.label_with_config(&config);
-                    let mut tmp = macros_state.add_step_parameter_path.clone();
-                    ui.selectable_value(&mut tmp, Some(p.clone()), label);
-                    if tmp != macros_state.add_step_parameter_path {
-                        macros_state.add_step_parameter_path = tmp;
-                    }
-                }
-            });
-    });
+            let section_label = macros_state
+                .add_step_section
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "—".into());
+            ui.allocate_ui_with_layout(
+                egui::vec2(140.0, W_H),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    egui::ComboBox::from_id_salt("add_section")
+                        .width(140.0)
+                        .selected_text(section_label)
+                        .show_ui(ui, |ui| {
+                            for sec in &sections {
+                                let label = sec.to_string();
+                                let mut tmp = macros_state.add_step_section.clone();
+                                if ui
+                                    .selectable_value(&mut tmp, Some(sec.clone()), label)
+                                    .changed()
+                                {
+                                    macros_state.add_step_section = tmp;
+                                    macros_state.add_step_parameter_path = None;
+                                }
+                            }
+                        });
+                },
+            );
 
-    ui.horizontal(|ui| {
-        // Mode
-        egui::ComboBox::from_id_salt("add_mode")
-            .width(80.0)
-            .selected_text(macros_state.add_step_mode.label())
-            .show_ui(ui, |ui| {
-                for m in StepModeChoice::ALL {
-                    ui.selectable_value(&mut macros_state.add_step_mode, m, m.label());
+            // Parameter (within section)
+            let paths = match &macros_state.add_step_section {
+                Some(sec) => sec.paths_for(&channel, &config),
+                None => Vec::new(),
+            };
+            if let Some(p) = &macros_state.add_step_parameter_path {
+                if !paths.contains(p) {
+                    macros_state.add_step_parameter_path = None;
                 }
-            });
-
-        // Value (for Fixed/Relative)
-        match macros_state.add_step_mode {
-            StepModeChoice::Fixed | StepModeChoice::Relative => {
-                ui.label("Value:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut macros_state.add_step_value)
-                        .desired_width(60.0),
-                );
             }
-            StepModeChoice::Toggle => {}
-        }
-    });
+            if macros_state.add_step_parameter_path.is_none() {
+                macros_state.add_step_parameter_path = paths.first().cloned();
+            }
+            let path_label = macros_state
+                .add_step_parameter_path
+                .as_ref()
+                .map(|p| p.label_with_config(&config))
+                .unwrap_or_else(|| "—".into());
+            ui.allocate_ui_with_layout(
+                egui::vec2(220.0, W_H),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    egui::ComboBox::from_id_salt("add_param")
+                        .width(220.0)
+                        .selected_text(path_label)
+                        .show_ui(ui, |ui| {
+                            for p in &paths {
+                                let label = p.label_with_config(&config);
+                                let mut tmp = macros_state.add_step_parameter_path.clone();
+                                ui.selectable_value(&mut tmp, Some(p.clone()), label);
+                                if tmp != macros_state.add_step_parameter_path {
+                                    macros_state.add_step_parameter_path = tmp;
+                                }
+                            }
+                        });
+                },
+            );
+        },
+    );
+
+    ui.allocate_ui_with_layout(
+        egui::vec2(row_w, 24.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().interact_size.y = W_H;
+            ui.spacing_mut().button_padding = egui::vec2(8.0, 2.0);
+
+            // Mode
+            ui.allocate_ui_with_layout(
+                egui::vec2(80.0, W_H),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    egui::ComboBox::from_id_salt("add_mode")
+                        .width(80.0)
+                        .selected_text(macros_state.add_step_mode.label())
+                        .show_ui(ui, |ui| {
+                            for m in StepModeChoice::ALL {
+                                ui.selectable_value(&mut macros_state.add_step_mode, m, m.label());
+                            }
+                        });
+                },
+            );
+
+            // Value (for Fixed/Relative)
+            match macros_state.add_step_mode {
+                StepModeChoice::Fixed | StepModeChoice::Relative => {
+                    ui.label("Value:");
+                    ui.add_sized(
+                        [60.0, W_H],
+                        egui::TextEdit::singleline(&mut macros_state.add_step_value),
+                    );
+                }
+                StepModeChoice::Toggle => {}
+            }
+        },
+    );
 }
 
 /// Mirror an inbound parameter address into the Add Step form's
