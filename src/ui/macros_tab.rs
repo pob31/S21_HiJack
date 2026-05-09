@@ -357,6 +357,7 @@ pub fn draw_macros_tab(
                                         ui,
                                         macros_state,
                                         macro_manager,
+                                        connected,
                                         runtime,
                                         ui_tx,
                                     );
@@ -529,6 +530,7 @@ fn draw_learn_section(
     ui: &mut egui::Ui,
     macros_state: &mut MacrosTabState,
     macro_manager: &Arc<RwLock<MacroManager>>,
+    connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
@@ -614,13 +616,26 @@ fn draw_learn_section(
         // Request repaint while recording to update elapsed time
         ui.ctx().request_repaint();
     } else {
-        // Not recording
+        // Not recording. The Learn button is gated on a live console
+        // connection — without one, no parameter updates ever reach
+        // the macro manager and the operator just records silence.
+        let is_connected = connected.load(Ordering::Relaxed);
         let learn_btn = theme::action_button(
             "Learn (Record)",
             theme::ACCENT_RED,
             egui::Vec2::new(130.0, 32.0),
         );
-        if ui.add(learn_btn).clicked() {
+        let resp = ui
+            .add_enabled(is_connected, learn_btn)
+            .on_hover_text(if is_connected {
+                "Record every parameter change made on the console into a new macro."
+            } else {
+                "Connect to the console first — Learn captures inbound parameter changes."
+            })
+            .on_disabled_hover_text(
+                "Connect to the console first — Learn captures inbound parameter changes.",
+            );
+        if resp.clicked() {
             let mgr_clone = macro_manager.clone();
             runtime.spawn(async move {
                 let mut mgr = mgr_clone.write().await;
