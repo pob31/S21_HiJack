@@ -99,6 +99,15 @@ pub struct MacrosTabState {
     /// allocated area on the current frame. `None` on first render
     /// (a generous default is used until the measurement lands).
     pub last_add_step_height: Option<f32>,
+    /// TextEdit buffer for the in-place macro name field on the editor
+    /// panel. Re-seeded from the manager whenever the selected macro
+    /// changes; user edits are committed back on every keystroke.
+    pub edit_macro_name: String,
+    /// Last `(macro_id, manager_value)` we synced into `edit_macro_name`,
+    /// so we can detect external renames (e.g. via the left-column
+    /// list) and refresh the buffer without overwriting an in-flight
+    /// edit on every frame.
+    pub edit_macro_name_synced: Option<(Uuid, String)>,
 
     // ─── Stream Deck ──────────────────────────────────────────────
     /// Right-column visibility for the Stream Deck setup panel.
@@ -168,6 +177,8 @@ impl Default for MacrosTabState {
             step_selection: std::collections::HashSet::new(),
             step_selection_anchor: None,
             last_add_step_height: None,
+            edit_macro_name: String::new(),
+            edit_macro_name_synced: None,
             streamdeck_popup_open: false,
             selected_streamdeck_button: None,
             streamdeck_add_step_target: None,
@@ -924,7 +935,57 @@ fn draw_step_editor(
     // up with the editor's bottom.
     let avail_h = ui.available_height();
     {
-        theme::section_heading(ui, &format!("Steps: {macro_name}"));
+        // Re-sync the name buffer whenever the selected macro changes
+        // OR an external rename lands (left-column list). Skips while
+        // the operator is still typing into the buffer for this same
+        // macro so we don't clobber in-flight edits.
+        let needs_sync = match &macros_state.edit_macro_name_synced {
+            Some((id, last)) => *id != selected_id || last != &macro_name,
+            None => true,
+        };
+        if needs_sync {
+            macros_state.edit_macro_name = macro_name.clone();
+            macros_state.edit_macro_name_synced = Some((selected_id, macro_name.clone()));
+        }
+
+        // Editable macro name. Sits where the section heading used to
+        // — same visual weight (large + bold) but typeable. Commits
+        // on every keystroke so the left-column list and Stream Deck
+        // labels stay in sync as the operator types.
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Macro:")
+                    .strong()
+                    .color(theme::TEXT_PRIMARY)
+                    .size(theme::FONT_SIZE_SECTION),
+            );
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut macros_state.edit_macro_name)
+                    .desired_width(ui.available_width() - 60.0)
+                    .font(egui::FontId::proportional(theme::FONT_SIZE_SECTION)),
+            );
+            if resp.changed() {
+                let mgr = macro_manager.clone();
+                let new_name = macros_state.edit_macro_name.clone();
+                runtime.spawn(async move {
+                    let mut m = mgr.write().await;
+                    if let Some(mac) = m.get_macro_mut(&selected_id) {
+                        mac.name = new_name;
+                        mac.touch();
+                    }
+                });
+                macros_state.edit_macro_name_synced =
+                    Some((selected_id, macros_state.edit_macro_name.clone()));
+            }
+        });
+        // Match the underline `theme::section_heading` paints so this
+        // hand-rolled header sits visually flush with other section
+        // headings elsewhere in the app.
+        ui.add_space(2.0);
+        let strip_w = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(strip_w, 1.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 0.0, theme::BORDER_SUBTLE);
+        ui.add_space(6.0);
 
         // Drop selections that point past the current step
         // count — a previous Delete or load may have shrunk
@@ -1517,6 +1578,8 @@ fn draw_add_step(
                         .width(180.0)
                         .selected_text(macros_state.add_step_kind.label())
                         .show_ui(ui, |ui| {
+                            ui.set_min_width(180.0);
+                            ui.set_max_width(180.0);
                             for k in AddStepKindChoice::ALL {
                                 ui.selectable_value(&mut macros_state.add_step_kind, k, k.label());
                             }
@@ -1602,6 +1665,8 @@ fn draw_add_step(
                             .width(80.0)
                             .selected_text(macros_state.add_step_mode.label())
                             .show_ui(ui, |ui| {
+                                ui.set_min_width(80.0);
+                                ui.set_max_width(80.0);
                                 for m in StepModeChoice::ALL {
                                     ui.selectable_value(
                                         &mut macros_state.add_step_mode,
@@ -1716,6 +1781,8 @@ fn draw_parameter_wizard(
                 .width(70.0)
                 .selected_text(macros_state.add_step_channel_type.label())
                 .show_ui(ui, |ui| {
+                    ui.set_min_width(70.0);
+                    ui.set_max_width(70.0);
                     for ch in ChannelTypeChoice::ALL {
                         if ui
                             .selectable_value(
@@ -1769,6 +1836,8 @@ fn draw_parameter_wizard(
                 .width(140.0)
                 .selected_text(section_label)
                 .show_ui(ui, |ui| {
+                    ui.set_min_width(140.0);
+                    ui.set_max_width(140.0);
                     for sec in &sections {
                         let label = sec.to_string();
                         let mut tmp = macros_state.add_step_section.clone();
@@ -1810,6 +1879,8 @@ fn draw_parameter_wizard(
                 .width(220.0)
                 .selected_text(path_label)
                 .show_ui(ui, |ui| {
+                    ui.set_min_width(220.0);
+                    ui.set_max_width(220.0);
                     for p in &paths {
                         let label = p.label_with_config(&config);
                         let mut tmp = macros_state.add_step_parameter_path.clone();
@@ -1869,6 +1940,8 @@ fn draw_fire_macro_picker(
                 .width(220.0)
                 .selected_text(selected_label)
                 .show_ui(ui, |ui| {
+                    ui.set_min_width(220.0);
+                    ui.set_max_width(220.0);
                     for (id, name) in &macros {
                         ui.selectable_value(
                             &mut macros_state.add_step_target_macro,
@@ -1916,6 +1989,8 @@ fn draw_snapshot_picker(
                 .width(220.0)
                 .selected_text(selected_label)
                 .show_ui(ui, |ui| {
+                    ui.set_min_width(220.0);
+                    ui.set_max_width(220.0);
                     for (id, name) in &snapshots {
                         ui.selectable_value(
                             &mut macros_state.add_step_target_snapshot,
@@ -1963,6 +2038,8 @@ fn draw_palette_picker(
                 .width(220.0)
                 .selected_text(selected_label)
                 .show_ui(ui, |ui| {
+                    ui.set_min_width(220.0);
+                    ui.set_max_width(220.0);
                     for (id, name) in &palettes {
                         ui.selectable_value(
                             &mut macros_state.add_step_target_palette,
@@ -1982,6 +2059,8 @@ fn draw_palette_picker(
                 .width(70.0)
                 .selected_text(macros_state.add_step_palette_channel_type.label())
                 .show_ui(ui, |ui| {
+                    ui.set_min_width(70.0);
+                    ui.set_max_width(70.0);
                     for ch in ChannelTypeChoice::ALL {
                         ui.selectable_value(
                             &mut macros_state.add_step_palette_channel_type,
