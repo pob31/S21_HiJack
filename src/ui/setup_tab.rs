@@ -1007,14 +1007,11 @@ pub fn draw_setup_tab(
                         // grid edges aligned even though this is one
                         // button instead of three.
                         if ui
-                            .add_sized(
-                                [action_row_w, 28.0],
-                                theme::action_button(
-                                    "Parameter coverage…",
-                                    theme::BG_ELEVATED,
-                                    egui::Vec2::new(action_row_w, 28.0),
-                                ),
-                            )
+                            .add(theme::action_button(
+                                "Parameter coverage…",
+                                theme::BG_ELEVATED,
+                                egui::Vec2::new(action_row_w, 28.0),
+                            ))
                             .clicked()
                         {
                             setup.show_coverage_popup = true;
@@ -1068,14 +1065,11 @@ pub fn draw_setup_tab(
                                 ui.spacing_mut().button_padding =
                                     egui::Vec2::new(8.0, 4.0);
                                 if ui
-                                    .add_sized(
-                                        [action_btn_w, 28.0],
-                                        theme::action_button(
-                                            "Open…",
-                                            theme::ACCENT_GREEN,
-                                            egui::Vec2::new(action_btn_w, 28.0),
-                                        ),
-                                    )
+                                    .add(theme::action_button(
+                                        "Open…",
+                                        theme::ACCENT_GREEN,
+                                        egui::Vec2::new(action_btn_w, 28.0),
+                                    ))
                                     .on_hover_text(
                                         "Pick a show file and load it. Save As… to save to \
                                          a new path.",
@@ -1113,7 +1107,7 @@ pub fn draw_setup_tab(
                             egui::Vec2::new(action_btn_w, 28.0),
                         );
                         if ui
-                            .add_sized([action_btn_w, 28.0], save_btn)
+                            .add(save_btn)
                             .on_hover_text(
                                 "Save to the path shown above. If empty, prompts for a \
                                  location.",
@@ -1148,7 +1142,7 @@ pub fn draw_setup_tab(
                             egui::Vec2::new(action_btn_w, 28.0),
                         );
                         if ui
-                            .add_sized([action_btn_w, 28.0], save_as_btn)
+                            .add(save_as_btn)
                             .on_hover_text(
                                 "Pick a new location and save there. Useful when the \
                                  path field already points at a different file.",
@@ -1191,7 +1185,7 @@ pub fn draw_setup_tab(
                             theme::ACCENT_ORANGE,
                             egui::Vec2::new(action_btn_w, 28.0),
                         );
-                        if ui.add_sized([action_btn_w, 28.0], new_btn).clicked() {
+                        if ui.add(new_btn).clicked() {
                             let cue_mgr = cue_manager.clone();
                             let macro_mgr = macro_manager.clone();
                             let pmgr_arc = palette_manager.clone();
