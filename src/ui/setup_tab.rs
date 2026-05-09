@@ -1349,15 +1349,23 @@ pub fn draw_setup_tab(
                     });
                     ui.add_space(6.0);
 
+                    // QLab on the left, Server (= This Computer) on
+                    // the right — mirrors the panel's physical layout
+                    // where the Server card sits to the right of the
+                    // QLab card. Arrows are flipped accordingly so
+                    // each row still reads "sender → receiver".
                     egui::Grid::new("qlab_flow_grid")
                         .num_columns(3)
                         .spacing([6.0, 6.0])
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new("Server").strong().color(theme::ACCENT_GREEN));
-                            ui.label("");
                             ui.label(egui::RichText::new("QLab").strong().color(theme::ACCENT_AMBER));
+                            ui.label("");
+                            ui.label(egui::RichText::new("Server").strong().color(theme::ACCENT_GREEN));
                             ui.end_row();
 
+                            // QLab Tx → Server listen (trigger_port)
+                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("→").color(theme::TEXT_SECONDARY));
                             port_edit_enabled(
                                 ui,
                                 &mut setup.trigger_port,
@@ -1365,12 +1373,9 @@ pub fn draw_setup_tab(
                                 "",
                                 "Local port the daemon listens on for cue triggers from QLab.",
                             );
-                            ui.label(egui::RichText::new("←").color(theme::TEXT_SECONDARY));
-                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
                             ui.end_row();
 
-                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
-                            ui.label(egui::RichText::new("→").color(theme::TEXT_SECONDARY));
+                            // QLab listen (qlab_port) ← Server Tx
                             port_edit_enabled(
                                 ui,
                                 &mut setup.qlab_port,
@@ -1378,6 +1383,8 @@ pub fn draw_setup_tab(
                                 "53000",
                                 "QLab's OSC listen port — daemon sends cue-build commands here.",
                             );
+                            ui.label(egui::RichText::new("←").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
                             ui.end_row();
                         });
                 });
