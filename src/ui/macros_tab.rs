@@ -80,6 +80,11 @@ pub struct MacrosTabState {
     /// (channel, parameter) — those are the rows Keep would remove.
     /// One frame stale, which is acceptable for a hover affordance.
     pub step_keep_hover_idx: Option<usize>,
+    /// Multi-selected step indices (click the `#N` badge to add /
+    /// remove single, Shift-click to toggle without losing the rest).
+    /// Drives the batch action bar (Reset delays / Delete / Keep)
+    /// shown above the step list when non-empty.
+    pub step_selection: std::collections::HashSet<usize>,
 
     // ─── Stream Deck ──────────────────────────────────────────────
     /// Right-column visibility for the Stream Deck setup panel.
@@ -146,6 +151,7 @@ impl Default for MacrosTabState {
             cached_list: Vec::new(),
             cached_steps: None,
             step_keep_hover_idx: None,
+            step_selection: std::collections::HashSet::new(),
             streamdeck_popup_open: false,
             selected_streamdeck_button: None,
             streamdeck_add_step_target: None,
@@ -865,25 +871,6 @@ fn draw_step_editor(
     let steps = cached.steps;
     let mark_dirty = cached.mark_dirty;
 
-    theme::section_heading(ui, &format!("Steps: {macro_name}"));
-
-    // Mark-dirty toggle
-    let mut dirty_toggle = mark_dirty;
-    if ui
-        .checkbox(&mut dirty_toggle, "Track as modified parameters")
-        .changed()
-    {
-        let mgr = macro_manager.clone();
-        let new_val = dirty_toggle;
-        runtime.spawn(async move {
-            let mut mgr = mgr.write().await;
-            if let Some(m) = mgr.get_macro_mut(&selected_id) {
-                m.mark_dirty = new_val;
-                m.touch();
-            }
-        });
-    }
-
     // Ensure edit buffers match step count. The mode / value buffers
     // are only meaningful for `Parameter`-kind steps; for app-action
     // kinds they get default placeholder values that the UI never
@@ -911,226 +898,373 @@ fn draw_step_editor(
     // Deferred actions
     let mut action: Option<StepAction> = None;
 
-    if steps.is_empty() {
-        ui.label(
-            egui::RichText::new("No steps — add one below or use Learn mode")
-                .color(theme::TEXT_SECONDARY),
-        );
-    } else {
-        // Address of the step whose "Keep" button was hovered last
-        // frame, if any. Rows targeting the same address get a tinted
-        // border this frame so the operator can see which steps Keep
-        // would remove. Cleared when nothing is hovered.
-        let keep_hover_address: Option<ParameterAddress> = macros_state
-            .step_keep_hover_idx
-            .and_then(|idx| steps.get(idx))
-            .and_then(|(kind, _)| match kind {
-                MacroStepKind::Parameter { address, .. } => Some(address.clone()),
-                _ => None,
+    // Pin Add Step to the bottom of the editor's allocated space and
+    // give the steps list everything above. Using `Layout::bottom_up`
+    // means we add Add Step *first* (so it lands at the bottom),
+    // then add the heading + steps area (which lands above). The
+    // earlier `max_height(avail - 200)` reservation was a guess that
+    // broke when the Add Step section grew past 200 px and pushed
+    // its "Add Step" button below the visible region.
+    let avail_h = ui.available_height();
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), avail_h),
+        egui::Layout::bottom_up(egui::Align::Min),
+        |ui| {
+            // ── Add Step (rendered at the bottom) ──
+            theme::elevated_frame().show(ui, |ui| {
+                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                    draw_add_step(
+                        ui,
+                        macros_state,
+                        selected_id,
+                        macro_manager,
+                        state,
+                        cue_manager,
+                        palette_manager,
+                        last_received,
+                        runtime,
+                    );
+                });
             });
-        let mut new_keep_hover_idx: Option<usize> = None;
-        let mut hovered_drop_idx: Option<usize> = None;
+            ui.add_space(8.0);
 
-        // Reserve enough vertical room below the scroll for the
-        // Add Step section (heading + 2 horizontal rows + button +
-        // elevated_frame margins ≈ 160 px). 200 leaves a comfortable
-        // gap so the Add Step button is never clipped at the bottom.
-        egui::ScrollArea::vertical()
-            .id_salt("step_editor_scroll")
-            .max_height((ui.available_height() - 200.0).max(80.0))
-            .show(ui, |ui| {
-                for (i, (kind, _delay)) in steps.iter().enumerate() {
-                    // Tint this row's frame when its address matches
-                    // the Keep-hovered step's address (and isn't itself
-                    // the hovered step — the operator already knows
-                    // which row their pointer is on).
-                    let is_keep_match = match (kind, &keep_hover_address) {
-                        (MacroStepKind::Parameter { address, .. }, Some(target)) => {
-                            address == target && macros_state.step_keep_hover_idx != Some(i)
+            // ── Everything above Add Step ──
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                theme::section_heading(ui, &format!("Steps: {macro_name}"));
+
+                // Mark-dirty toggle
+                let mut dirty_toggle = mark_dirty;
+                if ui
+                    .checkbox(&mut dirty_toggle, "Track as modified parameters")
+                    .changed()
+                {
+                    let mgr = macro_manager.clone();
+                    let new_val = dirty_toggle;
+                    runtime.spawn(async move {
+                        let mut mgr = mgr.write().await;
+                        if let Some(m) = mgr.get_macro_mut(&selected_id) {
+                            m.mark_dirty = new_val;
+                            m.touch();
                         }
-                        _ => false,
-                    };
-                    let mut frame = theme::elevated_frame();
-                    if is_keep_match {
-                        // Only the *color* of the stroke changes —
-                        // keeping the width at 1.0 means the highlight
-                        // doesn't shift surrounding rows or change the
-                        // box's outer size.
-                        frame = frame.stroke(egui::Stroke::new(1.0, theme::ACCENT_RED));
-                    }
-                    let row_inner = frame.show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            // Drag handle replaces the old Up/Dn
-                            // buttons — same painted dot grip the SD
-                            // step list uses. Rest of the row is not
-                            // a drag source.
-                            draw_drag_handle(ui, i);
-                            theme::colored_badge(ui, &format!("#{}", i + 1), theme::BG_ELEVATED);
-                            match kind {
-                                MacroStepKind::Parameter { address, .. } => {
-                                    ui.label(
-                                        egui::RichText::new(format!("{}", address))
-                                            .color(theme::TEXT_PRIMARY),
-                                    );
+                    });
+                }
 
-                                    ui.separator();
+                // Drop selections that point past the current step
+                // count — a previous Delete or load may have shrunk
+                // the list.
+                macros_state.step_selection.retain(|&i| i < steps.len());
 
-                                    // Mode ComboBox
-                                    let mode_id = ui.id().with(("step_mode", i));
-                                    egui::ComboBox::from_id_salt(mode_id)
-                                        .width(80.0)
-                                        .selected_text(macros_state.step_mode_edits[i].label())
-                                        .show_ui(ui, |ui| {
-                                            for choice in StepModeChoice::ALL {
-                                                if ui
-                                                    .selectable_value(
-                                                        &mut macros_state.step_mode_edits[i],
-                                                        choice,
-                                                        choice.label(),
-                                                    )
-                                                    .changed()
-                                                {
-                                                    action = Some(StepAction::UpdateMode(i));
+                // Multi-select action bar. Only shows when at least
+                // one step is in the selection. Buttons drive batch
+                // versions of the per-row Reset / Delete / Keep actions.
+                if !macros_state.step_selection.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Selected: {}",
+                                macros_state.step_selection.len()
+                            ))
+                            .strong()
+                            .color(theme::ACCENT_BLUE),
+                        );
+                        if ui
+                            .small_button("Reset delays to 0")
+                            .on_hover_text("Set delay to 0 ms on every selected step")
+                            .clicked()
+                        {
+                            let indices: Vec<usize> =
+                                macros_state.step_selection.iter().copied().collect();
+                            action = Some(StepAction::BatchResetDelays(indices));
+                        }
+                        if ui
+                            .small_button("Delete")
+                            .on_hover_text("Remove every selected step")
+                            .clicked()
+                        {
+                            let indices: Vec<usize> =
+                                macros_state.step_selection.iter().copied().collect();
+                            action = Some(StepAction::BatchDelete(indices));
+                        }
+                        if ui
+                            .small_button("Keep")
+                            .on_hover_text(
+                                "For every selected step, drop other steps with the \
+                                 same (channel, parameter)",
+                            )
+                            .clicked()
+                        {
+                            let indices: Vec<usize> =
+                                macros_state.step_selection.iter().copied().collect();
+                            action = Some(StepAction::BatchKeepOnly(indices));
+                        }
+                        if ui
+                            .small_button("Clear")
+                            .on_hover_text("Clear the multi-selection")
+                            .clicked()
+                        {
+                            macros_state.step_selection.clear();
+                        }
+                    });
+                    ui.add_space(4.0);
+                }
+
+                if steps.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No steps — add one below or use Learn mode")
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                    macros_state.step_keep_hover_idx = None;
+                } else {
+                    // Address of the step whose "Keep" button was hovered last
+                    // frame, if any. Rows targeting the same address get a tinted
+                    // border this frame so the operator can see which steps Keep
+                    // would remove. Cleared when nothing is hovered.
+                    let keep_hover_address: Option<ParameterAddress> = macros_state
+                        .step_keep_hover_idx
+                        .and_then(|idx| steps.get(idx))
+                        .and_then(|(kind, _)| match kind {
+                            MacroStepKind::Parameter { address, .. } => Some(address.clone()),
+                            _ => None,
+                        });
+                    let mut new_keep_hover_idx: Option<usize> = None;
+                    let mut hovered_drop_idx: Option<usize> = None;
+
+                    // Add Step is now rendered in a fixed bottom strip
+                    // by the surrounding bottom_up layout, so this
+                    // scroll just fills the available height — no more
+                    // hardcoded "leave 200 px" hack.
+                    egui::ScrollArea::vertical()
+                        .id_salt("step_editor_scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            for (i, (kind, _delay)) in steps.iter().enumerate() {
+                                // Tint this row's frame when its address matches
+                                // the Keep-hovered step's address (and isn't itself
+                                // the hovered step — the operator already knows
+                                // which row their pointer is on).
+                                let is_keep_match = match (kind, &keep_hover_address) {
+                                    (MacroStepKind::Parameter { address, .. }, Some(target)) => {
+                                        address == target
+                                            && macros_state.step_keep_hover_idx != Some(i)
+                                    }
+                                    _ => false,
+                                };
+                                let mut frame = theme::elevated_frame();
+                                let is_selected = macros_state.step_selection.contains(&i);
+                                if is_keep_match {
+                                    // Only the *color* of the stroke changes —
+                                    // keeping the width at 1.0 means the highlight
+                                    // doesn't shift surrounding rows or change the
+                                    // box's outer size.
+                                    frame = frame.stroke(egui::Stroke::new(1.0, theme::ACCENT_RED));
+                                } else if is_selected {
+                                    frame =
+                                        frame.stroke(egui::Stroke::new(1.0, theme::ACCENT_BLUE));
+                                }
+                                let row_inner = frame.show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        // Drag handle replaces the old Up/Dn
+                                        // buttons — same painted dot grip the SD
+                                        // step list uses. Rest of the row is not
+                                        // a drag source.
+                                        draw_drag_handle(ui, i);
+                                        // Clickable `#N` badge doubles as a
+                                        // multi-select toggle. Plain click
+                                        // selects only this step; Shift-click
+                                        // toggles without clearing the rest.
+                                        let badge_resp = step_number_badge(
+                                            ui,
+                                            &format!("#{}", i + 1),
+                                            theme::BG_ELEVATED,
+                                            is_selected,
+                                        )
+                                        .on_hover_text(
+                                            "Click to select; Shift-click to add to multi-select.",
+                                        );
+                                        if badge_resp.clicked() {
+                                            let shift =
+                                                ui.ctx().input(|input| input.modifiers.shift);
+                                            if shift {
+                                                if !macros_state.step_selection.insert(i) {
+                                                    macros_state.step_selection.remove(&i);
                                                 }
-                                            }
-                                        });
-
-                                    // Value field (for Fixed/Relative).
-                                    // Commit on every keystroke AND on
-                                    // focus loss — `lost_focus()` alone
-                                    // missed in-place edits when the
-                                    // user moved between fields without
-                                    // an explicit click-out, so the
-                                    // last value entered was sometimes
-                                    // dropped.
-                                    match macros_state.step_mode_edits[i] {
-                                        StepModeChoice::Fixed | StepModeChoice::Relative => {
-                                            let resp = ui.add(
-                                                egui::TextEdit::singleline(
-                                                    &mut macros_state.step_value_edits[i],
-                                                )
-                                                .desired_width(60.0),
-                                            );
-                                            if resp.changed() || resp.lost_focus() {
-                                                action = Some(StepAction::UpdateMode(i));
+                                            } else {
+                                                macros_state.step_selection.clear();
+                                                macros_state.step_selection.insert(i);
                                             }
                                         }
-                                        StepModeChoice::Toggle => {}
+                                        match kind {
+                                            MacroStepKind::Parameter { address, .. } => {
+                                                ui.label(
+                                                    egui::RichText::new(format!("{}", address))
+                                                        .color(theme::TEXT_PRIMARY),
+                                                );
+
+                                                ui.separator();
+
+                                                // Mode ComboBox
+                                                let mode_id = ui.id().with(("step_mode", i));
+                                                egui::ComboBox::from_id_salt(mode_id)
+                                                    .width(80.0)
+                                                    .selected_text(
+                                                        macros_state.step_mode_edits[i].label(),
+                                                    )
+                                                    .show_ui(ui, |ui| {
+                                                        for choice in StepModeChoice::ALL {
+                                                            if ui
+                                                                .selectable_value(
+                                                                    &mut macros_state
+                                                                        .step_mode_edits[i],
+                                                                    choice,
+                                                                    choice.label(),
+                                                                )
+                                                                .changed()
+                                                            {
+                                                                action =
+                                                                    Some(StepAction::UpdateMode(i));
+                                                            }
+                                                        }
+                                                    });
+
+                                                // Value field (for Fixed/Relative).
+                                                // Commit on every keystroke AND on
+                                                // focus loss — `lost_focus()` alone
+                                                // missed in-place edits when the
+                                                // user moved between fields without
+                                                // an explicit click-out, so the
+                                                // last value entered was sometimes
+                                                // dropped.
+                                                match macros_state.step_mode_edits[i] {
+                                                    StepModeChoice::Fixed
+                                                    | StepModeChoice::Relative => {
+                                                        let resp = ui.add(
+                                                            egui::TextEdit::singleline(
+                                                                &mut macros_state.step_value_edits
+                                                                    [i],
+                                                            )
+                                                            .desired_width(60.0),
+                                                        );
+                                                        if resp.changed() || resp.lost_focus() {
+                                                            action =
+                                                                Some(StepAction::UpdateMode(i));
+                                                        }
+                                                    }
+                                                    StepModeChoice::Toggle => {}
+                                                }
+                                            }
+                                            _ => {
+                                                // App-action steps render as a
+                                                // single descriptive label — no
+                                                // mode / value editor. Delay is
+                                                // still editable below.
+                                                ui.label(
+                                                    egui::RichText::new(describe_step_kind(kind))
+                                                        .color(theme::TEXT_PRIMARY)
+                                                        .strong(),
+                                                );
+                                            }
+                                        }
+
+                                        ui.separator();
+
+                                        // Delay field — applies to every kind.
+                                        // Same commit pattern as the value field.
+                                        ui.label("ms:");
+                                        let delay_resp = ui.add(
+                                            egui::TextEdit::singleline(
+                                                &mut macros_state.step_delay_edits[i],
+                                            )
+                                            .desired_width(50.0),
+                                        );
+                                        if delay_resp.changed() || delay_resp.lost_focus() {
+                                            action = Some(StepAction::UpdateDelay(i));
+                                        }
+                                        // One-click reset to 0 ms — common when
+                                        // chaining steps with no inter-step gap.
+                                        if ui
+                                            .small_button("0")
+                                            .on_hover_text("Reset this step's delay to 0 ms")
+                                            .clicked()
+                                        {
+                                            macros_state.step_delay_edits[i] = "0".into();
+                                            action = Some(StepAction::UpdateDelay(i));
+                                        }
+
+                                        // Delete + Keep on the same row — Up/Dn
+                                        // dropped (drag handle replaces them), so
+                                        // there's plenty of horizontal room and
+                                        // packing them in keeps more steps visible
+                                        // without scrolling.
+                                        ui.separator();
+                                        if ui
+                                            .small_button("Del")
+                                            .on_hover_text("Delete this step")
+                                            .clicked()
+                                        {
+                                            action = Some(StepAction::Delete(i));
+                                        }
+                                        // Keep only this step's value for its
+                                        // (channel, parameter) — drops every other
+                                        // step in the macro that targets the same
+                                        // address. Useful when a Learn-mode
+                                        // recording captured several intermediate
+                                        // fader positions and the operator only
+                                        // wants to keep the final one.
+                                        //
+                                        // Hovering this button paints a red border
+                                        // around the rows that would be removed —
+                                        // a quick "what does this do?" preview.
+                                        let keep_resp = ui.small_button("Keep").on_hover_text(
+                                            "Keep only this step for its (channel, parameter); \
+                                 remove the rest",
+                                        );
+                                        if keep_resp.hovered() {
+                                            new_keep_hover_idx = Some(i);
+                                        }
+                                        if keep_resp.clicked() {
+                                            action = Some(StepAction::KeepOnly(i));
+                                        }
+                                    });
+                                });
+                                let row_resp = row_inner.response;
+
+                                // Drop-target hover marker — same pattern as the
+                                // SD step list. A blue line at the top of the row
+                                // tells the operator where the dragged step would
+                                // land on release.
+                                if let Some(payload) = row_resp.dnd_hover_payload::<usize>() {
+                                    if *payload != i {
+                                        hovered_drop_idx = Some(i);
+                                        let stroke = egui::Stroke::new(2.0, theme::ACCENT_BLUE);
+                                        ui.painter().hline(
+                                            row_resp.rect.x_range(),
+                                            row_resp.rect.top(),
+                                            stroke,
+                                        );
                                     }
                                 }
-                                _ => {
-                                    // App-action steps render as a
-                                    // single descriptive label — no
-                                    // mode / value editor. Delay is
-                                    // still editable below.
-                                    ui.label(
-                                        egui::RichText::new(describe_step_kind(kind))
-                                            .color(theme::TEXT_PRIMARY)
-                                            .strong(),
-                                    );
+                                if let Some(payload) = row_resp.dnd_release_payload::<usize>() {
+                                    let from = *payload;
+                                    if from != i {
+                                        action = Some(StepAction::Reorder { from, to: i });
+                                    }
                                 }
-                            }
-
-                            ui.separator();
-
-                            // Delay field — applies to every kind.
-                            // Same commit pattern as the value field.
-                            ui.label("ms:");
-                            let delay_resp = ui.add(
-                                egui::TextEdit::singleline(&mut macros_state.step_delay_edits[i])
-                                    .desired_width(50.0),
-                            );
-                            if delay_resp.changed() || delay_resp.lost_focus() {
-                                action = Some(StepAction::UpdateDelay(i));
-                            }
-
-                            // Delete + Keep on the same row — Up/Dn
-                            // dropped (drag handle replaces them), so
-                            // there's plenty of horizontal room and
-                            // packing them in keeps more steps visible
-                            // without scrolling.
-                            ui.separator();
-                            if ui
-                                .small_button("Del")
-                                .on_hover_text("Delete this step")
-                                .clicked()
-                            {
-                                action = Some(StepAction::Delete(i));
-                            }
-                            // Keep only this step's value for its
-                            // (channel, parameter) — drops every other
-                            // step in the macro that targets the same
-                            // address. Useful when a Learn-mode
-                            // recording captured several intermediate
-                            // fader positions and the operator only
-                            // wants to keep the final one.
-                            //
-                            // Hovering this button paints a red border
-                            // around the rows that would be removed —
-                            // a quick "what does this do?" preview.
-                            let keep_resp = ui.small_button("Keep").on_hover_text(
-                                "Keep only this step for its (channel, parameter); \
-                                 remove the rest",
-                            );
-                            if keep_resp.hovered() {
-                                new_keep_hover_idx = Some(i);
-                            }
-                            if keep_resp.clicked() {
-                                action = Some(StepAction::KeepOnly(i));
+                                let _ = hovered_drop_idx; // silence unused warning when no drop active
+                                ui.add_space(2.0);
                             }
                         });
-                    });
-                    let row_resp = row_inner.response;
-
-                    // Drop-target hover marker — same pattern as the
-                    // SD step list. A blue line at the top of the row
-                    // tells the operator where the dragged step would
-                    // land on release.
-                    if let Some(payload) = row_resp.dnd_hover_payload::<usize>() {
-                        if *payload != i {
-                            hovered_drop_idx = Some(i);
-                            let stroke = egui::Stroke::new(2.0, theme::ACCENT_BLUE);
-                            ui.painter().hline(
-                                row_resp.rect.x_range(),
-                                row_resp.rect.top(),
-                                stroke,
-                            );
-                        }
-                    }
-                    if let Some(payload) = row_resp.dnd_release_payload::<usize>() {
-                        let from = *payload;
-                        if from != i {
-                            action = Some(StepAction::Reorder { from, to: i });
-                        }
-                    }
-                    let _ = hovered_drop_idx; // silence unused warning when no drop active
-                    ui.add_space(2.0);
+                    macros_state.step_keep_hover_idx = new_keep_hover_idx;
                 }
             });
-        macros_state.step_keep_hover_idx = new_keep_hover_idx;
-    }
+        },
+    );
 
-    // Process deferred action
+    // Process deferred action — runs once after both the steps area
+    // and the Add Step section have rendered, so any action queued by
+    // either side is applied before the next frame.
     if let Some(act) = action {
         apply_step_action(act, selected_id, macros_state, macro_manager, runtime);
     }
-
-    ui.add_space(8.0);
-
-    // Add Step section
-    theme::elevated_frame().show(ui, |ui| {
-        draw_add_step(
-            ui,
-            macros_state,
-            selected_id,
-            macro_manager,
-            state,
-            cue_manager,
-            palette_manager,
-            last_received,
-            runtime,
-        );
-    });
 }
 
 /// Draw the "Add Step" controls.
@@ -1647,6 +1781,12 @@ enum StepAction {
     /// Keep only the step at this index; remove every other step targeting
     /// the same `(channel, parameter)` address.
     KeepOnly(usize),
+    /// Multi-select batch: zero out the delay on every listed index.
+    BatchResetDelays(Vec<usize>),
+    /// Multi-select batch: delete every listed index.
+    BatchDelete(Vec<usize>),
+    /// Multi-select batch: run KeepOnly on each listed index.
+    BatchKeepOnly(Vec<usize>),
 }
 
 fn apply_step_action(
@@ -1796,6 +1936,80 @@ fn apply_step_action(
             macros_state.step_mode_edits.clear();
             macros_state.step_value_edits.clear();
             macros_state.step_delay_edits.clear();
+        }
+        StepAction::BatchResetDelays(mut indices) => {
+            indices.sort_unstable();
+            indices.dedup();
+            // Mirror the change onto the edit buffers immediately so
+            // the UI doesn't flash the previous values for a frame.
+            for &i in &indices {
+                if let Some(buf) = macros_state.step_delay_edits.get_mut(i) {
+                    *buf = "0".into();
+                }
+            }
+            let mgr_clone = macro_manager.clone();
+            runtime.spawn(async move {
+                let mut mgr = mgr_clone.write().await;
+                if let Some(m) = mgr.get_macro_mut(&macro_id) {
+                    for i in indices {
+                        if let Some(step) = m.steps.get_mut(i) {
+                            step.delay_ms = 0;
+                        }
+                    }
+                    m.touch();
+                }
+            });
+        }
+        StepAction::BatchDelete(mut indices) => {
+            // Sort descending so removals don't shift later indices.
+            indices.sort_unstable_by(|a, b| b.cmp(a));
+            indices.dedup();
+            let mgr_clone = macro_manager.clone();
+            runtime.spawn(async move {
+                let mut mgr = mgr_clone.write().await;
+                if let Some(m) = mgr.get_macro_mut(&macro_id) {
+                    for i in indices {
+                        if i < m.steps.len() {
+                            m.steps.remove(i);
+                        }
+                    }
+                    m.touch();
+                }
+            });
+            macros_state.step_mode_edits.clear();
+            macros_state.step_value_edits.clear();
+            macros_state.step_delay_edits.clear();
+            macros_state.step_selection.clear();
+        }
+        StepAction::BatchKeepOnly(mut indices) => {
+            // Each KeepOnly may shift earlier indices, so process the
+            // selected steps in descending order — removals always
+            // happen at indices > the next one we touch.
+            indices.sort_unstable_by(|a, b| b.cmp(a));
+            indices.dedup();
+            let mgr_clone = macro_manager.clone();
+            runtime.spawn(async move {
+                let mut mgr = mgr_clone.write().await;
+                if let Some(m) = mgr.get_macro_mut(&macro_id) {
+                    let mut total_removed = 0usize;
+                    for i in indices {
+                        if let Some((_new_idx, removed)) = m.keep_only_step(i) {
+                            total_removed += removed;
+                        }
+                    }
+                    if total_removed > 0 {
+                        info!(
+                            macro_id = %macro_id,
+                            removed = total_removed,
+                            "Macro: batch keep removed {total_removed} duplicates",
+                        );
+                    }
+                }
+            });
+            macros_state.step_mode_edits.clear();
+            macros_state.step_value_edits.clear();
+            macros_state.step_delay_edits.clear();
+            macros_state.step_selection.clear();
         }
     }
 }
@@ -2658,6 +2872,40 @@ fn draw_streamdeck_step_list(
 ///
 /// The bundled NotoSans build lacks `⋮`, `≡` and friends — those
 /// glyphs render as empty boxes — so we paint dots ourselves.
+/// Clickable badge — same look as `theme::colored_badge` but reports
+/// clicks. Used as the `#N` step-number badge that doubles as a
+/// multi-select toggle (Shift-click extends without clearing). The
+/// theme helper is hover-only and we don't want to widen its API
+/// surface for this one site.
+fn step_number_badge(
+    ui: &mut egui::Ui,
+    text: &str,
+    bg_color: egui::Color32,
+    selected: bool,
+) -> egui::Response {
+    let padding = egui::Vec2::new(8.0, 4.0);
+    let text_galley = ui.painter().layout_no_wrap(
+        text.to_string(),
+        egui::FontId::proportional(theme::FONT_SIZE_BADGE),
+        theme::TEXT_PRIMARY,
+    );
+    let desired_size = text_galley.size() + padding * 2.0;
+    let (rect, resp) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+    ui.painter().rect_filled(rect, 4.0, bg_color);
+    if selected {
+        ui.painter().rect_stroke(
+            rect,
+            4.0,
+            egui::Stroke::new(2.0, theme::ACCENT_BLUE),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let text_pos = rect.center() - text_galley.size() / 2.0;
+    ui.painter()
+        .galley(text_pos, text_galley, theme::TEXT_PRIMARY);
+    resp
+}
+
 fn draw_drag_handle(ui: &mut egui::Ui, payload: usize) -> egui::Response {
     let size = egui::Vec2::new(14.0, 22.0);
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
