@@ -33,7 +33,7 @@ impl PaletteManager {
         info!(
             name = %palette.name,
             id = %palette.id,
-            kind = ?palette.kind,
+            kinds = ?palette.kinds(),
             channel = %palette.channel,
             "Added palette"
         );
@@ -56,16 +56,22 @@ impl PaletteManager {
         self.palettes.get_mut(id)
     }
 
-    /// Return all palettes sorted by (kind, name) for UI display.
+    /// Return all palettes sorted by name for UI display. Palettes can cover
+    /// any subset of `{Eq, Dyn1, Dyn2}` so there's no single kind to group by.
     pub fn sorted_palettes(&self) -> Vec<&ChannelPalette> {
         let mut palettes: Vec<_> = self.palettes.values().collect();
-        palettes.sort_by(|a, b| (a.kind, &a.name).cmp(&(b.kind, &b.name)));
+        palettes.sort_by(|a, b| a.name.cmp(&b.name));
         palettes
     }
 
-    /// Return only the palettes of a specific kind, sorted by name.
+    /// Return palettes containing at least one parameter for `kind`, sorted
+    /// by name.
     pub fn sorted_palettes_of_kind(&self, kind: PaletteKind) -> Vec<&ChannelPalette> {
-        let mut palettes: Vec<_> = self.palettes.values().filter(|p| p.kind == kind).collect();
+        let mut palettes: Vec<_> = self
+            .palettes
+            .values()
+            .filter(|p| p.has_kind(kind))
+            .collect();
         palettes.sort_by(|a, b| a.name.cmp(&b.name));
         palettes
     }
@@ -78,7 +84,7 @@ impl PaletteManager {
             .collect()
     }
 
-    /// Return palettes for a specific (channel, kind) pair.
+    /// Return palettes on `channel` whose stored values include `kind`.
     pub fn palettes_for_channel_kind(
         &self,
         channel: &ChannelId,
@@ -86,7 +92,7 @@ impl PaletteManager {
     ) -> Vec<&ChannelPalette> {
         self.palettes
             .values()
-            .filter(|p| &p.channel == channel && p.kind == kind)
+            .filter(|p| &p.channel == channel && p.has_kind(kind))
             .collect()
     }
 
@@ -146,7 +152,7 @@ mod tests {
             ParameterPath::EqBandFrequency(1),
             ParameterValue::Float(1000.0),
         );
-        ChannelPalette::new(name.into(), PaletteKind::Eq, channel, values)
+        ChannelPalette::new(name.into(), channel, &[PaletteKind::Eq], values)
     }
 
     fn make_dyn1_palette(name: &str, channel: ChannelId) -> ChannelPalette {
@@ -156,14 +162,14 @@ mod tests {
             ParameterPath::Dyn1Threshold(1),
             ParameterValue::Float(-12.0),
         );
-        ChannelPalette::new(name.into(), PaletteKind::Dyn1, channel, values)
+        ChannelPalette::new(name.into(), channel, &[PaletteKind::Dyn1], values)
     }
 
     fn make_dyn2_palette(name: &str, channel: ChannelId) -> ChannelPalette {
         let mut values = HashMap::new();
         values.insert(ParameterPath::Dyn2Enabled, ParameterValue::Bool(true));
         values.insert(ParameterPath::Dyn2Threshold, ParameterValue::Float(-30.0));
-        ChannelPalette::new(name.into(), PaletteKind::Dyn2, channel, values)
+        ChannelPalette::new(name.into(), channel, &[PaletteKind::Dyn2], values)
     }
 
     #[test]
@@ -281,18 +287,45 @@ mod tests {
     }
 
     #[test]
-    fn sorted_palettes_orders_by_kind_then_name() {
+    fn sorted_palettes_orders_by_name() {
         let mut mgr = PaletteManager::new();
-        // Mix kinds and names; sorted_palettes() should group by kind first.
         mgr.add_palette(make_dyn1_palette("Drum Comp", ChannelId::Input(1)));
         mgr.add_palette(make_eq_palette("Zebra EQ", ChannelId::Input(2)));
         mgr.add_palette(make_eq_palette("Alpha EQ", ChannelId::Aux(1)));
 
         let sorted = mgr.sorted_palettes();
-        // PaletteKind enum order is Eq, Dyn1, Dyn2 — Eq palettes come first,
-        // then Dyn1.
         assert_eq!(sorted[0].name, "Alpha EQ");
-        assert_eq!(sorted[1].name, "Zebra EQ");
-        assert_eq!(sorted[2].name, "Drum Comp");
+        assert_eq!(sorted[1].name, "Drum Comp");
+        assert_eq!(sorted[2].name, "Zebra EQ");
+    }
+
+    #[test]
+    fn multi_kind_palette_appears_in_each_kind_filter() {
+        let mut mgr = PaletteManager::new();
+        let mut values = HashMap::new();
+        values.insert(ParameterPath::EqEnabled, ParameterValue::Bool(true));
+        values.insert(ParameterPath::Dyn1Enabled, ParameterValue::Bool(true));
+        let full = ChannelPalette::new(
+            "Full chain".into(),
+            ChannelId::Input(7),
+            &[PaletteKind::Eq, PaletteKind::Dyn1],
+            values,
+        );
+        mgr.add_palette(full);
+        mgr.add_palette(make_dyn2_palette("Gate only", ChannelId::Input(7)));
+
+        // "Full chain" covers Eq AND Dyn1 — should appear in both filters.
+        let eq = mgr.sorted_palettes_of_kind(PaletteKind::Eq);
+        assert_eq!(eq.len(), 1);
+        assert_eq!(eq[0].name, "Full chain");
+
+        let dyn1 = mgr.sorted_palettes_of_kind(PaletteKind::Dyn1);
+        assert_eq!(dyn1.len(), 1);
+        assert_eq!(dyn1[0].name, "Full chain");
+
+        // Dyn2 filter sees only the gate.
+        let dyn2 = mgr.sorted_palettes_of_kind(PaletteKind::Dyn2);
+        assert_eq!(dyn2.len(), 1);
+        assert_eq!(dyn2[0].name, "Gate only");
     }
 }

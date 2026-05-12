@@ -496,11 +496,11 @@ impl HiJackApp {
                         let cue = crate::model::snapshot::Cue::new(
                             0.0,
                             format!("(macro) {}", snapshot.name),
-                            snapshot_id,
-                        );
+                        )
+                        .with_snapshot_id(snapshot_id);
                         let pmgr = pmgr.read().await;
                         let _ = engine
-                            .recall_cue(&cue, &snapshot, &pmgr.palettes, false)
+                            .recall_cue(&cue, Some(&snapshot), &pmgr.palettes, false)
                             .await;
                     });
                 }
@@ -947,7 +947,11 @@ impl eframe::App for HiJackApp {
                                             } else {
                                                 format!(" — {}", c.name)
                                             };
-                                            format!("Cue {:.1}{}", c.cue_number, name)
+                                            let row = c
+                                                .console_snapshot
+                                                .map(|n| format!(" · row {n}"))
+                                                .unwrap_or_default();
+                                            format!("Cue {:.1}{}{}", c.cue_number, name, row)
                                         });
                                         (label, count > 0)
                                     };
@@ -1339,6 +1343,8 @@ impl eframe::App for HiJackApp {
                     &mut self.snapshots.scope_editor,
                     &state_guard,
                     dirty_guard.as_deref(),
+                    &self.cue_manager,
+                    &self.runtime,
                 );
                 drop(dirty_guard);
                 drop(state_guard);

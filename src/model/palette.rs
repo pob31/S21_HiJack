@@ -1,11 +1,12 @@
-//! Channel palettes — reusable per-channel templates for one parameter section.
+//! Channel palettes — reusable per-channel templates for any combination of
+//! EQ, Compressor (Dyn1), and Gate (Dyn2) values.
 //!
-//! Generalizes the original EQ-only `EqPalette` (Phase 5/6 work, replaces
-//! [src/model/eq_palette.rs] from earlier phases) into a kind-discriminated
-//! `ChannelPalette` that can store EQ, Compressor (Dyn1), or Gate (Dyn2)
-//! values for one channel. The recall engine substitutes palette values for
-//! the snapshot's stored values when a snapshot has a palette ref for a
-//! given (channel, kind) pair.
+//! A single palette can hold values across any of the three processes so an
+//! operator who wants to lock the whole vocal chain of one actor doesn't have
+//! to maintain three parallel palettes. The recall engine still looks up
+//! palettes per `(channel, kind)` via `Snapshot::palette_refs`, so different
+//! snapshots can pull just one process from the palette and leave the others
+//! to a different palette.
 //!
 //! Modifying a palette "ripples" to all referencing snapshots automatically
 //! on next recall — see [crate::console::snapshot_engine::SnapshotEngine].
@@ -17,59 +18,56 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::channel::ChannelId;
-use super::parameter::{PaletteKind, ParameterPath, ParameterValue};
+use super::parameter::{PaletteKind, ParameterPath, ParameterSection, ParameterValue};
 
-/// A reusable per-channel parameter template, scoped to one parameter section.
+/// A reusable per-channel parameter template. May store values for any subset
+/// of `{Eq, Dyn1, Dyn2}` — the kind set is derived at runtime from the
+/// sections present in `values` (see [`kinds`](ChannelPalette::kinds)).
 ///
-/// Snapshots tag a `(ChannelId, PaletteKind)` pair with a palette UUID via
+/// Snapshots tag each `(ChannelId, PaletteKind)` slot with a palette UUID via
 /// `Snapshot::palette_refs`; at recall time the engine substitutes palette
-/// values for the snapshot's stored values within the matching section.
+/// values for the snapshot's stored values within the matching section. A
+/// snapshot can link several different palettes for the same channel as long
+/// as they each provide a different kind.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChannelPalette {
     pub id: Uuid,
     pub name: String,
-    /// Which section this palette stores. Determines which `ParameterPath`
-    /// variants are accepted; `ChannelPalette::new` filters incoming values
-    /// to only those matching this kind.
-    ///
-    /// Defaults to `Eq` for back-compat with v8 show files where the field
-    /// did not exist (every legacy palette WAS an EQ palette).
-    #[serde(default)]
-    pub kind: PaletteKind,
     /// Which channel this palette stores values for.
     pub channel: ChannelId,
-    /// Section-specific parameter values. The serde alias `eq_values` lets
-    /// v8 show files load — they had a field of that name on `EqPalette`.
+    /// Parameter values across any of EQ / Dyn1 / Dyn2 sections. The serde
+    /// alias `eq_values` lets v8 show files load — they had a field of that
+    /// name on the old `EqPalette`.
     #[serde(with = "palette_values_serde", alias = "eq_values")]
     pub values: HashMap<ParameterPath, ParameterValue>,
-    /// Back-references: snapshot IDs that link to this palette. Used by the
-    /// UI for the "Linked Snapshots" display and the "ripple count" status
-    /// message after re-capture.
+    /// Back-references: snapshot IDs that link to this palette on at least
+    /// one `(channel, kind)` slot. Used by the UI for the ref count and to
+    /// drive ripple-count status messages after re-capture.
     pub referencing_snapshots: Vec<Uuid>,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
 }
 
 impl ChannelPalette {
-    /// Create a new palette of the given kind. Filters `values` to only
-    /// those whose section matches the kind — defensive against the
-    /// caller passing in a `capture_*` result that includes other params.
+    /// Create a new palette covering the given `kinds`. Filters `values` to
+    /// only those whose section maps to one of the requested kinds — defensive
+    /// against the caller passing in a capture result that includes unrelated
+    /// params.
     pub fn new(
         name: String,
-        kind: PaletteKind,
         channel: ChannelId,
+        kinds: &[PaletteKind],
         values: HashMap<ParameterPath, ParameterValue>,
     ) -> Self {
-        let target_section = kind.section();
-        let values = values
+        let allowed: Vec<ParameterSection> = kinds.iter().map(|k| k.section()).collect();
+        let values: HashMap<_, _> = values
             .into_iter()
-            .filter(|(p, _)| p.section() == target_section)
+            .filter(|(p, _)| allowed.contains(&p.section()))
             .collect();
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
             name,
-            kind,
             channel,
             values,
             referencing_snapshots: Vec::new(),
@@ -83,9 +81,34 @@ impl ChannelPalette {
         self.modified_at = Utc::now();
     }
 
-    /// Number of stored parameters.
+    /// Total number of stored parameters across every kind.
     pub fn parameter_count(&self) -> usize {
         self.values.len()
+    }
+
+    /// Number of stored parameters for one kind.
+    pub fn parameter_count_for(&self, kind: PaletteKind) -> usize {
+        let section = kind.section();
+        self.values
+            .keys()
+            .filter(|p| p.section() == section)
+            .count()
+    }
+
+    /// True if the palette stores at least one parameter for `kind`.
+    pub fn has_kind(&self, kind: PaletteKind) -> bool {
+        let section = kind.section();
+        self.values.keys().any(|p| p.section() == section)
+    }
+
+    /// Kinds present in this palette, in canonical Eq → Dyn1 → Dyn2 order
+    /// so UI column layout stays stable as values are added or removed.
+    pub fn kinds(&self) -> Vec<PaletteKind> {
+        PaletteKind::all()
+            .iter()
+            .copied()
+            .filter(|k| self.has_kind(*k))
+            .collect()
     }
 }
 
@@ -178,57 +201,97 @@ mod tests {
     }
 
     #[test]
-    fn creation_and_parameter_count() {
+    fn single_kind_palette() {
         let palette = ChannelPalette::new(
             "Vocal EQ".into(),
-            PaletteKind::Eq,
             ChannelId::Input(1),
+            &[PaletteKind::Eq],
             sample_eq_values(),
         );
         assert_eq!(palette.name, "Vocal EQ");
-        assert_eq!(palette.kind, PaletteKind::Eq);
         assert_eq!(palette.channel, ChannelId::Input(1));
         assert_eq!(palette.parameter_count(), 6);
+        assert_eq!(palette.kinds(), vec![PaletteKind::Eq]);
+        assert!(palette.has_kind(PaletteKind::Eq));
+        assert!(!palette.has_kind(PaletteKind::Dyn1));
+        assert_eq!(palette.parameter_count_for(PaletteKind::Eq), 6);
+        assert_eq!(palette.parameter_count_for(PaletteKind::Dyn1), 0);
         assert!(palette.referencing_snapshots.is_empty());
     }
 
     #[test]
-    fn channel_palette_filters_values_to_kind_section() {
-        // Mixed values: some EQ, some Dyn1, some Fader/Mute.
+    fn multi_kind_palette_stores_all_sections() {
+        let mut all = sample_eq_values();
+        all.extend(sample_dyn1_values());
+        all.extend(sample_dyn2_values());
+        let palette = ChannelPalette::new(
+            "Vocal full chain".into(),
+            ChannelId::Input(7),
+            &[PaletteKind::Eq, PaletteKind::Dyn1, PaletteKind::Dyn2],
+            all,
+        );
+        assert_eq!(palette.parameter_count(), 16);
+        assert_eq!(
+            palette.kinds(),
+            vec![PaletteKind::Eq, PaletteKind::Dyn1, PaletteKind::Dyn2]
+        );
+        assert_eq!(palette.parameter_count_for(PaletteKind::Eq), 6);
+        assert_eq!(palette.parameter_count_for(PaletteKind::Dyn1), 5);
+        assert_eq!(palette.parameter_count_for(PaletteKind::Dyn2), 5);
+    }
+
+    #[test]
+    fn new_filters_to_requested_kinds_only() {
+        // Mixed values: EQ + Dyn1 + Fader. Asking for only EQ keeps just EQ.
         let mut mixed = sample_eq_values();
         mixed.extend(sample_dyn1_values());
         mixed.insert(ParameterPath::Fader, ParameterValue::Float(-10.0));
         mixed.insert(ParameterPath::AnalogGain, ParameterValue::Float(20.0));
 
-        // EQ palette only keeps the EQ values.
         let eq_palette = ChannelPalette::new(
             "EQ".into(),
-            PaletteKind::Eq,
             ChannelId::Input(1),
+            &[PaletteKind::Eq],
             mixed.clone(),
         );
         assert_eq!(eq_palette.parameter_count(), 6);
         assert!(!eq_palette.values.contains_key(&ParameterPath::Fader));
         assert!(!eq_palette.values.contains_key(&ParameterPath::Dyn1Enabled));
+        assert_eq!(eq_palette.kinds(), vec![PaletteKind::Eq]);
 
-        // Dyn1 palette only keeps the Dyn1 values.
-        let dyn1_palette =
-            ChannelPalette::new("Comp".into(), PaletteKind::Dyn1, ChannelId::Input(1), mixed);
-        assert_eq!(dyn1_palette.parameter_count(), 5);
-        assert!(
-            dyn1_palette
-                .values
-                .contains_key(&ParameterPath::Dyn1Threshold(1))
+        // EQ + Dyn1 (but not Dyn2 or Fader) keeps both ducked sections.
+        let chain = ChannelPalette::new(
+            "EQ+Comp".into(),
+            ChannelId::Input(1),
+            &[PaletteKind::Eq, PaletteKind::Dyn1],
+            mixed,
         );
-        assert!(!dyn1_palette.values.contains_key(&ParameterPath::EqEnabled));
+        assert_eq!(chain.parameter_count(), 11);
+        assert!(!chain.values.contains_key(&ParameterPath::Fader));
+        assert_eq!(chain.kinds(), vec![PaletteKind::Eq, PaletteKind::Dyn1]);
+    }
+
+    #[test]
+    fn kinds_returns_canonical_order() {
+        // Build a palette covering only Dyn2 and Eq — kinds() must report
+        // them in Eq → Dyn2 order, not insertion order.
+        let mut vals = sample_dyn2_values();
+        vals.extend(sample_eq_values());
+        let palette = ChannelPalette::new(
+            "Mixed".into(),
+            ChannelId::Input(1),
+            &[PaletteKind::Eq, PaletteKind::Dyn2],
+            vals,
+        );
+        assert_eq!(palette.kinds(), vec![PaletteKind::Eq, PaletteKind::Dyn2]);
     }
 
     #[test]
     fn touch_updates_modified_at() {
         let mut palette = ChannelPalette::new(
             "Test".into(),
-            PaletteKind::Eq,
             ChannelId::Input(1),
+            &[PaletteKind::Eq],
             sample_eq_values(),
         );
         let before = palette.modified_at;
@@ -238,64 +301,55 @@ mod tests {
     }
 
     #[test]
-    fn channel_palette_serde_round_trip_eq() {
+    fn multi_kind_serde_round_trip() {
+        let mut all = sample_eq_values();
+        all.extend(sample_dyn2_values());
         let palette = ChannelPalette::new(
-            "Vocal EQ".into(),
-            PaletteKind::Eq,
-            ChannelId::Input(1),
-            sample_eq_values(),
-        );
-
-        let json = serde_json::to_string_pretty(&palette).unwrap();
-        let loaded: ChannelPalette = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(loaded.name, palette.name);
-        assert_eq!(loaded.kind, PaletteKind::Eq);
-        assert_eq!(loaded.channel, palette.channel);
-        assert_eq!(loaded.parameter_count(), palette.parameter_count());
-        assert_eq!(
-            loaded.values.get(&ParameterPath::EqBandFrequency(1)),
-            Some(&ParameterValue::Float(1000.0)),
-        );
-    }
-
-    #[test]
-    fn channel_palette_serde_round_trip_dyn1() {
-        let palette = ChannelPalette::new(
-            "Snare Comp".into(),
-            PaletteKind::Dyn1,
-            ChannelId::Input(2),
-            sample_dyn1_values(),
-        );
-        let json = serde_json::to_string(&palette).unwrap();
-        let loaded: ChannelPalette = serde_json::from_str(&json).unwrap();
-        assert_eq!(loaded.kind, PaletteKind::Dyn1);
-        assert_eq!(loaded.parameter_count(), 5);
-        assert_eq!(
-            loaded.values.get(&ParameterPath::Dyn1Threshold(1)),
-            Some(&ParameterValue::Float(-12.0)),
-        );
-    }
-
-    #[test]
-    fn channel_palette_serde_round_trip_dyn2() {
-        let palette = ChannelPalette::new(
-            "Tom Gate".into(),
-            PaletteKind::Dyn2,
+            "EQ+Gate".into(),
             ChannelId::Input(3),
-            sample_dyn2_values(),
+            &[PaletteKind::Eq, PaletteKind::Dyn2],
+            all,
         );
+
         let json = serde_json::to_string(&palette).unwrap();
         let loaded: ChannelPalette = serde_json::from_str(&json).unwrap();
-        assert_eq!(loaded.kind, PaletteKind::Dyn2);
-        assert_eq!(loaded.parameter_count(), 5);
+
+        assert_eq!(loaded.parameter_count(), palette.parameter_count());
+        assert_eq!(loaded.kinds(), vec![PaletteKind::Eq, PaletteKind::Dyn2]);
+        assert_eq!(
+            loaded.values.get(&ParameterPath::Dyn2Threshold),
+            Some(&ParameterValue::Float(-30.0)),
+        );
     }
 
     #[test]
-    fn v8_eq_palette_loads_as_eq_kind_channel_palette() {
-        // V8 JSON shape: no `kind` field, values stored under `eq_values`.
-        // The serde alias on `values` and the default on `kind` should let
-        // this load as a fully-functional ChannelPalette with PaletteKind::Eq.
+    fn legacy_single_kind_field_is_ignored_on_load() {
+        // V8/early-v9 JSON shape: a `kind` field used to live on the struct;
+        // it's been removed but legacy show files still write it. Serde should
+        // ignore the unknown field and derive kinds from values.
+        let v8_json = r#"{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Legacy Comp",
+            "kind": "Dyn1",
+            "channel": {"Input": 2},
+            "values": [
+                {"path": "Dyn1Enabled", "value": {"Bool": true}},
+                {"path": {"Dyn1Threshold": 1}, "value": {"Float": -8.0}}
+            ],
+            "referencing_snapshots": [],
+            "created_at": "2025-01-01T00:00:00Z",
+            "modified_at": "2025-01-01T00:00:00Z"
+        }"#;
+        let loaded: ChannelPalette = serde_json::from_str(v8_json).unwrap();
+        assert_eq!(loaded.name, "Legacy Comp");
+        assert_eq!(loaded.kinds(), vec![PaletteKind::Dyn1]);
+        assert_eq!(loaded.parameter_count(), 2);
+    }
+
+    #[test]
+    fn legacy_eq_values_alias_still_loads() {
+        // V8 EqPalette stored values under `eq_values`; the alias keeps these
+        // files loadable.
         let v8_json = r#"{
             "id": "00000000-0000-0000-0000-000000000001",
             "name": "Legacy Vocal",
@@ -310,15 +364,7 @@ mod tests {
         }"#;
         let loaded: ChannelPalette = serde_json::from_str(v8_json).unwrap();
         assert_eq!(loaded.name, "Legacy Vocal");
-        assert_eq!(loaded.kind, PaletteKind::Eq); // serde default
+        assert_eq!(loaded.kinds(), vec![PaletteKind::Eq]);
         assert_eq!(loaded.parameter_count(), 2);
-        assert_eq!(
-            loaded.values.get(&ParameterPath::EqEnabled),
-            Some(&ParameterValue::Bool(true)),
-        );
-        assert_eq!(
-            loaded.values.get(&ParameterPath::EqBandFrequency(1)),
-            Some(&ParameterValue::Float(1200.0)),
-        );
     }
 }

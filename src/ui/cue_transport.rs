@@ -35,17 +35,18 @@ pub fn fire_go(
         let mut mgr = cue_mgr.write().await;
         if let Some(cue) = mgr.go_next() {
             let cue = cue.clone();
-            if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
-                drop(mgr);
-                let pmgr = pmgr_arc.read().await;
-                let result = engine
-                    .recall_cue(&cue, &snapshot, &pmgr.palettes, false)
-                    .await;
-                let _ = tx.send(UiEvent::CueRecalled {
-                    cue_number: cue.cue_number,
-                    params_sent: result.parameters_sent,
-                });
-            }
+            let snapshot = cue
+                .snapshot_id
+                .and_then(|id| mgr.get_snapshot(&id).cloned());
+            drop(mgr);
+            let pmgr = pmgr_arc.read().await;
+            let result = engine
+                .recall_cue(&cue, snapshot.as_ref(), &pmgr.palettes, false)
+                .await;
+            let _ = tx.send(UiEvent::CueRecalled {
+                cue_number: cue.cue_number,
+                params_sent: result.parameters_sent,
+            });
         }
     });
 }
@@ -70,17 +71,18 @@ pub fn fire_prev(
         let mut mgr = cue_mgr.write().await;
         if let Some(cue) = mgr.go_previous() {
             let cue = cue.clone();
-            if let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() {
-                drop(mgr);
-                let pmgr = pmgr_arc.read().await;
-                let result = engine
-                    .recall_cue(&cue, &snapshot, &pmgr.palettes, false)
-                    .await;
-                let _ = tx.send(UiEvent::CueRecalled {
-                    cue_number: cue.cue_number,
-                    params_sent: result.parameters_sent,
-                });
-            }
+            let snapshot = cue
+                .snapshot_id
+                .and_then(|id| mgr.get_snapshot(&id).cloned());
+            drop(mgr);
+            let pmgr = pmgr_arc.read().await;
+            let result = engine
+                .recall_cue(&cue, snapshot.as_ref(), &pmgr.palettes, false)
+                .await;
+            let _ = tx.send(UiEvent::CueRecalled {
+                cue_number: cue.cue_number,
+                params_sent: result.parameters_sent,
+            });
         }
     });
 }

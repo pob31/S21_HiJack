@@ -201,12 +201,14 @@ pub struct Snapshot {
     /// a palette ripple to every linked snapshot automatically.
     #[serde(with = "palette_refs_serde")]
     pub palette_refs: HashMap<(ChannelId, PaletteKind), Uuid>,
-    /// Optional 1-based row number of the linked console memory snapshot.
-    /// When set, recall first fires `/Snapshots/Current_Snapshot <n>` via
-    /// the iPad protocol, then writes the captured parameter overlay on top.
-    /// `None` = the snapshot manages parameters only.
-    #[serde(default)]
-    pub console_snapshot: Option<i32>,
+    /// Legacy field — the per-snapshot console memory row. Replaced by
+    /// `Cue::console_snapshot`, which lets multiple cues target the same
+    /// desk row and lets a cue exist without an S21HiJack overlay. Show
+    /// files written before this change still carry the value under the
+    /// `console_snapshot` JSON key; the show-file loader migrates it onto
+    /// linked cues and clears the field. Never re-serialized.
+    #[serde(rename = "console_snapshot", default, skip_serializing)]
+    pub(crate) legacy_console_snapshot: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
 }
@@ -222,7 +224,7 @@ impl Snapshot {
             kind,
             data,
             palette_refs: HashMap::new(),
-            console_snapshot: None,
+            legacy_console_snapshot: None,
             created_at: now,
             modified_at: now,
         }
@@ -281,7 +283,7 @@ pub fn resolve_recall_values<'a>(
         let Some(palette) = palettes.get(palette_id) else {
             continue;
         };
-        if palette.kind != *kind {
+        if !palette.has_kind(*kind) {
             continue;
         }
         for (param_path, value) in &palette.values {
@@ -351,7 +353,7 @@ impl<'de> serde::Deserialize<'de> for Snapshot {
             kind: shadow.kind,
             data: shadow.data,
             palette_refs: shadow.palette_refs,
-            console_snapshot: shadow.console_snapshot,
+            legacy_console_snapshot: shadow.console_snapshot,
             created_at: shadow.created_at,
             modified_at: shadow.modified_at,
         })
@@ -496,14 +498,26 @@ impl Default for CueList {
 }
 
 /// A single cue in the cue list.
+///
+/// A cue targets either a console memory row (fires
+/// `/Snapshots/Current_Snapshot <n>`), an S21HiJack snapshot overlay
+/// (parameter + palette substitution), or both. At least one must be set
+/// for the cue to do anything on recall; the UI enforces this.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Cue {
     pub id: Uuid,
     /// Supports decimal cue numbers (e.g., 1.0, 1.5, 2.0).
     pub cue_number: f32,
     pub name: String,
-    /// Reference to the snapshot to recall.
-    pub snapshot_id: Uuid,
+    /// 1-based row in the desk's snapshot memory. When set, recall fires
+    /// `/Snapshots/Current_Snapshot <n>` before any parameter overlay.
+    /// Multiple cues can target the same row.
+    #[serde(default)]
+    pub console_snapshot: Option<i32>,
+    /// Optional S21HiJack snapshot whose parameter overlay + palette refs
+    /// apply on recall. When `None`, the cue is row-only (no overlay).
+    #[serde(default)]
+    pub snapshot_id: Option<Uuid>,
     /// If set, overrides the snapshot's built-in scope for this cue.
     pub scope_override: Option<ScopeTemplate>,
     /// Fade time in seconds (0 = instant).
@@ -515,17 +529,28 @@ pub struct Cue {
 }
 
 impl Cue {
-    pub fn new(cue_number: f32, name: String, snapshot_id: Uuid) -> Self {
+    pub fn new(cue_number: f32, name: String) -> Self {
         Self {
             id: Uuid::new_v4(),
             cue_number,
             name,
-            snapshot_id,
+            console_snapshot: None,
+            snapshot_id: None,
             scope_override: None,
             fade_time: 0.0,
             qlab_cue_id: None,
             notes: String::new(),
         }
+    }
+
+    pub fn with_snapshot_id(mut self, snapshot_id: Uuid) -> Self {
+        self.snapshot_id = Some(snapshot_id);
+        self
+    }
+
+    pub fn with_console_snapshot(mut self, row: i32) -> Self {
+        self.console_snapshot = Some(row);
+        self
     }
 }
 

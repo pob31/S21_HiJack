@@ -6,6 +6,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use uuid::Uuid;
+
 use crate::model::channel::ChannelId;
 use crate::model::config::ConsoleConfig;
 use crate::model::parameter::{ParameterPath, ParameterSection, TimingCategory};
@@ -140,6 +142,12 @@ pub struct ScopeEditorState {
     pub console_recall: ConsoleRecallConfig,
     /// Popup state for the recall scope/safe editor.
     pub recall_popup: RecallScopePopupState,
+    /// In-window template controls — `(select)` placeholder when None.
+    /// Cleared on `open(...)`.
+    pub selected_template_id: Option<Uuid>,
+    /// In-window "Save as" name buffer. Cleared on `open(...)` and after
+    /// a successful Save.
+    pub template_name_buf: String,
 }
 
 impl Default for ScopeEditorState {
@@ -157,6 +165,8 @@ impl Default for ScopeEditorState {
             last_dirty_generation: 0,
             console_recall: ConsoleRecallConfig::default(),
             recall_popup: RecallScopePopupState::default(),
+            selected_template_id: None,
+            template_name_buf: String::new(),
         }
     }
 }
@@ -199,6 +209,9 @@ impl ScopeEditorState {
         self.channel_timings = channel_timings;
         self.edit_mode = ScopeEditMode::Scope;
         self.window_open = true;
+        // Fresh template-picker state per editing session.
+        self.selected_template_id = None;
+        self.template_name_buf.clear();
     }
 
     /// Cancel: restore the backup and close the window.

@@ -34,9 +34,13 @@ mod state;
 pub use state::{ChannelGroup, ScopeEditMode, ScopeEditorState};
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use eframe::egui;
+use tokio::sync::RwLock;
+use uuid::Uuid;
 
+use crate::console::cue_manager::CueManager;
 use crate::model::channel::ChannelId;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::parameter::ParameterPath;
@@ -83,10 +87,35 @@ pub fn draw_scope_window(
     state: &mut ScopeEditorState,
     console_state: &ConsoleState,
     dirty: Option<&DirtyTracker>,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    runtime: &tokio::runtime::Handle,
 ) -> ScopeWindowOutcome {
     if !state.window_open {
         return ScopeWindowOutcome::default();
     }
+
+    // Snapshot templates (id, name) up front so the egui closure doesn't
+    // hold the cue_manager read guard while it renders.
+    let templates: Vec<(Uuid, String)> = cue_manager
+        .try_read()
+        .map(|mgr| {
+            let mut v: Vec<_> = mgr
+                .scope_templates
+                .values()
+                .map(|t| (t.id, t.name.clone()))
+                .collect();
+            v.sort_by(|a, b| a.1.cmp(&b.1));
+            v
+        })
+        .unwrap_or_default();
+    // Pull the full template for Load (if one is selected) so we don't
+    // need to reach back into cue_manager inside the closure.
+    let selected_template_full = state.selected_template_id.and_then(|id| {
+        cue_manager
+            .try_read()
+            .ok()
+            .and_then(|mgr| mgr.scope_templates.get(&id).cloned())
+    });
 
     // Phase C: if auto-preselect is on AND the dirty tracker's generation
     // has changed since we last looked, replace the selections with the
@@ -292,6 +321,120 @@ pub fn draw_scope_window(
                         .size(theme::FONT_SIZE_BADGE),
                 );
             });
+
+            // ── Templates row ─────────────────────────────────────────
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Templates:");
+                let current_name = state
+                    .selected_template_id
+                    .and_then(|id| templates.iter().find(|(tid, _)| *tid == id))
+                    .map(|(_, n)| n.clone())
+                    .unwrap_or_else(|| "(select)".into());
+                egui::ComboBox::from_id_salt("scope_editor_templates_combo")
+                    .selected_text(&current_name)
+                    .width(180.0)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(state.selected_template_id.is_none(), "(select)")
+                            .clicked()
+                        {
+                            state.selected_template_id = None;
+                        }
+                        for (id, name) in &templates {
+                            if ui
+                                .selectable_label(state.selected_template_id == Some(*id), name)
+                                .clicked()
+                            {
+                                state.selected_template_id = Some(*id);
+                            }
+                        }
+                    });
+
+                let load_btn = theme::action_button(
+                    "Load",
+                    theme::ACCENT_BLUE,
+                    egui::Vec2::new(70.0, 28.0),
+                );
+                if ui
+                    .add_enabled(selected_template_full.is_some(), load_btn)
+                    .clicked()
+                {
+                    if let Some(tmpl) = selected_template_full.as_ref() {
+                        state.load_template(tmpl, aux_count, group_count, matrix_count);
+                    }
+                }
+
+                ui.separator();
+                ui.add_space(4.0);
+
+                ui.label("Save as:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.template_name_buf)
+                        .desired_width(140.0),
+                );
+                let save_btn = theme::action_button(
+                    "Save",
+                    theme::ACCENT_GREEN,
+                    egui::Vec2::new(70.0, 28.0),
+                );
+                let can_save = !state.template_name_buf.trim().is_empty();
+                if ui.add_enabled(can_save, save_btn).clicked() {
+                    let name = state.template_name_buf.trim().to_string();
+                    let new_tmpl = state.to_scope_template(name);
+                    state.template_name_buf.clear();
+                    // Adopt the new template as the selection so a follow-up
+                    // Update/Delete targets it without a second click.
+                    state.selected_template_id = Some(new_tmpl.id);
+                    let cue_mgr = cue_manager.clone();
+                    runtime.spawn(async move {
+                        cue_mgr.write().await.add_scope_template(new_tmpl);
+                    });
+                }
+
+                ui.separator();
+                ui.add_space(4.0);
+
+                if theme::long_press_button(
+                    ui,
+                    "Update",
+                    theme::ACCENT_AMBER,
+                    egui::Vec2::new(80.0, 28.0),
+                    state.selected_template_id.is_some(),
+                    theme::LONG_PRESS_DURATION_MS,
+                ) {
+                    if let Some(id) = state.selected_template_id {
+                        let existing_name = templates
+                            .iter()
+                            .find(|(tid, _)| *tid == id)
+                            .map(|(_, n)| n.clone())
+                            .unwrap_or_else(|| "Untitled".into());
+                        let replacement = state.to_scope_template(existing_name);
+                        let cue_mgr = cue_manager.clone();
+                        runtime.spawn(async move {
+                            cue_mgr.write().await.update_scope_template(id, replacement);
+                        });
+                    }
+                }
+
+                if theme::long_press_button(
+                    ui,
+                    "Delete",
+                    theme::ACCENT_RED,
+                    egui::Vec2::new(80.0, 28.0),
+                    state.selected_template_id.is_some(),
+                    theme::LONG_PRESS_DURATION_MS,
+                ) {
+                    if let Some(id) = state.selected_template_id {
+                        let cue_mgr = cue_manager.clone();
+                        runtime.spawn(async move {
+                            cue_mgr.write().await.remove_scope_template(id);
+                        });
+                        state.selected_template_id = None;
+                    }
+                }
+            });
+
             ui.add_space(6.0);
             ui.separator();
 

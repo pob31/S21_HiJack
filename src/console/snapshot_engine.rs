@@ -224,25 +224,16 @@ impl SnapshotEngine {
         count
     }
 
-    /// Fire the console memory referenced by the snapshot, if any. Skips
-    /// when the live `current_console_snapshot` already matches (dedup),
-    /// and waits for a settling period after firing so the console's
-    /// echo flood lands before we start writing the parameter overlay.
-    /// Records the fired row in the suppression set so follow mode
-    /// ignores the resulting echo.
-    async fn fire_console_memory_if_needed(&self, snapshot: &Snapshot) {
-        let Some(row) = snapshot.console_snapshot else {
+    /// Fire the given console memory row, if any. Always fires when a row
+    /// is supplied — repeating a cue must reload the desk snapshot so any
+    /// drift between recalls is reset. Waits for a settling period after
+    /// firing so the console's echo flood lands before we start writing
+    /// the parameter overlay. Records the fired row in the suppression
+    /// set so follow mode ignores the resulting echo.
+    async fn fire_console_memory_if_needed(&self, row: Option<i32>) {
+        let Some(row) = row else {
             return;
         };
-        // Dedup against live state.
-        let already = {
-            let s = self.state.read().await;
-            s.current_console_snapshot == Some(row)
-        };
-        if already {
-            debug!(row, "Console memory already active — skipping fire");
-            return;
-        }
 
         let Some(ipad) = self.ipad_sender.as_ref() else {
             warn!(
@@ -344,7 +335,7 @@ impl SnapshotEngine {
             .with_dirty_suppression(async {
                 // Fire console memory inside the suppression bracket so
                 // its echo flood doesn't pollute the dirty tracker.
-                self.fire_console_memory_if_needed(snapshot).await;
+                self.fire_console_memory_if_needed(None).await;
                 self.recall_inner(snapshot, scope, palettes, ignore_scope)
                     .await
             })
@@ -488,13 +479,15 @@ impl SnapshotEngine {
     pub async fn recall_cue(
         &self,
         cue: &Cue,
-        snapshot: &Snapshot,
+        snapshot: Option<&Snapshot>,
         palettes: &HashMap<Uuid, ChannelPalette>,
         ignore_scope: bool,
     ) -> RecallResult {
-        // Auto-update: must run BEFORE dirty suppression bracket clears
-        // the tracker. Filtered by the previous snapshot's scope template.
-        self.auto_save_previous_snapshot(snapshot.id).await;
+        // Auto-update only applies when there's a snapshot overlay — there's
+        // nothing to compare a "previous snapshot's scope" against otherwise.
+        if let Some(snap) = snapshot {
+            self.auto_save_previous_snapshot(snap.id).await;
+        }
 
         // Phase C: bracket the whole cue recall in dirty suppression so
         // BOTH the no-fade path (which calls recall_inner) AND the fade
@@ -502,15 +495,26 @@ impl SnapshotEngine {
         // is cleared on success.
         let result = self
             .with_dirty_suppression(async {
-                // Fire console memory inside the suppression bracket so
-                // its echo flood doesn't pollute the dirty tracker.
-                self.fire_console_memory_if_needed(snapshot).await;
-                self.recall_cue_inner(cue, snapshot, palettes, ignore_scope)
-                    .await
+                // Fire the cue's console memory row (if any) inside the
+                // suppression bracket so its echo flood doesn't pollute
+                // the dirty tracker.
+                self.fire_console_memory_if_needed(cue.console_snapshot).await;
+                match snapshot {
+                    Some(snap) => {
+                        self.recall_cue_inner(cue, snap, palettes, ignore_scope)
+                            .await
+                    }
+                    None => RecallResult {
+                        parameters_sent: 0,
+                        parameters_skipped: 0,
+                    },
+                }
             })
             .await;
 
-        self.mark_last_recalled(snapshot.id).await;
+        if let Some(snap) = snapshot {
+            self.mark_last_recalled(snap.id).await;
+        }
         result
     }
 
@@ -612,9 +616,9 @@ impl SnapshotEngine {
             let Some(palette) = palettes.get(palette_id) else {
                 continue;
             };
-            // Defensive: skip if palette kind doesn't match the ref's kind
+            // Defensive: skip if palette doesn't cover the ref's kind
             // (shouldn't happen, but better to drop than send to wrong section).
-            if palette.kind != *kind {
+            if !palette.has_kind(*kind) {
                 continue;
             }
             for (param_path, value) in &palette.values {
@@ -1490,8 +1494,8 @@ mod tests {
         eq_vals.insert(ParameterPath::EqBandGain(1), ParameterValue::Float(5.0));
         let palette = ChannelPalette::new(
             "Vocal EQ".into(),
-            PaletteKind::Eq,
             ChannelId::Input(1),
+            &[PaletteKind::Eq],
             eq_vals,
         );
         let palette_id = palette.id;
@@ -1579,8 +1583,8 @@ mod tests {
         let eq_vals = HashMap::new();
         let palette = ChannelPalette::new(
             "Empty".into(),
-            PaletteKind::Eq,
             ChannelId::Input(1),
+            &[PaletteKind::Eq],
             eq_vals,
         );
         snapshot
@@ -1676,7 +1680,7 @@ mod tests {
         );
         eq_vals.insert(ParameterPath::EqBandGain(1), ParameterValue::Float(4.0));
         let palette =
-            ChannelPalette::new("Test".into(), PaletteKind::Eq, ChannelId::Input(1), eq_vals);
+            ChannelPalette::new("Test".into(), ChannelId::Input(1), &[PaletteKind::Eq], eq_vals);
         let pid = palette.id;
 
         snapshot
@@ -1725,10 +1729,11 @@ mod tests {
             SnapshotData { values },
             SnapshotKind::ApplyOnSave,
         );
-        let cue = crate::model::snapshot::Cue::new(1.0, "Test Cue".into(), snapshot.id);
+        let cue =
+            crate::model::snapshot::Cue::new(1.0, "Test Cue".into()).with_snapshot_id(snapshot.id);
 
         let result = engine
-            .recall_cue(&cue, &snapshot, &no_palettes(), false)
+            .recall_cue(&cue, Some(&snapshot), &no_palettes(), false)
             .await;
         // Both are new (no live state) → both sent
         assert_eq!(result.parameters_sent, 2);
@@ -1782,11 +1787,12 @@ mod tests {
             SnapshotData { values },
             SnapshotKind::ApplyOnSave,
         );
-        let mut cue = crate::model::snapshot::Cue::new(1.0, "Fade Cue".into(), snapshot.id);
+        let mut cue =
+            crate::model::snapshot::Cue::new(1.0, "Fade Cue".into()).with_snapshot_id(snapshot.id);
         cue.fade_time = 2.0;
 
         let result = engine
-            .recall_cue(&cue, &snapshot, &no_palettes(), false)
+            .recall_cue(&cue, Some(&snapshot), &no_palettes(), false)
             .await;
         // Mute sent immediately; Fader deferred to background fade
         assert_eq!(result.parameters_sent, 1);
@@ -1837,11 +1843,12 @@ mod tests {
             SnapshotData { values },
             SnapshotKind::ApplyOnSave,
         );
-        let mut cue = crate::model::snapshot::Cue::new(1.0, "Scoped".into(), snapshot.id);
+        let mut cue =
+            crate::model::snapshot::Cue::new(1.0, "Scoped".into()).with_snapshot_id(snapshot.id);
         cue.scope_override = Some(eq_only_scope);
 
         let result = engine
-            .recall_cue(&cue, &snapshot, &no_palettes(), false)
+            .recall_cue(&cue, Some(&snapshot), &no_palettes(), false)
             .await;
         // Only EqEnabled sent (within override scope); Fader skipped
         assert_eq!(result.parameters_sent, 1);
@@ -1942,19 +1949,20 @@ mod tests {
             SnapshotData { values },
             SnapshotKind::ApplyOnRecall,
         );
-        let mut cue = crate::model::snapshot::Cue::new(1.0, "Cue".into(), snapshot.id);
+        let mut cue =
+            crate::model::snapshot::Cue::new(1.0, "Cue".into()).with_snapshot_id(snapshot.id);
         cue.scope_override = Some(fader_only_scope);
 
         // ignore_scope=false honours the override → only Fader sent.
         let result = engine
-            .recall_cue(&cue, &snapshot, &no_palettes(), false)
+            .recall_cue(&cue, Some(&snapshot), &no_palettes(), false)
             .await;
         assert_eq!(result.parameters_sent, 1);
         assert_eq!(result.parameters_skipped, 1);
 
         // ignore_scope=true bypasses the override → both sent.
         let result = engine
-            .recall_cue(&cue, &snapshot, &no_palettes(), true)
+            .recall_cue(&cue, Some(&snapshot), &no_palettes(), true)
             .await;
         assert_eq!(result.parameters_sent, 2);
     }
@@ -2012,9 +2020,10 @@ mod tests {
             SnapshotData::new(),
             SnapshotKind::ApplyOnSave,
         );
-        let cue = crate::model::snapshot::Cue::new(1.0, "Cue".into(), snapshot.id);
+        let cue =
+            crate::model::snapshot::Cue::new(1.0, "Cue".into()).with_snapshot_id(snapshot.id);
         let _ = engine
-            .recall_cue(&cue, &snapshot, &no_palettes(), false)
+            .recall_cue(&cue, Some(&snapshot), &no_palettes(), false)
             .await;
 
         assert!(!dirty.read().await.has_any());
@@ -2231,7 +2240,8 @@ mod tests {
         let mut cue_mgr = CueManager::new(CueList::default());
         cue_mgr.add_snapshot(snapshot);
 
-        let cue = crate::model::snapshot::Cue::new(1.0, "Cue 1".into(), snap_id);
+        let cue =
+            crate::model::snapshot::Cue::new(1.0, "Cue 1".into()).with_snapshot_id(snap_id);
         cue_mgr.add_cue(cue.clone());
 
         // Parse /cue/fire 1.0
@@ -2243,9 +2253,12 @@ mod tests {
 
         // Resolve cue → snapshot (mirrors main.rs dispatch)
         let fired_cue = cue_mgr.fire_cue_number(number).unwrap().clone();
-        let snapshot = cue_mgr.snapshots.get(&fired_cue.snapshot_id).unwrap();
+        let snapshot = cue_mgr
+            .snapshots
+            .get(&fired_cue.snapshot_id.unwrap())
+            .unwrap();
         let result = engine
-            .recall_cue(&fired_cue, snapshot, &no_palettes(), false)
+            .recall_cue(&fired_cue, Some(snapshot), &no_palettes(), false)
             .await;
         assert_eq!(result.parameters_sent, 1);
     }

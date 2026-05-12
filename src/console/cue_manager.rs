@@ -220,15 +220,52 @@ impl CueManager {
         self.scope_templates.insert(template.id, template);
     }
 
-    /// Update cue properties (fade time, scope override, notes).
+    /// Replace the scope template with the given id. Returns `false` when
+    /// no template with that id exists. The replacement keeps the id so
+    /// any references (cue `scope_override`) stay valid.
+    pub fn update_scope_template(&mut self, id: Uuid, mut template: ScopeTemplate) -> bool {
+        if !self.scope_templates.contains_key(&id) {
+            warn!(%id, "Scope template not found for update");
+            return false;
+        }
+        template.id = id;
+        info!(name = %template.name, %id, "Updated scope template");
+        self.scope_templates.insert(id, template);
+        true
+    }
+
+    /// Remove a scope template. Returns whether the template existed.
+    pub fn remove_scope_template(&mut self, id: Uuid) -> bool {
+        let removed = self.scope_templates.remove(&id).is_some();
+        if removed {
+            info!(%id, "Removed scope template");
+        }
+        removed
+    }
+
+    /// Update cue properties. `cue_number`, when provided, replaces the
+    /// existing order key and the cue list is re-sorted so the display
+    /// reflects the new position. `snapshot_id` and `console_snapshot` are
+    /// passed through unchanged (Option == None clears the link).
+    #[allow(clippy::too_many_arguments)]
     pub fn update_cue(
         &mut self,
         cue_id: Uuid,
+        cue_number: Option<f32>,
+        snapshot_id: Option<Uuid>,
+        console_snapshot: Option<i32>,
         fade_time: f32,
         scope_override: Option<ScopeTemplate>,
         notes: String,
     ) -> bool {
-        if let Some(cue) = self.cue_list.cues.iter_mut().find(|c| c.id == cue_id) {
+        let updated = if let Some(cue) =
+            self.cue_list.cues.iter_mut().find(|c| c.id == cue_id)
+        {
+            if let Some(n) = cue_number {
+                cue.cue_number = n;
+            }
+            cue.snapshot_id = snapshot_id;
+            cue.console_snapshot = console_snapshot;
             cue.fade_time = fade_time;
             cue.scope_override = scope_override;
             cue.notes = notes;
@@ -237,7 +274,15 @@ impl CueManager {
         } else {
             warn!(%cue_id, "Cue not found for update");
             false
+        };
+        if updated && cue_number.is_some() {
+            self.cue_list.cues.sort_by(|a, b| {
+                a.cue_number
+                    .partial_cmp(&b.cue_number)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         }
+        updated
     }
 }
 
@@ -247,7 +292,7 @@ mod tests {
     use crate::model::snapshot::{Cue, CueList};
 
     fn make_cue(number: f32, name: &str) -> Cue {
-        Cue::new(number, name.into(), Uuid::new_v4())
+        Cue::new(number, name.into()).with_snapshot_id(Uuid::new_v4())
     }
 
     #[test]
@@ -331,7 +376,15 @@ mod tests {
         let cue_id = cue.id;
         mgr.add_cue(cue);
 
-        assert!(mgr.update_cue(cue_id, 3.5, None, "Scene change".into()));
+        assert!(mgr.update_cue(
+            cue_id,
+            None,
+            mgr.cue_list.cues[0].snapshot_id,
+            None,
+            3.5,
+            None,
+            "Scene change".into(),
+        ));
 
         let updated = mgr.cue_list.cues.iter().find(|c| c.id == cue_id).unwrap();
         assert!((updated.fade_time - 3.5).abs() < 0.001);
@@ -340,9 +393,39 @@ mod tests {
     }
 
     #[test]
+    fn update_cue_renumber_resorts_list() {
+        let mut mgr = CueManager::new(CueList::default());
+        mgr.add_cue(make_cue(1.0, "A"));
+        mgr.add_cue(make_cue(2.0, "B"));
+        mgr.add_cue(make_cue(3.0, "C"));
+        let b_id = mgr.cue_list.cues[1].id;
+
+        // Renumber B from 2.0 → 0.5; it should now be first.
+        assert!(mgr.update_cue(
+            b_id,
+            Some(0.5),
+            mgr.cue_list.cues[1].snapshot_id,
+            None,
+            0.0,
+            None,
+            String::new(),
+        ));
+        assert_eq!(mgr.cue_list.cues[0].id, b_id);
+        assert!((mgr.cue_list.cues[0].cue_number - 0.5).abs() < 0.001);
+    }
+
+    #[test]
     fn update_cue_nonexistent_returns_false() {
         let mut mgr = CueManager::new(CueList::default());
-        assert!(!mgr.update_cue(Uuid::new_v4(), 1.0, None, String::new()));
+        assert!(!mgr.update_cue(
+            Uuid::new_v4(),
+            None,
+            None,
+            None,
+            1.0,
+            None,
+            String::new(),
+        ));
     }
 
     // ─── Phase E: resolve_snapshot ──────────────────────────────────

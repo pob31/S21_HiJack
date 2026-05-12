@@ -28,6 +28,9 @@ pub struct SnapshotsTabState {
 
     // Cue editor
     pub last_edited_cue_id: Option<Uuid>,
+    pub editing_cue_number: String,
+    pub editing_local_snapshot: Option<Uuid>,
+    pub editing_console_snapshot: String,
     pub editing_fade_time: f32,
     pub editing_scope_override_enabled: bool,
     pub editing_scope_template_id: Option<Uuid>,
@@ -42,19 +45,13 @@ pub struct SnapshotsTabState {
 
     // Scope
     pub scope_editor: ScopeEditorState,
-    pub new_template_name: String,
     pub selected_scope_template_id: Option<Uuid>,
 
     // Feedback
     pub status_message: Option<String>,
 
-    // Console memory ref editor: text buffer for the selected snapshot's
-    // console_snapshot value (empty = None).
-    pub console_snapshot_input: String,
-    /// UUID of the snapshot whose `console_snapshot_input` is currently
-    /// loaded — used to detect when the selection changed and the buffer
-    /// needs reloading.
-    pub console_snapshot_input_for: Option<Uuid>,
+    // Console row for the Add Cue form (empty = no row link).
+    pub new_cue_console_row: String,
 
     // Shift console refs modal state.
     pub shift_modal_open: bool,
@@ -71,6 +68,9 @@ impl Default for SnapshotsTabState {
             new_cue_name: String::new(),
             selected_snapshot_for_cue: None,
             last_edited_cue_id: None,
+            editing_cue_number: String::new(),
+            editing_local_snapshot: None,
+            editing_console_snapshot: String::new(),
             editing_fade_time: 0.0,
             editing_scope_override_enabled: false,
             editing_scope_template_id: None,
@@ -79,11 +79,9 @@ impl Default for SnapshotsTabState {
             selected_snapshot_id: None,
             pending_kind: SnapshotKind::default(),
             scope_editor: ScopeEditorState::default(),
-            new_template_name: String::new(),
             selected_scope_template_id: None,
             status_message: None,
-            console_snapshot_input: String::new(),
-            console_snapshot_input_for: None,
+            new_cue_console_row: String::new(),
             shift_modal_open: false,
             shift_from_row: "1".into(),
             shift_delta: "1".into(),
@@ -131,375 +129,81 @@ pub fn draw_snapshots_tab(
         .ok()
         .and_then(|mgr| mgr.current_cue().map(|c| c.id));
 
-    // Two-column layout
+    // Three-column layout. Each column scrolls independently; lists inside
+    // cards have their own bounded ScrollArea so trailing buttons never get
+    // pushed off-screen by a long list.
     let available = ui.available_size();
-    let left_width = (available.x * 0.5).min(700.0);
-    let panel_height = available.y;
 
-    ui.horizontal(|ui| {
-        // Left panel: Scope templates + editor
-        ui.vertical(|ui| {
-            ui.set_width(left_width);
-            ui.set_min_height(panel_height);
-
-            egui::ScrollArea::vertical()
-                .id_salt("snapshot_left_scroll")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    // Scope template list
-                    theme::card_frame().show(ui, |ui| {
-                        theme::section_heading(ui, "Scope Templates");
-                        if let Ok(mgr) = cue_manager.try_read() {
-                            let mut templates: Vec<_> = mgr.scope_templates.values().collect();
-                            templates.sort_by(|a, b| a.name.cmp(&b.name));
-                            for tmpl in templates {
-                                let selected = snap_state.selected_scope_template_id == Some(tmpl.id);
-                                let text = format!("{} ({} ch)", tmpl.name, tmpl.channel_scopes.len());
-                                let response = ui.selectable_label(selected, egui::RichText::new(&text).color(
-                                    if selected { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY }
-                                ));
-                                if response.clicked() {
-                                    snap_state.selected_scope_template_id = Some(tmpl.id);
-                                    snap_state.scope_editor.load_template(
-                                        tmpl,
-                                        aux_count,
-                                        group_count,
-                                        matrix_count,
-                                    );
-                                }
-                            }
-                        }
-
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            theme::padded_text_edit(ui, &mut snap_state.new_template_name, 200.0, true, "");
-                            let save_btn = theme::action_button("Save Template", theme::ACCENT_GREEN, egui::Vec2::new(100.0, 28.0));
-                            if ui.add(save_btn).clicked() && !snap_state.new_template_name.is_empty() {
-                                let template = snap_state.scope_editor.to_scope_template(
-                                    snap_state.new_template_name.clone(),
-                                );
-                                let cue_mgr = cue_manager.clone();
-                                runtime.spawn(async move {
-                                    cue_mgr.write().await.add_scope_template(template);
-                                });
-                                snap_state.status_message = Some(format!("Saved template: {}", snap_state.new_template_name));
-                                snap_state.new_template_name.clear();
-                            }
-                        });
-                    });
-
-                    ui.add_space(8.0);
-
-                    // Recall scope summary + Edit Scope button.
-                    // The full editor lives in a dedicated window (rendered at App level)
-                    // so the matrix has room for 48 channels and the two-level
-                    // collapsing without competing with the snapshots tab layout.
-                    theme::card_frame().show(ui, |ui| {
-                        theme::section_heading(ui, "Recall Scope");
-                        let count = snap_state.scope_editor.selection_count();
-                        let channel_count = snap_state.scope_editor.channel_paths.len();
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{count} parameter{} selected across {channel_count} channel{}",
-                                if count == 1 { "" } else { "s" },
-                                if channel_count == 1 { "" } else { "s" },
-                            ))
-                            .color(theme::TEXT_SECONDARY),
+    ui.columns(3, |cols| {
+        // ── Column 1: Scope + Palettes ──
+        egui::ScrollArea::vertical()
+            .id_salt("snapshot_col1_scroll")
+            .auto_shrink([false, false])
+            .show(&mut cols[0], |ui| {
+                theme::card_frame().show(ui, |ui| {
+                    theme::section_heading(ui, "Scope");
+                    let count = snap_state.scope_editor.selection_count();
+                    let channel_count = snap_state.scope_editor.channel_paths.len();
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{count} parameter{} selected across {channel_count} channel{}",
+                            if count == 1 { "" } else { "s" },
+                            if channel_count == 1 { "" } else { "s" },
+                        ))
+                        .color(theme::TEXT_SECONDARY),
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let edit_btn = theme::action_button(
+                            "Edit Scope…",
+                            theme::ACCENT_BLUE,
+                            egui::Vec2::new(120.0, 30.0),
                         );
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            let edit_btn = theme::action_button(
-                                "Edit Scope…",
-                                theme::ACCENT_BLUE,
-                                egui::Vec2::new(120.0, 30.0),
+                        if ui.add(edit_btn).clicked() {
+                            let template = snap_state
+                                .scope_editor
+                                .to_scope_template("Editing".into());
+                            snap_state.scope_editor.open(
+                                &template,
+                                aux_count,
+                                group_count,
+                                matrix_count,
                             );
-                            if ui.add(edit_btn).clicked() {
-                                let template = snap_state
-                                    .scope_editor
-                                    .to_scope_template("Editing".into());
-                                snap_state.scope_editor.open(
-                                    &template,
-                                    aux_count,
-                                    group_count,
-                                    matrix_count,
-                                );
-                            }
-                            ui.add_space(8.0);
-                            let clear_btn = theme::action_button(
-                                "Clear",
-                                theme::BG_ELEVATED,
-                                egui::Vec2::new(70.0, 30.0),
-                            );
-                            if ui.add(clear_btn).clicked() {
-                                snap_state.scope_editor.clear();
-                            }
-                        });
+                        }
+                        ui.add_space(8.0);
+                        let clear_btn = theme::action_button(
+                            "Clear",
+                            theme::BG_ELEVATED,
+                            egui::Vec2::new(70.0, 30.0),
+                        );
+                        if ui.add(clear_btn).clicked() {
+                            snap_state.scope_editor.clear();
+                        }
                     });
                 });
-        });
 
-        ui.add_space(4.0);
+                ui.add_space(8.0);
 
-        // Right panel: Cue list + snapshots
-        ui.vertical(|ui| {
-            ui.set_min_height(panel_height);
+                // Palettes section
+                theme::card_frame().show(ui, |ui| {
+                    draw_palettes_section(
+                        ui,
+                        palettes_ui,
+                        console_state,
+                        cue_manager,
+                        palette_manager,
+                        is_connected,
+                        runtime,
+                        ui_tx,
+                    );
+                });
+            });
 
-            egui::ScrollArea::vertical()
-                .id_salt("snapshot_right_scroll")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    // ── Cue List card ──
-                    theme::card_frame().show(ui, |ui| {
-                        theme::section_heading(ui, "Cue List");
-
-                        egui::ScrollArea::vertical()
-                            .id_salt("cue_list_scroll")
-                            .max_height(available.y * 0.35)
-                            .show(ui, |ui| {
-                                if let Ok(mgr) = cue_manager.try_read() {
-                                    for cue in &mgr.cue_list.cues {
-                                        let selected = snap_state.selected_cue_id == Some(cue.id);
-                                        let is_current = current_cue_id == Some(cue.id);
-                                        let snap_name = mgr
-                                            .snapshots
-                                            .get(&cue.snapshot_id)
-                                            .map(|s| s.name.as_str())
-                                            .unwrap_or("?");
-
-                                        // Cue row with DiGiCo-style maroon highlight for current
-                                        let bg = if is_current {
-                                            theme::CUE_CURRENT_BG
-                                        } else if selected {
-                                            theme::BG_ELEVATED
-                                        } else {
-                                            theme::BG_PANEL
-                                        };
-                                        let border = if is_current {
-                                            egui::Stroke::new(1.0, theme::CUE_CURRENT_BORDER)
-                                        } else if selected {
-                                            egui::Stroke::new(1.0, theme::ACCENT_BLUE)
-                                        } else {
-                                            egui::Stroke::NONE
-                                        };
-
-                                        egui::Frame::new()
-                                            .fill(bg)
-                                            .stroke(border)
-                                            .corner_radius(4.0)
-                                            .inner_margin(egui::Margin::symmetric(8, 4))
-                                            .show(ui, |ui| {
-                                                let response = ui.horizontal(|ui| {
-                                                    // Number badge
-                                                    theme::colored_badge(
-                                                        ui,
-                                                        &format!("{:.1}", cue.cue_number),
-                                                        if is_current { theme::ACCENT_RED } else { theme::BG_ELEVATED },
-                                                    );
-
-                                                    ui.add_space(8.0);
-
-                                                    // Cue name
-                                                    ui.label(
-                                                        egui::RichText::new(&cue.name)
-                                                            .strong()
-                                                            .color(theme::TEXT_PRIMARY),
-                                                    );
-
-                                                    // Snapshot name (secondary)
-                                                    ui.label(
-                                                        egui::RichText::new(snap_name)
-                                                            .color(theme::TEXT_SECONDARY),
-                                                    );
-
-                                                    // Fade time badge
-                                                    if cue.fade_time > 0.0 {
-                                                        theme::colored_badge(
-                                                            ui,
-                                                            &format!("{:.1}s", cue.fade_time),
-                                                            theme::ACCENT_AMBER,
-                                                        );
-                                                    }
-
-                                                    // Scope override indicator
-                                                    if cue.scope_override.is_some() {
-                                                        theme::colored_badge(ui, "S", theme::ACCENT_BLUE);
-                                                    }
-                                                }).response;
-
-                                                if response.interact(egui::Sense::click()).clicked() {
-                                                    snap_state.selected_cue_id = Some(cue.id);
-                                                }
-                                            });
-                                        ui.add_space(2.0);
-                                    }
-
-                                    if mgr.cue_list.cues.is_empty() {
-                                        ui.label(egui::RichText::new("No cues yet. Add one below.").color(theme::TEXT_SECONDARY));
-                                    }
-                                }
-                            });
-
-                        ui.add_space(8.0);
-
-                        // Add cue controls
-                        ui.horizontal(|ui| {
-                            ui.label("Cue #:");
-                            theme::padded_text_edit(ui, &mut snap_state.new_cue_number, 80.0, true, "");
-                            ui.label("Name:");
-                            theme::padded_text_edit(ui, &mut snap_state.new_cue_name, 180.0, true, "");
-                        });
-
-                        // Snapshot selector for new cue
-                        ui.horizontal(|ui| {
-                            ui.label("Snapshot:");
-                            if let Ok(mgr) = cue_manager.try_read() {
-                                let current_name = snap_state
-                                    .selected_snapshot_for_cue
-                                    .and_then(|id| mgr.snapshots.get(&id))
-                                    .map(|s| s.name.clone())
-                                    .unwrap_or_else(|| "(select)".into());
-
-                                egui::ComboBox::from_id_salt("snapshot_selector")
-                                    .selected_text(&current_name)
-                                    .show_ui(ui, |ui| {
-                                        for snap in mgr.snapshots.values() {
-                                            if ui.selectable_label(
-                                                snap_state.selected_snapshot_for_cue == Some(snap.id),
-                                                &snap.name,
-                                            ).clicked() {
-                                                snap_state.selected_snapshot_for_cue = Some(snap.id);
-                                            }
-                                        }
-                                    });
-                            }
-
-                            let add_btn = theme::action_button("Add Cue", theme::ACCENT_GREEN, egui::Vec2::new(80.0, 28.0));
-                            if ui.add(add_btn).clicked() {
-                                if let (Ok(num), Some(snap_id)) = (
-                                    snap_state.new_cue_number.parse::<f32>(),
-                                    snap_state.selected_snapshot_for_cue,
-                                ) {
-                                    let name = if snap_state.new_cue_name.is_empty() {
-                                        format!("Cue {num}")
-                                    } else {
-                                        snap_state.new_cue_name.clone()
-                                    };
-                                    let cue = Cue::new(num, name, snap_id);
-                                    let cue_mgr = cue_manager.clone();
-                                    runtime.spawn(async move {
-                                        cue_mgr.write().await.add_cue(cue);
-                                    });
-                                    snap_state.new_cue_number.clear();
-                                    snap_state.new_cue_name.clear();
-                                    snap_state.status_message = Some(format!("Added cue {num}"));
-                                } else {
-                                    snap_state.status_message = Some("Enter a valid cue number and select a snapshot".into());
-                                }
-                            }
-
-                            // Long-press to confirm — matches the
-                            // Macros / Gangs / Setup transport buttons.
-                            if theme::long_press_button(
-                                ui,
-                                "Delete",
-                                theme::ACCENT_RED,
-                                egui::Vec2::new(70.0, 28.0),
-                                snap_state.selected_cue_id.is_some(),
-                                theme::LONG_PRESS_DURATION_MS,
-                            ) {
-                                if let Some(cue_id) = snap_state.selected_cue_id {
-                                    let cue_mgr = cue_manager.clone();
-                                    runtime.spawn(async move {
-                                        cue_mgr.write().await.remove_cue(cue_id);
-                                    });
-                                    snap_state.selected_cue_id = None;
-                                    snap_state.status_message = Some("Cue deleted".into());
-                                }
-                            }
-                        });
-                    });
-
-                    // ── Cue Editor card (when a cue is selected) ──
-                    if let Some(cue_id) = snap_state.selected_cue_id {
-                        ui.add_space(8.0);
-                        theme::card_frame().show(ui, |ui| {
-                            theme::section_heading(ui, "Cue Editor");
-
-                            if let Ok(mgr) = cue_manager.try_read() {
-                                if let Some(cue) = mgr.cue_list.cues.iter().find(|c| c.id == cue_id) {
-                                    // Sync editor state when selection changes
-                                    if snap_state.last_edited_cue_id != Some(cue_id) {
-                                        snap_state.editing_fade_time = cue.fade_time;
-                                        snap_state.editing_scope_override_enabled = cue.scope_override.is_some();
-                                        snap_state.editing_scope_template_id = cue.scope_override.as_ref().map(|s| s.id);
-                                        snap_state.editing_cue_notes = cue.notes.clone();
-                                        snap_state.last_edited_cue_id = Some(cue_id);
-                                    }
-
-                                    ui.horizontal(|ui| {
-                                        ui.label("Fade Time:");
-                                        ui.add(
-                                            egui::Slider::new(&mut snap_state.editing_fade_time, 0.0..=60.0)
-                                                .suffix(" s")
-                                                .step_by(0.1),
-                                        );
-                                    });
-
-                                    ui.checkbox(&mut snap_state.editing_scope_override_enabled, "Scope Override");
-
-                                    if snap_state.editing_scope_override_enabled {
-                                        ui.horizontal(|ui| {
-                                            ui.label("Template:");
-                                            let current_name = snap_state.editing_scope_template_id
-                                                .and_then(|id| mgr.scope_templates.get(&id))
-                                                .map(|t| t.name.clone())
-                                                .unwrap_or_else(|| "(select)".into());
-
-                                            egui::ComboBox::from_id_salt("scope_override_selector")
-                                                .selected_text(&current_name)
-                                                .show_ui(ui, |ui| {
-                                                    for tmpl in mgr.scope_templates.values() {
-                                                        if ui.selectable_label(
-                                                            snap_state.editing_scope_template_id == Some(tmpl.id),
-                                                            &tmpl.name,
-                                                        ).clicked() {
-                                                            snap_state.editing_scope_template_id = Some(tmpl.id);
-                                                        }
-                                                    }
-                                                });
-                                        });
-                                    }
-
-                                    ui.label("Notes:");
-                                    ui.add(
-                                        egui::TextEdit::multiline(&mut snap_state.editing_cue_notes)
-                                            .desired_rows(2)
-                                            .desired_width(f32::INFINITY),
-                                    );
-
-                                    let save_btn = theme::action_button("Save Cue Changes", theme::ACCENT_GREEN, egui::Vec2::new(140.0, 28.0));
-                                    if ui.add(save_btn).clicked() {
-                                        let fade_time = snap_state.editing_fade_time;
-                                        let scope_override = if snap_state.editing_scope_override_enabled {
-                                            snap_state.editing_scope_template_id
-                                                .and_then(|id| mgr.scope_templates.get(&id).cloned())
-                                        } else {
-                                            None
-                                        };
-                                        let notes = snap_state.editing_cue_notes.clone();
-                                        let cue_mgr = cue_manager.clone();
-                                        runtime.spawn(async move {
-                                            cue_mgr.write().await.update_cue(cue_id, fade_time, scope_override, notes);
-                                        });
-                                        snap_state.status_message = Some("Cue updated".into());
-                                    }
-                                }
-                            }
-                        });
-                    }
-
-                    ui.add_space(8.0);
-
+        // ── Column 2: Snapshots ──
+        egui::ScrollArea::vertical()
+            .id_salt("snapshot_col2_scroll")
+            .auto_shrink([false, false])
+            .show(&mut cols[1], |ui| {
                     // ── Snapshots card ──
                     theme::card_frame().show(ui, |ui| {
                         theme::section_heading(ui, "Snapshots");
@@ -533,18 +237,6 @@ pub fn draw_snapshots_tab(
                                     "Requires Mode 2 or Mode 3 (iPad protocol) — the console \
                                      snapshot list is only reachable via that protocol.",
                                 );
-                            }
-                            ui.add_space(8.0);
-                            if ui
-                                .button("Shift console refs…")
-                                .on_hover_text(
-                                    "Bulk-shift every snapshot's console memory row reference \
-                                     when you've inserted or deleted snapshots on the console.",
-                                )
-                                .clicked()
-                            {
-                                snap_state.shift_modal_open = true;
-                                snap_state.shift_status = None;
                             }
                         });
                         ui.add_space(4.0);
@@ -662,13 +354,6 @@ pub fn draw_snapshots_tab(
                                                         .color(theme::TEXT_SECONDARY)
                                                         .small(),
                                                     );
-                                                    if let Some(row) = snap.console_snapshot {
-                                                        theme::colored_badge(
-                                                            ui,
-                                                            &format!("mem {row}"),
-                                                            theme::ACCENT_AMBER,
-                                                        );
-                                                    }
                                                 }).response;
 
                                                 if response.interact(egui::Sense::click()).clicked() {
@@ -775,70 +460,6 @@ pub fn draw_snapshots_tab(
                                 }
                             }
                         });
-
-                        // ── Console memory editor ──
-                        ui.add_space(4.0);
-                        if let Some(snap_id) = snap_state.selected_snapshot_id {
-                            // Reload the input buffer when the selection changes.
-                            if snap_state.console_snapshot_input_for != Some(snap_id) {
-                                let current_value = cue_manager
-                                    .try_read()
-                                    .ok()
-                                    .and_then(|mgr| mgr.snapshots.get(&snap_id).and_then(|s| s.console_snapshot));
-                                snap_state.console_snapshot_input = current_value
-                                    .map(|n| n.to_string())
-                                    .unwrap_or_default();
-                                snap_state.console_snapshot_input_for = Some(snap_id);
-                            }
-                            ui.horizontal(|ui| {
-                                ui.label("Console memory row:");
-                                theme::padded_text_edit(
-                                    ui,
-                                    &mut snap_state.console_snapshot_input,
-                                    90.0,
-                                    true,
-                                    "none",
-                                );
-                                if ui.button("Apply").clicked() {
-                                    let new_val: Option<i32> = if snap_state.console_snapshot_input.trim().is_empty() {
-                                        None
-                                    } else {
-                                        snap_state.console_snapshot_input.trim().parse().ok()
-                                    };
-                                    let cue_mgr = cue_manager.clone();
-                                    runtime.spawn(async move {
-                                        let mut mgr = cue_mgr.write().await;
-                                        if let Some(s) = mgr.snapshots.get_mut(&snap_id) {
-                                            s.console_snapshot = new_val;
-                                            s.modified_at = chrono::Utc::now();
-                                        }
-                                    });
-                                    snap_state.status_message = Some(match new_val {
-                                        Some(n) => format!("Linked snapshot to console memory {n}"),
-                                        None => "Cleared console memory link".into(),
-                                    });
-                                }
-                                if ui.button("Clear").clicked() {
-                                    snap_state.console_snapshot_input.clear();
-                                    let cue_mgr = cue_manager.clone();
-                                    runtime.spawn(async move {
-                                        let mut mgr = cue_mgr.write().await;
-                                        if let Some(s) = mgr.snapshots.get_mut(&snap_id) {
-                                            s.console_snapshot = None;
-                                            s.modified_at = chrono::Utc::now();
-                                        }
-                                    });
-                                    snap_state.status_message = Some("Cleared console memory link".into());
-                                }
-                                if !uses_ipad {
-                                    ui.label(
-                                        egui::RichText::new("(Mode 1 — fire on recall is disabled)")
-                                            .color(theme::TEXT_SECONDARY)
-                                            .small(),
-                                    );
-                                }
-                            });
-                        }
 
                         // ── Undo + pacing ──
                         ui.add_space(2.0);
@@ -954,24 +575,375 @@ pub fn draw_snapshots_tab(
                         ui.add_space(4.0);
                         ui.colored_label(theme::TEXT_WARNING, msg);
                     }
+            });
+
+        // ── Column 3: Cue List + reserved Cue Editor slot ──
+        egui::ScrollArea::vertical()
+            .id_salt("snapshot_col3_scroll")
+            .auto_shrink([false, false])
+            .show(&mut cols[2], |ui| {
+                // Cue List card
+                theme::card_frame().show(ui, |ui| {
+                    theme::section_heading(ui, "Cue List");
+
+                    egui::ScrollArea::vertical()
+                        .id_salt("cue_list_scroll")
+                        .max_height(available.y * 0.35)
+                        .show(ui, |ui| {
+                            if let Ok(mgr) = cue_manager.try_read() {
+                                for cue in &mgr.cue_list.cues {
+                                    let selected = snap_state.selected_cue_id == Some(cue.id);
+                                    let is_current = current_cue_id == Some(cue.id);
+                                    let snap_name = cue
+                                        .snapshot_id
+                                        .and_then(|id| mgr.snapshots.get(&id))
+                                        .map(|s| s.name.as_str())
+                                        .unwrap_or("(no overlay)");
+                                    let bg = if is_current {
+                                        theme::CUE_CURRENT_BG
+                                    } else if selected {
+                                        theme::BG_ELEVATED
+                                    } else {
+                                        theme::BG_PANEL
+                                    };
+                                    let border = if is_current {
+                                        egui::Stroke::new(1.0, theme::CUE_CURRENT_BORDER)
+                                    } else if selected {
+                                        egui::Stroke::new(1.0, theme::ACCENT_BLUE)
+                                    } else {
+                                        egui::Stroke::NONE
+                                    };
+                                    egui::Frame::new()
+                                        .fill(bg)
+                                        .stroke(border)
+                                        .corner_radius(4.0)
+                                        .inner_margin(egui::Margin::symmetric(8, 4))
+                                        .show(ui, |ui| {
+                                            let response = ui.horizontal(|ui| {
+                                                theme::colored_badge(
+                                                    ui,
+                                                    &format!("{:.1}", cue.cue_number),
+                                                    if is_current { theme::ACCENT_RED } else { theme::BG_ELEVATED },
+                                                );
+                                                ui.add_space(8.0);
+                                                ui.label(
+                                                    egui::RichText::new(&cue.name)
+                                                        .strong()
+                                                        .color(theme::TEXT_PRIMARY),
+                                                );
+                                                if let Some(row) = cue.console_snapshot {
+                                                    theme::colored_badge(
+                                                        ui,
+                                                        &format!("CS {row}"),
+                                                        theme::ACCENT_AMBER,
+                                                    );
+                                                }
+                                                ui.label(
+                                                    egui::RichText::new(snap_name)
+                                                        .color(theme::TEXT_SECONDARY),
+                                                );
+                                                if cue.fade_time > 0.0 {
+                                                    theme::colored_badge(
+                                                        ui,
+                                                        &format!("{:.1}s", cue.fade_time),
+                                                        theme::ACCENT_AMBER,
+                                                    );
+                                                }
+                                                if cue.scope_override.is_some() {
+                                                    theme::colored_badge(ui, "S", theme::ACCENT_BLUE);
+                                                }
+                                            }).response;
+                                            if response.interact(egui::Sense::click()).clicked() {
+                                                snap_state.selected_cue_id = Some(cue.id);
+                                            }
+                                        });
+                                    ui.add_space(2.0);
+                                }
+                                if mgr.cue_list.cues.is_empty() {
+                                    ui.label(egui::RichText::new("No cues yet. Add one below.").color(theme::TEXT_SECONDARY));
+                                }
+                            }
+                        });
 
                     ui.add_space(8.0);
 
-                    // ── Palettes section (EQ / Compressor / Gate) ──
-                    theme::card_frame().show(ui, |ui| {
-                        draw_palettes_section(
+                    // Add Cue form
+                    ui.horizontal(|ui| {
+                        ui.label("Cue #:");
+                        theme::padded_text_edit(ui, &mut snap_state.new_cue_number, 60.0, true, "");
+                        ui.label("Name:");
+                        theme::padded_text_edit(ui, &mut snap_state.new_cue_name, 160.0, true, "");
+                        ui.label("Console:");
+                        theme::padded_text_edit(ui, &mut snap_state.new_cue_console_row, 50.0, true, "");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Local snapshot:");
+                        if let Ok(mgr) = cue_manager.try_read() {
+                            let current_name = snap_state
+                                .selected_snapshot_for_cue
+                                .and_then(|id| mgr.snapshots.get(&id))
+                                .map(|s| s.name.clone())
+                                .unwrap_or_else(|| "(none)".into());
+                            egui::ComboBox::from_id_salt("snapshot_selector")
+                                .selected_text(&current_name)
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(
+                                            snap_state.selected_snapshot_for_cue.is_none(),
+                                            "(none)",
+                                        )
+                                        .clicked()
+                                    {
+                                        snap_state.selected_snapshot_for_cue = None;
+                                    }
+                                    for snap in mgr.snapshots.values() {
+                                        if ui.selectable_label(
+                                            snap_state.selected_snapshot_for_cue == Some(snap.id),
+                                            &snap.name,
+                                        ).clicked() {
+                                            snap_state.selected_snapshot_for_cue = Some(snap.id);
+                                        }
+                                    }
+                                });
+                        }
+                        let add_btn = theme::action_button("Add Cue", theme::ACCENT_GREEN, egui::Vec2::new(80.0, 28.0));
+                        if ui.add(add_btn).clicked() {
+                            let parsed_num = snap_state.new_cue_number.parse::<f32>();
+                            let parsed_row = if snap_state.new_cue_console_row.trim().is_empty() {
+                                Ok(None)
+                            } else {
+                                snap_state.new_cue_console_row.trim().parse::<i32>().map(Some)
+                            };
+                            let snap_id = snap_state.selected_snapshot_for_cue;
+                            match (parsed_num, parsed_row) {
+                                (Ok(num), Ok(row)) if row.is_some() || snap_id.is_some() => {
+                                    let name = if snap_state.new_cue_name.is_empty() {
+                                        format!("Cue {num}")
+                                    } else {
+                                        snap_state.new_cue_name.clone()
+                                    };
+                                    let mut cue = Cue::new(num, name);
+                                    if let Some(r) = row {
+                                        cue.console_snapshot = Some(r);
+                                    }
+                                    if let Some(id) = snap_id {
+                                        cue.snapshot_id = Some(id);
+                                    }
+                                    let cue_mgr = cue_manager.clone();
+                                    runtime.spawn(async move {
+                                        cue_mgr.write().await.add_cue(cue);
+                                    });
+                                    snap_state.new_cue_number.clear();
+                                    snap_state.new_cue_name.clear();
+                                    snap_state.new_cue_console_row.clear();
+                                    snap_state.status_message = Some(format!("Added cue {num}"));
+                                }
+                                (Ok(_), Ok(_)) => {
+                                    snap_state.status_message = Some("Cue needs a Local snapshot, a Console snapshot, or both".into());
+                                }
+                                (Err(_), _) => {
+                                    snap_state.status_message = Some("Enter a valid cue number".into());
+                                }
+                                (_, Err(_)) => {
+                                    snap_state.status_message = Some("Row must be a whole number (or blank)".into());
+                                }
+                            }
+                        }
+                        if theme::long_press_button(
                             ui,
-                            palettes_ui,
-                            console_state,
-                            cue_manager,
-                            palette_manager,
-                            is_connected,
-                            runtime,
-                            ui_tx,
-                        );
+                            "Delete",
+                            theme::ACCENT_RED,
+                            egui::Vec2::new(70.0, 28.0),
+                            snap_state.selected_cue_id.is_some(),
+                            theme::LONG_PRESS_DURATION_MS,
+                        ) {
+                            if let Some(cue_id) = snap_state.selected_cue_id {
+                                let cue_mgr = cue_manager.clone();
+                                runtime.spawn(async move {
+                                    cue_mgr.write().await.remove_cue(cue_id);
+                                });
+                                snap_state.selected_cue_id = None;
+                                snap_state.status_message = Some("Cue deleted".into());
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("Shift console snapshots…")
+                            .on_hover_text(
+                                "Bulk-shift every cue's console snapshot when you've \
+                                 inserted or removed snapshots on the console.",
+                            )
+                            .clicked()
+                        {
+                            snap_state.shift_modal_open = true;
+                            snap_state.shift_status = None;
+                        }
                     });
                 });
-        });
+
+                ui.add_space(8.0);
+
+                // Cue Editor card — always rendered; disabled when no selection.
+                theme::card_frame().show(ui, |ui| {
+                    theme::section_heading(ui, "Cue Editor");
+                    let has_selection = snap_state.selected_cue_id.is_some();
+                    if !has_selection {
+                        ui.label(
+                            egui::RichText::new("Select a cue to edit.")
+                                .color(theme::TEXT_SECONDARY),
+                        );
+                    }
+                    if let Ok(mgr) = cue_manager.try_read() {
+                        if let Some(cue_id) = snap_state.selected_cue_id {
+                            if let Some(cue) = mgr.cue_list.cues.iter().find(|c| c.id == cue_id) {
+                                if snap_state.last_edited_cue_id != Some(cue_id) {
+                                    snap_state.editing_cue_number = format!("{}", cue.cue_number);
+                                    snap_state.editing_local_snapshot = cue.snapshot_id;
+                                    snap_state.editing_console_snapshot = cue
+                                        .console_snapshot
+                                        .map(|n| n.to_string())
+                                        .unwrap_or_default();
+                                    snap_state.editing_fade_time = cue.fade_time;
+                                    snap_state.editing_scope_override_enabled = cue.scope_override.is_some();
+                                    snap_state.editing_scope_template_id = cue.scope_override.as_ref().map(|s| s.id);
+                                    snap_state.editing_cue_notes = cue.notes.clone();
+                                    snap_state.last_edited_cue_id = Some(cue_id);
+                                }
+                            }
+                        }
+                        ui.add_enabled_ui(has_selection, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Cue #:");
+                                theme::padded_text_edit(
+                                    ui,
+                                    &mut snap_state.editing_cue_number,
+                                    70.0,
+                                    true,
+                                    "",
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Local snapshot:");
+                                let current_name = snap_state
+                                    .editing_local_snapshot
+                                    .and_then(|id| mgr.snapshots.get(&id))
+                                    .map(|s| s.name.clone())
+                                    .unwrap_or_else(|| "(none)".into());
+                                egui::ComboBox::from_id_salt("cue_editor_local_snapshot")
+                                    .selected_text(&current_name)
+                                    .show_ui(ui, |ui| {
+                                        if ui
+                                            .selectable_label(
+                                                snap_state.editing_local_snapshot.is_none(),
+                                                "(none)",
+                                            )
+                                            .clicked()
+                                        {
+                                            snap_state.editing_local_snapshot = None;
+                                        }
+                                        for s in mgr.snapshots.values() {
+                                            if ui
+                                                .selectable_label(
+                                                    snap_state.editing_local_snapshot == Some(s.id),
+                                                    &s.name,
+                                                )
+                                                .clicked()
+                                            {
+                                                snap_state.editing_local_snapshot = Some(s.id);
+                                            }
+                                        }
+                                    });
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Console snapshot:");
+                                theme::padded_text_edit(
+                                    ui,
+                                    &mut snap_state.editing_console_snapshot,
+                                    70.0,
+                                    true,
+                                    "none",
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Fade Time:");
+                                ui.add(
+                                    egui::Slider::new(&mut snap_state.editing_fade_time, 0.0..=60.0)
+                                        .suffix(" s")
+                                        .step_by(0.1),
+                                );
+                            });
+                            ui.checkbox(&mut snap_state.editing_scope_override_enabled, "Scope Override");
+                            if snap_state.editing_scope_override_enabled {
+                                ui.horizontal(|ui| {
+                                    ui.label("Template:");
+                                    let current_name = snap_state.editing_scope_template_id
+                                        .and_then(|id| mgr.scope_templates.get(&id))
+                                        .map(|t| t.name.clone())
+                                        .unwrap_or_else(|| "(select)".into());
+                                    egui::ComboBox::from_id_salt("scope_override_selector")
+                                        .selected_text(&current_name)
+                                        .show_ui(ui, |ui| {
+                                            for tmpl in mgr.scope_templates.values() {
+                                                if ui.selectable_label(
+                                                    snap_state.editing_scope_template_id == Some(tmpl.id),
+                                                    &tmpl.name,
+                                                ).clicked() {
+                                                    snap_state.editing_scope_template_id = Some(tmpl.id);
+                                                }
+                                            }
+                                        });
+                                });
+                            }
+                            ui.label("Notes:");
+                            ui.add(
+                                egui::TextEdit::multiline(&mut snap_state.editing_cue_notes)
+                                    .desired_rows(2)
+                                    .desired_width(f32::INFINITY),
+                            );
+                            let save_btn = theme::action_button("Save Cue Changes", theme::ACCENT_GREEN, egui::Vec2::new(140.0, 28.0));
+                            if ui.add(save_btn).clicked() {
+                                if let Some(cue_id) = snap_state.selected_cue_id {
+                                    let parsed_num = snap_state.editing_cue_number.trim().parse::<f32>().ok();
+                                    let parsed_row: Option<i32> = if snap_state.editing_console_snapshot.trim().is_empty() {
+                                        None
+                                    } else {
+                                        snap_state.editing_console_snapshot.trim().parse().ok()
+                                    };
+                                    let local = snap_state.editing_local_snapshot;
+                                    let fade_time = snap_state.editing_fade_time;
+                                    let scope_override = if snap_state.editing_scope_override_enabled {
+                                        snap_state.editing_scope_template_id
+                                            .and_then(|id| mgr.scope_templates.get(&id).cloned())
+                                    } else {
+                                        None
+                                    };
+                                    let notes = snap_state.editing_cue_notes.clone();
+                                    if local.is_none() && parsed_row.is_none() {
+                                        snap_state.status_message = Some("Cue needs a Local snapshot, a Console snapshot, or both".into());
+                                    } else {
+                                        let cue_mgr = cue_manager.clone();
+                                        runtime.spawn(async move {
+                                            cue_mgr.write().await.update_cue(
+                                                cue_id,
+                                                parsed_num,
+                                                local,
+                                                parsed_row,
+                                                fade_time,
+                                                scope_override,
+                                                notes,
+                                            );
+                                        });
+                                        snap_state.status_message = Some("Cue updated".into());
+                                        snap_state.last_edited_cue_id = None;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                });
+            });
     });
 
     // ── Shift console refs modal ──
@@ -1018,18 +990,17 @@ pub fn draw_snapshots_tab(
                                     let mut mgr = cue_mgr.write().await;
                                     let mut shifted = 0usize;
                                     let mut cleared = 0usize;
-                                    for snap in mgr.snapshots.values_mut() {
-                                        if let Some(row) = snap.console_snapshot {
+                                    for cue in mgr.cue_list.cues.iter_mut() {
+                                        if let Some(row) = cue.console_snapshot {
                                             if row >= from {
                                                 let new_row = row + delta;
                                                 if new_row <= 0 {
-                                                    snap.console_snapshot = None;
+                                                    cue.console_snapshot = None;
                                                     cleared += 1;
                                                 } else {
-                                                    snap.console_snapshot = Some(new_row);
+                                                    cue.console_snapshot = Some(new_row);
                                                     shifted += 1;
                                                 }
-                                                snap.modified_at = chrono::Utc::now();
                                             }
                                         }
                                     }

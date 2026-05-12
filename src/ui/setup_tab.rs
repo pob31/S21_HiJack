@@ -1962,22 +1962,23 @@ pub(crate) fn start_connection(
                         continue;
                     }
 
-                    // Look up the first matching cue-list snapshot.
+                    // Look up the first cue whose console row matches, then
+                    // recall its overlay (if any).
                     let target = {
                         let mgr = follow_cue_mgr.read().await;
                         let mut hit = None;
                         for cue in &mgr.cue_list.cues {
-                            if let Some(snap) = mgr.snapshots.get(&cue.snapshot_id) {
-                                if snap.console_snapshot == Some(row) {
-                                    hit = Some(snap.clone());
-                                    break;
-                                }
+                            if cue.console_snapshot == Some(row) {
+                                hit = cue
+                                    .snapshot_id
+                                    .and_then(|id| mgr.snapshots.get(&id).cloned());
+                                break;
                             }
                         }
                         hit
                     };
                     let Some(snapshot) = target else {
-                        debug!(row, "Follow: no matching app snapshot");
+                        debug!(row, "Follow: no cue with overlay for this row");
                         continue;
                     };
                     info!(row, name = %snapshot.name, "Follow: recalling app snapshot");

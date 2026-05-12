@@ -135,14 +135,16 @@ async fn recall_cue_with_label<F>(
     let Some(cue) = pick(&mut mgr) else {
         return;
     };
-    let Some(snapshot) = mgr.get_snapshot(&cue.snapshot_id).cloned() else {
-        warn!(snapshot_id = %cue.snapshot_id, label, "Trigger: snapshot not found for cue");
-        return;
-    };
+    let snapshot = cue
+        .snapshot_id
+        .and_then(|id| mgr.get_snapshot(&id).cloned());
+    if cue.snapshot_id.is_some() && snapshot.is_none() {
+        warn!(snapshot_id = ?cue.snapshot_id, label, "Trigger: snapshot not found for cue");
+    }
     drop(mgr);
     let pmgr = palette_manager.read().await;
     let result = snapshot_engine
-        .recall_cue(&cue, &snapshot, &pmgr.palettes, false)
+        .recall_cue(&cue, snapshot.as_ref(), &pmgr.palettes, false)
         .await;
     info!(
         label,
@@ -323,16 +325,10 @@ mod tests {
         let mut mgr_inner = CueManager::new(CueList::default());
         mgr_inner.add_snapshot(snapshot);
         // Add a cue that points at the snapshot, so FireCue(1.0) works.
-        mgr_inner.cue_list.cues.push(Cue {
-            id: uuid::Uuid::new_v4(),
-            cue_number: 1.0,
-            name: "Cue 1".into(),
-            snapshot_id,
-            scope_override: None,
-            fade_time: 0.0,
-            qlab_cue_id: None,
-            notes: String::new(),
-        });
+        mgr_inner
+            .cue_list
+            .cues
+            .push(Cue::new(1.0, "Cue 1".into()).with_snapshot_id(snapshot_id));
         let cue_mgr = Arc::new(RwLock::new(mgr_inner));
 
         handle_trigger_event(
