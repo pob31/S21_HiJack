@@ -212,7 +212,7 @@ pub fn draw_snapshots_tab(
                         let uses_ipad = operating_mode.uses_ipad_protocol();
                         ui.horizontal(|ui| {
                             let mut auto = auto_update_on_recall.load(Ordering::Relaxed);
-                            if ui.checkbox(&mut auto, "Auto-save changes to previous snapshot on recall")
+                            if ui.checkbox(&mut auto, "Auto-save previous on recall")
                                 .on_hover_text(
                                     "When recalling a snapshot, write any dirty parameters \
                                      within the previous snapshot's scope back into it. \
@@ -227,7 +227,7 @@ pub fn draw_snapshots_tab(
                             let mut follow = console_snapshot_follow.load(Ordering::Relaxed);
                             let resp = ui.add_enabled(
                                 uses_ipad,
-                                egui::Checkbox::new(&mut follow, "Follow console snapshot recalls"),
+                                egui::Checkbox::new(&mut follow, "Follow desk recalls"),
                             );
                             if resp.clicked() && uses_ipad {
                                 console_snapshot_follow.store(follow, Ordering::Relaxed);
@@ -389,7 +389,7 @@ pub fn draw_snapshots_tab(
                             let has_selection = snap_state.selected_snapshot_id.is_some();
                             let engine_ready = snapshot_engine.is_some() && is_connected;
 
-                            let recall_btn = theme::action_button("Recall", theme::ACCENT_GREEN, egui::Vec2::new(80.0, 28.0));
+                            let recall_btn = theme::action_button("Recall", theme::ACCENT_GREEN, egui::Vec2::new(70.0, 28.0));
                             if ui.add_enabled(has_selection && engine_ready, recall_btn).clicked() {
                                 recall_selected_snapshot(
                                     snap_state,
@@ -404,9 +404,9 @@ pub fn draw_snapshots_tab(
 
                             let can_recall_no_scope = matches!(selected_kind, Some(SnapshotKind::ApplyOnRecall));
                             let recall_no_scope_btn = theme::action_button(
-                                "Recall (no scope)",
+                                "Recall full",
                                 theme::ACCENT_AMBER,
-                                egui::Vec2::new(140.0, 28.0),
+                                egui::Vec2::new(90.0, 28.0),
                             );
                             let recall_no_scope_resp = ui.add_enabled(
                                 has_selection && engine_ready && can_recall_no_scope,
@@ -431,7 +431,7 @@ pub fn draw_snapshots_tab(
                                 );
                             }
 
-                            let recapture_btn = theme::action_button("Re-capture", theme::ACCENT_BLUE, egui::Vec2::new(100.0, 28.0));
+                            let recapture_btn = theme::action_button("Re-capture", theme::ACCENT_BLUE, egui::Vec2::new(85.0, 28.0));
                             if ui.add_enabled(has_selection && is_connected, recapture_btn).clicked() {
                                 recapture_snapshot(snap_state, console_state, cue_manager, dirty_tracker, runtime, ui_tx);
                             }
@@ -439,7 +439,7 @@ pub fn draw_snapshots_tab(
                                 ui,
                                 "Delete",
                                 theme::ACCENT_RED,
-                                egui::Vec2::new(80.0, 28.0),
+                                egui::Vec2::new(70.0, 28.0),
                                 has_selection,
                                 theme::LONG_PRESS_DURATION_MS,
                             ) {
@@ -530,11 +530,17 @@ pub fn draw_snapshots_tab(
                             let qlab_port_local = qlab_port;
 
                             let trigger_btn = theme::action_button(
-                                "Create Trigger Cue in QLab",
+                                "QLab trigger cue",
                                 theme::ACCENT_BLUE,
-                                egui::Vec2::new(200.0, 28.0),
+                                egui::Vec2::new(140.0, 28.0),
                             );
-                            if ui.add_enabled(has_selection, trigger_btn).clicked() {
+                            let trigger_resp = ui
+                                .add_enabled(has_selection, trigger_btn)
+                                .on_hover_text(format!(
+                                    "Create a single network cue in QLab whose customString \
+                                     fires `/snapshot/recall <name>`. Sent to {qlab_ip}:{qlab_port}."
+                                ));
+                            if trigger_resp.clicked() {
                                 qlab_create_trigger_cue(
                                     snap_state,
                                     cue_manager,
@@ -546,11 +552,17 @@ pub fn draw_snapshots_tab(
                             }
 
                             let export_btn = theme::action_button(
-                                "Export to QLab",
+                                "QLab export",
                                 theme::ACCENT_BLUE,
-                                egui::Vec2::new(140.0, 28.0),
+                                egui::Vec2::new(110.0, 28.0),
                             );
-                            if ui.add_enabled(has_selection, export_btn).clicked() {
+                            let export_resp = ui
+                                .add_enabled(has_selection, export_btn)
+                                .on_hover_text(format!(
+                                    "Export one network cue per parameter to QLab (grouped). \
+                                     Sent to {qlab_ip}:{qlab_port}."
+                                ));
+                            if export_resp.clicked() {
                                 qlab_export_full_snapshot(
                                     snap_state,
                                     cue_manager,
@@ -561,12 +573,6 @@ pub fn draw_snapshots_tab(
                                     ui_tx,
                                 );
                             }
-
-                            ui.label(
-                                egui::RichText::new(format!("→ {qlab_ip}:{qlab_port}"))
-                                    .color(theme::TEXT_SECONDARY)
-                                    .small(),
-                            );
                         });
                     });
 
@@ -672,8 +678,8 @@ pub fn draw_snapshots_tab(
                         ui.label("Cue #:");
                         theme::padded_text_edit(ui, &mut snap_state.new_cue_number, 60.0, true, "");
                         ui.label("Name:");
-                        theme::padded_text_edit(ui, &mut snap_state.new_cue_name, 160.0, true, "");
-                        ui.label("Console:");
+                        theme::padded_text_edit(ui, &mut snap_state.new_cue_name, 130.0, true, "");
+                        ui.label("CS:");
                         theme::padded_text_edit(ui, &mut snap_state.new_cue_console_row, 50.0, true, "");
                     });
                     ui.horizontal(|ui| {
@@ -686,6 +692,7 @@ pub fn draw_snapshots_tab(
                                 .unwrap_or_else(|| "(none)".into());
                             egui::ComboBox::from_id_salt("snapshot_selector")
                                 .selected_text(&current_name)
+                                .width(120.0)
                                 .show_ui(ui, |ui| {
                                     if ui
                                         .selectable_label(
@@ -706,7 +713,7 @@ pub fn draw_snapshots_tab(
                                     }
                                 });
                         }
-                        let add_btn = theme::action_button("Add Cue", theme::ACCENT_GREEN, egui::Vec2::new(80.0, 28.0));
+                        let add_btn = theme::action_button("Add Cue", theme::ACCENT_GREEN, egui::Vec2::new(75.0, 28.0));
                         if ui.add(add_btn).clicked() {
                             let parsed_num = snap_state.new_cue_number.parse::<f32>();
                             let parsed_row = if snap_state.new_cue_console_row.trim().is_empty() {
@@ -833,6 +840,7 @@ pub fn draw_snapshots_tab(
                                     .unwrap_or_else(|| "(none)".into());
                                 egui::ComboBox::from_id_salt("cue_editor_local_snapshot")
                                     .selected_text(&current_name)
+                                    .width(140.0)
                                     .show_ui(ui, |ui| {
                                         if ui
                                             .selectable_label(
@@ -884,6 +892,7 @@ pub fn draw_snapshots_tab(
                                         .unwrap_or_else(|| "(select)".into());
                                     egui::ComboBox::from_id_salt("scope_override_selector")
                                         .selected_text(&current_name)
+                                        .width(140.0)
                                         .show_ui(ui, |ui| {
                                             for tmpl in mgr.scope_templates.values() {
                                                 if ui.selectable_label(
