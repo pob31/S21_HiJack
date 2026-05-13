@@ -258,9 +258,7 @@ impl CueManager {
         scope_override: Option<ScopeTemplate>,
         notes: String,
     ) -> bool {
-        let updated = if let Some(cue) =
-            self.cue_list.cues.iter_mut().find(|c| c.id == cue_id)
-        {
+        let updated = if let Some(cue) = self.cue_list.cues.iter_mut().find(|c| c.id == cue_id) {
             if let Some(n) = cue_number {
                 cue.cue_number = n;
             }
@@ -417,15 +415,7 @@ mod tests {
     #[test]
     fn update_cue_nonexistent_returns_false() {
         let mut mgr = CueManager::new(CueList::default());
-        assert!(!mgr.update_cue(
-            Uuid::new_v4(),
-            None,
-            None,
-            None,
-            1.0,
-            None,
-            String::new(),
-        ));
+        assert!(!mgr.update_cue(Uuid::new_v4(), None, None, None, 1.0, None, String::new(),));
     }
 
     // ─── Phase E: resolve_snapshot ──────────────────────────────────

@@ -351,11 +351,8 @@ pub fn draw_scope_window(
                         }
                     });
 
-                let load_btn = theme::action_button(
-                    "Load",
-                    theme::ACCENT_BLUE,
-                    egui::Vec2::new(70.0, 28.0),
-                );
+                let load_btn =
+                    theme::action_button("Load", theme::ACCENT_BLUE, egui::Vec2::new(70.0, 28.0));
                 if ui
                     .add_enabled(selected_template_full.is_some(), load_btn)
                     .clicked()
@@ -370,14 +367,10 @@ pub fn draw_scope_window(
 
                 ui.label("Save as:");
                 ui.add(
-                    egui::TextEdit::singleline(&mut state.template_name_buf)
-                        .desired_width(140.0),
+                    egui::TextEdit::singleline(&mut state.template_name_buf).desired_width(140.0),
                 );
-                let save_btn = theme::action_button(
-                    "Save",
-                    theme::ACCENT_GREEN,
-                    egui::Vec2::new(70.0, 28.0),
-                );
+                let save_btn =
+                    theme::action_button("Save", theme::ACCENT_GREEN, egui::Vec2::new(70.0, 28.0));
                 let can_save = !state.template_name_buf.trim().is_empty();
                 if ui.add_enabled(can_save, save_btn).clicked() {
                     let name = state.template_name_buf.trim().to_string();

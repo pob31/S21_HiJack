@@ -498,7 +498,8 @@ impl SnapshotEngine {
                 // Fire the cue's console memory row (if any) inside the
                 // suppression bracket so its echo flood doesn't pollute
                 // the dirty tracker.
-                self.fire_console_memory_if_needed(cue.console_snapshot).await;
+                self.fire_console_memory_if_needed(cue.console_snapshot)
+                    .await;
                 match snapshot {
                     Some(snap) => {
                         self.recall_cue_inner(cue, snap, palettes, ignore_scope)
@@ -1679,8 +1680,12 @@ mod tests {
             ParameterValue::Float(800.0),
         );
         eq_vals.insert(ParameterPath::EqBandGain(1), ParameterValue::Float(4.0));
-        let palette =
-            ChannelPalette::new("Test".into(), ChannelId::Input(1), &[PaletteKind::Eq], eq_vals);
+        let palette = ChannelPalette::new(
+            "Test".into(),
+            ChannelId::Input(1),
+            &[PaletteKind::Eq],
+            eq_vals,
+        );
         let pid = palette.id;
 
         snapshot
@@ -2020,8 +2025,7 @@ mod tests {
             SnapshotData::new(),
             SnapshotKind::ApplyOnSave,
         );
-        let cue =
-            crate::model::snapshot::Cue::new(1.0, "Cue".into()).with_snapshot_id(snapshot.id);
+        let cue = crate::model::snapshot::Cue::new(1.0, "Cue".into()).with_snapshot_id(snapshot.id);
         let _ = engine
             .recall_cue(&cue, Some(&snapshot), &no_palettes(), false)
             .await;
@@ -2240,8 +2244,7 @@ mod tests {
         let mut cue_mgr = CueManager::new(CueList::default());
         cue_mgr.add_snapshot(snapshot);
 
-        let cue =
-            crate::model::snapshot::Cue::new(1.0, "Cue 1".into()).with_snapshot_id(snap_id);
+        let cue = crate::model::snapshot::Cue::new(1.0, "Cue 1".into()).with_snapshot_id(snap_id);
         cue_mgr.add_cue(cue.clone());
 
         // Parse /cue/fire 1.0

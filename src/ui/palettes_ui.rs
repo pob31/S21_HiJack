@@ -256,10 +256,8 @@ pub fn draw_palettes_section(
         if resp.changed() {
             state.rename_draft = Some((pid, buf.clone()));
         }
-        let enter_pressed =
-            resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        let escape_pressed =
-            resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let enter_pressed = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let escape_pressed = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape));
         if escape_pressed {
             state.rename_draft = None;
             resp.surrender_focus();
@@ -271,8 +269,11 @@ pub fn draw_palettes_section(
             }
         }
 
-        let recapture_btn =
-            theme::action_button("Re-capture", theme::ACCENT_BLUE, egui::Vec2::new(90.0, 28.0));
+        let recapture_btn = theme::action_button(
+            "Re-capture",
+            theme::ACCENT_BLUE,
+            egui::Vec2::new(90.0, 28.0),
+        );
         if ui.add_enabled(is_connected, recapture_btn).clicked() {
             recapture_palette(pid, console_state, palette_manager, runtime, ui_tx);
         }
@@ -305,9 +306,7 @@ pub fn draw_palettes_section(
         for (path, value) in entries {
             ui.horizontal(|ui| {
                 ui.monospace(format!("{:?}", path));
-                ui.label(
-                    egui::RichText::new(format!("= {}", value)).color(theme::TEXT_SECONDARY),
-                );
+                ui.label(egui::RichText::new(format!("= {}", value)).color(theme::TEXT_SECONDARY));
             });
         }
     });
@@ -343,9 +342,7 @@ pub fn draw_palettes_section(
         );
 
         if rows.is_empty() {
-            ui.label(
-                egui::RichText::new("No snapshots yet.").color(theme::TEXT_SECONDARY),
-            );
+            ui.label(egui::RichText::new("No snapshots yet.").color(theme::TEXT_SECONDARY));
         } else {
             egui::ScrollArea::vertical()
                 .id_salt("palette_membership_scroll")
