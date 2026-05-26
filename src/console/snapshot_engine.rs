@@ -470,8 +470,9 @@ impl SnapshotEngine {
 
     /// Recall a cue — resolves effective scope and delegates to recall().
     ///
-    /// When `cue.fade_time > 0`, continuous parameters are interpolated in a
-    /// background task while discrete parameters fire immediately.
+    /// When the effective scope carries per-category timing, continuous
+    /// parameters are faded per category (see `recall_cue_timed`); otherwise
+    /// the recall is instant.
     ///
     /// When `ignore_scope == true`, the scope filter is bypassed entirely
     /// (see `recall` for details). Only meaningful for `ApplyOnRecall`
@@ -531,190 +532,24 @@ impl SnapshotEngine {
             cue_number = cue.cue_number,
             cue_name = %cue.name,
             snapshot_name = %snapshot.name,
-            fade_time = cue.fade_time,
             ignore_scope,
             "Recalling cue"
         );
 
         // Per-category timed recall: if the scope has any category timings,
-        // use the new orchestrated path with mute ordering and per-group fades.
+        // use the orchestrated path with mute ordering and per-group fades.
         if effective_scope.has_any_category_timing() {
             return self
                 .recall_cue_timed(snapshot, effective_scope, palettes, ignore_scope)
                 .await;
         }
 
-        // No fade — instant recall (existing behavior). Call the inner
-        // body so we don't double-suppress (the outer recall_cue is
-        // already inside with_dirty_suppression).
-        if cue.fade_time <= 0.0 {
-            // Cancel any in-progress fade from a previous cue
-            self.fade_controller.cancel_active().await;
-            return self
-                .recall_inner(snapshot, effective_scope, palettes, ignore_scope)
-                .await;
-        }
-
-        // Fade recall: split parameters into discrete (immediate) and continuous (fade)
-        let state = self.state.read().await;
-        let mut sent = 0usize;
-        let mut skipped = 0usize;
-        let mut fade_targets: Vec<FadeTarget> = Vec::new();
-        let mut undo_map: HashMap<ParameterAddress, ParameterValue> = HashMap::new();
-
-        // Track palette params handled via snapshot data
-        let mut palette_params_seen: HashMap<(Uuid, ParameterAddress), bool> = HashMap::new();
-
-        for (addr, snap_value) in &snapshot.data.values {
-            if !ignore_scope && !effective_scope.contains(addr) {
-                skipped += 1;
-                continue;
-            }
-
-            // Resolve palette override for any palette-eligible section
-            // (EQ, Dyn1, Dyn2). Generalized in Phase 5/6.
-            let effective_value = if let Some(palette_id) = snapshot.palette_ref_for(addr) {
-                if let Some(palette) = palettes.get(&palette_id) {
-                    palette_params_seen.insert((palette_id, addr.clone()), true);
-                    palette.values.get(&addr.parameter).unwrap_or(snap_value)
-                } else {
-                    snap_value
-                }
-            } else {
-                snap_value
-            };
-
-            let live_value = state.get(addr);
-
-            if live_value == Some(effective_value) {
-                skipped += 1;
-            } else if addr.parameter.is_continuous() && live_value.is_some() {
-                // Capture live value for undo before changing it
-                undo_map.insert(addr.clone(), live_value.unwrap().clone());
-                // Continuous param with known start → fade
-                fade_targets.push(FadeTarget {
-                    address: addr.clone(),
-                    start_value: live_value.unwrap().clone(),
-                    end_value: effective_value.clone(),
-                });
-            } else {
-                // Capture live value for undo (if present)
-                if let Some(live) = live_value {
-                    undo_map.insert(addr.clone(), live.clone());
-                }
-                // Discrete, or continuous with unknown live value → send immediately
-                fade_targets.push(FadeTarget {
-                    address: addr.clone(),
-                    start_value: effective_value.clone(),
-                    end_value: effective_value.clone(),
-                });
-            }
-        }
-
-        // Palette-only params: walk the unified palette_refs map and send
-        // any values that weren't already handled via snapshot data above.
-        for ((channel, kind), palette_id) in &snapshot.palette_refs {
-            let Some(palette) = palettes.get(palette_id) else {
-                continue;
-            };
-            // Defensive: skip if palette doesn't cover the ref's kind
-            // (shouldn't happen, but better to drop than send to wrong section).
-            if !palette.has_kind(*kind) {
-                continue;
-            }
-            for (param_path, value) in &palette.values {
-                let addr = ParameterAddress {
-                    channel: channel.clone(),
-                    parameter: param_path.clone(),
-                };
-                if palette_params_seen.contains_key(&(*palette_id, addr.clone())) {
-                    continue;
-                }
-                if !ignore_scope && !effective_scope.contains(&addr) {
-                    skipped += 1;
-                    continue;
-                }
-                let live_value = state.get(&addr);
-                if live_value == Some(value) {
-                    skipped += 1;
-                    continue;
-                }
-                // Capture live value for undo. `Option<&ParameterValue>` is
-                // `Copy` (the inner is a reference), so both `if let` arms
-                // consume independently without needing to clone or borrow.
-                if let Some(live) = live_value {
-                    undo_map.insert(addr.clone(), live.clone());
-                }
-                if let Some(live) = live_value
-                    && addr.parameter.is_continuous()
-                {
-                    fade_targets.push(FadeTarget {
-                        address: addr,
-                        start_value: live.clone(),
-                        end_value: value.clone(),
-                    });
-                } else {
-                    fade_targets.push(FadeTarget {
-                        address: addr,
-                        start_value: value.clone(),
-                        end_value: value.clone(),
-                    });
-                }
-            }
-        }
-
-        drop(state);
-
-        // Separate discrete targets (start == end) from continuous
-        let mut discrete_targets = Vec::new();
-        let mut continuous_targets = Vec::new();
-        for target in fade_targets {
-            if target.start_value == target.end_value {
-                discrete_targets.push(target);
-            } else {
-                continuous_targets.push(target);
-            }
-        }
-
-        // Send discrete params immediately (with pacing)
-        let pace = self.pace_us.load(Ordering::Relaxed);
-        for target in &discrete_targets {
-            let did_send = self
-                .send_now(&target.address, &target.end_value, &mut sent, &mut skipped)
-                .await;
-            if did_send && pace > 0 {
-                tokio::time::sleep(Duration::from_micros(pace)).await;
-            }
-        }
-
-        // Start continuous fade in background
-        if !continuous_targets.is_empty() {
-            let fade_count = continuous_targets.len();
-            let _handle = self
-                .fade_controller
-                .start_fade(
-                    cue.cue_number,
-                    cue.fade_time,
-                    continuous_targets,
-                    self.sender.clone(),
-                    self.ipad_sender.clone(),
-                )
-                .await;
-            info!(fade_count, "Fade started for continuous parameters");
-        }
-
-        // Store undo state
-        if !undo_map.is_empty() {
-            *self.undo.write().await = Some(UndoState {
-                previous_values: undo_map,
-                label: format!("Undo '{}'", snapshot.name),
-            });
-        }
-
-        RecallResult {
-            parameters_sent: sent,
-            parameters_skipped: skipped,
-        }
+        // Otherwise an instant recall. Fades live in the scope's per-category
+        // timing (see `recall_cue_timed`), not on the cue itself, so there is
+        // no single-fade path. Cancel any fade still running from a prior cue.
+        self.fade_controller.cancel_active().await;
+        self.recall_inner(snapshot, effective_scope, palettes, ignore_scope)
+            .await
     }
 
     /// Per-category timed recall with mute ordering and send enable ordering.
@@ -1745,7 +1580,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recall_cue_with_fade_sends_discrete_immediately() {
+    async fn recall_cue_without_category_timing_is_instant() {
         let (engine, state) = setup_test().await;
 
         // Set live state so continuous params have a known start value
@@ -1769,7 +1604,7 @@ mod tests {
         );
 
         let mut values = HashMap::new();
-        // Fader = continuous with known live value → deferred to fade
+        // Fader = continuous, live value 0.0 → changes to 5.0.
         values.insert(
             ParameterAddress {
                 channel: ChannelId::Input(1),
@@ -1777,7 +1612,7 @@ mod tests {
             },
             ParameterValue::Float(5.0),
         );
-        // Mute = discrete → sent immediately
+        // Mute = discrete.
         values.insert(
             ParameterAddress {
                 channel: ChannelId::Input(1),
@@ -1792,15 +1627,15 @@ mod tests {
             SnapshotData { values },
             SnapshotKind::ApplyOnSave,
         );
-        let mut cue =
-            crate::model::snapshot::Cue::new(1.0, "Fade Cue".into()).with_snapshot_id(snapshot.id);
-        cue.fade_time = 2.0;
+        let cue = crate::model::snapshot::Cue::new(1.0, "Instant Cue".into())
+            .with_snapshot_id(snapshot.id);
 
         let result = engine
             .recall_cue(&cue, Some(&snapshot), &no_palettes(), false)
             .await;
-        // Mute sent immediately; Fader deferred to background fade
-        assert_eq!(result.parameters_sent, 1);
+        // No per-category timing → instant recall: Fader (0.0→5.0) and Mute
+        // are both changes, so both are sent immediately.
+        assert_eq!(result.parameters_sent, 2);
         assert_eq!(result.parameters_skipped, 0);
     }
 

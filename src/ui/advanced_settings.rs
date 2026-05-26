@@ -55,11 +55,34 @@ pub fn draw_advanced_settings_window(
             );
             ui.add_space(2.0);
             let mut pace = setup.send_pace_us as f32;
-            let resp = ui.add(
-                egui::Slider::new(&mut pace, 0.0..=5000.0)
-                    .step_by(100.0)
-                    .suffix(" μs"),
-            );
+            // Widen the slider track to fill the panel, and show the value in a
+            // fixed-width box so the track length doesn't jump as the number
+            // grows (egui sizes the track from `spacing.slider_width`, not the
+            // allocated width, and its built-in value box auto-sizes). Both
+            // controls pinned to ROW_H.
+            const VALUE_W: f32 = 84.0;
+            let resp = ui
+                .horizontal(|ui| {
+                    let gap = ui.spacing().item_spacing.x;
+                    let track_w = (ui.available_width() - VALUE_W - gap).max(120.0);
+                    ui.spacing_mut().slider_width = track_w;
+                    let slider = ui.add_sized(
+                        [track_w, theme::ROW_H],
+                        egui::Slider::new(&mut pace, 0.0..=5000.0)
+                            .step_by(100.0)
+                            .show_value(false),
+                    );
+                    let value = ui.add_sized(
+                        [VALUE_W, theme::ROW_H],
+                        egui::DragValue::new(&mut pace)
+                            .speed(100.0)
+                            .range(0.0..=5000.0)
+                            .fixed_decimals(0)
+                            .suffix(" μs"),
+                    );
+                    slider.union(value)
+                })
+                .inner;
             if resp.changed() {
                 let new = pace as u64;
                 setup.send_pace_us = new;
@@ -99,12 +122,14 @@ pub fn draw_advanced_settings_window(
             );
             ui.add_enabled_ui(false, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Color theme:");
-                    let _ = ui.button("Default");
+                    theme::row_label(ui, "Color theme:", theme::TEXT_DISABLED);
+                    let _ =
+                        theme::row_action_button(ui, "Default", theme::BG_ELEVATED, 110.0, true);
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Help-bubble language:");
-                    let _ = ui.button("English");
+                    theme::row_label(ui, "Help-bubble language:", theme::TEXT_DISABLED);
+                    let _ =
+                        theme::row_action_button(ui, "English", theme::BG_ELEVATED, 110.0, true);
                 });
             });
         });

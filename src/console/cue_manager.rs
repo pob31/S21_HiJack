@@ -254,7 +254,6 @@ impl CueManager {
         cue_number: Option<f32>,
         snapshot_id: Option<Uuid>,
         console_snapshot: Option<i32>,
-        fade_time: f32,
         scope_override: Option<ScopeTemplate>,
         notes: String,
     ) -> bool {
@@ -264,10 +263,9 @@ impl CueManager {
             }
             cue.snapshot_id = snapshot_id;
             cue.console_snapshot = console_snapshot;
-            cue.fade_time = fade_time;
             cue.scope_override = scope_override;
             cue.notes = notes;
-            info!(cue_number = cue.cue_number, name = %cue.name, fade_time, "Updated cue");
+            info!(cue_number = cue.cue_number, name = %cue.name, "Updated cue");
             true
         } else {
             warn!(%cue_id, "Cue not found for update");
@@ -379,13 +377,11 @@ mod tests {
             None,
             mgr.cue_list.cues[0].snapshot_id,
             None,
-            3.5,
             None,
             "Scene change".into(),
         ));
 
         let updated = mgr.cue_list.cues.iter().find(|c| c.id == cue_id).unwrap();
-        assert!((updated.fade_time - 3.5).abs() < 0.001);
         assert!(updated.scope_override.is_none());
         assert_eq!(updated.notes, "Scene change");
     }
@@ -404,7 +400,6 @@ mod tests {
             Some(0.5),
             mgr.cue_list.cues[1].snapshot_id,
             None,
-            0.0,
             None,
             String::new(),
         ));
@@ -415,7 +410,7 @@ mod tests {
     #[test]
     fn update_cue_nonexistent_returns_false() {
         let mut mgr = CueManager::new(CueList::default());
-        assert!(!mgr.update_cue(Uuid::new_v4(), None, None, None, 1.0, None, String::new(),));
+        assert!(!mgr.update_cue(Uuid::new_v4(), None, None, None, None, String::new(),));
     }
 
     // ─── Phase E: resolve_snapshot ──────────────────────────────────

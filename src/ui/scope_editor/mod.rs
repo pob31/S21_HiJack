@@ -333,38 +333,42 @@ pub fn draw_scope_window(
             // ── Templates row ─────────────────────────────────────────
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label("Templates:");
+                theme::row_label(ui, "Templates:", theme::TEXT_PRIMARY);
                 let current_name = state
                     .selected_template_id
                     .and_then(|id| templates.iter().find(|(tid, _)| *tid == id))
                     .map(|(_, n)| n.clone())
                     .unwrap_or_else(|| "(select)".into());
-                egui::ComboBox::from_id_salt("scope_editor_templates_combo")
-                    .selected_text(&current_name)
-                    .width(180.0)
-                    .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(state.selected_template_id.is_none(), "(select)")
-                            .clicked()
-                        {
-                            state.selected_template_id = None;
-                        }
-                        for (id, name) in &templates {
+                theme::row_combo(ui, 0, |ui| {
+                    egui::ComboBox::from_id_salt("scope_editor_templates_combo")
+                        .selected_text(&current_name)
+                        .width(180.0)
+                        .height(320.0)
+                        .show_ui(ui, |ui| {
                             if ui
-                                .selectable_label(state.selected_template_id == Some(*id), name)
+                                .selectable_label(state.selected_template_id.is_none(), "(select)")
                                 .clicked()
                             {
-                                state.selected_template_id = Some(*id);
+                                state.selected_template_id = None;
                             }
-                        }
-                    });
+                            for (id, name) in &templates {
+                                if ui
+                                    .selectable_label(state.selected_template_id == Some(*id), name)
+                                    .clicked()
+                                {
+                                    state.selected_template_id = Some(*id);
+                                }
+                            }
+                        });
+                });
 
-                let load_btn =
-                    theme::action_button("Load", theme::ACCENT_BLUE, egui::Vec2::new(70.0, 28.0));
-                if ui
-                    .add_enabled(selected_template_full.is_some(), load_btn)
-                    .clicked()
-                {
+                if theme::row_action_button(
+                    ui,
+                    "Load",
+                    theme::ACCENT_BLUE,
+                    70.0,
+                    selected_template_full.is_some(),
+                ) {
                     if let Some(tmpl) = selected_template_full.as_ref() {
                         state.load_template(tmpl, aux_count, group_count, matrix_count);
                     }
@@ -373,14 +377,17 @@ pub fn draw_scope_window(
                 ui.separator();
                 ui.add_space(4.0);
 
-                ui.label("Save as:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.template_name_buf).desired_width(140.0),
+                theme::row_label(ui, "Save as:", theme::TEXT_PRIMARY);
+                theme::padded_text_edit_sized(
+                    ui,
+                    &mut state.template_name_buf,
+                    140.0,
+                    theme::ROW_H,
+                    true,
+                    "",
                 );
-                let save_btn =
-                    theme::action_button("Save", theme::ACCENT_GREEN, egui::Vec2::new(70.0, 28.0));
                 let can_save = !state.template_name_buf.trim().is_empty();
-                if ui.add_enabled(can_save, save_btn).clicked() {
+                if theme::row_action_button(ui, "Save", theme::ACCENT_GREEN, 70.0, can_save) {
                     let name = state.template_name_buf.trim().to_string();
                     let new_tmpl = state.to_scope_template(name);
                     state.template_name_buf.clear();
@@ -396,13 +403,12 @@ pub fn draw_scope_window(
                 ui.separator();
                 ui.add_space(4.0);
 
-                if theme::long_press_button(
+                if theme::row_long_press_button(
                     ui,
                     "Update",
                     theme::ACCENT_AMBER,
-                    egui::Vec2::new(80.0, 28.0),
+                    80.0,
                     state.selected_template_id.is_some(),
-                    theme::LONG_PRESS_DURATION_MS,
                 ) {
                     if let Some(id) = state.selected_template_id {
                         let existing_name = templates
@@ -418,13 +424,12 @@ pub fn draw_scope_window(
                     }
                 }
 
-                if theme::long_press_button(
+                if theme::row_long_press_button(
                     ui,
                     "Delete",
                     theme::ACCENT_RED,
-                    egui::Vec2::new(80.0, 28.0),
+                    80.0,
                     state.selected_template_id.is_some(),
-                    theme::LONG_PRESS_DURATION_MS,
                 ) {
                     if let Some(id) = state.selected_template_id {
                         let cue_mgr = cue_manager.clone();

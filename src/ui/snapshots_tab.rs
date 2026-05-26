@@ -31,7 +31,6 @@ pub struct SnapshotsTabState {
     pub editing_cue_number: String,
     pub editing_local_snapshot: Option<Uuid>,
     pub editing_console_snapshot: String,
-    pub editing_fade_time: f32,
     pub editing_scope_override_enabled: bool,
     pub editing_scope_template_id: Option<Uuid>,
     pub editing_cue_notes: String,
@@ -71,7 +70,6 @@ impl Default for SnapshotsTabState {
             editing_cue_number: String::new(),
             editing_local_snapshot: None,
             editing_console_snapshot: String::new(),
-            editing_fade_time: 0.0,
             editing_scope_override_enabled: false,
             editing_scope_template_id: None,
             editing_cue_notes: String::new(),
@@ -571,7 +569,24 @@ pub fn draw_snapshots_tab(
                                         let selected = snap_state.selected_snapshot_id == Some(snap.id);
                                         let bg = if selected { theme::BG_ELEVATED } else { theme::BG_PANEL };
 
-                                        egui::Frame::new()
+                                        let kind_label = match snap.kind {
+                                            SnapshotKind::ApplyOnSave => "scope: save",
+                                            SnapshotKind::ApplyOnRecall => "scope: recall",
+                                        };
+                                        let kind_color = match snap.kind {
+                                            SnapshotKind::ApplyOnSave => theme::BG_ELEVATED,
+                                            SnapshotKind::ApplyOnRecall => theme::ACCENT_BLUE,
+                                        };
+                                        let meta = format!(
+                                            "{} params  {}",
+                                            snap.data.parameter_count(),
+                                            snap.modified_at.format("%H:%M:%S"),
+                                        );
+                                        // Whole row in one fixed-height band:
+                                        // meta + badge pinned right, name fills
+                                        // the rest (truncated, so a long name
+                                        // can't wrap and break the baseline).
+                                        let row_resp = egui::Frame::new()
                                             .fill(bg)
                                             .stroke(if selected {
                                                 egui::Stroke::new(1.0, theme::ACCENT_BLUE)
@@ -579,41 +594,53 @@ pub fn draw_snapshots_tab(
                                                 egui::Stroke::NONE
                                             })
                                             .corner_radius(4.0)
-                                            .inner_margin(egui::Margin::symmetric(8, 3))
+                                            .inner_margin(egui::Margin::symmetric(8, 4))
                                             .show(ui, |ui| {
-                                                let response = ui.horizontal(|ui| {
-                                                    ui.label(
-                                                        egui::RichText::new(&snap.name)
-                                                            .strong()
-                                                            .color(theme::TEXT_PRIMARY),
-                                                    );
-                                                    let kind_label = match snap.kind {
-                                                        SnapshotKind::ApplyOnSave => "scope: save",
-                                                        SnapshotKind::ApplyOnRecall => "scope: recall",
-                                                    };
-                                                    theme::colored_badge(
-                                                        ui,
-                                                        kind_label,
-                                                        match snap.kind {
-                                                            SnapshotKind::ApplyOnSave => theme::BG_ELEVATED,
-                                                            SnapshotKind::ApplyOnRecall => theme::ACCENT_BLUE,
-                                                        },
-                                                    );
-                                                    ui.label(
-                                                        egui::RichText::new(format!(
-                                                            "{} params  {}",
-                                                            snap.data.parameter_count(),
-                                                            snap.modified_at.format("%H:%M:%S"),
-                                                        ))
-                                                        .color(theme::TEXT_SECONDARY)
-                                                        .small(),
-                                                    );
-                                                }).response;
+                                                let w = ui.available_width();
+                                                ui.allocate_ui_with_layout(
+                                                    egui::vec2(w, 22.0),
+                                                    egui::Layout::right_to_left(egui::Align::Center),
+                                                    |ui| {
+                                                        ui.spacing_mut().item_spacing.x = 8.0;
+                                                        // Meta + badge pinned right; the name fills the
+                                                        // remaining width on the LEFT (explicit cell so
+                                                        // it doesn't hug the badge). Name and meta use
+                                                        // the same body font size, centred in the band,
+                                                        // so they share one baseline.
+                                                        ui.label(
+                                                            egui::RichText::new(meta)
+                                                                .color(theme::TEXT_SECONDARY),
+                                                        );
+                                                        theme::colored_badge(ui, kind_label, kind_color);
+                                                        let name_w = ui.available_width();
+                                                        ui.allocate_ui_with_layout(
+                                                            egui::vec2(name_w, 22.0),
+                                                            egui::Layout::left_to_right(egui::Align::Center),
+                                                            |ui| {
+                                                                ui.add(
+                                                                    egui::Label::new(
+                                                                        egui::RichText::new(&snap.name)
+                                                                            .strong()
+                                                                            .color(theme::TEXT_PRIMARY),
+                                                                    )
+                                                                    .truncate(),
+                                                                );
+                                                            },
+                                                        );
+                                                    },
+                                                );
+                                            })
+                                            .response;
 
-                                                if response.interact(egui::Sense::click()).clicked() {
-                                                    snap_state.selected_snapshot_id = Some(snap.id);
-                                                }
-                                            });
+                                        if row_resp.interact(egui::Sense::click()).clicked() {
+                                            // Toggle: clicking the selected row deselects it.
+                                            snap_state.selected_snapshot_id =
+                                                if snap_state.selected_snapshot_id == Some(snap.id) {
+                                                    None
+                                                } else {
+                                                    Some(snap.id)
+                                                };
+                                        }
                                         ui.add_space(1.0);
                                     }
 
@@ -640,7 +667,54 @@ pub fn draw_snapshots_tab(
                 // List"; the list itself now lives in its own card at the
                 // bottom of the column).
                 theme::card_frame().show(ui, |ui| {
-                    theme::section_heading(ui, "Add Cue");
+                    // A cue needs a valid number plus at least one of a
+                    // console-snapshot row or a local snapshot. The Add Cue
+                    // button only appears once those are satisfied.
+                    let cs_trim = snap_state.new_cue_console_row.trim();
+                    let cs_row = if cs_trim.is_empty() {
+                        None
+                    } else {
+                        cs_trim.parse::<i32>().ok()
+                    };
+                    let cs_valid = cs_trim.is_empty() || cs_row.is_some();
+                    let num_ok = snap_state.new_cue_number.trim().parse::<f32>().is_ok();
+                    let can_add = num_ok
+                        && cs_valid
+                        && (cs_row.is_some() || snap_state.selected_snapshot_for_cue.is_some());
+
+                    // Heading row: title + Add Cue button (only when ready).
+                    // row_spacer pins the row to ROW_H so the taller button
+                    // appearing/disappearing doesn't shift the form below.
+                    let mut add_clicked = false;
+                    ui.horizontal(|ui| {
+                        theme::row_spacer(ui);
+                        ui.label(
+                            egui::RichText::new("Add Cue")
+                                .size(theme::FONT_SIZE_SECTION)
+                                .strong()
+                                .color(theme::TEXT_PRIMARY),
+                        );
+                        if can_add {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    add_clicked = theme::row_action_button(
+                                        ui,
+                                        "Add Cue",
+                                        theme::ACCENT_GREEN,
+                                        90.0,
+                                        true,
+                                    );
+                                },
+                            );
+                        }
+                    });
+                    ui.add_space(2.0);
+                    let add_underline_w = ui.available_width();
+                    let (add_rect, _) = ui
+                        .allocate_exact_size(egui::vec2(add_underline_w, 1.0), egui::Sense::hover());
+                    ui.painter().rect_filled(add_rect, 0.0, theme::BORDER_SUBTLE);
+                    ui.add_space(6.0);
 
                     // Add Cue form
                     ui.horizontal(|ui| {
@@ -684,65 +758,33 @@ pub fn draw_snapshots_tab(
                                     });
                             });
                         }
-                        if theme::row_action_button(ui, "Add Cue", theme::ACCENT_GREEN, 75.0, true) {
-                            let parsed_num = snap_state.new_cue_number.parse::<f32>();
-                            let parsed_row = if snap_state.new_cue_console_row.trim().is_empty() {
-                                Ok(None)
-                            } else {
-                                snap_state.new_cue_console_row.trim().parse::<i32>().map(Some)
-                            };
-                            let snap_id = snap_state.selected_snapshot_for_cue;
-                            match (parsed_num, parsed_row) {
-                                (Ok(num), Ok(row)) if row.is_some() || snap_id.is_some() => {
-                                    let name = if snap_state.new_cue_name.is_empty() {
-                                        format!("Cue {num}")
-                                    } else {
-                                        snap_state.new_cue_name.clone()
-                                    };
-                                    let mut cue = Cue::new(num, name);
-                                    if let Some(r) = row {
-                                        cue.console_snapshot = Some(r);
-                                    }
-                                    if let Some(id) = snap_id {
-                                        cue.snapshot_id = Some(id);
-                                    }
-                                    let cue_mgr = cue_manager.clone();
-                                    runtime.spawn(async move {
-                                        cue_mgr.write().await.add_cue(cue);
-                                    });
-                                    snap_state.new_cue_number.clear();
-                                    snap_state.new_cue_name.clear();
-                                    snap_state.new_cue_console_row.clear();
-                                    snap_state.status_message = Some(format!("Added cue {num}"));
-                                }
-                                (Ok(_), Ok(_)) => {
-                                    snap_state.status_message = Some("Cue needs a Local snapshot, a Console snapshot, or both".into());
-                                }
-                                (Err(_), _) => {
-                                    snap_state.status_message = Some("Enter a valid cue number".into());
-                                }
-                                (_, Err(_)) => {
-                                    snap_state.status_message = Some("Row must be a whole number (or blank)".into());
-                                }
-                            }
-                        }
-                        if theme::row_long_press_button(
-                            ui,
-                            "Delete",
-                            theme::ACCENT_RED,
-                            70.0,
-                            snap_state.selected_cue_id.is_some(),
-                        ) {
-                            if let Some(cue_id) = snap_state.selected_cue_id {
-                                let cue_mgr = cue_manager.clone();
-                                runtime.spawn(async move {
-                                    cue_mgr.write().await.remove_cue(cue_id);
-                                });
-                                snap_state.selected_cue_id = None;
-                                snap_state.status_message = Some("Cue deleted".into());
-                            }
-                        }
                     });
+
+                    if add_clicked {
+                        let num = snap_state.new_cue_number.trim().parse::<f32>().unwrap_or(0.0);
+                        let row = cs_row;
+                        let snap_id = snap_state.selected_snapshot_for_cue;
+                        let name = if snap_state.new_cue_name.is_empty() {
+                            format!("Cue {num}")
+                        } else {
+                            snap_state.new_cue_name.clone()
+                        };
+                        let mut cue = Cue::new(num, name);
+                        if let Some(r) = row {
+                            cue.console_snapshot = Some(r);
+                        }
+                        if let Some(id) = snap_id {
+                            cue.snapshot_id = Some(id);
+                        }
+                        let cue_mgr = cue_manager.clone();
+                        runtime.spawn(async move {
+                            cue_mgr.write().await.add_cue(cue);
+                        });
+                        snap_state.new_cue_number.clear();
+                        snap_state.new_cue_name.clear();
+                        snap_state.new_cue_console_row.clear();
+                        snap_state.status_message = Some(format!("Added cue {num}"));
+                    }
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         let shift_resp = ui
@@ -773,15 +815,9 @@ pub fn draw_snapshots_tab(
                 // bottom of the column) grows and shrinks. Always rendered;
                 // disabled when no cue is selected.
                 theme::card_frame().show(ui, |ui| {
-                    theme::section_heading(ui, "Cue Editor");
                     let has_selection = snap_state.selected_cue_id.is_some();
-                    if !has_selection {
-                        ui.label(
-                            egui::RichText::new("Select a cue to edit.")
-                                .color(theme::TEXT_SECONDARY),
-                        );
-                    }
                     if let Ok(mgr) = cue_manager.try_read() {
+                        // (Re)load the editing buffers when the selection changes.
                         if let Some(cue_id) = snap_state.selected_cue_id {
                             if let Some(cue) = mgr.cue_list.cues.iter().find(|c| c.id == cue_id) {
                                 if snap_state.last_edited_cue_id != Some(cue_id) {
@@ -791,7 +827,6 @@ pub fn draw_snapshots_tab(
                                         .console_snapshot
                                         .map(|n| n.to_string())
                                         .unwrap_or_default();
-                                    snap_state.editing_fade_time = cue.fade_time;
                                     snap_state.editing_scope_override_enabled = cue.scope_override.is_some();
                                     snap_state.editing_scope_template_id = cue.scope_override.as_ref().map(|s| s.id);
                                     snap_state.editing_cue_notes = cue.notes.clone();
@@ -799,10 +834,87 @@ pub fn draw_snapshots_tab(
                                 }
                             }
                         }
+
+                        // True when the editing buffer differs from the stored
+                        // cue — drives whether the heading shows a Save button.
+                        let dirty = snap_state
+                            .selected_cue_id
+                            .and_then(|id| mgr.cue_list.cues.iter().find(|c| c.id == id))
+                            .map(|cue| {
+                                snap_state.editing_cue_number != format!("{}", cue.cue_number)
+                                    || snap_state.editing_local_snapshot != cue.snapshot_id
+                                    || snap_state.editing_console_snapshot
+                                        != cue
+                                            .console_snapshot
+                                            .map(|n| n.to_string())
+                                            .unwrap_or_default()
+                                    || snap_state.editing_scope_override_enabled
+                                        != cue.scope_override.is_some()
+                                    || snap_state.editing_scope_template_id
+                                        != cue.scope_override.as_ref().map(|s| s.id)
+                                    || snap_state.editing_cue_notes != cue.notes
+                            })
+                            .unwrap_or(false);
+
+                        // Heading row: title, then a right-aligned action for
+                        // the selected cue — Save while there are unsaved edits,
+                        // otherwise a long-press Delete. Nothing when no cue is
+                        // selected.
+                        let mut save_clicked = false;
+                        let mut delete_clicked = false;
+                        // row_spacer pins the row to ROW_H so the action
+                        // button appearing/disappearing never shifts the form
+                        // below. The right side carries the action for the
+                        // selected cue — Save while dirty, otherwise Delete —
+                        // or, with no selection, the "select a cue" hint (so it
+                        // occupies the same slot instead of a separate line).
+                        ui.horizontal(|ui| {
+                            theme::row_spacer(ui);
+                            ui.label(
+                                egui::RichText::new("Cue Editor")
+                                    .size(theme::FONT_SIZE_SECTION)
+                                    .strong()
+                                    .color(theme::TEXT_PRIMARY),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if !has_selection {
+                                        ui.label(
+                                            egui::RichText::new("Select a cue to edit.")
+                                                .color(theme::TEXT_SECONDARY),
+                                        );
+                                    } else if dirty {
+                                        save_clicked = theme::row_action_button(
+                                            ui,
+                                            "Save Cue Changes",
+                                            theme::ACCENT_GREEN,
+                                            150.0,
+                                            true,
+                                        );
+                                    } else {
+                                        delete_clicked = theme::row_long_press_button(
+                                            ui,
+                                            "Delete",
+                                            theme::ACCENT_RED,
+                                            70.0,
+                                            true,
+                                        );
+                                    }
+                                },
+                            );
+                        });
+                        ui.add_space(2.0);
+                        let underline_w = ui.available_width();
+                        let (rect, _) = ui
+                            .allocate_exact_size(egui::vec2(underline_w, 1.0), egui::Sense::hover());
+                        ui.painter().rect_filled(rect, 0.0, theme::BORDER_SUBTLE);
+                        ui.add_space(6.0);
+
                         ui.add_enabled_ui(has_selection, |ui| {
                             // 2-column label|control form. row_label sizes each
-                            // label cell to ROW_H (centred), and the combo cell
-                            // uses the -7 nudge since Grid cells top-align.
+                            // label cell to ROW_H (centred); the combo cells use
+                            // row_combo so they match.
                             egui::Grid::new("cue_editor_grid")
                                 .num_columns(2)
                                 .spacing([12.0, 10.0])
@@ -863,23 +975,17 @@ pub fn draw_snapshots_tab(
                                         "none",
                                     );
                                     ui.end_row();
-
-                                    theme::row_label(ui, "Fade Time:", theme::TEXT_PRIMARY);
-                                    ui.add(
-                                        egui::Slider::new(&mut snap_state.editing_fade_time, 0.0..=60.0)
-                                            .suffix(" s")
-                                            .step_by(0.1),
-                                    );
-                                    ui.end_row();
                                 });
 
+                            // Checkbox + template selector on one row. The
+                            // row_spacer pins it to ROW_H so toggling the
+                            // override (which shows/hides the combo) doesn't
+                            // shift the Notes field below it.
                             ui.horizontal(|ui| {
                                 theme::row_spacer(ui);
                                 ui.checkbox(&mut snap_state.editing_scope_override_enabled, "Scope Override");
-                            });
-                            if snap_state.editing_scope_override_enabled {
-                                ui.horizontal(|ui| {
-                                    theme::row_label(ui, "Template:", theme::TEXT_PRIMARY);
+                                if snap_state.editing_scope_override_enabled {
+                                    ui.add_space(8.0);
                                     let current_name = snap_state.editing_scope_template_id
                                         .and_then(|id| mgr.scope_templates.get(&id))
                                         .map(|t| t.name.clone())
@@ -888,6 +994,7 @@ pub fn draw_snapshots_tab(
                                         egui::ComboBox::from_id_salt("scope_override_selector")
                                             .selected_text(&current_name)
                                             .width(140.0)
+                                            .height(320.0)
                                             .show_ui(ui, |ui| {
                                                 for tmpl in mgr.scope_templates.values() {
                                                     if ui.selectable_label(
@@ -899,63 +1006,63 @@ pub fn draw_snapshots_tab(
                                                 }
                                             });
                                     });
-                                });
-                            }
+                                }
+                            });
                             ui.label("Notes:");
                             ui.add(
                                 egui::TextEdit::multiline(&mut snap_state.editing_cue_notes)
                                     .desired_rows(2)
                                     .desired_width(f32::INFINITY),
                             );
-                            let save_clicked = ui
-                                .scope(|ui| {
-                                    ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
-                                    ui.add(theme::action_button(
-                                        "Save Cue Changes",
-                                        theme::ACCENT_GREEN,
-                                        egui::Vec2::new(140.0, theme::ROW_H),
-                                    ))
-                                    .clicked()
-                                })
-                                .inner;
-                            if save_clicked {
-                                if let Some(cue_id) = snap_state.selected_cue_id {
-                                    let parsed_num = snap_state.editing_cue_number.trim().parse::<f32>().ok();
-                                    let parsed_row: Option<i32> = if snap_state.editing_console_snapshot.trim().is_empty() {
-                                        None
-                                    } else {
-                                        snap_state.editing_console_snapshot.trim().parse().ok()
-                                    };
-                                    let local = snap_state.editing_local_snapshot;
-                                    let fade_time = snap_state.editing_fade_time;
-                                    let scope_override = if snap_state.editing_scope_override_enabled {
-                                        snap_state.editing_scope_template_id
-                                            .and_then(|id| mgr.scope_templates.get(&id).cloned())
-                                    } else {
-                                        None
-                                    };
-                                    let notes = snap_state.editing_cue_notes.clone();
-                                    if local.is_none() && parsed_row.is_none() {
-                                        snap_state.status_message = Some("Cue needs a Local snapshot, a Console snapshot, or both".into());
-                                    } else {
-                                        let cue_mgr = cue_manager.clone();
-                                        runtime.spawn(async move {
-                                            cue_mgr.write().await.update_cue(
-                                                cue_id,
-                                                parsed_num,
-                                                local,
-                                                parsed_row,
-                                                fade_time,
-                                                scope_override,
-                                                notes,
-                                            );
-                                        });
-                                        snap_state.status_message = Some("Cue updated".into());
-                                        snap_state.last_edited_cue_id = None;
-                                    }
+                        });
+
+                        if save_clicked {
+                            if let Some(cue_id) = snap_state.selected_cue_id {
+                                let parsed_num = snap_state.editing_cue_number.trim().parse::<f32>().ok();
+                                let parsed_row: Option<i32> = if snap_state.editing_console_snapshot.trim().is_empty() {
+                                    None
+                                } else {
+                                    snap_state.editing_console_snapshot.trim().parse().ok()
+                                };
+                                let local = snap_state.editing_local_snapshot;
+                                let scope_override = if snap_state.editing_scope_override_enabled {
+                                    snap_state.editing_scope_template_id
+                                        .and_then(|id| mgr.scope_templates.get(&id).cloned())
+                                } else {
+                                    None
+                                };
+                                let notes = snap_state.editing_cue_notes.clone();
+                                if local.is_none() && parsed_row.is_none() {
+                                    snap_state.status_message = Some("Cue needs a Local snapshot, a Console snapshot, or both".into());
+                                } else {
+                                    let cue_mgr = cue_manager.clone();
+                                    runtime.spawn(async move {
+                                        cue_mgr.write().await.update_cue(
+                                            cue_id,
+                                            parsed_num,
+                                            local,
+                                            parsed_row,
+                                            scope_override,
+                                            notes,
+                                        );
+                                    });
+                                    snap_state.status_message = Some("Cue updated".into());
+                                    snap_state.last_edited_cue_id = None;
                                 }
                             }
-                        });
+                        }
+
+                        if delete_clicked {
+                            if let Some(cue_id) = snap_state.selected_cue_id {
+                                let cue_mgr = cue_manager.clone();
+                                runtime.spawn(async move {
+                                    cue_mgr.write().await.remove_cue(cue_id);
+                                });
+                                snap_state.selected_cue_id = None;
+                                snap_state.last_edited_cue_id = None;
+                                snap_state.status_message = Some("Cue deleted".into());
+                            }
+                        }
                     }
                 });
 
@@ -966,6 +1073,48 @@ pub fn draw_snapshots_tab(
                 // Cue or Cue Editor controls above it.
                 theme::card_frame().show(ui, |ui| {
                     theme::section_heading(ui, "Cue List");
+
+                    // Fixed column widths so the cue number, name, CS row and
+                    // snapshot line up down the list. `LEAD` matches the row
+                    // frame's left inner margin so the header lines up with the
+                    // rows below it.
+                    const COL_NUM_W: f32 = 44.0;
+                    const COL_NAME_W: f32 = 110.0;
+                    const COL_CS_W: f32 = 56.0;
+                    const COL_SNAP_W: f32 = 120.0;
+                    const COL_GAP: f32 = 6.0;
+                    const LEAD: f32 = 8.0;
+                    const CELL_H: f32 = 20.0;
+
+                    // Fixed-width text cell (left-aligned, truncated to fit).
+                    let text_cell = |ui: &mut egui::Ui, w: f32, rich: egui::RichText| {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(w, CELL_H),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.add(egui::Label::new(rich).truncate());
+                            },
+                        );
+                    };
+
+                    // Column header.
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = COL_GAP;
+                        ui.add_space(LEAD);
+                        for (w, title) in [
+                            (COL_NUM_W, "Cue"),
+                            (COL_NAME_W, "Name"),
+                            (COL_CS_W, "CS"),
+                            (COL_SNAP_W, "Snapshot"),
+                        ] {
+                            text_cell(
+                                ui,
+                                w,
+                                egui::RichText::new(title).small().color(theme::TEXT_SECONDARY),
+                            );
+                        }
+                    });
+                    ui.add_space(2.0);
 
                     egui::ScrollArea::vertical()
                         .id_salt("cue_list_scroll")
@@ -994,50 +1143,69 @@ pub fn draw_snapshots_tab(
                                     } else {
                                         egui::Stroke::NONE
                                     };
-                                    egui::Frame::new()
+                                    let row_resp = egui::Frame::new()
                                         .fill(bg)
                                         .stroke(border)
                                         .corner_radius(4.0)
-                                        .inner_margin(egui::Margin::symmetric(8, 4))
+                                        .inner_margin(egui::Margin::symmetric(LEAD as i8, 4))
                                         .show(ui, |ui| {
-                                            let response = ui.horizontal(|ui| {
-                                                theme::colored_badge(
+                                            ui.horizontal(|ui| {
+                                                ui.spacing_mut().item_spacing.x = COL_GAP;
+                                                // Fill the row so the whole line
+                                                // is a click target.
+                                                ui.set_min_width(ui.available_width());
+                                                // Cue number — fixed-width badge.
+                                                theme::colored_badge_sized(
                                                     ui,
                                                     &format!("{:.1}", cue.cue_number),
                                                     if is_current { theme::ACCENT_RED } else { theme::BG_ELEVATED },
+                                                    COL_NUM_W,
                                                 );
-                                                ui.add_space(8.0);
-                                                ui.label(
+                                                // Name.
+                                                text_cell(
+                                                    ui,
+                                                    COL_NAME_W,
                                                     egui::RichText::new(&cue.name)
                                                         .strong()
                                                         .color(theme::TEXT_PRIMARY),
                                                 );
-                                                if let Some(row) = cue.console_snapshot {
-                                                    theme::colored_badge(
-                                                        ui,
-                                                        &format!("CS {row}"),
-                                                        theme::ACCENT_AMBER,
-                                                    );
-                                                }
-                                                ui.label(
+                                                // Console-snapshot row.
+                                                ui.allocate_ui_with_layout(
+                                                    egui::vec2(COL_CS_W, CELL_H),
+                                                    egui::Layout::left_to_right(egui::Align::Center),
+                                                    |ui| {
+                                                        if let Some(row) = cue.console_snapshot {
+                                                            theme::colored_badge(
+                                                                ui,
+                                                                &format!("CS {row}"),
+                                                                theme::ACCENT_AMBER,
+                                                            );
+                                                        }
+                                                    },
+                                                );
+                                                // Snapshot overlay name.
+                                                text_cell(
+                                                    ui,
+                                                    COL_SNAP_W,
                                                     egui::RichText::new(snap_name)
                                                         .color(theme::TEXT_SECONDARY),
                                                 );
-                                                if cue.fade_time > 0.0 {
-                                                    theme::colored_badge(
-                                                        ui,
-                                                        &format!("{:.1}s", cue.fade_time),
-                                                        theme::ACCENT_AMBER,
-                                                    );
-                                                }
+                                                // Scope-override flag (trailing).
                                                 if cue.scope_override.is_some() {
                                                     theme::colored_badge(ui, "S", theme::ACCENT_BLUE);
                                                 }
-                                            }).response;
-                                            if response.interact(egui::Sense::click()).clicked() {
-                                                snap_state.selected_cue_id = Some(cue.id);
-                                            }
-                                        });
+                                            });
+                                        })
+                                        .response;
+                                    if row_resp.interact(egui::Sense::click()).clicked() {
+                                        // Toggle: clicking the selected row deselects it.
+                                        snap_state.selected_cue_id =
+                                            if snap_state.selected_cue_id == Some(cue.id) {
+                                                None
+                                            } else {
+                                                Some(cue.id)
+                                            };
+                                    }
                                     ui.add_space(2.0);
                                 }
                                 if mgr.cue_list.cues.is_empty() {

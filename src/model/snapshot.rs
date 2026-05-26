@@ -507,8 +507,6 @@ pub struct Cue {
     pub snapshot_id: Option<Uuid>,
     /// If set, overrides the snapshot's built-in scope for this cue.
     pub scope_override: Option<ScopeTemplate>,
-    /// Fade time in seconds (0 = instant).
-    pub fade_time: f32,
     /// QLab cue identifier for trigger mapping.
     pub qlab_cue_id: Option<String>,
     /// Notes for the operator.
@@ -524,7 +522,6 @@ impl Cue {
             console_snapshot: None,
             snapshot_id: None,
             scope_override: None,
-            fade_time: 0.0,
             qlab_cue_id: None,
             notes: String::new(),
         }
