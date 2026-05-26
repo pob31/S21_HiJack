@@ -640,7 +640,7 @@ pub fn draw_setup_tab(
                 // Console (S21) satellite — top-left
                 peer_section(ui, "Console (S21)", theme::ACCENT_BLUE, w_sat, MIN_TOP_HEIGHT, false, console_status, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("IP:");
+                        theme::row_label(ui, "IP:", theme::TEXT_PRIMARY);
                         let mismatch = console_ip_mismatch(setup);
                         let show_warn_icon = mismatch && !setup.console_ip_warning_dismissed;
                         // Reserve 24 px on the right of the edit for the
@@ -648,10 +648,11 @@ pub fn draw_setup_tab(
                         // the edit width jumping when the warning appears
                         // or is dismissed.
                         let edit_w = w_sat - 100.0 - 24.0;
-                        let resp = theme::padded_text_edit(
+                        let resp = theme::padded_text_edit_sized(
                             ui,
                             &mut setup.console_ip,
                             edit_w,
+                            theme::ROW_H,
                             !is_connected,
                             "",
                         )
@@ -693,6 +694,16 @@ pub fn draw_setup_tab(
                             ui.label(egui::RichText::new("Server").strong().color(theme::ACCENT_GREEN));
                             ui.end_row();
 
+                            // GP OSC port pair (always active, every mode).
+                            ui.label(
+                                egui::RichText::new("GP OSC")
+                                    .small()
+                                    .color(theme::TEXT_SECONDARY),
+                            );
+                            ui.label("");
+                            ui.label("");
+                            ui.end_row();
+
                             port_edit_enabled(
                                 ui,
                                 &mut setup.console_port,
@@ -720,6 +731,22 @@ pub fn draw_setup_tab(
                             // Mode 1 they're invisible (and thus disabled, by
                             // egui semantics) so identity + channel config
                             // below stay at a fixed Y-coordinate.
+                            //
+                            // iPad-protocol port pair caption — only active in
+                            // Modes 2/3 (Direct iPad / Proxy), so it's hidden
+                            // in Mode 1 along with the rows it heads.
+                            ui.add_visible(
+                                uses_ipad,
+                                egui::Label::new(
+                                    egui::RichText::new("iPad protocol")
+                                        .small()
+                                        .color(theme::ACCENT_ORANGE),
+                                ),
+                            );
+                            ui.label("");
+                            ui.label("");
+                            ui.end_row();
+
                             port_edit_visible(
                                 ui,
                                 &mut setup.ipad_console_port,
@@ -887,7 +914,7 @@ pub fn draw_setup_tab(
 
                     // ── Display Mode ──
                     server_grid("server_display_grid").show(ui, |ui| {
-                        ui.label("Display Mode:");
+                        theme::row_label(ui, "Display Mode:", theme::TEXT_PRIMARY);
                         ui.horizontal(|ui| {
                             // All 3 toggles share `action_btn_w` so the
                             // row spans `action_row_w` — same width as
@@ -923,7 +950,7 @@ pub fn draw_setup_tab(
 
                     // ── Network + bind-IP read-out ──
                     server_grid("server_network_grid").show(ui, |ui| {
-                        ui.label("Network:");
+                        theme::row_label(ui, "Network:", theme::TEXT_PRIMARY);
                         ui.add_enabled_ui(!is_connected, |ui| {
                             let interfaces = net_interfaces::list_interfaces();
                             let current_label = if setup.local_ip.is_empty() {
@@ -935,6 +962,7 @@ pub fn draw_setup_tab(
                                     .map(|i| i.label())
                                     .unwrap_or_else(|| setup.local_ip.clone())
                             };
+                            theme::row_combo(ui, 0, |ui| {
                             egui::ComboBox::from_id_salt("nic_select")
                                 .selected_text(&current_label)
                                 .width(action_row_w)
@@ -973,6 +1001,7 @@ pub fn draw_setup_tab(
                                         }
                                     }
                                 });
+                            });
                         });
                         ui.end_row();
                     });
@@ -983,7 +1012,7 @@ pub fn draw_setup_tab(
 
                     // ── Connection Mode ──
                     server_grid("server_conn_grid").show(ui, |ui| {
-                        ui.label("Connection Mode:");
+                        theme::row_label(ui, "Connection Mode:", theme::TEXT_PRIMARY);
                         ui.horizontal(|ui| {
                             // button_padding is set panel-wide above.
                             for mode in [OperatingMode::Mode1, OperatingMode::Mode2, OperatingMode::Mode3] {
@@ -1034,7 +1063,7 @@ pub fn draw_setup_tab(
 
                     // ── Show File ──
                     server_grid("server_show_file_grid").show(ui, |ui| {
-                        ui.label("Show file:");
+                        theme::row_label(ui, "Show file:", theme::TEXT_PRIMARY);
                         ui.horizontal(|ui| {
                             // Display only the filename with a leading
                             // "…/" so a long path doesn't blow out the
@@ -1249,11 +1278,12 @@ pub fn draw_setup_tab(
                     OperatingMode::Mode3 => {
                         peer_section(ui, "iPad", theme::ACCENT_ORANGE, w_sat, MIN_TOP_HEIGHT, false, ipad_status, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label("IP:");
-                                theme::padded_text_edit(
+                                theme::row_label(ui, "IP:", theme::TEXT_PRIMARY);
+                                theme::padded_text_edit_sized(
                                     ui,
                                     &mut setup.ipad_ip,
                                     w_sat - 120.0,
+                                    theme::ROW_H,
                                     !is_connected,
                                     "auto-detect",
                                 )
@@ -1337,11 +1367,12 @@ pub fn draw_setup_tab(
                 // QLab satellite — bottom-left
                 peer_section(ui, "QLab", theme::ACCENT_AMBER, w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("IP:");
-                        theme::padded_text_edit(
+                        theme::row_label(ui, "IP:", theme::TEXT_PRIMARY);
+                        theme::padded_text_edit_sized(
                             ui,
                             &mut setup.qlab_ip,
                             w_sat - 100.0,
+                            theme::ROW_H,
                             !is_connected,
                             "127.0.0.1",
                         )
@@ -1349,29 +1380,21 @@ pub fn draw_setup_tab(
                     });
                     ui.add_space(6.0);
 
-                    // QLab on the left, Server (= This Computer) on
-                    // the right — mirrors the panel's physical layout
-                    // where the Server card sits to the right of the
-                    // QLab card. Arrows are flipped accordingly so
-                    // each row still reads "sender → receiver".
+                    // QLab on the left, Server (= This Computer) on the
+                    // right — mirrors the panel's physical layout. Port rows
+                    // ordered QLab-listen first, then Server-listen. Only the
+                    // "Server" side is labelled; the QLab side is already
+                    // named by the card title, so no second "QLab" header.
                     egui::Grid::new("qlab_flow_grid")
                         .num_columns(3)
                         .spacing([6.0, 6.0])
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new("QLab").strong().color(theme::ACCENT_AMBER));
                             ui.label("");
-                            ui.label(egui::RichText::new("Server").strong().color(theme::ACCENT_GREEN));
-                            ui.end_row();
-
-                            // QLab Tx → Server listen (trigger_port)
-                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
-                            ui.label(egui::RichText::new("→").color(theme::TEXT_SECONDARY));
-                            port_edit_enabled(
-                                ui,
-                                &mut setup.trigger_port,
-                                !is_connected,
-                                "",
-                                "Local port the daemon listens on for cue triggers from QLab.",
+                            ui.label("");
+                            ui.label(
+                                egui::RichText::new("Server")
+                                    .strong()
+                                    .color(theme::ACCENT_GREEN),
                             );
                             ui.end_row();
 
@@ -1385,6 +1408,18 @@ pub fn draw_setup_tab(
                             );
                             ui.label(egui::RichText::new("←").color(theme::TEXT_SECONDARY));
                             ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
+                            ui.end_row();
+
+                            // QLab Tx → Server listen (trigger_port)
+                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("→").color(theme::TEXT_SECONDARY));
+                            port_edit_enabled(
+                                ui,
+                                &mut setup.trigger_port,
+                                !is_connected,
+                                "",
+                                "Local port the daemon listens on for cue triggers from QLab.",
+                            );
                             ui.end_row();
                         });
                 });

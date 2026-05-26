@@ -203,6 +203,11 @@ impl std::fmt::Display for MacroStepMode {
 
 // ─── Recording types (not persisted, runtime only) ─────────────────
 
+/// Window within which an exact-duplicate parameter echo is treated as the
+/// same console action (see [`MacroRecording::record`]). Covers the GP-OSC /
+/// iPad-protocol double-echo in Operating Modes 2/3.
+const RECORD_DEDUP_WINDOW_MS: u128 = 60;
+
 /// An in-progress recording session (learn mode).
 /// Not serialized — only exists while recording is active.
 #[derive(Clone, Debug)]
@@ -233,8 +238,23 @@ impl MacroRecording {
     }
 
     /// Record a parameter change. Computes delay from the previous step automatically.
+    ///
+    /// In Operating Modes 2/3 the daemon mirrors the console over both the
+    /// GP-OSC and iPad-protocol links at once, so a single console action can
+    /// echo on both within a few ms — which would record the identical step
+    /// twice. Drop an exact-duplicate `(address, value)` that lands within
+    /// `RECORD_DEDUP_WINDOW_MS` of the previous step. A human can't produce two
+    /// identical values that fast, and even if they could, replaying the value
+    /// once yields the same result.
     pub fn record(&mut self, address: ParameterAddress, value: ParameterValue) {
         let now = std::time::Instant::now();
+        if let Some(last) = self.steps.last()
+            && last.address == address
+            && last.value == value
+            && now.duration_since(self.last_step_at).as_millis() < RECORD_DEDUP_WINDOW_MS
+        {
+            return;
+        }
         let elapsed = now.duration_since(self.last_step_at).as_millis() as u32;
         self.last_step_at = now;
         self.steps.push(RecordedStep {
@@ -336,6 +356,36 @@ mod tests {
         let delay = rec.steps[1].elapsed_ms;
         assert!(delay >= 30, "Expected delay >= 30ms, got {delay}ms");
         assert!(delay <= 200, "Expected delay <= 200ms, got {delay}ms");
+    }
+
+    #[test]
+    fn recording_dedupes_rapid_duplicate_echo() {
+        // Same (address, value) arriving back-to-back (the GP-OSC + iPad
+        // double-echo in Modes 2/3) records only once.
+        let mut rec = MacroRecording::new();
+        rec.record(
+            make_addr(1, ParameterPath::Fader),
+            ParameterValue::Float(-3.0),
+        );
+        rec.record(
+            make_addr(1, ParameterPath::Fader),
+            ParameterValue::Float(-3.0),
+        );
+        assert_eq!(rec.step_count(), 1, "duplicate echo should be coalesced");
+
+        // A different value on the same channel is a real change — recorded.
+        rec.record(
+            make_addr(1, ParameterPath::Fader),
+            ParameterValue::Float(-2.0),
+        );
+        assert_eq!(rec.step_count(), 2);
+
+        // Same value on a different parameter is also distinct.
+        rec.record(
+            make_addr(1, ParameterPath::Mute),
+            ParameterValue::Float(-2.0),
+        );
+        assert_eq!(rec.step_count(), 3);
     }
 
     #[test]

@@ -651,23 +651,24 @@ pub(super) fn cell_available(
     available.get(ch).is_some_and(|s| s.contains(path))
 }
 
-/// Group an `applicable_to` slice into per-section runs while preserving the
-/// signal-flow order. Pure helper — used by the matrix renderer to lay out
-/// sections in row-blocks; lives here so the test module can access it
-/// without pulling egui into scope.
+/// Group an `applicable_to` slice into one block per section. Each section
+/// appears exactly once — paths belonging to the same section are merged even
+/// when they aren't contiguous in `paths` (e.g. the `InputGain` paths are
+/// split by Trim / Balance / Polarity in signal-flow order, which would
+/// otherwise render as two separate "Input" headers). Section order is fixed
+/// by first appearance; path order within a section is preserved. Pure helper
+/// — lives here so the test module can access it without pulling egui in.
 pub(super) fn group_paths_by_section(
     paths: &[ParameterPath],
 ) -> Vec<(ParameterSection, Vec<ParameterPath>)> {
     let mut out: Vec<(ParameterSection, Vec<ParameterPath>)> = Vec::new();
     for path in paths {
         let s = path.section();
-        if let Some((cur_section, cur_paths)) = out.last_mut() {
-            if *cur_section == s {
-                cur_paths.push(path.clone());
-                continue;
-            }
+        if let Some((_, existing)) = out.iter_mut().find(|(sec, _)| *sec == s) {
+            existing.push(path.clone());
+        } else {
+            out.push((s, vec![path.clone()]));
         }
-        out.push((s, vec![path.clone()]));
     }
     out
 }
@@ -907,6 +908,33 @@ mod tests {
         assert_eq!(grouped[1].1.len(), 3);
         assert_eq!(grouped[2].0, ParameterSection::Eq);
         assert_eq!(grouped[2].1.len(), 2);
+    }
+
+    #[test]
+    fn group_paths_by_section_merges_non_contiguous_runs() {
+        // InputGain paths are split by Trim/Polarity in signal-flow order;
+        // they must still collapse into a single "Input" block (one header),
+        // positioned by first appearance, with path order preserved.
+        let paths = vec![
+            ParameterPath::AnalogGain, // InputGain
+            ParameterPath::Trim,       // Trim
+            ParameterPath::Polarity,   // Polarity
+            ParameterPath::Phantom,    // InputGain again
+            ParameterPath::StereoMode, // InputGain again
+        ];
+        let grouped = group_paths_by_section(&paths);
+        assert_eq!(grouped.len(), 3, "InputGain must not appear twice");
+        assert_eq!(grouped[0].0, ParameterSection::InputGain);
+        assert_eq!(
+            grouped[0].1,
+            vec![
+                ParameterPath::AnalogGain,
+                ParameterPath::Phantom,
+                ParameterPath::StereoMode
+            ]
+        );
+        assert_eq!(grouped[1].0, ParameterSection::Trim);
+        assert_eq!(grouped[2].0, ParameterSection::Polarity);
     }
 
     #[test]

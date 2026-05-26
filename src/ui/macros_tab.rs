@@ -551,6 +551,8 @@ pub fn draw_macros_tab(
                         cue_manager,
                         palette_manager,
                         last_received,
+                        streamdeck_engine,
+                        streamdeck_config,
                         runtime,
                     );
                 }
@@ -600,8 +602,15 @@ fn draw_learn_section(
                 });
 
                 ui.horizontal(|ui| {
-                    ui.label("Name:");
-                    ui.text_edit_singleline(&mut macros_state.learn_name);
+                    theme::row_label(ui, "Name:", theme::TEXT_PRIMARY);
+                    theme::padded_text_edit_sized(
+                        ui,
+                        &mut macros_state.learn_name,
+                        200.0,
+                        theme::ROW_H,
+                        true,
+                        "",
+                    );
                 });
 
                 ui.horizontal(|ui| {
@@ -842,6 +851,8 @@ fn draw_step_editor(
     cue_manager: &Arc<RwLock<CueManager>>,
     palette_manager: &Arc<RwLock<PaletteManager>>,
     last_received: &Arc<RwLock<Option<ParameterAddress>>>,
+    streamdeck_engine: &Arc<crate::console::streamdeck_engine::StreamDeckEngine>,
+    streamdeck_config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
     runtime: &tokio::runtime::Handle,
 ) {
     let Some(selected_id) = macros_state.selected_macro_id else {
@@ -966,12 +977,27 @@ fn draw_step_editor(
             );
             if resp.changed() {
                 let mgr = macro_manager.clone();
+                let cfg = streamdeck_config.clone();
+                let eng = streamdeck_engine.clone();
                 let new_name = macros_state.edit_macro_name.clone();
                 runtime.spawn(async move {
-                    let mut m = mgr.write().await;
-                    if let Some(mac) = m.get_macro_mut(&selected_id) {
-                        mac.name = new_name;
-                        mac.touch();
+                    {
+                        let mut m = mgr.write().await;
+                        if let Some(mac) = m.get_macro_mut(&selected_id) {
+                            mac.name = new_name.clone();
+                            mac.touch();
+                        }
+                    }
+                    // Push the new name to any Stream Deck button currently
+                    // displaying this macro so its label updates immediately
+                    // rather than waiting for the next button-config change.
+                    let cfg_r = cfg.read().await;
+                    for (idx, button) in cfg_r.buttons.iter().enumerate() {
+                        if let Some(step) = button.next_step()
+                            && step.macro_id == selected_id
+                        {
+                            eng.refresh_button(idx as u8, new_name.clone(), step.color);
+                        }
                     }
                 });
                 macros_state.edit_macro_name_synced =
@@ -2673,9 +2699,8 @@ fn draw_streamdeck_panel(
     };
 
     ui.horizontal(|ui| {
-        ui.add_sized([60.0, 26.0], egui::Label::new("Device:"));
-        ui.scope(|ui| {
-            ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
+        theme::row_label(ui, "Device:", theme::TEXT_PRIMARY);
+        theme::row_combo(ui, 0, |ui| {
             egui::ComboBox::from_id_salt("streamdeck_device")
                 .width(260.0)
                 .selected_text(selected_label)
@@ -2901,8 +2926,7 @@ fn draw_streamdeck_panel(
                                 .map(|(_, n)| n.clone())
                         })
                         .unwrap_or_else(|| "— select macro —".into());
-                    ui.scope(|ui| {
-                        ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
+                    theme::row_combo(ui, 0, |ui| {
                         egui::ComboBox::from_id_salt("sd_add_step_macro")
                             .width(200.0)
                             .selected_text(selected_label)

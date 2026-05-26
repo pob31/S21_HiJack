@@ -318,109 +318,56 @@ pub fn draw_gangs_tab(
                     |ui| {
                         ui.set_min_width(LEFT_COL_W);
                         ui.set_max_width(LEFT_COL_W);
-                        // Each row's label needs the cell to be the
-                        // full row height (26 px) AND the text painted
-                        // at the cell's vertical centre — otherwise
-                        // egui Grid top-aligns the natural-height
-                        // (~18 px) label cell against the 26 px input
-                        // cell and the input visibly drops below the
-                        // label's centreline.
-                        //
-                        // `add_sized` doesn't help here: it reports the
-                        // child's `min_rect` (label's natural ~18 px)
-                        // back to the parent, so the cell never grows
-                        // past 18 px. Instead we explicitly allocate
-                        // `label_w × 26` and paint the galley with a
-                        // y offset that centres it.
-                        const ROW_H: f32 = 26.0;
-                        let row_label = |ui: &mut egui::Ui, text: &str| {
-                            let galley = ui.painter().layout_no_wrap(
-                                text.to_string(),
-                                egui::FontId::proportional(theme::FONT_SIZE_BODY),
-                                theme::TEXT_SECONDARY,
-                            );
-                            let label_w = galley.size().x;
-                            let label_h = galley.size().y;
-                            let (rect, _) = ui.allocate_exact_size(
-                                egui::Vec2::new(label_w, ROW_H),
-                                egui::Sense::hover(),
-                            );
-                            let y = rect.min.y + (ROW_H - label_h) / 2.0;
-                            ui.painter().galley(
-                                egui::pos2(rect.min.x, y),
-                                galley,
-                                theme::TEXT_SECONDARY,
-                            );
-                        };
+                        // 2-column label|control form. `theme::row_label`
+                        // sizes each label cell to ROW_H and centres it
+                        // (Grid cells top-align, so a bare label would sit
+                        // above the control's centreline); `theme::row_combo`
+                        // sizes the ComboBox to the same ROW_H so it matches
+                        // the text edits beside / above it.
                         egui::Grid::new("add_gang_grid")
                             .num_columns(2)
-                            // Bumped vertical spacing 6 → 10 so any
-                            // small per-row height differences read as
-                            // padding rather than misalignment.
                             .spacing([10.0, 10.0])
                             .show(ui, |ui| {
-                                row_label(ui, "Name:");
-                                theme::padded_text_edit(
+                                theme::row_label(ui, "Name:", theme::TEXT_SECONDARY);
+                                theme::padded_text_edit_sized(
                                     ui,
                                     &mut tab.new_gang_name,
                                     240.0,
+                                    theme::ROW_H,
                                     true,
                                     "",
                                 );
                                 ui.end_row();
 
-                                row_label(ui, "Channel type:");
-                                // Wrap the combobox in a Frame with a
-                                // negative top inner_margin to shift
-                                // the whole widget (fill + text + chevron)
-                                // up by 5 px relative to its cell —
-                                // user wants the combobox aligned with
-                                // the labels above and below, and the
-                                // increased inter-row spacing absorbs
-                                // the visual displacement.
-                                egui::Frame::new()
-                                    .inner_margin(egui::Margin {
-                                        left: 0,
-                                        right: 0,
-                                        top: -7,
-                                        bottom: 0,
-                                    })
-                                    .show(ui, |ui| {
-                                        ui.spacing_mut().button_padding =
-                                            egui::Vec2::new(12.0, 3.5);
-                                        let visuals = ui.visuals_mut();
-                                        visuals.widgets.inactive.bg_fill = theme::BG_INPUT;
-                                        visuals.widgets.inactive.weak_bg_fill = theme::BG_INPUT;
-                                        visuals.widgets.hovered.bg_fill = theme::BG_INPUT;
-                                        visuals.widgets.hovered.weak_bg_fill = theme::BG_INPUT;
-                                        visuals.widgets.open.bg_fill = theme::BG_INPUT;
-                                        visuals.widgets.open.weak_bg_fill = theme::BG_INPUT;
-                                        egui::ComboBox::from_id_salt("gang_channel_type")
-                                            .width(240.0)
-                                            .selected_text(tab.new_gang_channel_type.label())
-                                            .show_ui(ui, |ui| {
-                                                for ct in &ChannelTypeSelection::ALL {
-                                                    ui.selectable_value(
-                                                        &mut tab.new_gang_channel_type,
-                                                        *ct,
-                                                        ct.label(),
-                                                    );
-                                                }
-                                            });
-                                    });
+                                theme::row_label(ui, "Channel type:", theme::TEXT_SECONDARY);
+                                theme::row_combo(ui, 0, |ui| {
+                                    egui::ComboBox::from_id_salt("gang_channel_type")
+                                        .width(240.0)
+                                        .selected_text(tab.new_gang_channel_type.label())
+                                        .show_ui(ui, |ui| {
+                                            for ct in &ChannelTypeSelection::ALL {
+                                                ui.selectable_value(
+                                                    &mut tab.new_gang_channel_type,
+                                                    *ct,
+                                                    ct.label(),
+                                                );
+                                            }
+                                        });
+                                });
                                 ui.end_row();
 
-                                row_label(ui, "Members:");
+                                theme::row_label(ui, "Members:", theme::TEXT_SECONDARY);
                                 let hint =
                                     if tab.new_gang_channel_type == ChannelTypeSelection::Mixed {
                                         "I1-4,A1-2,G5"
                                     } else {
                                         "1-4,7,12"
                                     };
-                                theme::padded_text_edit(
+                                theme::padded_text_edit_sized(
                                     ui,
                                     &mut tab.new_gang_members,
                                     240.0,
+                                    theme::ROW_H,
                                     true,
                                     hint,
                                 );

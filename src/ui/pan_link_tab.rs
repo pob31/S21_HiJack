@@ -165,7 +165,26 @@ pub fn draw_pan_link_tab(
             let stereo =
                 !uses_ipad_protocol || matches!(mix_modes.get(idx), Some(ChannelMode::Stereo));
             let label = state_guard.config.bus_label(bus);
-            Some(AuxBusInfo { bus, label, stereo })
+            // Aux names are keyed by per-type aux index (1-based), so count
+            // the aux buses preceding this one to map the unified bus index
+            // onto the aux number the console stores names under.
+            let aux_index = mix_types.iter().take(idx).filter(|a| **a).count() as u8 + 1;
+            let name = state_guard
+                .get(&ParameterAddress {
+                    channel: ChannelId::Aux(aux_index),
+                    parameter: ParameterPath::Name,
+                })
+                .and_then(|v| match v {
+                    ParameterValue::String(s) if !s.is_empty() => Some(s.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            Some(AuxBusInfo {
+                bus,
+                label,
+                name,
+                stereo,
+            })
         })
         .collect();
 
@@ -275,6 +294,8 @@ struct AuxBusInfo {
     /// Unified mix-output bus index (1-based).
     bus: u8,
     label: String,
+    /// Operator-assigned aux name, if any (empty when unnamed).
+    name: String,
     stereo: bool,
 }
 
@@ -426,8 +447,14 @@ fn draw_auxes_panel(ui: &mut egui::Ui, tab: &mut PanLinkTabState, aux_buses: &[A
                 for info in chunk {
                     let aux_state = compute_aux_state(tab, info);
                     let mono_override = tab.staged.is_aux_mono_override(info.bus);
-                    let clicks =
-                        draw_aux_tile(ui, &info.label, info.stereo, aux_state, mono_override);
+                    let clicks = draw_aux_tile(
+                        ui,
+                        &info.label,
+                        &info.name,
+                        info.stereo,
+                        aux_state,
+                        mono_override,
+                    );
                     if clicks.mono {
                         toggled_mono = Some(info.bus);
                     } else if clicks.link && !tab.selected_inputs.is_empty() {
@@ -600,6 +627,7 @@ fn draw_input_tile(
 fn draw_aux_tile(
     ui: &mut egui::Ui,
     label: &str,
+    name: &str,
     stereo: bool,
     state: AuxState,
     mono_override: bool,
@@ -674,13 +702,33 @@ fn draw_aux_tile(
         AuxState::Mono => theme::TEXT_DISABLED,
         _ => theme::TEXT_PRIMARY,
     };
-    painter.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(13.0),
-        text_color,
-    );
+    if name.is_empty() {
+        // Unnamed aux — single centred line, as before.
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(13.0),
+            text_color,
+        );
+    } else {
+        // Named aux — bus label on the top line, name below it, mirroring
+        // the input tiles' number-then-name layout.
+        painter.text(
+            egui::pos2(rect.center().x, rect.min.y + 13.0),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(13.0),
+            text_color,
+        );
+        painter.text(
+            egui::pos2(rect.center().x, rect.min.y + 29.0),
+            egui::Align2::CENTER_CENTER,
+            name,
+            egui::FontId::proportional(11.0),
+            text_color,
+        );
+    }
 
     // Mono / stereo toggle in the top-left corner. Click toggles the
     // operator's manual mono override for this aux. Always shown so
@@ -798,11 +846,13 @@ mod tests {
         let info = AuxBusInfo {
             bus: 5,
             label: "Aux 5".into(),
+            name: String::new(),
             stereo: true,
         };
         let mono = AuxBusInfo {
             bus: 6,
             label: "Aux 6".into(),
+            name: String::new(),
             stereo: false,
         };
 

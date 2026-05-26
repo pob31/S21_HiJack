@@ -252,10 +252,18 @@ pub fn draw_scope_window(
                     state.clear();
                 }
                 ui.add_space(8.0);
-                theme::colored_badge(
+                let sel_count = state.selection_count();
+                // Fixed width so the badge doesn't grow with the count and
+                // shove the controls after it along the row. Singular
+                // "Selection" for 0 and 1, plural otherwise.
+                theme::colored_badge_sized(
                     ui,
-                    &format!("{} selections", state.selection_count()),
+                    &format!(
+                        "{sel_count} Selection{}",
+                        if sel_count > 1 { "s" } else { "" }
+                    ),
                     theme::ACCENT_BLUE,
+                    120.0,
                 );
                 ui.add_space(16.0);
 

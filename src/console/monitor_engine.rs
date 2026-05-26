@@ -219,7 +219,10 @@ impl MonitorEngine {
                 return;
             }
         };
-        if !client.is_permitted(aux_ch, 1) {
+        // Aux fader/mute changes only involve an aux channel — there is no
+        // input channel, so check `permitted_auxes` directly rather than
+        // going through `is_permitted`, which would also test `visible_inputs`.
+        if !client.permitted_auxes.contains(&aux_ch) {
             warn!(name = %client_name, aux_ch, "Monitor aux: not permitted");
             return;
         }

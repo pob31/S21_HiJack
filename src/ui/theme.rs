@@ -279,14 +279,146 @@ pub fn padded_text_edit(
     enabled: bool,
     hint: &str,
 ) -> egui::Response {
+    padded_text_edit_sized(ui, value, width, TEXT_EDIT_HEIGHT, enabled, hint)
+}
+
+/// Same as [`padded_text_edit`] but with an explicit `height` — used by the
+/// row-alignment helpers below to force a TextEdit to a shared row height.
+pub fn padded_text_edit_sized(
+    ui: &mut egui::Ui,
+    value: &mut String,
+    width: f32,
+    height: f32,
+    enabled: bool,
+    hint: &str,
+) -> egui::Response {
     ui.add_enabled_ui(enabled, |ui| {
         let mut edit = egui::TextEdit::singleline(value).margin(TEXT_EDIT_MARGIN);
         if !hint.is_empty() {
             edit = edit.hint_text(hint);
         }
-        ui.add_sized([width, TEXT_EDIT_HEIGHT], edit)
+        ui.add_sized([width, height], edit)
     })
     .inner
+}
+
+// ─── Row-alignment primitives ──────────────────────────────────────────
+//
+// Mixing bare labels (~18 px), text edits (26 px) and buttons / comboboxes
+// (~30-35 px under the global `button_padding = 12×8`) in one horizontal row
+// reads as ragged — egui centres them vertically, but the differing heights
+// put the text on different lines. The fix: pick one row height, size every
+// widget in the row to it, and centre. `ROW_H` matches the action-button
+// height already used across the Snapshots / Macros tabs.
+pub const ROW_H: f32 = 28.0;
+
+/// Paint `text` as a label whose galley is vertically centred within a
+/// `ROW_H`-tall cell. Unlike `ui.add_sized([w, ROW_H], Label)` — which reports
+/// the label's natural ~18 px `min_rect` back to the parent and so leaves a
+/// Grid cell short and top-aligned — this allocates exactly `text_w × ROW_H`,
+/// so the control beside it lines up on the same centreline.
+pub fn row_label(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+    let galley = ui.painter().layout_no_wrap(
+        text.to_string(),
+        egui::FontId::proportional(FONT_SIZE_BODY),
+        color,
+    );
+    let label_h = galley.size().y;
+    let (rect, _) = ui.allocate_exact_size(
+        egui::Vec2::new(galley.size().x, ROW_H),
+        egui::Sense::hover(),
+    );
+    let y = rect.min.y + (ROW_H - label_h) / 2.0;
+    ui.painter()
+        .galley(egui::pos2(rect.min.x, y), galley, color);
+}
+
+/// `ROW_H`-tall action button. Compresses `button_padding.y` in a child scope
+/// so the button renders at exactly `ROW_H` instead of overflowing under the
+/// global `(12, 8)` padding. Returns `clicked()`; respects `enabled`.
+pub fn row_action_button(
+    ui: &mut egui::Ui,
+    text: &str,
+    color: egui::Color32,
+    width: f32,
+    enabled: bool,
+) -> bool {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
+        ui.add_enabled(
+            enabled,
+            action_button(text, color, egui::Vec2::new(width, ROW_H)),
+        )
+        .clicked()
+    })
+    .inner
+}
+
+/// `ROW_H`-tall long-press button — see [`long_press_button`]. Returns true
+/// the frame the press completes.
+pub fn row_long_press_button(
+    ui: &mut egui::Ui,
+    text: &str,
+    color: egui::Color32,
+    width: f32,
+    enabled: bool,
+) -> bool {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
+        long_press_button(
+            ui,
+            text,
+            color,
+            egui::Vec2::new(width, ROW_H),
+            enabled,
+            LONG_PRESS_DURATION_MS,
+        )
+    })
+    .inner
+}
+
+/// Run `add_combo` inside a scope tuned so an `egui::ComboBox`'s closed box is
+/// `ROW_H` tall — matching the sibling text edits / buttons — and centres on
+/// the row's centreline. The caller builds the ComboBox itself (it owns the
+/// id_salt, width, selected_text and items).
+///
+/// The closed combo's height is driven by `interact_size.y`, which we pin to
+/// `ROW_H`; `button_padding` stays modest so it doesn't push past that. Once
+/// the combo is full row height, `ui.horizontal`'s `Align::Center` (and a
+/// Grid row whose label cell is also `ROW_H`) line it up without any nudge —
+/// `nudge_top` remains as an optional fine-tune (negative = up).
+pub fn row_combo<R>(
+    ui: &mut egui::Ui,
+    nudge_top: i8,
+    add_combo: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 0,
+            right: 0,
+            top: nudge_top,
+            bottom: 0,
+        })
+        .show(ui, |ui| {
+            ui.spacing_mut().interact_size.y = ROW_H;
+            ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
+            let v = ui.visuals_mut();
+            v.widgets.inactive.bg_fill = BG_INPUT;
+            v.widgets.inactive.weak_bg_fill = BG_INPUT;
+            v.widgets.hovered.bg_fill = BG_INPUT;
+            v.widgets.hovered.weak_bg_fill = BG_INPUT;
+            v.widgets.open.bg_fill = BG_INPUT;
+            v.widgets.open.weak_bg_fill = BG_INPUT;
+            add_combo(ui)
+        })
+        .inner
+}
+
+/// Pin the current horizontal row to `ROW_H` by allocating a zero-width,
+/// `ROW_H`-tall invisible spacer. Use as the first thing in a checkbox- or
+/// radio-only row so its content centres on the shared centreline.
+pub fn row_spacer(ui: &mut egui::Ui) {
+    ui.allocate_exact_size(egui::Vec2::new(0.0, ROW_H), egui::Sense::hover());
 }
 
 /// Scope/section toggle block — green when active, grey when inactive.

@@ -201,14 +201,6 @@ pub struct Snapshot {
     /// a palette ripple to every linked snapshot automatically.
     #[serde(with = "palette_refs_serde")]
     pub palette_refs: HashMap<(ChannelId, PaletteKind), Uuid>,
-    /// Legacy field — the per-snapshot console memory row. Replaced by
-    /// `Cue::console_snapshot`, which lets multiple cues target the same
-    /// desk row and lets a cue exist without an S21HiJack overlay. Show
-    /// files written before this change still carry the value under the
-    /// `console_snapshot` JSON key; the show-file loader migrates it onto
-    /// linked cues and clears the field. Never re-serialized.
-    #[serde(rename = "console_snapshot", default, skip_serializing)]
-    pub(crate) legacy_console_snapshot: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
 }
@@ -224,7 +216,6 @@ impl Snapshot {
             kind,
             data,
             palette_refs: HashMap::new(),
-            legacy_console_snapshot: None,
             created_at: now,
             modified_at: now,
         }
@@ -332,9 +323,6 @@ impl<'de> serde::Deserialize<'de> for Snapshot {
             /// v8 legacy field — present on older show files.
             #[serde(default)]
             eq_palette_refs: Vec<LegacyEqRefEntry>,
-            /// v13+ — optional console memory row reference.
-            #[serde(default)]
-            console_snapshot: Option<i32>,
             created_at: DateTime<Utc>,
             modified_at: DateTime<Utc>,
         }
@@ -353,7 +341,6 @@ impl<'de> serde::Deserialize<'de> for Snapshot {
             kind: shadow.kind,
             data: shadow.data,
             palette_refs: shadow.palette_refs,
-            legacy_console_snapshot: shadow.console_snapshot,
             created_at: shadow.created_at,
             modified_at: shadow.modified_at,
         })

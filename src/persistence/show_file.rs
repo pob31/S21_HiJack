@@ -246,45 +246,13 @@ impl ShowFile {
     /// Load a show file from disk.
     pub async fn load(path: &Path) -> std::io::Result<Self> {
         let json = tokio::fs::read_to_string(path).await?;
-        let mut show: ShowFile = serde_json::from_str(&json).map_err(|e| {
+        let show: ShowFile = serde_json::from_str(&json).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("Deserialize error: {e}"),
             )
         })?;
-        show.migrate_legacy_console_snapshots();
         Ok(show)
-    }
-
-    /// Migrate legacy `Snapshot::console_snapshot` values into the cues
-    /// that point at them. Old show files (≤ v15) stored the desk row
-    /// per-snapshot; the new model puts it on the cue so multiple cues
-    /// can target the same row and overlay-only / row-only cues exist.
-    /// Idempotent — does nothing once `legacy_console_snapshot` is None
-    /// on every snapshot.
-    fn migrate_legacy_console_snapshots(&mut self) {
-        use std::collections::HashMap;
-        let rows: HashMap<uuid::Uuid, i32> = self
-            .snapshots
-            .iter()
-            .filter_map(|s| s.legacy_console_snapshot.map(|r| (s.id, r)))
-            .collect();
-        if rows.is_empty() {
-            return;
-        }
-        for cue in self.cue_list.cues.iter_mut() {
-            if cue.console_snapshot.is_some() {
-                continue;
-            }
-            if let Some(snap_id) = cue.snapshot_id {
-                if let Some(row) = rows.get(&snap_id) {
-                    cue.console_snapshot = Some(*row);
-                }
-            }
-        }
-        for snap in self.snapshots.iter_mut() {
-            snap.legacy_console_snapshot = None;
-        }
     }
 }
 
@@ -590,119 +558,6 @@ mod tests {
             snap.palette_refs
                 .contains_key(&(ChannelId::Input(1), PaletteKind::Eq))
         );
-
-        let _ = tokio::fs::remove_file(&path).await;
-    }
-
-    #[tokio::test]
-    async fn legacy_snapshot_console_row_migrates_to_linked_cue() {
-        // Pre-cue-console-row show files stored the desk row on the
-        // Snapshot. Load such a file and verify the row landed on the
-        // linked cue, that the snapshot's legacy field is cleared, and
-        // that an explicit cue.console_snapshot already on disk is left
-        // alone (not overwritten by the migration).
-        let legacy_json = r#"{
-            "version": 15,
-            "console_config": {
-                "console_name": "", "console_serial": "", "session_filename": null,
-                "input_channel_count": 48, "aux_output_count": 8,
-                "group_output_count": 16, "matrix_output_count": 8,
-                "matrix_input_count": 10, "control_group_count": 10,
-                "graphic_eq_count": 16, "talkback_output_count": 0,
-                "mix_output_types": [], "mix_output_modes": [],
-                "input_modes": [], "group_modes": []
-            },
-            "scope_templates": [],
-            "snapshots": [
-                {
-                    "id": "11111111-1111-1111-1111-111111111111",
-                    "name": "Sc A",
-                    "scope": {"id": "00000000-0000-0000-0000-000000000001", "name": "S", "channel_scopes": []},
-                    "kind": "ApplyOnSave",
-                    "data": {"values": []},
-                    "palette_refs": [],
-                    "console_snapshot": 7,
-                    "created_at": "2025-01-01T00:00:00Z",
-                    "modified_at": "2025-01-01T00:00:00Z"
-                },
-                {
-                    "id": "22222222-2222-2222-2222-222222222222",
-                    "name": "Sc B (untouched)",
-                    "scope": {"id": "00000000-0000-0000-0000-000000000002", "name": "S", "channel_scopes": []},
-                    "kind": "ApplyOnSave",
-                    "data": {"values": []},
-                    "palette_refs": [],
-                    "console_snapshot": 9,
-                    "created_at": "2025-01-01T00:00:00Z",
-                    "modified_at": "2025-01-01T00:00:00Z"
-                }
-            ],
-            "cue_list": {
-                "id": "00000000-0000-0000-0000-000000000000",
-                "name": "Main",
-                "cues": [
-                    {
-                        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                        "cue_number": 1.0,
-                        "name": "Cue with row to migrate",
-                        "snapshot_id": "11111111-1111-1111-1111-111111111111",
-                        "scope_override": null,
-                        "fade_time": 0.0,
-                        "qlab_cue_id": null,
-                        "notes": ""
-                    },
-                    {
-                        "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                        "cue_number": 2.0,
-                        "name": "Cue with explicit row",
-                        "snapshot_id": "11111111-1111-1111-1111-111111111111",
-                        "console_snapshot": 42,
-                        "scope_override": null,
-                        "fade_time": 0.0,
-                        "qlab_cue_id": null,
-                        "notes": ""
-                    }
-                ]
-            },
-            "macros": [],
-            "palettes": [],
-            "monitor_clients": [],
-            "gang_groups": []
-        }"#;
-        let dir = std::env::temp_dir().join("s21_hijack_test");
-        let _ = tokio::fs::create_dir_all(&dir).await;
-        let path = dir.join("test_console_snapshot_migration.json");
-        tokio::fs::write(&path, legacy_json).await.unwrap();
-
-        let loaded = ShowFile::load(&path).await.unwrap();
-
-        // Cue 1.0 (None on disk → migrated from snapshot row 7).
-        let cue1 = loaded
-            .cue_list
-            .cues
-            .iter()
-            .find(|c| (c.cue_number - 1.0).abs() < 0.001)
-            .unwrap();
-        assert_eq!(cue1.console_snapshot, Some(7));
-
-        // Cue 2.0 had an explicit row on disk — migration leaves it alone.
-        let cue2 = loaded
-            .cue_list
-            .cues
-            .iter()
-            .find(|c| (c.cue_number - 2.0).abs() < 0.001)
-            .unwrap();
-        assert_eq!(cue2.console_snapshot, Some(42));
-
-        // Legacy field cleared on every snapshot.
-        for snap in &loaded.snapshots {
-            assert_eq!(snap.legacy_console_snapshot, None);
-        }
-
-        // Sc B is unreferenced by any cue, so its row 9 is dropped — the
-        // operator can re-create a cue and re-link it manually. (Logged
-        // by the migration is overkill for v1; the dropped value is
-        // visible in git history if it matters.)
 
         let _ = tokio::fs::remove_file(&path).await;
     }

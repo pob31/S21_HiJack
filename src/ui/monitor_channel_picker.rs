@@ -311,31 +311,30 @@ pub fn draw_channel_picker(
             let content_w = GRIDS_CONTENT_W.min(ui.available_width());
             ui.set_min_width(content_w);
             ui.set_max_width(content_w);
-            // Header row: name field + Save/Cancel buttons.
+            // Header row: name field + Save/Cancel buttons, all sized to
+            // ROW_H so the label, text box and buttons share a baseline.
             ui.horizontal(|ui| {
-                ui.label("Name:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.name)
-                        .desired_width(220.0)
-                        .hint_text("Drummer, Keys, …"),
+                theme::row_label(ui, "Name:", theme::TEXT_PRIMARY);
+                theme::padded_text_edit_sized(
+                    ui,
+                    &mut state.name,
+                    220.0,
+                    theme::ROW_H,
+                    true,
+                    "Drummer, Keys, …",
                 );
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let cancel_btn = theme::action_button(
-                        "Cancel",
-                        theme::ACCENT_RED,
-                        egui::Vec2::new(80.0, 28.0),
-                    );
-                    if ui.add(cancel_btn).clicked() {
+                    if theme::row_action_button(ui, "Cancel", theme::ACCENT_RED, 80.0, true) {
                         outcome = Some(PickerOutcome::Cancel);
                     }
-
-                    let save_btn = theme::action_button(
+                    if theme::row_action_button(
+                        ui,
                         "Save",
                         theme::ACCENT_GREEN,
-                        egui::Vec2::new(80.0, 28.0),
-                    );
-                    if ui.add_enabled(state.save_enabled(), save_btn).clicked() {
+                        80.0,
+                        state.save_enabled(),
+                    ) {
                         outcome = Some(state.to_save_outcome());
                     }
                 });

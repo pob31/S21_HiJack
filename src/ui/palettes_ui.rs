@@ -116,32 +116,46 @@ pub fn draw_palettes_section(
 
     // ── Capture palette ─────────────────────────────────────────
     ui.horizontal(|ui| {
-        ui.label("Channel:");
-        egui::ComboBox::from_id_salt("palette_capture_ch_type")
-            .selected_text(state.capture_channel_type.label())
-            .width(70.0)
-            .show_ui(ui, |ui| {
-                for ch in ChannelTypeChoice::ALL {
-                    ui.selectable_value(&mut state.capture_channel_type, ch, ch.label());
-                }
-            });
-        ui.add(egui::TextEdit::singleline(&mut state.capture_channel_number).desired_width(40.0));
+        theme::row_label(ui, "Channel:", theme::TEXT_PRIMARY);
+        theme::row_combo(ui, 0, |ui| {
+            egui::ComboBox::from_id_salt("palette_capture_ch_type")
+                .selected_text(state.capture_channel_type.label())
+                .width(70.0)
+                .show_ui(ui, |ui| {
+                    for ch in ChannelTypeChoice::ALL {
+                        ui.selectable_value(&mut state.capture_channel_type, ch, ch.label());
+                    }
+                });
+        });
+        theme::padded_text_edit_sized(
+            ui,
+            &mut state.capture_channel_number,
+            40.0,
+            theme::ROW_H,
+            true,
+            "",
+        );
 
-        ui.label("Name:");
-        ui.add(egui::TextEdit::singleline(&mut state.new_palette_name).desired_width(140.0));
+        theme::row_label(ui, "Name:", theme::TEXT_PRIMARY);
+        theme::padded_text_edit_sized(
+            ui,
+            &mut state.new_palette_name,
+            140.0,
+            theme::ROW_H,
+            true,
+            "",
+        );
     });
 
     ui.horizontal(|ui| {
-        ui.label("Include:");
+        theme::row_label(ui, "Include:", theme::TEXT_PRIMARY);
         for (i, kind) in PaletteKind::all().iter().enumerate() {
             ui.checkbox(&mut state.capture_kinds[i], kind.label());
         }
 
         let any_kind = state.capture_kinds.iter().any(|on| *on);
         let can_capture = is_connected && !state.new_palette_name.is_empty() && any_kind;
-        let capture_btn =
-            theme::action_button("Capture", theme::ACCENT_GREEN, egui::Vec2::new(90.0, 28.0));
-        if ui.add_enabled(can_capture, capture_btn).clicked() {
+        if theme::row_action_button(ui, "Capture", theme::ACCENT_GREEN, 90.0, can_capture) {
             capture_palette(state, console_state, palette_manager, runtime, ui_tx);
         }
     });
@@ -244,7 +258,7 @@ pub fn draw_palettes_section(
 
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.label("Name:");
+        theme::row_label(ui, "Name:", theme::TEXT_PRIMARY);
         // Draft buffer is only present while editing; fall back to the
         // stored name. We bind the TextEdit to a local string and write
         // through to the draft on change.
@@ -252,7 +266,7 @@ pub fn draw_palettes_section(
             Some((id, draft)) if *id == pid => draft.clone(),
             _ => palette_info.name.clone(),
         };
-        let resp = ui.add(egui::TextEdit::singleline(&mut buf).desired_width(180.0));
+        let resp = theme::padded_text_edit_sized(ui, &mut buf, 180.0, theme::ROW_H, true, "");
         if resp.changed() {
             state.rename_draft = Some((pid, buf.clone()));
         }
@@ -269,20 +283,10 @@ pub fn draw_palettes_section(
             }
         }
 
-        let recapture_btn = theme::action_button(
-            "Re-capture",
-            theme::ACCENT_BLUE,
-            egui::Vec2::new(90.0, 28.0),
-        );
-        if ui.add_enabled(is_connected, recapture_btn).clicked() {
+        if theme::row_action_button(ui, "Re-capture", theme::ACCENT_BLUE, 90.0, is_connected) {
             recapture_palette(pid, console_state, palette_manager, runtime, ui_tx);
         }
-        let del_btn = theme::action_button(
-            "Delete Palette",
-            theme::ACCENT_RED,
-            egui::Vec2::new(100.0, 28.0),
-        );
-        if ui.add(del_btn).clicked() {
+        if theme::row_action_button(ui, "Delete Palette", theme::ACCENT_RED, 100.0, true) {
             delete_palette(pid, cue_manager, palette_manager, runtime);
             state.selected_palette_id = None;
             state.rename_draft = None;
