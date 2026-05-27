@@ -251,6 +251,10 @@ impl HiJackApp {
                     self.snapshots.status_message =
                         Some(format!("Captured '{name}' ({param_count} params)"));
                 }
+                UiEvent::SnapshotRecalled { name, params_sent } => {
+                    self.snapshots.status_message =
+                        Some(format!("Recalled '{name}' ({params_sent} params sent)"));
+                }
                 UiEvent::CueRecalled { .. } => {
                     // The Live tab used to surface a "Cue X.Y recalled
                     // (N params)" line here; now that the transport

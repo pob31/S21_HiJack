@@ -56,6 +56,12 @@ pub enum UiEvent {
         name: String,
         param_count: usize,
     },
+    /// A snapshot recall finished. Distinct from `SnapshotCaptured` so the
+    /// status line reads "Recalled …" rather than "Captured …".
+    SnapshotRecalled {
+        name: String,
+        params_sent: usize,
+    },
     CueRecalled {
         cue_number: f32,
         params_sent: usize,

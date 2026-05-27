@@ -1326,6 +1326,10 @@ fn capture_snapshot(
     let tx = ui_tx.clone();
 
     runtime.spawn(async move {
+        // The live mirror already tracks the surface (the console echoes every
+        // fader/parameter move into it), so we capture it directly. We do NOT
+        // request a /console/resend here — that is a multi-second full dump
+        // whose flood races the capture and clobbers the live values.
         let state_guard = st.read().await;
         let data = state_guard.capture(&scope, kind);
         let param_count = data.parameter_count();
@@ -1375,7 +1379,8 @@ fn recapture_snapshot(
         let kind = existing.kind;
         drop(mgr);
 
-        // Capture fresh data using the original kind.
+        // Capture the live mirror directly (no /console/resend — see
+        // `capture_snapshot`).
         let state_guard = st.read().await;
         let data = state_guard.capture(&scope, kind);
         let param_count = data.parameter_count();
@@ -1441,17 +1446,16 @@ fn recall_selected_snapshot(
             .await;
         drop(palettes_guard);
 
-        let label = if ignore_scope {
-            format!(
-                "Recalled '{name}' without scope ({} params sent)",
-                result.parameters_sent
-            )
+        // Emit a recall-specific event so the status reads "Recalled …",
+        // not "Captured …". The handler adds the "(N params sent)" suffix.
+        let display = if ignore_scope {
+            format!("{name} (no scope)")
         } else {
-            format!("Recalled '{name}' ({} params sent)", result.parameters_sent)
+            name.clone()
         };
-        let _ = tx.send(UiEvent::SnapshotCaptured {
-            name: label,
-            param_count: result.parameters_sent,
+        let _ = tx.send(UiEvent::SnapshotRecalled {
+            name: display,
+            params_sent: result.parameters_sent,
         });
     });
 

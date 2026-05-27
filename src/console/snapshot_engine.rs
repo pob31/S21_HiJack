@@ -377,6 +377,7 @@ impl SnapshotEngine {
                     &mut sent,
                     &mut skipped,
                     Some(&mut undo_map),
+                    true, // force: recall must not trust the (lossy) live mirror
                 )
                 .await;
             if did_send && pace > 0 {
@@ -399,10 +400,17 @@ impl SnapshotEngine {
         }
     }
 
-    /// Send a parameter if it differs from the live state.
+    /// Send a parameter to the console.
     /// Returns `true` if the parameter was actually sent.
     /// When `undo_map` is provided, captures the live value before sending
     /// so the recall can be reverted.
+    ///
+    /// When `force` is false this skips parameters whose value already equals
+    /// the live state mirror (a traffic optimisation). When `force` is true it
+    /// always sends, regardless of the mirror — the mirror is only kept in
+    /// sync by lossy UDP echoes, so trusting it for recall correctness can
+    /// silently drop channels that genuinely need to move. Recall passes
+    /// `force = true`; undo (which only re-sends what differs) passes `false`.
     async fn send_if_changed(
         &self,
         state: &ConsoleState,
@@ -411,10 +419,12 @@ impl SnapshotEngine {
         sent: &mut usize,
         skipped: &mut usize,
         undo_map: Option<&mut HashMap<ParameterAddress, ParameterValue>>,
+        force: bool,
     ) -> bool {
-        // Check if the value differs from live state
+        // Check if the value differs from live state. Without `force`, an
+        // unchanged value is skipped; with `force` we send anyway.
         let live_value = state.get(addr);
-        if live_value == Some(value) {
+        if !force && live_value == Some(value) {
             *skipped += 1;
             debug!(%addr, "Recall skip: value unchanged");
             return false;
@@ -602,10 +612,8 @@ impl SnapshotEngine {
 
         for (addr, effective_value) in &resolved {
             let live_value = state.get(addr);
-            if live_value == Some(*effective_value) {
-                total_skipped += 1;
-                continue;
-            }
+            // Force: do not skip params that merely match the (lossy) live
+            // mirror. A param already at target simply fades target→target.
             // Capture live value for undo
             if let Some(live) = live_value {
                 undo_map.insert(addr.clone(), live.clone());
@@ -1060,7 +1068,7 @@ impl SnapshotEngine {
 
                 for (addr, value) in &undo.previous_values {
                     let did_send = self
-                        .send_if_changed(&state, addr, value, &mut sent, &mut skipped, None)
+                        .send_if_changed(&state, addr, value, &mut sent, &mut skipped, None, false)
                         .await;
                     if did_send && pace > 0 {
                         tokio::time::sleep(Duration::from_micros(pace)).await;
@@ -1191,11 +1199,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recall_sends_only_changed_params() {
+    async fn recall_force_sends_all_in_scope_params() {
+        // Recall must not trust the live mirror for correctness: even a param
+        // whose stored value already matches the (lossy) mirror is re-sent, so
+        // a dropped/late echo can never silently leave a channel behind.
         let (engine, state) = setup_test().await;
 
         {
             let mut st = state.write().await;
+            // Fader differs from the snapshot (live -10, stored 0).
             st.update(
                 ParameterAddress {
                     channel: ChannelId::Input(1),
@@ -1203,6 +1215,8 @@ mod tests {
                 },
                 ParameterValue::Float(-10.0),
             );
+            // Mute already matches the snapshot (both false) — pre-force this
+            // was skipped; with force it is still sent.
             st.update(
                 ParameterAddress {
                     channel: ChannelId::Input(1),
@@ -1246,8 +1260,9 @@ mod tests {
         let result = engine
             .recall(&snapshot, &scope, &no_palettes(), false)
             .await;
-        assert_eq!(result.parameters_sent, 1);
-        assert_eq!(result.parameters_skipped, 1);
+        // Both the changed fader and the unchanged mute are sent.
+        assert_eq!(result.parameters_sent, 2);
+        assert_eq!(result.parameters_skipped, 0);
     }
 
     #[tokio::test]
