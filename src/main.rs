@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 mod console;
+mod logging;
 mod model;
 mod osc;
 mod persistence;
@@ -19,7 +20,6 @@ use std::sync::Arc;
 use clap::Parser;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
-use tracing_subscriber::EnvFilter;
 
 use console::connection::ConnectionManager;
 use console::cue_manager::CueManager;
@@ -120,13 +120,20 @@ impl Args {
 }
 
 fn main() {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info,s21_hijack=debug,sctk_adwaita=error")),
-        )
-        .init();
+    // Initialize logging (stdout + rotating file) and the crash-capturing
+    // panic hook. The returned guard flushes the async file writer on exit, so
+    // it must stay alive for the whole program — hold it across both the
+    // headless and UI branches below.
+    let _log_guard = logging::init();
+    info!(
+        "S21 HiJack v{} on {}/{} — logs at {}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        logging::log_dir()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|| "<stdout only>".to_string()),
+    );
 
     let args = Args::parse();
 
