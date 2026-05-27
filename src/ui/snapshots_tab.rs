@@ -139,8 +139,6 @@ pub fn draw_snapshots_tab(
     // Three-column layout. Each column scrolls independently; lists inside
     // cards have their own bounded ScrollArea so trailing buttons never get
     // pushed off-screen by a long list.
-    let available = ui.available_size();
-
     ui.columns(3, |cols| {
         // ── Column 1: Scope + Palettes ──
         egui::ScrollArea::vertical()
@@ -893,12 +891,7 @@ pub fn draw_snapshots_tab(
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if !has_selection {
-                                        ui.label(
-                                            egui::RichText::new("Select a cue to edit.")
-                                                .color(theme::TEXT_SECONDARY),
-                                        );
-                                    } else if dirty {
+                                    if has_selection && dirty {
                                         save_clicked = theme::row_action_button(
                                             ui,
                                             "Save Cue Changes",
@@ -907,12 +900,16 @@ pub fn draw_snapshots_tab(
                                             true,
                                         );
                                     } else {
+                                        // Delete is always shown but dimmed when
+                                        // no cue is selected (the editor form
+                                        // below is dimmed too), matching the
+                                        // snapshot list's Delete.
                                         delete_clicked = theme::row_long_press_button(
                                             ui,
                                             "Delete",
                                             theme::ACCENT_RED,
                                             70.0,
-                                            true,
+                                            has_selection,
                                         );
                                     }
                                 },
@@ -1130,9 +1127,13 @@ pub fn draw_snapshots_tab(
                     });
                     ui.add_space(2.0);
 
+                    // Cue list is the last item in the last card of the column;
+                    // fill the remaining column height (same as the snapshot list).
+                    let cue_list_height =
+                        (ui.available_height() - LIST_BOTTOM_RESERVE).max(LIST_MIN_HEIGHT);
                     egui::ScrollArea::vertical()
                         .id_salt("cue_list_scroll")
-                        .max_height(available.y * 0.35)
+                        .max_height(cue_list_height)
                         .show(ui, |ui| {
                             if let Ok(mgr) = cue_manager.try_read() {
                                 for cue in &mgr.cue_list.cues {

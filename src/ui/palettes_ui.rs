@@ -24,6 +24,13 @@ use crate::model::palette::ChannelPalette;
 use crate::model::parameter::{PaletteKind, ParameterPath, ParameterSection, ParameterValue};
 use crate::model::state::ConsoleState;
 
+/// Space (px) left below the palette list so the status line stays visible
+/// when the list fills the column. Mirrors the snapshots/cue lists.
+const PALETTE_LIST_BOTTOM_RESERVE: f32 = 40.0;
+/// Minimum palette-list height on short windows; the outer column ScrollArea
+/// takes over scrolling below this.
+const PALETTE_LIST_MIN_HEIGHT: f32 = 120.0;
+
 /// Channel type selector reused from macros_tab pattern.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelTypeChoice {
@@ -160,12 +167,30 @@ pub fn draw_palettes_section(
         }
     });
 
-    ui.add_space(4.0);
+    ui.add_space(6.0);
 
-    // ── Palette list ────────────────────────────────────────────
+    // Selected-palette detail/actions — kept ABOVE the list and dimmed when no
+    // palette is selected, so the list below holds a stable position (mirrors
+    // the Snapshots column).
+    draw_palette_detail(
+        ui,
+        state,
+        console_state,
+        cue_manager,
+        palette_manager,
+        is_connected,
+        runtime,
+        ui_tx,
+    );
+
+    ui.add_space(8.0);
+
+    // ── Palette list (fills the remaining column height) ──
+    let list_height =
+        (ui.available_height() - PALETTE_LIST_BOTTOM_RESERVE).max(PALETTE_LIST_MIN_HEIGHT);
     egui::ScrollArea::vertical()
         .id_salt("palette_list_scroll")
-        .max_height(120.0)
+        .max_height(list_height)
         .show(ui, |ui| {
             if let Ok(mgr) = palette_manager.try_read() {
                 let palettes = mgr.sorted_palettes();
@@ -239,184 +264,223 @@ pub fn draw_palettes_section(
             }
         });
 
-    // ── Palette detail / actions ────────────────────────────────
-    let Some(pid) = state.selected_palette_id else {
-        if let Some(msg) = &state.status_message {
-            ui.add_space(2.0);
-            ui.colored_label(theme::TEXT_WARNING, msg);
-        }
-        return;
-    };
-
-    // Snapshot all data we need from the locked managers before rendering,
-    // so we never hold guards across egui closures that may spawn work.
-    let Some(palette_info) = read_palette_info(palette_manager, pid) else {
-        // Selected palette disappeared (deletion mid-frame). Clear selection.
-        state.selected_palette_id = None;
-        return;
-    };
-
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        theme::row_label(ui, "Name:", theme::TEXT_PRIMARY);
-        // Draft buffer is only present while editing; fall back to the
-        // stored name. We bind the TextEdit to a local string and write
-        // through to the draft on change.
-        let mut buf = match &state.rename_draft {
-            Some((id, draft)) if *id == pid => draft.clone(),
-            _ => palette_info.name.clone(),
-        };
-        let resp = theme::padded_text_edit_sized(ui, &mut buf, 180.0, theme::ROW_H, true, "");
-        if resp.changed() {
-            state.rename_draft = Some((pid, buf.clone()));
-        }
-        let enter_pressed = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        let escape_pressed = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape));
-        if escape_pressed {
-            state.rename_draft = None;
-            resp.surrender_focus();
-        } else if enter_pressed || (resp.lost_focus() && state.rename_draft.is_some()) {
-            if let Some((id, draft)) = state.rename_draft.take() {
-                if id == pid && !draft.trim().is_empty() && draft != palette_info.name {
-                    rename_palette(pid, draft, palette_manager, runtime);
-                }
-            }
-        }
-
-        if theme::row_action_button(ui, "Re-capture", theme::ACCENT_BLUE, 90.0, is_connected) {
-            recapture_palette(pid, console_state, palette_manager, runtime, ui_tx);
-        }
-        if theme::row_action_button(ui, "Delete Palette", theme::ACCENT_RED, 100.0, true) {
-            delete_palette(pid, cue_manager, palette_manager, runtime);
-            state.selected_palette_id = None;
-            state.rename_draft = None;
-            state.status_message = Some("Palette deleted".into());
-        }
-    });
-
-    // Detail: stored values
-    egui::CollapsingHeader::new(
-        egui::RichText::new(format!(
-            "Values ({} · {})",
-            palette_info.parameter_count,
-            kinds_chip_from(&palette_info.kinds),
-        ))
-        .color(theme::TEXT_SECONDARY),
-    )
-    .default_open(false)
-    .show(ui, |ui| {
-        let mut entries: Vec<_> = palette_info.values.iter().collect();
-        entries.sort_by_key(|(path, _)| format!("{:?}", path));
-        for (path, value) in entries {
-            ui.horizontal(|ui| {
-                ui.monospace(format!("{:?}", path));
-                ui.label(egui::RichText::new(format!("= {}", value)).color(theme::TEXT_SECONDARY));
-            });
-        }
-    });
-
-    // ── Membership grid ─────────────────────────────────────────
-    ui.add_space(6.0);
-    ui.label(
-        egui::RichText::new("Assign to snapshots")
-            .strong()
-            .color(theme::TEXT_PRIMARY),
-    );
-    ui.label(
-        egui::RichText::new(
-            "Tick a checkbox to use this palette on the corresponding snapshot. \
-             Each column is one process.",
-        )
-        .color(theme::TEXT_SECONDARY)
-        .small(),
-    );
-
-    if palette_info.kinds.is_empty() {
-        ui.label(
-            egui::RichText::new("Palette has no values yet — re-capture to populate it.")
-                .color(theme::TEXT_SECONDARY),
-        );
-    } else {
-        let rows = read_membership_rows(
-            cue_manager,
-            palette_manager,
-            pid,
-            &palette_info.channel,
-            &palette_info.kinds,
-        );
-
-        if rows.is_empty() {
-            ui.label(egui::RichText::new("No snapshots yet.").color(theme::TEXT_SECONDARY));
-        } else {
-            egui::ScrollArea::vertical()
-                .id_salt("palette_membership_scroll")
-                .max_height(220.0)
-                .show(ui, |ui| {
-                    egui::Grid::new("palette_membership_grid")
-                        .num_columns(1 + palette_info.kinds.len())
-                        .striped(true)
-                        .spacing(egui::Vec2::new(8.0, 4.0))
-                        .show(ui, |ui| {
-                            // Header row
-                            ui.label("");
-                            for k in &palette_info.kinds {
-                                ui.label(
-                                    egui::RichText::new(k.label())
-                                        .strong()
-                                        .color(theme::TEXT_SECONDARY),
-                                );
-                            }
-                            ui.end_row();
-
-                            for row in &rows {
-                                ui.label(
-                                    egui::RichText::new(&row.snapshot_name)
-                                        .color(theme::TEXT_PRIMARY),
-                                );
-                                for cell in &row.cells {
-                                    let mut on = matches!(cell.state, CellState::LinkedToThis);
-                                    let resp = ui.checkbox(&mut on, "");
-                                    if let CellState::LinkedToOther { other_name } = &cell.state {
-                                        resp.clone()
-                                            .on_hover_text(format!("Currently: \"{other_name}\""));
-                                    }
-                                    if resp.changed() {
-                                        if on {
-                                            link_palette(
-                                                pid,
-                                                row.snapshot_id,
-                                                palette_info.channel.clone(),
-                                                cell.kind,
-                                                cue_manager,
-                                                palette_manager,
-                                                runtime,
-                                                ui_tx,
-                                            );
-                                        } else {
-                                            unlink_palette(
-                                                pid,
-                                                row.snapshot_id,
-                                                palette_info.channel.clone(),
-                                                cell.kind,
-                                                cue_manager,
-                                                palette_manager,
-                                                runtime,
-                                            );
-                                        }
-                                    }
-                                }
-                                ui.end_row();
-                            }
-                        });
-                });
-        }
-    }
-
     // Status
     if let Some(msg) = &state.status_message {
         ui.add_space(2.0);
         ui.colored_label(theme::TEXT_WARNING, msg);
     }
+}
+
+/// Detail / actions for the currently selected palette — rename, re-capture,
+/// delete, a collapsible value dump, and the snapshot-membership grid. Drawn
+/// above the palette list and shown dimmed (disabled) when no palette is
+/// selected, so the list below keeps a stable position.
+#[allow(clippy::too_many_arguments)]
+fn draw_palette_detail(
+    ui: &mut egui::Ui,
+    state: &mut PalettesUiState,
+    console_state: &Arc<RwLock<ConsoleState>>,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
+    is_connected: bool,
+    runtime: &tokio::runtime::Handle,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+) {
+    // Resolve the selected palette's info once (owned, so no manager lock is
+    // held across the render closures). Clear a stale selection if the palette
+    // vanished (deleted mid-frame).
+    let selected = state
+        .selected_palette_id
+        .and_then(|pid| read_palette_info(palette_manager, pid).map(|info| (pid, info)));
+    if state.selected_palette_id.is_some() && selected.is_none() {
+        state.selected_palette_id = None;
+    }
+
+    ui.add_enabled_ui(selected.is_some(), |ui| {
+        let Some((pid, palette_info)) = &selected else {
+            // No palette selected — dimmed placeholder occupying the action
+            // row so the layout reads the same as when one is selected.
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                theme::row_label(ui, "Name:", theme::TEXT_PRIMARY);
+                let mut empty = String::new();
+                let _ =
+                    theme::padded_text_edit_sized(ui, &mut empty, 180.0, theme::ROW_H, false, "");
+                let _ = theme::row_action_button(ui, "Re-capture", theme::ACCENT_BLUE, 90.0, false);
+                let _ =
+                    theme::row_action_button(ui, "Delete Palette", theme::ACCENT_RED, 100.0, false);
+            });
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(
+                    "Select a palette below to edit it and assign it to snapshots.",
+                )
+                .color(theme::TEXT_SECONDARY),
+            );
+            return;
+        };
+        let pid = *pid;
+
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            theme::row_label(ui, "Name:", theme::TEXT_PRIMARY);
+            // Draft buffer is only present while editing; fall back to the
+            // stored name. We bind the TextEdit to a local string and write
+            // through to the draft on change.
+            let mut buf = match &state.rename_draft {
+                Some((id, draft)) if *id == pid => draft.clone(),
+                _ => palette_info.name.clone(),
+            };
+            let resp = theme::padded_text_edit_sized(ui, &mut buf, 180.0, theme::ROW_H, true, "");
+            if resp.changed() {
+                state.rename_draft = Some((pid, buf.clone()));
+            }
+            let enter_pressed = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let escape_pressed = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+            if escape_pressed {
+                state.rename_draft = None;
+                resp.surrender_focus();
+            } else if enter_pressed || (resp.lost_focus() && state.rename_draft.is_some()) {
+                if let Some((id, draft)) = state.rename_draft.take() {
+                    if id == pid && !draft.trim().is_empty() && draft != palette_info.name {
+                        rename_palette(pid, draft, palette_manager, runtime);
+                    }
+                }
+            }
+
+            if theme::row_action_button(ui, "Re-capture", theme::ACCENT_BLUE, 90.0, is_connected) {
+                recapture_palette(pid, console_state, palette_manager, runtime, ui_tx);
+            }
+            if theme::row_action_button(ui, "Delete Palette", theme::ACCENT_RED, 100.0, true) {
+                delete_palette(pid, cue_manager, palette_manager, runtime);
+                state.selected_palette_id = None;
+                state.rename_draft = None;
+                state.status_message = Some("Palette deleted".into());
+            }
+        });
+
+        // Detail: stored values
+        egui::CollapsingHeader::new(
+            egui::RichText::new(format!(
+                "Values ({} · {})",
+                palette_info.parameter_count,
+                kinds_chip_from(&palette_info.kinds),
+            ))
+            .color(theme::TEXT_SECONDARY),
+        )
+        .default_open(false)
+        .show(ui, |ui| {
+            let mut entries: Vec<_> = palette_info.values.iter().collect();
+            entries.sort_by_key(|(path, _)| format!("{:?}", path));
+            for (path, value) in entries {
+                ui.horizontal(|ui| {
+                    ui.monospace(format!("{:?}", path));
+                    ui.label(
+                        egui::RichText::new(format!("= {}", value)).color(theme::TEXT_SECONDARY),
+                    );
+                });
+            }
+        });
+
+        // ── Membership grid ─────────────────────────────────────────
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new("Assign to snapshots")
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+        );
+        ui.label(
+            egui::RichText::new(
+                "Tick a checkbox to use this palette on the corresponding snapshot. \
+                 Each column is one process.",
+            )
+            .color(theme::TEXT_SECONDARY)
+            .small(),
+        );
+
+        if palette_info.kinds.is_empty() {
+            ui.label(
+                egui::RichText::new("Palette has no values yet — re-capture to populate it.")
+                    .color(theme::TEXT_SECONDARY),
+            );
+        } else {
+            let rows = read_membership_rows(
+                cue_manager,
+                palette_manager,
+                pid,
+                &palette_info.channel,
+                &palette_info.kinds,
+            );
+
+            if rows.is_empty() {
+                ui.label(egui::RichText::new("No snapshots yet.").color(theme::TEXT_SECONDARY));
+            } else {
+                egui::ScrollArea::vertical()
+                    .id_salt("palette_membership_scroll")
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("palette_membership_grid")
+                            .num_columns(1 + palette_info.kinds.len())
+                            .striped(true)
+                            .spacing(egui::Vec2::new(8.0, 4.0))
+                            .show(ui, |ui| {
+                                // Header row
+                                ui.label("");
+                                for k in &palette_info.kinds {
+                                    ui.label(
+                                        egui::RichText::new(k.label())
+                                            .strong()
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                }
+                                ui.end_row();
+
+                                for row in &rows {
+                                    ui.label(
+                                        egui::RichText::new(&row.snapshot_name)
+                                            .color(theme::TEXT_PRIMARY),
+                                    );
+                                    for cell in &row.cells {
+                                        let mut on = matches!(cell.state, CellState::LinkedToThis);
+                                        let resp = ui.checkbox(&mut on, "");
+                                        if let CellState::LinkedToOther { other_name } = &cell.state
+                                        {
+                                            resp.clone().on_hover_text(format!(
+                                                "Currently: \"{other_name}\""
+                                            ));
+                                        }
+                                        if resp.changed() {
+                                            if on {
+                                                link_palette(
+                                                    pid,
+                                                    row.snapshot_id,
+                                                    palette_info.channel.clone(),
+                                                    cell.kind,
+                                                    cue_manager,
+                                                    palette_manager,
+                                                    runtime,
+                                                    ui_tx,
+                                                );
+                                            } else {
+                                                unlink_palette(
+                                                    pid,
+                                                    row.snapshot_id,
+                                                    palette_info.channel.clone(),
+                                                    cell.kind,
+                                                    cue_manager,
+                                                    palette_manager,
+                                                    runtime,
+                                                );
+                                            }
+                                        }
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                    });
+            }
+        }
+    });
 }
 
 // ─── Render-time data snapshots ────────────────────────────────
