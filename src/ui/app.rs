@@ -1241,11 +1241,13 @@ impl eframe::App for HiJackApp {
 
                                     ui.add_space(GAP);
 
-                                    // SKIP (advance without firing). `⇥`
-                                    // (U+21E5, arrow-to-bar) renders via the
-                                    // arrows fallback font.
+                                    // SKIP (advance without firing). Built from
+                                    // `▶` (U+25B6, Geometric Shapes — same font
+                                    // family as the working ◀/▶) plus an ASCII
+                                    // bar, since the arrows-block `⇥` rendered as
+                                    // tofu. Reads as skip-to-next (▶|).
                                     let skip_btn = egui::Button::new(
-                                        egui::RichText::new("⇥")
+                                        egui::RichText::new("▶|")
                                             .color(super::theme::TEXT_PRIMARY)
                                             .strong(),
                                     )

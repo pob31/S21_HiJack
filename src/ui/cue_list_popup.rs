@@ -67,6 +67,7 @@ pub fn draw_cue_list_popup(
     drop(mgr);
 
     let mut fire_id: Option<Uuid> = None;
+    let mut select_id: Option<Uuid> = None;
 
     egui::Window::new("Cue List")
         .open(open)
@@ -95,8 +96,15 @@ pub fn draw_cue_list_popup(
                         } else {
                             theme::BG_PANEL
                         };
+                        let stroke = if row.is_current {
+                            egui::Stroke::new(1.0, theme::CUE_CURRENT_BORDER)
+                        } else {
+                            egui::Stroke::NONE
+                        };
+                        let mut row_clicked = false;
                         egui::Frame::new()
                             .fill(bg)
+                            .stroke(stroke)
                             .corner_radius(4.0)
                             .inner_margin(egui::Margin::symmetric(8, 4))
                             .show(ui, |ui| {
@@ -117,24 +125,43 @@ pub fn draw_cue_list_popup(
                                         fire_id = Some(row.id);
                                     }
 
+                                    // "current" marker so the highlighted row
+                                    // reads clearly even at a glance.
+                                    let marker = if row.is_current { "▶ " } else { "   " };
                                     ui.add_space(8.0);
-                                    ui.label(
-                                        egui::RichText::new(format!("Cue {:.1}", row.number))
-                                            .strong()
-                                            .color(if row.is_current {
-                                                theme::ACCENT_BLUE
-                                            } else {
-                                                theme::TEXT_PRIMARY
-                                            }),
-                                    );
-                                    if !row.name.is_empty() {
-                                        ui.label(
-                                            egui::RichText::new(&row.name)
-                                                .color(theme::TEXT_PRIMARY),
+                                    let num =
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(format!(
+                                                    "{marker}Cue {:.1}",
+                                                    row.number
+                                                ))
+                                                .strong()
+                                                .color(if row.is_current {
+                                                    theme::ACCENT_BLUE
+                                                } else {
+                                                    theme::TEXT_PRIMARY
+                                                }),
+                                            )
+                                            .sense(egui::Sense::click()),
                                         );
-                                    }
+                                    let nm = if row.name.is_empty() {
+                                        None
+                                    } else {
+                                        Some(
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(&row.name)
+                                                        .color(theme::TEXT_PRIMARY),
+                                                )
+                                                .sense(egui::Sense::click()),
+                                            ),
+                                        )
+                                    };
 
-                                    // Right-aligned meta: console row + overlay snapshot.
+                                    // Right-aligned meta + a click-sensing fill
+                                    // strip so the whole row selects (set current
+                                    // without firing).
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
@@ -155,10 +182,25 @@ pub fn draw_cue_list_popup(
                                                         .small(),
                                                 );
                                             }
+                                            let fill_w = ui.available_width().max(1.0);
+                                            let (_, r_fill) = ui.allocate_exact_size(
+                                                egui::vec2(fill_w, 20.0),
+                                                egui::Sense::click(),
+                                            );
+                                            if r_fill.clicked() {
+                                                row_clicked = true;
+                                            }
                                         },
                                     );
+
+                                    if num.clicked() || nm.map(|r| r.clicked()).unwrap_or(false) {
+                                        row_clicked = true;
+                                    }
                                 });
                             });
+                        if row_clicked {
+                            select_id = Some(row.id);
+                        }
                         ui.add_space(2.0);
                     }
                 });
@@ -173,5 +215,8 @@ pub fn draw_cue_list_popup(
             runtime,
             ui_tx,
         );
+    } else if let Some(id) = select_id {
+        // Row click (not the Fire button): make it current without recalling.
+        super::cue_transport::set_current_cue(id, cue_manager, runtime);
     }
 }

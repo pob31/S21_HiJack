@@ -130,6 +130,17 @@ impl CueManager {
         Some(cue)
     }
 
+    /// Make the cue with this id the current cue WITHOUT recalling anything
+    /// (the cue-list popup's row click). Repositions the playhead so the next
+    /// GO fires the following cue. Returns the cue number set, if found.
+    pub fn set_current_cue_id(&mut self, id: Uuid) -> Option<f32> {
+        let idx = self.cue_list.cues.iter().position(|c| c.id == id)?;
+        self.current_cue_index = Some(idx);
+        let cue = &self.cue_list.cues[idx];
+        info!(cue_number = cue.cue_number, cue_name = %cue.name, "Set current cue (no recall)");
+        Some(cue.cue_number)
+    }
+
     /// Advance the current-cue pointer to the next cue WITHOUT recalling it
     /// (the "skip" transport action). Returns the now-current cue, or None at
     /// the end of the list / when empty.

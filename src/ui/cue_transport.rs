@@ -62,6 +62,20 @@ pub fn fire_skip(cue_manager: &Arc<RwLock<CueManager>>, runtime: &tokio::runtime
     });
 }
 
+/// Make a cue current WITHOUT recalling it (the cue-list popup's row click).
+/// Repositions the playhead so the next GO fires the following cue. Sends
+/// nothing to the console.
+pub fn set_current_cue(
+    id: uuid::Uuid,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    runtime: &tokio::runtime::Handle,
+) {
+    let cue_mgr = cue_manager.clone();
+    runtime.spawn(async move {
+        cue_mgr.write().await.set_current_cue_id(id);
+    });
+}
+
 /// Fire a specific cue by id (the cue-list popup's per-cue Fire button):
 /// make it the current cue and recall its snapshot. Same no-op semantics as
 /// [`fire_go`] when the engine isn't ready.

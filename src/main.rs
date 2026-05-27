@@ -522,7 +522,9 @@ fn run_ui(args: Args) {
     let icon = load_app_icon();
 
     let mut viewport = eframe::egui::ViewportBuilder::default()
-        .with_inner_size([1400.0, 950.0])
+        // Wide enough that the top-bar cue transport (Cues / Prev / Go / Skip)
+        // is fully visible at startup without resizing.
+        .with_inner_size([1800.0, 950.0])
         .with_title("S21 HiJack")
         .with_app_id("s21_hijack");
     if let Some(icon) = icon {
