@@ -34,6 +34,26 @@ use super::setup_tab::SetupTabState;
 use super::snapshots_tab::SnapshotsTabState;
 use super::{PendingEngines, Tab, UiEvent};
 
+/// State for the post-capture confirmation popup — a centered, temporary
+/// window listing the parameters a capture just recorded. It auto-fades after
+/// ~10 s unless the operator clicks or scrolls it (which pins it open), and
+/// offers a button to immediately re-recall the snapshot to verify nothing has
+/// drifted on the console.
+pub struct CaptureConfirm {
+    pub snapshot_id: uuid::Uuid,
+    pub name: String,
+    /// Pre-formatted (label, value) pairs to display.
+    pub params: Vec<(String, String)>,
+    /// When the popup appeared — drives the 10 s auto-fade.
+    pub started_at: std::time::Instant,
+    /// Set once the user clicks/scrolls the window; disables the auto-fade.
+    pub pinned: bool,
+    /// Baseline `ConsoleState::generation()` captured on the first frame. Once
+    /// the console sends ≥3 further parameter updates (operator back at the
+    /// desk), the popup auto-dismisses. Skipped while `pinned`.
+    pub seen_gen_base: Option<u64>,
+}
+
 /// Main application struct implementing eframe::App.
 pub struct HiJackApp {
     // Shared state
@@ -112,6 +132,9 @@ pub struct HiJackApp {
     pub monitor: MonitorTabState,
     pub osc_log_tab: OscLogTabState,
     pub inspector: InspectorTabState,
+
+    /// Post-capture confirmation popup, when one is showing.
+    pub capture_confirm: Option<CaptureConfirm>,
 }
 
 impl HiJackApp {
@@ -197,7 +220,143 @@ impl HiJackApp {
             monitor: MonitorTabState::default(),
             osc_log_tab: OscLogTabState::default(),
             inspector: InspectorTabState::default(),
+            capture_confirm: None,
         }
+    }
+
+    /// Draw the post-capture confirmation popup, if one is active. Centered,
+    /// auto-fades after ~10 s, or dismisses early once the console sends ≥3
+    /// parameter updates (operator back at the desk) — both skipped once the
+    /// operator clicks or scrolls it (which pins it open). The × dismisses it;
+    /// "Reload snapshot to verify" re-recalls the snapshot (force-send) so the
+    /// operator can watch the surface confirm.
+    fn draw_capture_confirm(&mut self, ctx: &egui::Context) {
+        use std::time::Duration;
+        const VISIBLE: Duration = Duration::from_secs(8);
+        const FADE: Duration = Duration::from_secs(2);
+        /// Inbound console parameter updates after which the popup self-dismisses.
+        const DISMISS_AFTER_UPDATES: u64 = 3;
+
+        // Take ownership for the frame so we can render without borrowing self;
+        // we put it back at the end unless it should close.
+        let Some(mut cc) = self.capture_confirm.take() else {
+            return;
+        };
+
+        // Auto-dismiss once the console reports activity (≥3 parameter updates
+        // since the popup appeared), unless the operator has pinned it. Uses
+        // the live mirror's monotonic generation counter as the update count.
+        if !cc.pinned {
+            if let Ok(state) = self.state.try_read() {
+                let gen_now = state.generation();
+                match cc.seen_gen_base {
+                    None => cc.seen_gen_base = Some(gen_now),
+                    Some(base) => {
+                        if gen_now.saturating_sub(base) >= DISMISS_AFTER_UPDATES {
+                            return; // drop `cc` → closed
+                        }
+                    }
+                }
+            }
+        }
+
+        let alpha = if cc.pinned {
+            1.0
+        } else {
+            let e = cc.started_at.elapsed();
+            if e < VISIBLE {
+                1.0
+            } else if e < VISIBLE + FADE {
+                1.0 - (e - VISIBLE).as_secs_f32() / FADE.as_secs_f32()
+            } else {
+                // Fully faded — drop `cc` (leaves capture_confirm None) and close.
+                return;
+            }
+        };
+
+        let mut dismiss = false;
+        let mut reload = false;
+
+        let area = egui::Area::new(egui::Id::new("capture_confirm_popup"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_opacity(alpha);
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_max_width(440.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Captured ‘{}’ ({} params)",
+                                cc.name,
+                                cc.params.len()
+                            ))
+                            .strong(),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("×").on_hover_text("Dismiss").clicked() {
+                                dismiss = true;
+                            }
+                        });
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .max_height(360.0)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            egui::Grid::new("capture_confirm_params")
+                                .num_columns(2)
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    for (label, value) in &cc.params {
+                                        ui.label(label);
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| ui.monospace(value),
+                                        );
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                    ui.separator();
+                    if ui
+                        .add_sized(
+                            [ui.available_width(), 28.0],
+                            egui::Button::new("Reload snapshot to verify"),
+                        )
+                        .on_hover_text("Re-recall this snapshot now to confirm nothing drifted")
+                        .clicked()
+                    {
+                        reload = true;
+                    }
+                });
+            });
+
+        // A click or scroll inside the popup pins it open (cancels the fade).
+        // Mere hover does not.
+        let hovered = area.response.contains_pointer();
+        let activity = ctx.input(|i| i.pointer.any_pressed() || i.smooth_scroll_delta.y != 0.0);
+        if hovered && activity {
+            cc.pinned = true;
+        }
+
+        if dismiss {
+            return; // drop `cc` → closed
+        }
+        if reload {
+            cc.pinned = true;
+            super::snapshots_tab::recall_snapshot_by_id(
+                cc.snapshot_id,
+                &self.cue_manager,
+                &self.palette_manager,
+                &self.snapshot_engine,
+                &self.runtime,
+                &self.ui_tx,
+                false,
+            );
+        }
+        // Keep showing.
+        self.capture_confirm = Some(cc);
     }
 
     /// Move any engine handles produced by the connect-console task into the
@@ -250,6 +409,22 @@ impl HiJackApp {
                 UiEvent::SnapshotCaptured { name, param_count } => {
                     self.snapshots.status_message =
                         Some(format!("Captured '{name}' ({param_count} params)"));
+                }
+                UiEvent::SnapshotCaptureConfirm {
+                    snapshot_id,
+                    name,
+                    params,
+                } => {
+                    self.snapshots.status_message =
+                        Some(format!("Captured '{name}' ({} params)", params.len()));
+                    self.capture_confirm = Some(CaptureConfirm {
+                        snapshot_id,
+                        name,
+                        params,
+                        started_at: std::time::Instant::now(),
+                        pinned: false,
+                        seen_gen_base: None,
+                    });
                 }
                 UiEvent::SnapshotRecalled { name, params_sent } => {
                     self.snapshots.status_message =
@@ -1364,5 +1539,8 @@ impl eframe::App for HiJackApp {
                 }
             }
         }
+
+        // Post-capture confirmation popup floats above everything.
+        self.draw_capture_confirm(ctx);
     }
 }

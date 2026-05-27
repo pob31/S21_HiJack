@@ -56,6 +56,16 @@ pub enum UiEvent {
         name: String,
         param_count: usize,
     },
+    /// A capture / re-capture finished — drives the post-capture
+    /// confirmation popup (lists the recorded params, offers an immediate
+    /// re-recall). Separate from `SnapshotCaptured` (still used by undo /
+    /// QLab export as a generic status channel).
+    SnapshotCaptureConfirm {
+        snapshot_id: uuid::Uuid,
+        name: String,
+        /// Pre-formatted (label, value) pairs, sorted for stable display.
+        params: Vec<(String, String)>,
+    },
     /// A snapshot recall finished. Distinct from `SnapshotCaptured` so the
     /// status line reads "Recalled …" rather than "Captured …".
     SnapshotRecalled {

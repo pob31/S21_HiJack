@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -13,10 +14,18 @@ use crate::console::cue_manager::CueManager;
 use crate::console::palette_manager::PaletteManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::dirty_tracker::DirtyTracker;
+use crate::model::parameter::{ParameterAddress, ParameterValue};
 use crate::model::snapshot::{Cue, Snapshot, SnapshotKind};
 use crate::model::state::ConsoleState;
 use crate::osc::qlab_client::QLabClient;
 use crate::osc::qlab_cue_builder::{build_snapshot_cues, build_snapshot_load_cue};
+
+/// Space (px) left below the snapshot list so the status line under the card
+/// (and an eventual footer) stay visible when the list fills the column.
+const LIST_BOTTOM_RESERVE: f32 = 40.0;
+/// Minimum snapshot-list height on short windows; the outer column ScrollArea
+/// takes over scrolling below this.
+const LIST_MIN_HEIGHT: f32 = 120.0;
 
 /// State for the Snapshots tab.
 pub struct SnapshotsTabState {
@@ -557,9 +566,14 @@ pub fn draw_snapshots_tab(
                         // Snapshot list — kept at the bottom of the card so
                         // adding or removing snapshots never shifts the
                         // capture / recall controls above it.
+                        // The list is the last item in the card; fill the
+                        // remaining column height, reserving room for the
+                        // status line below the card / a future footer.
+                        let list_height = (ui.available_height() - LIST_BOTTOM_RESERVE)
+                            .max(LIST_MIN_HEIGHT);
                         egui::ScrollArea::vertical()
                             .id_salt("snapshot_list_scroll")
-                            .max_height(180.0)
+                            .max_height(list_height)
                             .show(ui, |ui| {
                                 if let Ok(mgr) = cue_manager.try_read() {
                                     let mut snapshots: Vec<_> = mgr.snapshots.values().collect();
@@ -1307,6 +1321,30 @@ pub fn draw_snapshots_tab(
     }
 }
 
+/// Format a snapshot's captured values into sorted `(label, value)` display
+/// pairs for the post-capture confirmation popup. Channel uses its `Display`;
+/// the parameter path has no `Display`, so `{:?}` (matches the Inspector tab).
+/// Floats are shown to one decimal; everything else via its natural string.
+fn format_captured_params(
+    values: &HashMap<ParameterAddress, ParameterValue>,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = values
+        .iter()
+        .map(|(addr, value)| {
+            let label = format!("{} · {:?}", addr.channel, addr.parameter);
+            let val = match value {
+                ParameterValue::Float(f) => format!("{f:.1}"),
+                ParameterValue::Bool(b) => b.to_string(),
+                ParameterValue::Int(i) => i.to_string(),
+                ParameterValue::String(s) => s.clone(),
+            };
+            (label, val)
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
 fn capture_snapshot(
     snap_state: &mut SnapshotsTabState,
     console_state: &Arc<RwLock<ConsoleState>>,
@@ -1332,10 +1370,12 @@ fn capture_snapshot(
         // whose flood races the capture and clobbers the live values.
         let state_guard = st.read().await;
         let data = state_guard.capture(&scope, kind);
-        let param_count = data.parameter_count();
         drop(state_guard);
 
+        // Format for the confirmation popup before `data` moves into the snapshot.
+        let params = format_captured_params(&data.values);
         let snapshot = Snapshot::new(name.clone(), scope, data, kind);
+        let snapshot_id = snapshot.id;
         cue_mgr.write().await.add_snapshot(snapshot);
 
         // Phase C: capture establishes a new baseline — anything that
@@ -1343,7 +1383,11 @@ fn capture_snapshot(
         // Mirrors WFS-DIY's clear-on-store behaviour.
         dirty.write().await.clear();
 
-        let _ = tx.send(UiEvent::SnapshotCaptured { name, param_count });
+        let _ = tx.send(UiEvent::SnapshotCaptureConfirm {
+            snapshot_id,
+            name,
+            params,
+        });
     });
 
     snap_state.status_message = Some(format!("Capturing '{}'...", snap_state.new_snapshot_name));
@@ -1383,16 +1427,20 @@ fn recapture_snapshot(
         // `capture_snapshot`).
         let state_guard = st.read().await;
         let data = state_guard.capture(&scope, kind);
-        let param_count = data.parameter_count();
         drop(state_guard);
 
-        // Update
+        // Format for the confirmation popup before `data` moves into the store.
+        let params = format_captured_params(&data.values);
         cue_mgr.write().await.update_snapshot(snap_id, data);
 
         // Phase C: re-capture also re-anchors the dirty baseline.
         dirty.write().await.clear();
 
-        let _ = tx.send(UiEvent::SnapshotCaptured { name, param_count });
+        let _ = tx.send(UiEvent::SnapshotCaptureConfirm {
+            snapshot_id: snap_id,
+            name,
+            params,
+        });
     });
 
     snap_state.status_message = Some("Re-capturing...".into());
@@ -1422,6 +1470,36 @@ fn recall_selected_snapshot(
     let Some(snap_id) = snap_state.selected_snapshot_id else {
         return;
     };
+    recall_snapshot_by_id(
+        snap_id,
+        cue_manager,
+        palette_manager,
+        snapshot_engine,
+        runtime,
+        ui_tx,
+        ignore_scope,
+    );
+    snap_state.status_message = Some(if ignore_scope {
+        "Recalling without scope...".into()
+    } else {
+        "Recalling...".into()
+    });
+}
+
+/// Recall a snapshot by id (no `SnapshotsTabState` needed). Used by the tab's
+/// Recall buttons (via `recall_selected_snapshot`) and by the post-capture
+/// confirmation popup's "Reload to verify" button. Emits `SnapshotRecalled`
+/// on completion. No-op if the engine isn't connected or the id is unknown.
+#[allow(clippy::too_many_arguments)]
+pub fn recall_snapshot_by_id(
+    snap_id: Uuid,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
+    snapshot_engine: &Option<Arc<SnapshotEngine>>,
+    runtime: &tokio::runtime::Handle,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+    ignore_scope: bool,
+) {
     let Some(engine) = snapshot_engine.clone() else {
         return;
     };
@@ -1457,12 +1535,6 @@ fn recall_selected_snapshot(
             name: display,
             params_sent: result.parameters_sent,
         });
-    });
-
-    snap_state.status_message = Some(if ignore_scope {
-        "Recalling without scope...".into()
-    } else {
-        "Recalling...".into()
     });
 }
 
@@ -1587,4 +1659,50 @@ fn qlab_create_trigger_cue(
     });
 
     snap_state.status_message = Some("Creating QLab trigger cue...".into());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::channel::ChannelId;
+    use crate::model::parameter::ParameterPath;
+
+    #[test]
+    fn format_captured_params_sorts_and_formats() {
+        let mut values: HashMap<ParameterAddress, ParameterValue> = HashMap::new();
+        values.insert(
+            ParameterAddress {
+                channel: ChannelId::Input(41),
+                parameter: ParameterPath::Fader,
+            },
+            ParameterValue::Float(0.04),
+        );
+        values.insert(
+            ParameterAddress {
+                channel: ChannelId::Input(41),
+                parameter: ParameterPath::Mute,
+            },
+            ParameterValue::Bool(false),
+        );
+        values.insert(
+            ParameterAddress {
+                channel: ChannelId::Input(42),
+                parameter: ParameterPath::Fader,
+            },
+            ParameterValue::Float(-10.04),
+        );
+
+        let out = format_captured_params(&values);
+
+        // Sorted by label string.
+        let labels: Vec<&str> = out.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["Input 41 · Fader", "Input 41 · Mute", "Input 42 · Fader"]
+        );
+        // Floats rounded to one decimal; bool as text.
+        assert_eq!(out[0].1, "0.0");
+        assert_eq!(out[1].1, "false");
+        assert_eq!(out[2].1, "-10.0");
+    }
 }
