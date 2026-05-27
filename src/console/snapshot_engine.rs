@@ -409,8 +409,8 @@ impl SnapshotEngine {
     /// the live state mirror (a traffic optimisation). When `force` is true it
     /// always sends, regardless of the mirror — the mirror is only kept in
     /// sync by lossy UDP echoes, so trusting it for recall correctness can
-    /// silently drop channels that genuinely need to move. Recall passes
-    /// `force = true`; undo (which only re-sends what differs) passes `false`.
+    /// silently drop channels that genuinely need to move. Both recall and
+    /// undo pass `force = true` for this reason.
     async fn send_if_changed(
         &self,
         state: &ConsoleState,
@@ -1067,8 +1067,12 @@ impl SnapshotEngine {
                 let pace = self.pace_us.load(Ordering::Relaxed);
 
                 for (addr, value) in &undo.previous_values {
+                    // Force-send: like recall, undo must not trust the live
+                    // mirror (which lags behind the console over UDP) — otherwise
+                    // it skips everything when the mirror hasn't caught up yet
+                    // and the undo appears to do nothing.
                     let did_send = self
-                        .send_if_changed(&state, addr, value, &mut sent, &mut skipped, None, false)
+                        .send_if_changed(&state, addr, value, &mut sent, &mut skipped, None, true)
                         .await;
                     if did_send && pace > 0 {
                         tokio::time::sleep(Duration::from_micros(pace)).await;

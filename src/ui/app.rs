@@ -1071,6 +1071,8 @@ impl eframe::App for HiJackApp {
                         // advance without firing — (right of Go).
                         const CUES_W: f32 = 64.0;
                         const SKIP_W: f32 = 44.0;
+                        // Undo last recall (rightmost).
+                        const UNDO_W: f32 = 70.0;
                         // Preferred cue-label width — keeps Prev / Go
                         // anchored as the current cue changes so muscle
                         // memory still hits the buttons.
@@ -1093,7 +1095,8 @@ impl eframe::App for HiJackApp {
                             + PREV_W
                             + GO_W
                             + SKIP_W
-                            + GAP * 4.0
+                            + UNDO_W
+                            + GAP * 5.0
                             + LABEL_MIN_W;
 
                         if mode.cue_transport_visible() && ui.available_width() >= MIN_STRIP_W {
@@ -1113,7 +1116,7 @@ impl eframe::App for HiJackApp {
                             //   1. Trim left padding from PAD_MAX → MIN_PAD.
                             //   2. Once left padding is at MIN_PAD,
                             //      shrink the cue label toward LABEL_MIN_W.
-                            let buttons_w = CUES_W + PREV_W + GO_W + SKIP_W + GAP * 4.0;
+                            let buttons_w = CUES_W + PREV_W + GO_W + SKIP_W + UNDO_W + GAP * 5.0;
                             let pref_w = buttons_w + LABEL_W;
                             let (pad, label_w) = if leftover_w >= pref_w + PAD_MAX + MIN_PAD {
                                 (PAD_MAX, LABEL_W)
@@ -1264,6 +1267,36 @@ impl eframe::App for HiJackApp {
                                         super::cue_transport::fire_skip(
                                             &self.cue_manager,
                                             &self.runtime,
+                                        );
+                                    }
+
+                                    ui.add_space(GAP);
+
+                                    // UNDO the last recall (cue or direct
+                                    // snapshot). Lives here, by the transport,
+                                    // since cues are fired from this strip.
+                                    let has_undo = self
+                                        .snapshot_engine
+                                        .as_ref()
+                                        .map(|e| e.has_undo())
+                                        .unwrap_or(false);
+                                    let undo_btn = egui::Button::new(
+                                        egui::RichText::new("Undo")
+                                            .color(super::theme::TEXT_PRIMARY)
+                                            .strong(),
+                                    )
+                                    .fill(super::theme::ACCENT_AMBER)
+                                    .corner_radius(4.0)
+                                    .min_size(egui::Vec2::new(UNDO_W, 26.0));
+                                    if ui
+                                        .add_enabled(has_undo, undo_btn)
+                                        .on_hover_text("Undo the last cue / snapshot recall.")
+                                        .clicked()
+                                    {
+                                        super::cue_transport::fire_undo(
+                                            &self.snapshot_engine,
+                                            &self.runtime,
+                                            &self.ui_tx,
                                         );
                                     }
                                 },

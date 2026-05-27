@@ -62,6 +62,28 @@ pub fn fire_skip(cue_manager: &Arc<RwLock<CueManager>>, runtime: &tokio::runtime
     });
 }
 
+/// Undo the last recall (whether fired from a cue or a direct snapshot recall):
+/// re-send the pre-recall parameter values. The engine force-sends, so this
+/// works even when the live mirror lags. No-op if there's nothing to undo.
+pub fn fire_undo(
+    snapshot_engine: &Option<Arc<SnapshotEngine>>,
+    runtime: &tokio::runtime::Handle,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+) {
+    let Some(engine) = snapshot_engine.clone() else {
+        return;
+    };
+    let tx = ui_tx.clone();
+    runtime.spawn(async move {
+        if let Some(result) = engine.undo_recall().await {
+            let _ = tx.send(UiEvent::SnapshotRecalled {
+                name: "Undo".into(),
+                params_sent: result.parameters_sent,
+            });
+        }
+    });
+}
+
 /// Make a cue current WITHOUT recalling it (the cue-list popup's row click).
 /// Repositions the playhead so the next GO fires the following cue. Sends
 /// nothing to the console.
