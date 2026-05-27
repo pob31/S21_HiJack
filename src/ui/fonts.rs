@@ -29,7 +29,15 @@ pub fn install_fonts(ctx: &egui::Context) {
     );
     fonts.font_data.insert(
         "noto_sans_symbols2".into(),
-        Arc::new(egui::FontData::from_static(NOTO_SANS_SYMBOLS2_GEOMETRIC)),
+        // Nudge the geometric glyphs (▶ ◀ ▼ ▲ …) downward so they share the
+        // text baseline instead of riding high — Noto's symbol metrics centre
+        // them higher than Ubuntu-Light's lowercase text. Tunable.
+        Arc::new(
+            egui::FontData::from_static(NOTO_SANS_SYMBOLS2_GEOMETRIC).tweak(egui::FontTweak {
+                y_offset_factor: 0.12,
+                ..Default::default()
+            }),
+        ),
     );
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
         let fam = fonts.families.entry(family).or_default();
