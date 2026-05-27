@@ -119,6 +119,24 @@ impl CueManager {
         }
     }
 
+    /// Fire a specific cue by id, making it the current cue. Returns the cue
+    /// (so the caller can recall its snapshot). Used by the cue-list popup's
+    /// per-cue Fire buttons, where firing by id is unambiguous.
+    pub fn fire_cue_id(&mut self, id: Uuid) -> Option<&Cue> {
+        let idx = self.cue_list.cues.iter().position(|c| c.id == id)?;
+        self.current_cue_index = Some(idx);
+        let cue = &self.cue_list.cues[idx];
+        info!(cue_number = cue.cue_number, cue_name = %cue.name, "Fired cue by id");
+        Some(cue)
+    }
+
+    /// Advance the current-cue pointer to the next cue WITHOUT recalling it
+    /// (the "skip" transport action). Returns the now-current cue, or None at
+    /// the end of the list / when empty.
+    pub fn skip_next(&mut self) -> Option<&Cue> {
+        self.go_next()
+    }
+
     /// Get the current cue (if any).
     pub fn current_cue(&self) -> Option<&Cue> {
         self.current_cue_index.map(|i| &self.cue_list.cues[i])

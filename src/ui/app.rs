@@ -135,6 +135,9 @@ pub struct HiJackApp {
 
     /// Post-capture confirmation popup, when one is showing.
     pub capture_confirm: Option<CaptureConfirm>,
+
+    /// Whether the top-bar cue-list popup window is open.
+    pub show_cue_list_popup: bool,
 }
 
 impl HiJackApp {
@@ -221,6 +224,7 @@ impl HiJackApp {
             osc_log_tab: OscLogTabState::default(),
             inspector: InspectorTabState::default(),
             capture_confirm: None,
+            show_cue_list_popup: false,
         }
     }
 
@@ -1063,6 +1067,10 @@ impl eframe::App for HiJackApp {
                         // rect and lands on top of the Online toggle.
                         const PREV_W: f32 = 80.0;
                         const GO_W: f32 = 80.0;
+                        // Cue-list popup opener (left of Prev) and Skip —
+                        // advance without firing — (right of Go).
+                        const CUES_W: f32 = 64.0;
+                        const SKIP_W: f32 = 44.0;
                         // Preferred cue-label width — keeps Prev / Go
                         // anchored as the current cue changes so muscle
                         // memory still hits the buttons.
@@ -1080,8 +1088,13 @@ impl eframe::App for HiJackApp {
                         // Strip's absolute minimum: MIN_PAD on the
                         // left, both buttons + their gaps, label at
                         // its floor, MIN_PAD on the right.
-                        const MIN_STRIP_W: f32 =
-                            MIN_PAD * 2.0 + PREV_W + GO_W + GAP * 2.0 + LABEL_MIN_W;
+                        const MIN_STRIP_W: f32 = MIN_PAD * 2.0
+                            + CUES_W
+                            + PREV_W
+                            + GO_W
+                            + SKIP_W
+                            + GAP * 4.0
+                            + LABEL_MIN_W;
 
                         if mode.cue_transport_visible() && ui.available_width() >= MIN_STRIP_W {
                             // Reserve the right-side gap explicitly: in
@@ -1100,7 +1113,7 @@ impl eframe::App for HiJackApp {
                             //   1. Trim left padding from PAD_MAX → MIN_PAD.
                             //   2. Once left padding is at MIN_PAD,
                             //      shrink the cue label toward LABEL_MIN_W.
-                            let buttons_w = PREV_W + GO_W + GAP + GAP;
+                            let buttons_w = CUES_W + PREV_W + GO_W + SKIP_W + GAP * 4.0;
                             let pref_w = buttons_w + LABEL_W;
                             let (pad, label_w) = if leftover_w >= pref_w + PAD_MAX + MIN_PAD {
                                 (PAD_MAX, LABEL_W)
@@ -1135,6 +1148,25 @@ impl eframe::App for HiJackApp {
                                         (label, count > 0)
                                     };
                                     let transport_enabled = is_connected && has_cues;
+
+                                    // Cue-list popup opener (leftmost).
+                                    let cues_btn = egui::Button::new(
+                                        egui::RichText::new("Cues")
+                                            .color(super::theme::TEXT_PRIMARY)
+                                            .strong(),
+                                    )
+                                    .fill(super::theme::BG_ELEVATED)
+                                    .corner_radius(4.0)
+                                    .min_size(egui::Vec2::new(CUES_W, 26.0));
+                                    if ui
+                                        .add(cues_btn)
+                                        .on_hover_text("Open the cue list to jump to any cue.")
+                                        .clicked()
+                                    {
+                                        self.show_cue_list_popup = !self.show_cue_list_popup;
+                                    }
+
+                                    ui.add_space(GAP);
 
                                     // PREV (red)
                                     let prev_btn = egui::Button::new(
@@ -1204,6 +1236,32 @@ impl eframe::App for HiJackApp {
                                             &self.snapshot_engine,
                                             &self.runtime,
                                             &self.ui_tx,
+                                        );
+                                    }
+
+                                    ui.add_space(GAP);
+
+                                    // SKIP (advance without firing). `⇥`
+                                    // (U+21E5, arrow-to-bar) renders via the
+                                    // arrows fallback font.
+                                    let skip_btn = egui::Button::new(
+                                        egui::RichText::new("⇥")
+                                            .color(super::theme::TEXT_PRIMARY)
+                                            .strong(),
+                                    )
+                                    .fill(super::theme::BG_ELEVATED)
+                                    .corner_radius(4.0)
+                                    .min_size(egui::Vec2::new(SKIP_W, 26.0));
+                                    if ui
+                                        .add_enabled(has_cues, skip_btn)
+                                        .on_hover_text(
+                                            "Skip — advance to the next cue without recalling it.",
+                                        )
+                                        .clicked()
+                                    {
+                                        super::cue_transport::fire_skip(
+                                            &self.cue_manager,
+                                            &self.runtime,
                                         );
                                     }
                                 },
@@ -1542,5 +1600,17 @@ impl eframe::App for HiJackApp {
 
         // Post-capture confirmation popup floats above everything.
         self.draw_capture_confirm(ctx);
+
+        // Cue-list popup (opened from the top-bar "Cues" button).
+        super::cue_list_popup::draw_cue_list_popup(
+            ctx,
+            &mut self.show_cue_list_popup,
+            &self.cue_manager,
+            &self.palette_manager,
+            &self.snapshot_engine,
+            self.connected.load(Ordering::Relaxed),
+            &self.runtime,
+            &self.ui_tx,
+        );
     }
 }

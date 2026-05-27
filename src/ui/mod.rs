@@ -1,5 +1,6 @@
 pub mod advanced_settings;
 pub mod app;
+pub mod cue_list_popup;
 pub mod cue_transport;
 pub mod fonts;
 pub mod gangs_tab;

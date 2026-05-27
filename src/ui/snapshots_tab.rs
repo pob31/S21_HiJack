@@ -34,6 +34,10 @@ pub struct SnapshotsTabState {
     pub new_cue_number: String,
     pub new_cue_name: String,
     pub selected_snapshot_for_cue: Option<Uuid>,
+    /// Type-to-filter text for the Add Cue snapshot picker dropdown.
+    pub add_cue_snap_filter: String,
+    /// Type-to-filter text for the Cue Editor snapshot picker dropdown.
+    pub cue_editor_snap_filter: String,
 
     // Cue editor
     pub last_edited_cue_id: Option<Uuid>,
@@ -75,6 +79,8 @@ impl Default for SnapshotsTabState {
             new_cue_number: String::new(),
             new_cue_name: String::new(),
             selected_snapshot_for_cue: None,
+            add_cue_snap_filter: String::new(),
+            cue_editor_snap_filter: String::new(),
             last_edited_cue_id: None,
             editing_cue_number: String::new(),
             editing_local_snapshot: None,
@@ -740,34 +746,16 @@ pub fn draw_snapshots_tab(
                     ui.horizontal(|ui| {
                         theme::row_label(ui, "Local snapshot:", theme::TEXT_PRIMARY);
                         if let Ok(mgr) = cue_manager.try_read() {
-                            let current_name = snap_state
-                                .selected_snapshot_for_cue
-                                .and_then(|id| mgr.snapshots.get(&id))
-                                .map(|s| s.name.clone())
-                                .unwrap_or_else(|| "(none)".into());
+                            let snaps = sorted_snapshot_list(&mgr);
                             theme::row_combo(ui, 0, |ui| {
-                                egui::ComboBox::from_id_salt("snapshot_selector")
-                                    .selected_text(&current_name)
-                                    .width(120.0)
-                                    .show_ui(ui, |ui| {
-                                        if ui
-                                            .selectable_label(
-                                                snap_state.selected_snapshot_for_cue.is_none(),
-                                                "(none)",
-                                            )
-                                            .clicked()
-                                        {
-                                            snap_state.selected_snapshot_for_cue = None;
-                                        }
-                                        for snap in mgr.snapshots.values() {
-                                            if ui.selectable_label(
-                                                snap_state.selected_snapshot_for_cue == Some(snap.id),
-                                                &snap.name,
-                                            ).clicked() {
-                                                snap_state.selected_snapshot_for_cue = Some(snap.id);
-                                            }
-                                        }
-                                    });
+                                filtered_snapshot_combo(
+                                    ui,
+                                    "snapshot_selector",
+                                    120.0,
+                                    &mut snap_state.selected_snapshot_for_cue,
+                                    &mut snap_state.add_cue_snap_filter,
+                                    &snaps,
+                                );
                             });
                         }
                     });
@@ -942,37 +930,16 @@ pub fn draw_snapshots_tab(
                                     ui.end_row();
 
                                     theme::row_label(ui, "Local snapshot:", theme::TEXT_PRIMARY);
-                                    let current_name = snap_state
-                                        .editing_local_snapshot
-                                        .and_then(|id| mgr.snapshots.get(&id))
-                                        .map(|s| s.name.clone())
-                                        .unwrap_or_else(|| "(none)".into());
+                                    let snaps = sorted_snapshot_list(&mgr);
                                     theme::row_combo(ui, 0, |ui| {
-                                        egui::ComboBox::from_id_salt("cue_editor_local_snapshot")
-                                            .selected_text(&current_name)
-                                            .width(140.0)
-                                            .show_ui(ui, |ui| {
-                                                if ui
-                                                    .selectable_label(
-                                                        snap_state.editing_local_snapshot.is_none(),
-                                                        "(none)",
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    snap_state.editing_local_snapshot = None;
-                                                }
-                                                for s in mgr.snapshots.values() {
-                                                    if ui
-                                                        .selectable_label(
-                                                            snap_state.editing_local_snapshot == Some(s.id),
-                                                            &s.name,
-                                                        )
-                                                        .clicked()
-                                                    {
-                                                        snap_state.editing_local_snapshot = Some(s.id);
-                                                    }
-                                                }
-                                            });
+                                        filtered_snapshot_combo(
+                                            ui,
+                                            "cue_editor_local_snapshot",
+                                            140.0,
+                                            &mut snap_state.editing_local_snapshot,
+                                            &mut snap_state.cue_editor_snap_filter,
+                                            &snaps,
+                                        );
                                     });
                                     ui.end_row();
 
@@ -1343,6 +1310,98 @@ fn format_captured_params(
         })
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// A snapshot picker combobox with a type-to-filter search field at the top of
+/// the dropdown. `snapshots` must be sorted for display. Typing filters the
+/// list (case-insensitive substring); when exactly one entry matches, pressing
+/// Tab confirms it. Selecting an item (or Tab-confirming) clears the filter and
+/// closes the popup. Writes the chosen id (or `None` for "(none)") into `selected`.
+fn filtered_snapshot_combo(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    width: f32,
+    selected: &mut Option<Uuid>,
+    filter: &mut String,
+    snapshots: &[(Uuid, String)],
+) {
+    let current_name = selected
+        .and_then(|id| snapshots.iter().find(|(sid, _)| *sid == id))
+        .map(|(_, name)| name.clone())
+        .unwrap_or_else(|| "(none)".into());
+
+    // Popup id egui uses for this combo (button id + "popup"), so we can close
+    // it ourselves on selection / Tab. CloseOnClickOutside keeps the popup open
+    // while the operator clicks/types in the search field.
+    let popup_id = ui.make_persistent_id(id_salt).with("popup");
+
+    let resp = egui::ComboBox::from_id_salt(id_salt)
+        .selected_text(current_name)
+        .width(width)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show_ui(ui, |ui| {
+            // Search field, auto-focused when the popup first opens.
+            let te = ui.add(
+                egui::TextEdit::singleline(filter)
+                    .hint_text("type to filter")
+                    .desired_width(width),
+            );
+            if ui.memory(|m| m.focused().is_none()) {
+                te.request_focus();
+            }
+
+            let needle = filter.to_lowercase();
+            let matches: Vec<(Uuid, &str)> = snapshots
+                .iter()
+                .filter(|(_, name)| needle.is_empty() || name.to_lowercase().contains(&needle))
+                .map(|(id, name)| (*id, name.as_str()))
+                .collect();
+
+            // Tab confirms when exactly one snapshot matches. consume_key stops
+            // egui from also using Tab for focus navigation.
+            let tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+            if tab && matches.len() == 1 {
+                *selected = Some(matches[0].0);
+                filter.clear();
+                egui::Popup::close_id(ui.ctx(), popup_id);
+                return;
+            }
+
+            ui.separator();
+
+            if ui.selectable_label(selected.is_none(), "(none)").clicked() {
+                *selected = None;
+                filter.clear();
+                egui::Popup::close_id(ui.ctx(), popup_id);
+            }
+            for (id, name) in &matches {
+                if ui.selectable_label(*selected == Some(*id), *name).clicked() {
+                    *selected = Some(*id);
+                    filter.clear();
+                    egui::Popup::close_id(ui.ctx(), popup_id);
+                }
+            }
+            if matches.is_empty() && !needle.is_empty() {
+                ui.label(egui::RichText::new("No match").color(theme::TEXT_SECONDARY));
+            }
+        });
+
+    // Popup closed (clicked away / Escape): drop any stale filter text.
+    if resp.inner.is_none() && !filter.is_empty() {
+        filter.clear();
+    }
+}
+
+/// Collect snapshots as `(id, name)` sorted by name (case-insensitive) for the
+/// filterable pickers.
+fn sorted_snapshot_list(mgr: &CueManager) -> Vec<(Uuid, String)> {
+    let mut out: Vec<(Uuid, String)> = mgr
+        .snapshots
+        .values()
+        .map(|s| (s.id, s.name.clone()))
+        .collect();
+    out.sort_by_key(|a| a.1.to_lowercase());
     out
 }
 
