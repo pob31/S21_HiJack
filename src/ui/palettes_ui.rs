@@ -1,12 +1,12 @@
 //! Palettes UI section embedded in the Snapshots tab.
 //!
 //! A palette can hold EQ, Dyn1, and/or Dyn2 values for one channel — the
-//! capture form lets the operator pick which processes to include. Linkage to
-//! snapshots is expressed as a per-kind membership grid on the selected
-//! palette: each snapshot row shows one checkbox per kind the palette covers.
-//! Ticking links the palette on that `(channel, kind)`; unticking unlinks.
-//! When another palette currently occupies a slot the cell hints "currently:
-//! <other>" so the operator sees the swap before it happens.
+//! capture form lets the operator pick which processes to include. Selecting a
+//! palette opens a temporary "Assign to snapshots" overlay (floating right, over
+//! the middle column): each snapshot row has one checkbox per kind the palette
+//! covers, before its (truncated) name. Ticking links the palette on that
+//! `(channel, kind)`; unticking unlinks. When another palette currently occupies
+//! a slot the cell hints "currently: <other>" so the operator sees the swap.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use crate::console::cue_manager::CueManager;
 use crate::console::palette_manager::PaletteManager;
 use crate::model::channel::ChannelId;
 use crate::model::palette::ChannelPalette;
-use crate::model::parameter::{PaletteKind, ParameterPath, ParameterSection, ParameterValue};
+use crate::model::parameter::{PaletteKind, ParameterSection};
 use crate::model::state::ConsoleState;
 
 /// Space (px) left below the palette list so the status line stays visible
@@ -169,12 +169,21 @@ pub fn draw_palettes_section(
 
     ui.add_space(6.0);
 
-    // Selected-palette detail/actions — kept ABOVE the list and dimmed when no
-    // palette is selected, so the list below holds a stable position (mirrors
-    // the Snapshots column).
-    draw_palette_detail(
+    // Resolve the selected palette once (owned — no manager lock held across
+    // the render closures). Clear a stale selection if it vanished.
+    let selected = state
+        .selected_palette_id
+        .and_then(|pid| read_palette_info(palette_manager, pid).map(|info| (pid, info)));
+    if state.selected_palette_id.is_some() && selected.is_none() {
+        state.selected_palette_id = None;
+    }
+
+    // Action row for the selected palette (rename / Re-capture / Delete),
+    // dimmed when nothing is selected — kept on top.
+    draw_palette_actions(
         ui,
         state,
+        selected.as_ref(),
         console_state,
         cue_manager,
         palette_manager,
@@ -184,6 +193,10 @@ pub fn draw_palettes_section(
     );
 
     ui.add_space(8.0);
+
+    // Anchor for the temporary assign overlay: just right of column 1, at the
+    // palette list's top, so it floats over the middle column.
+    let overlay_pos = egui::pos2(ui.max_rect().right() + 8.0, ui.cursor().top());
 
     // ── Palette list (fills the remaining column height) ──
     let list_height =
@@ -255,14 +268,35 @@ pub fn draw_palettes_section(
                                 }
                             });
                         });
-                    if clicked && state.selected_palette_id != Some(palette.id) {
-                        state.selected_palette_id = Some(palette.id);
+                    if clicked {
+                        // Toggle: re-clicking the selected palette deselects it.
+                        state.selected_palette_id = if state.selected_palette_id == Some(palette.id)
+                        {
+                            None
+                        } else {
+                            Some(palette.id)
+                        };
                         state.rename_draft = None;
                     }
                     ui.add_space(1.0);
                 }
             }
         });
+
+    // Temporary "Assign to snapshots" overlay while a palette is selected —
+    // floats right, overlapping the middle column.
+    if let Some((pid, info)) = &selected {
+        draw_assign_overlay(
+            ui.ctx(),
+            overlay_pos,
+            *pid,
+            info,
+            cue_manager,
+            palette_manager,
+            runtime,
+            ui_tx,
+        );
+    }
 
     // Status
     if let Some(msg) = &state.status_message {
@@ -271,14 +305,14 @@ pub fn draw_palettes_section(
     }
 }
 
-/// Detail / actions for the currently selected palette — rename, re-capture,
-/// delete, a collapsible value dump, and the snapshot-membership grid. Drawn
-/// above the palette list and shown dimmed (disabled) when no palette is
-/// selected, so the list below keeps a stable position.
+/// Action row for the selected palette — rename, channel, Re-capture, Delete.
+/// Dimmed (disabled) when no palette is selected, so it holds a stable position
+/// on top of column 1. The snapshot-assign UI lives in `draw_assign_overlay`.
 #[allow(clippy::too_many_arguments)]
-fn draw_palette_detail(
+fn draw_palette_actions(
     ui: &mut egui::Ui,
     state: &mut PalettesUiState,
+    selected: Option<&(Uuid, PaletteInfo)>,
     console_state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
     palette_manager: &Arc<RwLock<PaletteManager>>,
@@ -286,18 +320,8 @@ fn draw_palette_detail(
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    // Resolve the selected palette's info once (owned, so no manager lock is
-    // held across the render closures). Clear a stale selection if the palette
-    // vanished (deleted mid-frame).
-    let selected = state
-        .selected_palette_id
-        .and_then(|pid| read_palette_info(palette_manager, pid).map(|info| (pid, info)));
-    if state.selected_palette_id.is_some() && selected.is_none() {
-        state.selected_palette_id = None;
-    }
-
     ui.add_enabled_ui(selected.is_some(), |ui| {
-        let Some((pid, palette_info)) = &selected else {
+        let Some((pid, palette_info)) = selected else {
             // No palette selected — dimmed placeholder occupying the action
             // row so the layout reads the same as when one is selected.
             ui.add_space(4.0);
@@ -305,7 +329,7 @@ fn draw_palette_detail(
                 theme::row_label(ui, "Name:", theme::TEXT_PRIMARY);
                 let mut empty = String::new();
                 let _ =
-                    theme::padded_text_edit_sized(ui, &mut empty, 180.0, theme::ROW_H, false, "");
+                    theme::padded_text_edit_sized(ui, &mut empty, 160.0, theme::ROW_H, false, "");
                 let _ = theme::row_action_button(ui, "Re-capture", theme::ACCENT_BLUE, 90.0, false);
                 let _ =
                     theme::row_action_button(ui, "Delete Palette", theme::ACCENT_RED, 100.0, false);
@@ -331,7 +355,7 @@ fn draw_palette_detail(
                 Some((id, draft)) if *id == pid => draft.clone(),
                 _ => palette_info.name.clone(),
             };
-            let resp = theme::padded_text_edit_sized(ui, &mut buf, 180.0, theme::ROW_H, true, "");
+            let resp = theme::padded_text_edit_sized(ui, &mut buf, 160.0, theme::ROW_H, true, "");
             if resp.changed() {
                 state.rename_draft = Some((pid, buf.clone()));
             }
@@ -348,6 +372,12 @@ fn draw_palette_detail(
                 }
             }
 
+            // Channel the palette belongs to.
+            ui.label(
+                egui::RichText::new(format!("{}", palette_info.channel))
+                    .color(theme::TEXT_SECONDARY),
+            );
+
             if theme::row_action_button(ui, "Re-capture", theme::ACCENT_BLUE, 90.0, is_connected) {
                 recapture_palette(pid, console_state, palette_manager, runtime, ui_tx);
             }
@@ -358,129 +388,147 @@ fn draw_palette_detail(
                 state.status_message = Some("Palette deleted".into());
             }
         });
+    });
+}
 
-        // Detail: stored values
-        egui::CollapsingHeader::new(
-            egui::RichText::new(format!(
-                "Values ({} · {})",
-                palette_info.parameter_count,
-                kinds_chip_from(&palette_info.kinds),
-            ))
-            .color(theme::TEXT_SECONDARY),
-        )
-        .default_open(false)
-        .show(ui, |ui| {
-            let mut entries: Vec<_> = palette_info.values.iter().collect();
-            entries.sort_by_key(|(path, _)| format!("{:?}", path));
-            for (path, value) in entries {
+/// Temporary "Assign to snapshots" overlay shown while a palette is selected.
+/// Floats just right of column 1 (overlapping the middle column). Each row is
+/// one checkbox per palette kind, placed BEFORE the (truncated) snapshot name;
+/// a small header labels the kind columns. Reuses the same membership read +
+/// link/unlink as the old inline grid.
+#[allow(clippy::too_many_arguments)]
+fn draw_assign_overlay(
+    ctx: &egui::Context,
+    pos: egui::Pos2,
+    pid: Uuid,
+    info: &PaletteInfo,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
+    runtime: &tokio::runtime::Handle,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+) {
+    /// Width of one kind checkbox column (header label + checkbox align here).
+    const CB_W: f32 = 30.0;
+    /// Overlay content width.
+    const CONTENT_W: f32 = 300.0;
+
+    if info.kinds.is_empty() {
+        return;
+    }
+    let rows = read_membership_rows(
+        cue_manager,
+        palette_manager,
+        pid,
+        &info.channel,
+        &info.kinds,
+    );
+
+    egui::Area::new(egui::Id::new("palette_assign_overlay"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_width(CONTENT_W);
+                ui.label(
+                    egui::RichText::new(format!("Assign ‘{}’ to snapshots", info.name)).strong(),
+                );
+                ui.label(
+                    egui::RichText::new(format!("{}", info.channel))
+                        .color(theme::TEXT_SECONDARY)
+                        .small(),
+                );
+                ui.separator();
+
+                if rows.is_empty() {
+                    ui.label(egui::RichText::new("No snapshots yet.").color(theme::TEXT_SECONDARY));
+                    return;
+                }
+
+                // Header: one kind label per checkbox column, then "Snapshot".
                 ui.horizontal(|ui| {
-                    ui.monospace(format!("{:?}", path));
+                    for k in &info.kinds {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(CB_W, 16.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.label(
+                                    egui::RichText::new(k.label())
+                                        .small()
+                                        .strong()
+                                        .color(theme::TEXT_SECONDARY),
+                                );
+                            },
+                        );
+                    }
                     ui.label(
-                        egui::RichText::new(format!("= {}", value)).color(theme::TEXT_SECONDARY),
+                        egui::RichText::new("Snapshot")
+                            .small()
+                            .color(theme::TEXT_SECONDARY),
                     );
                 });
-            }
-        });
 
-        // ── Membership grid ─────────────────────────────────────────
-        ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new("Assign to snapshots")
-                .strong()
-                .color(theme::TEXT_PRIMARY),
-        );
-        ui.label(
-            egui::RichText::new(
-                "Tick a checkbox to use this palette on the corresponding snapshot. \
-                 Each column is one process.",
-            )
-            .color(theme::TEXT_SECONDARY)
-            .small(),
-        );
-
-        if palette_info.kinds.is_empty() {
-            ui.label(
-                egui::RichText::new("Palette has no values yet — re-capture to populate it.")
-                    .color(theme::TEXT_SECONDARY),
-            );
-        } else {
-            let rows = read_membership_rows(
-                cue_manager,
-                palette_manager,
-                pid,
-                &palette_info.channel,
-                &palette_info.kinds,
-            );
-
-            if rows.is_empty() {
-                ui.label(egui::RichText::new("No snapshots yet.").color(theme::TEXT_SECONDARY));
-            } else {
                 egui::ScrollArea::vertical()
-                    .id_salt("palette_membership_scroll")
-                    .max_height(220.0)
+                    .max_height(360.0)
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        egui::Grid::new("palette_membership_grid")
-                            .num_columns(1 + palette_info.kinds.len())
-                            .striped(true)
-                            .spacing(egui::Vec2::new(8.0, 4.0))
-                            .show(ui, |ui| {
-                                // Header row
-                                ui.label("");
-                                for k in &palette_info.kinds {
-                                    ui.label(
-                                        egui::RichText::new(k.label())
-                                            .strong()
-                                            .color(theme::TEXT_SECONDARY),
+                        for row in &rows {
+                            ui.horizontal(|ui| {
+                                for cell in &row.cells {
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(CB_W, 18.0),
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            let mut on =
+                                                matches!(cell.state, CellState::LinkedToThis);
+                                            let resp = ui.checkbox(&mut on, "");
+                                            if let CellState::LinkedToOther { other_name } =
+                                                &cell.state
+                                            {
+                                                resp.clone().on_hover_text(format!(
+                                                    "Currently: \"{other_name}\""
+                                                ));
+                                            }
+                                            if resp.changed() {
+                                                if on {
+                                                    link_palette(
+                                                        pid,
+                                                        row.snapshot_id,
+                                                        info.channel.clone(),
+                                                        cell.kind,
+                                                        cue_manager,
+                                                        palette_manager,
+                                                        runtime,
+                                                        ui_tx,
+                                                    );
+                                                } else {
+                                                    unlink_palette(
+                                                        pid,
+                                                        row.snapshot_id,
+                                                        info.channel.clone(),
+                                                        cell.kind,
+                                                        cue_manager,
+                                                        palette_manager,
+                                                        runtime,
+                                                    );
+                                                }
+                                            }
+                                        },
                                     );
                                 }
-                                ui.end_row();
-
-                                for row in &rows {
-                                    ui.label(
+                                let name_w = ui.available_width().max(1.0);
+                                ui.add_sized(
+                                    [name_w, 18.0],
+                                    egui::Label::new(
                                         egui::RichText::new(&row.snapshot_name)
                                             .color(theme::TEXT_PRIMARY),
-                                    );
-                                    for cell in &row.cells {
-                                        let mut on = matches!(cell.state, CellState::LinkedToThis);
-                                        let resp = ui.checkbox(&mut on, "");
-                                        if let CellState::LinkedToOther { other_name } = &cell.state
-                                        {
-                                            resp.clone().on_hover_text(format!(
-                                                "Currently: \"{other_name}\""
-                                            ));
-                                        }
-                                        if resp.changed() {
-                                            if on {
-                                                link_palette(
-                                                    pid,
-                                                    row.snapshot_id,
-                                                    palette_info.channel.clone(),
-                                                    cell.kind,
-                                                    cue_manager,
-                                                    palette_manager,
-                                                    runtime,
-                                                    ui_tx,
-                                                );
-                                            } else {
-                                                unlink_palette(
-                                                    pid,
-                                                    row.snapshot_id,
-                                                    palette_info.channel.clone(),
-                                                    cell.kind,
-                                                    cue_manager,
-                                                    palette_manager,
-                                                    runtime,
-                                                );
-                                            }
-                                        }
-                                    }
-                                    ui.end_row();
-                                }
+                                    )
+                                    .truncate(),
+                                );
                             });
+                        }
                     });
-            }
-        }
-    });
+            });
+        });
 }
 
 // ─── Render-time data snapshots ────────────────────────────────
@@ -489,8 +537,6 @@ struct PaletteInfo {
     name: String,
     channel: ChannelId,
     kinds: Vec<PaletteKind>,
-    parameter_count: usize,
-    values: HashMap<ParameterPath, ParameterValue>,
 }
 
 fn read_palette_info(
@@ -503,21 +549,7 @@ fn read_palette_info(
         name: palette.name.clone(),
         channel: palette.channel.clone(),
         kinds: palette.kinds(),
-        parameter_count: palette.parameter_count(),
-        values: palette.values.clone(),
     })
-}
-
-fn kinds_chip_from(kinds: &[PaletteKind]) -> String {
-    if kinds.is_empty() {
-        "(empty)".into()
-    } else {
-        kinds
-            .iter()
-            .map(|k| k.label())
-            .collect::<Vec<_>>()
-            .join("·")
-    }
 }
 
 enum CellState {
