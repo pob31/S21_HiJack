@@ -111,6 +111,21 @@ pub enum UiEvent {
     ),
     ShowFileSaved(String),
     ShowFileError(String),
+    /// An autosave write task finished. `wrote` is false when the content
+    /// fingerprint was unchanged (nothing written). Carries the new
+    /// fingerprint so the UI updates its dedup baseline and clears the
+    /// in-flight guard.
+    AutosaveCompleted {
+        fingerprint: u64,
+        wrote: bool,
+    },
+    /// A load failed because the file looks truncated or has a bad header.
+    /// Carries the original path and the recovery candidates (backups +
+    /// autosaves) found for that show, so the UI can offer recovery.
+    ShowFileCorrupt {
+        path: String,
+        candidates: Vec<crate::persistence::backup::RecoveryCandidate>,
+    },
     IpadConnected,
     IpadConnectionFailed(String),
     FadeProgress {

@@ -2153,7 +2153,80 @@ pub(crate) fn start_connection(
     });
 }
 
-fn load_show_file(
+/// Assemble `ConnectionSettings` from the live Setup-tab fields. Shared by
+/// the manual Save path and the autosave scheduler so the two never drift.
+pub(crate) fn connection_settings_from_setup(
+    setup: &SetupTabState,
+    auto_update_on_recall: bool,
+    console_snapshot_follow: bool,
+) -> ConnectionSettings {
+    ConnectionSettings {
+        local_ip: setup.local_ip.clone(),
+        console_ip: setup.console_ip.clone(),
+        console_gp_port: setup.console_port.parse().unwrap_or(8024),
+        local_gp_port: setup.local_port.parse().unwrap_or(8023),
+        trigger_port: setup.trigger_port.parse().unwrap_or(53001),
+        operating_mode: setup.operating_mode,
+        ipad_ip: setup.ipad_ip.clone(),
+        ipad_send_port: setup.ipad_console_port.parse().unwrap_or(0),
+        ipad_receive_port: setup.ipad_local_port.parse().unwrap_or(0),
+        ipad_listen_port: setup.ipad_listen_port.parse().unwrap_or(0),
+        ipad_reply_port: setup.ipad_reply_port.parse().unwrap_or(0),
+        monitor_port: setup.monitor_port.parse().unwrap_or(0),
+        qlab_ip: setup.qlab_ip.clone(),
+        qlab_port: setup.qlab_port.parse().unwrap_or(53000),
+        send_pace_us: setup.send_pace_us,
+        auto_update_on_recall,
+        console_snapshot_follow,
+        monitor_allow_cidrs: setup.monitor_allow_cidrs.clone(),
+        trigger_allow_cidrs: setup.trigger_allow_cidrs.clone(),
+        ui_mode: setup.ui_mode,
+    }
+}
+
+/// Gather the full session state from the manager Arcs into a `ShowFile`.
+/// Acquires read locks internally; shared by manual Save and autosave.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn build_show_file(
+    state: &Arc<RwLock<ConsoleState>>,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    macro_manager: &Arc<RwLock<MacroManager>>,
+    monitor_manager: &Arc<RwLock<MonitorManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
+    gang_manager: &Arc<RwLock<GangManager>>,
+    pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
+    stream_deck_config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
+    connection: ConnectionSettings,
+    console_recall: ConsoleRecallConfig,
+) -> ShowFile {
+    let state_guard = state.read().await;
+    let mgr = cue_manager.read().await;
+    let mmgr = macro_manager.read().await;
+    let monmgr = monitor_manager.read().await;
+    let pmgr = palette_manager.read().await;
+    let gmgr = gang_manager.read().await;
+    let pl = pan_link_bindings.read().await;
+    let sd = stream_deck_config.read().await;
+
+    ShowFile {
+        version: 15,
+        console_config: state_guard.config.clone(),
+        connection,
+        scope_templates: mgr.scope_templates.values().cloned().collect(),
+        snapshots: mgr.snapshots.values().cloned().collect(),
+        cue_list: mgr.cue_list.clone(),
+        macros: mmgr.macros.values().cloned().collect(),
+        palettes: pmgr.palettes.values().cloned().collect(),
+        monitor_clients: monmgr.clients.values().cloned().collect(),
+        gang_groups: gmgr.groups.values().cloned().collect(),
+        console_recall,
+        pan_link: pl.clone(),
+        stream_deck: sd.clone(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn load_show_file(
     setup: &mut SetupTabState,
     state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
@@ -2263,6 +2336,25 @@ fn load_show_file(
                 }
 
                 info!("Show file loaded: {path_str}");
+
+                // Backup-on-load: copy the exact on-disk bytes into the
+                // `.s21backups/` subfolder (keep the last few). Best-effort —
+                // a failure here must never block a successful load.
+                match tokio::fs::read(&path).await {
+                    Ok(bytes) => {
+                        if let Err(e) = crate::persistence::backup::write_and_rotate(
+                            &path,
+                            crate::persistence::backup::BackupKind::Backup,
+                            &bytes,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %e, "Backup-on-load failed");
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "Backup-on-load: re-read failed"),
+                }
+
                 let conn = show.connection;
                 let recall = show.console_recall;
                 let _ = tx.send(UiEvent::ShowFileLoaded(
@@ -2273,13 +2365,25 @@ fn load_show_file(
             }
             Err(e) => {
                 error!("Load failed for {path_str}: {e}");
-                let _ = tx.send(UiEvent::ShowFileError(format!("Load failed: {e}")));
+                if crate::persistence::backup::is_corruption_error(&e) {
+                    // Truncated / bad-header file — offer recovery from the
+                    // backups and autosaves of this same show.
+                    let candidates =
+                        crate::persistence::backup::list_recovery_candidates(&path).await;
+                    let _ = tx.send(UiEvent::ShowFileCorrupt {
+                        path: path_str,
+                        candidates,
+                    });
+                } else {
+                    let _ = tx.send(UiEvent::ShowFileError(format!("Load failed: {e}")));
+                }
             }
         }
     });
 }
 
-fn save_show_file(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn save_show_file(
     setup: &mut SetupTabState,
     state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
@@ -2313,62 +2417,23 @@ fn save_show_file(
     let path_str = setup.show_file_path.clone();
 
     // Capture connection settings from current UI state
-    let conn_settings = ConnectionSettings {
-        local_ip: setup.local_ip.clone(),
-        console_ip: setup.console_ip.clone(),
-        console_gp_port: setup.console_port.parse().unwrap_or(8024),
-        local_gp_port: setup.local_port.parse().unwrap_or(8023),
-        trigger_port: setup.trigger_port.parse().unwrap_or(53001),
-        operating_mode: setup.operating_mode,
-        ipad_ip: setup.ipad_ip.clone(),
-        ipad_send_port: setup.ipad_console_port.parse().unwrap_or(0),
-        ipad_receive_port: setup.ipad_local_port.parse().unwrap_or(0),
-        ipad_listen_port: setup.ipad_listen_port.parse().unwrap_or(0),
-        ipad_reply_port: setup.ipad_reply_port.parse().unwrap_or(0),
-        monitor_port: setup.monitor_port.parse().unwrap_or(0),
-        qlab_ip: setup.qlab_ip.clone(),
-        qlab_port: setup.qlab_port.parse().unwrap_or(53000),
-        send_pace_us: setup.send_pace_us,
-        auto_update_on_recall,
-        console_snapshot_follow,
-        monitor_allow_cidrs: setup.monitor_allow_cidrs.clone(),
-        trigger_allow_cidrs: setup.trigger_allow_cidrs.clone(),
-        ui_mode: setup.ui_mode,
-    };
+    let conn_settings =
+        connection_settings_from_setup(setup, auto_update_on_recall, console_snapshot_follow);
 
     runtime.spawn(async move {
-        let state_guard = st.read().await;
-        let mgr = cue_mgr.read().await;
-        let mmgr = macro_mgr.read().await;
-        let monmgr = mon_mgr.read().await;
-        let pmgr = pmgr_arc.read().await;
-        let gmgr = gang_mgr.read().await;
-        let pl = pl_bindings.read().await;
-        let sd = sd_config.read().await;
-
-        let show = ShowFile {
-            version: 15,
-            console_config: state_guard.config.clone(),
-            connection: conn_settings,
-            scope_templates: mgr.scope_templates.values().cloned().collect(),
-            snapshots: mgr.snapshots.values().cloned().collect(),
-            cue_list: mgr.cue_list.clone(),
-            macros: mmgr.macros.values().cloned().collect(),
-            palettes: pmgr.palettes.values().cloned().collect(),
-            monitor_clients: monmgr.clients.values().cloned().collect(),
-            gang_groups: gmgr.groups.values().cloned().collect(),
-            console_recall: console_recall.clone(),
-            pan_link: pl.clone(),
-            stream_deck: sd.clone(),
-        };
-
-        drop(state_guard);
-        drop(mgr);
-        drop(mmgr);
-        drop(monmgr);
-        drop(pmgr);
-        drop(gmgr);
-        drop(pl);
+        let show = build_show_file(
+            &st,
+            &cue_mgr,
+            &macro_mgr,
+            &mon_mgr,
+            &pmgr_arc,
+            &gang_mgr,
+            &pl_bindings,
+            &sd_config,
+            conn_settings,
+            console_recall,
+        )
+        .await;
 
         match show.save(&path).await {
             Ok(()) => {

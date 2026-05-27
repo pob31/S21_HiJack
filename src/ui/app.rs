@@ -54,6 +54,19 @@ pub struct CaptureConfirm {
     pub seen_gen_base: Option<u64>,
 }
 
+/// Modal shown when a show file fails to load because it is truncated / has a
+/// bad header. Lists the recovery candidates (backups + autosaves) for that
+/// show so the operator can restore one and optionally repair the original.
+pub struct RecoveryDialog {
+    /// The corrupt file the operator tried to open.
+    pub original_path: String,
+    /// Candidates found in `.s21backups/`, newest-first.
+    pub candidates: Vec<crate::persistence::backup::RecoveryCandidate>,
+    /// Set after a candidate has been loaded — enables the "Save to original
+    /// path" repair affordance.
+    pub recovered: bool,
+}
+
 /// Main application struct implementing eframe::App.
 pub struct HiJackApp {
     // Shared state
@@ -138,6 +151,21 @@ pub struct HiJackApp {
 
     /// Whether the top-bar cue-list popup window is open.
     pub show_cue_list_popup: bool,
+
+    // ─── Autosave scheduler (see persistence::backup) ────────────────
+    /// When the last autosave was taken — throttles to `AUTOSAVE_INTERVAL`.
+    pub last_autosave_at: std::time::Instant,
+    /// Content fingerprint of the last autosave, so we skip writing when
+    /// nothing changed.
+    pub last_autosaved_fingerprint: u64,
+    /// Last observed `ConsoleState::generation()` and the instant it changed —
+    /// drives the "quiet settle" gate.
+    pub last_seen_generation: u64,
+    pub generation_changed_at: std::time::Instant,
+    /// True while an autosave write task is in flight (prevents overlap).
+    pub autosave_in_flight: Arc<AtomicBool>,
+    /// Active corruption-recovery modal, if any.
+    pub recovery_dialog: Option<RecoveryDialog>,
 }
 
 impl HiJackApp {
@@ -225,6 +253,13 @@ impl HiJackApp {
             inspector: InspectorTabState::default(),
             capture_confirm: None,
             show_cue_list_popup: false,
+
+            last_autosave_at: std::time::Instant::now(),
+            last_autosaved_fingerprint: 0,
+            last_seen_generation: 0,
+            generation_changed_at: std::time::Instant::now(),
+            autosave_in_flight: Arc::new(AtomicBool::new(false)),
+            recovery_dialog: None,
         }
     }
 
@@ -483,6 +518,11 @@ impl HiJackApp {
                 }
                 UiEvent::ShowFileLoaded(path, conn, recall) => {
                     self.setup.status_message = Some(format!("Loaded: {path}"));
+                    // If this load resolved a recovery, flag it so the dialog
+                    // can offer to repair the original path.
+                    if let Some(rd) = &mut self.recovery_dialog {
+                        rd.recovered = true;
+                    }
                     self.snapshots.scope_editor.console_recall = recall;
                     if let Some(c) = &conn {
                         self.auto_update_on_recall
@@ -566,6 +606,22 @@ impl HiJackApp {
                 }
                 UiEvent::ShowFileError(msg) => {
                     self.setup.status_message = Some(msg);
+                }
+                UiEvent::AutosaveCompleted { fingerprint, wrote } => {
+                    self.last_autosaved_fingerprint = fingerprint;
+                    self.autosave_in_flight.store(false, Ordering::Relaxed);
+                    if wrote {
+                        self.setup.status_message = Some("Autosaved".into());
+                    }
+                }
+                UiEvent::ShowFileCorrupt { path, candidates } => {
+                    self.setup.status_message =
+                        Some("Show file appears corrupt — choose a recovery candidate".into());
+                    self.recovery_dialog = Some(RecoveryDialog {
+                        original_path: path,
+                        candidates,
+                        recovered: false,
+                    });
                 }
                 UiEvent::IpadConnected => {
                     self.setup.ipad_connected = true;
@@ -905,6 +961,260 @@ impl HiJackApp {
                 .collect()
         })
     }
+
+    /// Take a periodic autosave when the session is quiet. Called once per
+    /// frame. No-ops unless the show has a path, no recovery is pending, the
+    /// console state has settled, no recall/cue burst is suppressing, and the
+    /// autosave interval has elapsed. The actual build + write runs off-thread.
+    fn maybe_autosave(&mut self) {
+        use crate::persistence::backup;
+
+        // Skip unnamed shows and while a recovery dialog is open (don't
+        // autosave over an unrecovered corrupt session).
+        if self.setup.show_file_path.is_empty() || self.recovery_dialog.is_some() {
+            return;
+        }
+        let now = std::time::Instant::now();
+
+        // Sample generation; a held lock means a write is in flight → not quiet.
+        let generation = match self.state.try_read() {
+            Ok(s) => s.generation(),
+            Err(_) => return,
+        };
+        if generation != self.last_seen_generation {
+            self.last_seen_generation = generation;
+            self.generation_changed_at = now;
+            return;
+        }
+
+        // Quiet gate: settled long enough AND nothing suppressing marks.
+        if now.duration_since(self.generation_changed_at) < backup::QUIET_SETTLE {
+            return;
+        }
+        let suppressed = self
+            .dirty_tracker
+            .try_read()
+            .map(|d| d.is_suppressed())
+            .unwrap_or(true);
+        if suppressed {
+            return;
+        }
+
+        // Interval + overlap gates.
+        if now.duration_since(self.last_autosave_at) < backup::AUTOSAVE_INTERVAL {
+            return;
+        }
+        if self.autosave_in_flight.load(Ordering::Relaxed) {
+            return;
+        }
+
+        // All gates passed. Build connection settings on the UI thread, then
+        // spawn the gather + write.
+        let conn = super::setup_tab::connection_settings_from_setup(
+            &self.setup,
+            self.auto_update_on_recall.load(Ordering::Relaxed),
+            self.console_snapshot_follow.load(Ordering::Relaxed),
+        );
+        let console_recall = self.snapshots.scope_editor.console_recall.clone();
+        let path = std::path::PathBuf::from(&self.setup.show_file_path);
+
+        let st = self.state.clone();
+        let cue_mgr = self.cue_manager.clone();
+        let macro_mgr = self.macro_manager.clone();
+        let mon_mgr = self.monitor_manager.clone();
+        let pmgr = self.palette_manager.clone();
+        let gang_mgr = self.gang_manager.clone();
+        let pl = self.pan_link_bindings.clone();
+        let sd = self.stream_deck_config.clone();
+        let dirty = self.dirty_tracker.clone();
+        let prev_fp = self.last_autosaved_fingerprint;
+        let tx = self.ui_tx.clone();
+        let in_flight = self.autosave_in_flight.clone();
+
+        self.autosave_in_flight.store(true, Ordering::Relaxed);
+        self.last_autosave_at = now;
+
+        self.runtime.spawn(async move {
+            // Re-check suppression now that we're scheduled — a recall may
+            // have started in the gap. If so, abort without writing.
+            if dirty.read().await.is_suppressed() {
+                let _ = tx.send(UiEvent::AutosaveCompleted {
+                    fingerprint: prev_fp,
+                    wrote: false,
+                });
+                in_flight.store(false, Ordering::Relaxed);
+                return;
+            }
+
+            let show = super::setup_tab::build_show_file(
+                &st,
+                &cue_mgr,
+                &macro_mgr,
+                &mon_mgr,
+                &pmgr,
+                &gang_mgr,
+                &pl,
+                &sd,
+                conn,
+                console_recall,
+            )
+            .await;
+
+            let json = match serde_json::to_vec_pretty(&show) {
+                Ok(j) => j,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Autosave serialize failed");
+                    let _ = tx.send(UiEvent::AutosaveCompleted {
+                        fingerprint: prev_fp,
+                        wrote: false,
+                    });
+                    in_flight.store(false, Ordering::Relaxed);
+                    return;
+                }
+            };
+
+            let fingerprint = {
+                use std::hash::Hasher;
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                h.write(&json);
+                h.finish()
+            };
+
+            let mut wrote = false;
+            if fingerprint != prev_fp {
+                match backup::write_and_rotate(&path, backup::BackupKind::Autosave, &json).await {
+                    Ok(p) => {
+                        tracing::info!(path = %p.display(), "Autosaved");
+                        wrote = true;
+                    }
+                    Err(e) => tracing::warn!(error = %e, "Autosave write failed"),
+                }
+            }
+
+            let _ = tx.send(UiEvent::AutosaveCompleted { fingerprint, wrote });
+            in_flight.store(false, Ordering::Relaxed);
+        });
+    }
+
+    /// Render the corruption-recovery modal, if open, and act on the
+    /// operator's choice.
+    fn draw_recovery_dialog(&mut self, ctx: &egui::Context) {
+        if self.recovery_dialog.is_none() {
+            return;
+        }
+
+        enum Action {
+            None,
+            Cancel,
+            Load(std::path::PathBuf),
+            SaveToOriginal,
+        }
+        let mut action = Action::None;
+
+        {
+            let rd = self.recovery_dialog.as_ref().unwrap();
+            egui::Window::new("Recover show file")
+                .collapsible(false)
+                .resizable(true)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "“{}” could not be loaded (truncated or bad header).",
+                            rd.original_path
+                        ))
+                        .strong(),
+                    );
+                    if rd.recovered {
+                        ui.colored_label(
+                            super::theme::ACCENT_GREEN,
+                            "Recovered. You can re-save it to the original path below.",
+                        );
+                    }
+                    ui.separator();
+
+                    if rd.candidates.is_empty() {
+                        ui.label("No backups or autosaves were found for this show.");
+                    } else {
+                        ui.label("Choose a copy to restore (newest first):");
+                        egui::ScrollArea::vertical()
+                            .max_height(260.0)
+                            .show(ui, |ui| {
+                                for cand in &rd.candidates {
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .add_enabled(cand.valid, egui::Button::new("Load this"))
+                                            .clicked()
+                                        {
+                                            action = Action::Load(cand.path.clone());
+                                        }
+                                        ui.label(cand.describe());
+                                    });
+                                }
+                            });
+                    }
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if rd.recovered && ui.button("Save recovered to original path").clicked() {
+                            action = Action::SaveToOriginal;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            action = Action::Cancel;
+                        }
+                    });
+                });
+        }
+
+        match action {
+            Action::None => {}
+            Action::Cancel => {
+                self.recovery_dialog = None;
+            }
+            Action::Load(path) => {
+                self.setup.show_file_path = path.display().to_string();
+                super::setup_tab::load_show_file(
+                    &mut self.setup,
+                    &self.state,
+                    &self.cue_manager,
+                    &self.macro_manager,
+                    &self.monitor_manager,
+                    &self.palette_manager,
+                    &self.gang_manager,
+                    &self.pan_link_bindings,
+                    &self.stream_deck_config,
+                    &self.connected,
+                    &self.runtime,
+                    &self.ui_tx,
+                );
+            }
+            Action::SaveToOriginal => {
+                let orig = self
+                    .recovery_dialog
+                    .as_ref()
+                    .map(|rd| rd.original_path.clone())
+                    .unwrap_or_default();
+                self.setup.show_file_path = orig;
+                super::setup_tab::save_show_file(
+                    &mut self.setup,
+                    &self.state,
+                    &self.cue_manager,
+                    &self.macro_manager,
+                    &self.monitor_manager,
+                    &self.palette_manager,
+                    &self.gang_manager,
+                    &self.pan_link_bindings,
+                    &self.stream_deck_config,
+                    self.auto_update_on_recall.load(Ordering::Relaxed),
+                    self.console_snapshot_follow.load(Ordering::Relaxed),
+                    self.snapshots.scope_editor.console_recall.clone(),
+                    &self.runtime,
+                    &self.ui_tx,
+                );
+                self.recovery_dialog = None;
+            }
+        }
+    }
 }
 
 impl eframe::App for HiJackApp {
@@ -932,6 +1242,9 @@ impl eframe::App for HiJackApp {
 
         // Drain async events
         self.drain_events();
+
+        // Periodic autosave during quiet periods (no-op most frames).
+        self.maybe_autosave();
 
         // Tab bar
         egui::TopBottomPanel::top("tab_bar")
@@ -1625,6 +1938,9 @@ impl eframe::App for HiJackApp {
 
         // Post-capture confirmation popup floats above everything.
         self.draw_capture_confirm(ctx);
+
+        // Corruption-recovery modal (when a load failed on a bad file).
+        self.draw_recovery_dialog(ctx);
 
         // Cue-list popup (opened from the top-bar "Cues" button).
         super::cue_list_popup::draw_cue_list_popup(
