@@ -1408,6 +1408,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recall_applies_linked_palette_outside_scope() {
+        // A Fader-scoped snapshot with an EQ palette linked on its channel must
+        // still apply the palette's EQ on recall — the link bypasses scope.
+        // A Dyn1 value in the same palette must NOT be sent, since only the Eq
+        // kind is linked.
+        let (engine, _state) = setup_test().await;
+
+        // Scope covers only Fader/Mute/Pan — no EQ, no dynamics.
+        let scope = ScopeTemplate::new(
+            "FaderOnly".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+
+        // Empty snapshot data — the palette is the only source of values.
+        let mut snapshot = Snapshot::new(
+            "Snap".into(),
+            scope.clone(),
+            SnapshotData {
+                values: HashMap::new(),
+            },
+            SnapshotKind::ApplyOnSave,
+        );
+
+        // Palette holds both an EQ and a Dyn1 value, linked on Eq only.
+        let mut vals = HashMap::new();
+        vals.insert(ParameterPath::EqBandGain(1), ParameterValue::Float(5.0));
+        vals.insert(
+            ParameterPath::Dyn1Threshold(1),
+            ParameterValue::Float(-12.0),
+        );
+        let palette = ChannelPalette::new(
+            "Vocal".into(),
+            ChannelId::Input(1),
+            &[PaletteKind::Eq, PaletteKind::Dyn1],
+            vals,
+        );
+        let palette_id = palette.id;
+        snapshot
+            .palette_refs
+            .insert((ChannelId::Input(1), PaletteKind::Eq), palette_id);
+
+        let mut palettes = HashMap::new();
+        palettes.insert(palette_id, palette);
+
+        let result = engine.recall(&snapshot, &scope, &palettes, false).await;
+        // Only the EQ palette param is sent; the unlinked Dyn1 value is not.
+        assert_eq!(result.parameters_sent, 1);
+    }
+
+    #[tokio::test]
     async fn non_eq_params_unaffected_by_palette() {
         let (engine, _state) = setup_test().await;
 

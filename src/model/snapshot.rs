@@ -269,23 +269,27 @@ pub fn resolve_recall_values<'a>(
         out.push((addr.clone(), effective_value));
     }
 
-    // 2. Palette-only values: params in palettes but not in snapshot data.
+    // 2. Palette-only values: parameters supplied by a linked palette that
+    //    aren't already in the snapshot data. A palette link is an explicit
+    //    per-snapshot instruction, so these are applied REGARDLESS of scope
+    //    (otherwise a Fader/Pan-scoped snapshot would silently drop a linked
+    //    EQ/Dyn palette). Only the params matching the linked kind's section
+    //    are emitted, and each (palette, address) is emitted once — deduped
+    //    against phase 1 and across multiple kind-links via `palette_params_seen`.
     for ((channel, kind), palette_id) in &snapshot.palette_refs {
         let Some(palette) = palettes.get(palette_id) else {
             continue;
         };
-        if !palette.has_kind(*kind) {
-            continue;
-        }
+        let section = kind.section();
         for (param_path, value) in &palette.values {
+            if param_path.section() != section {
+                continue;
+            }
             let addr = ParameterAddress {
                 channel: channel.clone(),
                 parameter: param_path.clone(),
             };
-            if palette_params_seen.contains(&(*palette_id, addr.clone())) {
-                continue;
-            }
-            if !ignore_scope && !scope.contains(&addr) {
+            if !palette_params_seen.insert((*palette_id, addr.clone())) {
                 continue;
             }
             out.push((addr, value));
