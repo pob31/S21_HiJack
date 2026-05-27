@@ -247,7 +247,7 @@ pub async fn rotate(dir: &Path, kind: BackupKind, stem: &str, keep: usize) {
         return;
     }
     // Newest first.
-    matches.sort_by(|a, b| b.1.cmp(&a.1));
+    matches.sort_by_key(|m| std::cmp::Reverse(m.1));
     for (path, _) in matches.into_iter().skip(keep) {
         if let Err(e) = tokio::fs::remove_file(&path).await {
             tracing::warn!(path = %path.display(), error = %e, "Failed to prune old backup");
@@ -293,7 +293,7 @@ pub async fn list_recovery_candidates(show_path: &Path) -> Vec<RecoveryCandidate
         });
     }
 
-    out.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    out.sort_by_key(|c| std::cmp::Reverse(c.timestamp));
     out
 }
 
