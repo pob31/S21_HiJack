@@ -2,7 +2,7 @@
 name = "s21_hijack"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "DiGiCo S21/S31 snapshot manager daemon"
 license = "MIT OR Apache-2.0"
 
