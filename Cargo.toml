@@ -17,6 +17,11 @@ type_complexity = "allow"
 # `field_reassign_with_default` flags clear, deliberate per-test config builds
 # where the struct-init form would obscure which field the test cares about.
 field_reassign_with_default = "allow"
+# `collapsible_if` (as of clippy 1.95) rewrites nested `if { if let … }` into
+# `let`-chains. The daemon deliberately keeps the guard and the `if let` on
+# separate lines for readability across ~70 connection/UI sites; collapsing
+# them buys nothing and churns unrelated code. Kept as a style choice.
+collapsible_if = "allow"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
