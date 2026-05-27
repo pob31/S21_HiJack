@@ -1067,11 +1067,10 @@ impl eframe::App for HiJackApp {
                         // rect and lands on top of the Online toggle.
                         const PREV_W: f32 = 80.0;
                         const GO_W: f32 = 80.0;
-                        // Cue-list popup opener (left of Prev) and Skip —
-                        // advance without firing — (right of Go).
-                        const CUES_W: f32 = 64.0;
+                        // Skip — advance without firing — (right of Go) and
+                        // Undo (leftmost, where the Cues button used to be; the
+                        // cue label now opens the cue-list popup).
                         const SKIP_W: f32 = 44.0;
-                        // Undo last recall (rightmost).
                         const UNDO_W: f32 = 70.0;
                         // Preferred cue-label width — keeps Prev / Go
                         // anchored as the current cue changes so muscle
@@ -1091,12 +1090,11 @@ impl eframe::App for HiJackApp {
                         // left, both buttons + their gaps, label at
                         // its floor, MIN_PAD on the right.
                         const MIN_STRIP_W: f32 = MIN_PAD * 2.0
-                            + CUES_W
+                            + UNDO_W
                             + PREV_W
                             + GO_W
                             + SKIP_W
-                            + UNDO_W
-                            + GAP * 5.0
+                            + GAP * 4.0
                             + LABEL_MIN_W;
 
                         if mode.cue_transport_visible() && ui.available_width() >= MIN_STRIP_W {
@@ -1116,7 +1114,7 @@ impl eframe::App for HiJackApp {
                             //   1. Trim left padding from PAD_MAX → MIN_PAD.
                             //   2. Once left padding is at MIN_PAD,
                             //      shrink the cue label toward LABEL_MIN_W.
-                            let buttons_w = CUES_W + PREV_W + GO_W + SKIP_W + UNDO_W + GAP * 5.0;
+                            let buttons_w = UNDO_W + PREV_W + GO_W + SKIP_W + GAP * 4.0;
                             let pref_w = buttons_w + LABEL_W;
                             let (pad, label_w) = if leftover_w >= pref_w + PAD_MAX + MIN_PAD {
                                 (PAD_MAX, LABEL_W)
@@ -1152,21 +1150,31 @@ impl eframe::App for HiJackApp {
                                     };
                                     let transport_enabled = is_connected && has_cues;
 
-                                    // Cue-list popup opener (leftmost).
-                                    let cues_btn = egui::Button::new(
-                                        egui::RichText::new("Cues")
+                                    // UNDO the last recall (cue or direct
+                                    // snapshot), leftmost in the transport.
+                                    let has_undo = self
+                                        .snapshot_engine
+                                        .as_ref()
+                                        .map(|e| e.has_undo())
+                                        .unwrap_or(false);
+                                    let undo_btn = egui::Button::new(
+                                        egui::RichText::new("Undo")
                                             .color(super::theme::TEXT_PRIMARY)
                                             .strong(),
                                     )
-                                    .fill(super::theme::BG_ELEVATED)
+                                    .fill(super::theme::ACCENT_AMBER)
                                     .corner_radius(4.0)
-                                    .min_size(egui::Vec2::new(CUES_W, 26.0));
+                                    .min_size(egui::Vec2::new(UNDO_W, 26.0));
                                     if ui
-                                        .add(cues_btn)
-                                        .on_hover_text("Open the cue list to jump to any cue.")
+                                        .add_enabled(has_undo, undo_btn)
+                                        .on_hover_text("Undo the last cue / snapshot recall.")
                                         .clicked()
                                     {
-                                        self.show_cue_list_popup = !self.show_cue_list_popup;
+                                        super::cue_transport::fire_undo(
+                                            &self.snapshot_engine,
+                                            &self.runtime,
+                                            &self.ui_tx,
+                                        );
                                     }
 
                                     ui.add_space(GAP);
@@ -1198,8 +1206,9 @@ impl eframe::App for HiJackApp {
 
                                     // Cue label — fixed-width, centred,
                                     // truncated with ellipsis if it would
-                                    // overflow. Dimmed `—` when no current
-                                    // cue is set.
+                                    // overflow. Dimmed `—` when no current cue
+                                    // is set. Clicking it opens the cue-list
+                                    // popup (replaces the old "Cues" button).
                                     let label_rich = match &current_cue_text {
                                         Some(s) => egui::RichText::new(s)
                                             .color(super::theme::TEXT_PRIMARY)
@@ -1207,15 +1216,26 @@ impl eframe::App for HiJackApp {
                                         None => egui::RichText::new("—")
                                             .color(super::theme::TEXT_DISABLED),
                                     };
-                                    ui.allocate_ui_with_layout(
-                                        egui::Vec2::new(label_w, 26.0),
-                                        egui::Layout::centered_and_justified(
-                                            egui::Direction::LeftToRight,
-                                        ),
-                                        |ui| {
-                                            ui.add(egui::Label::new(label_rich).truncate());
-                                        },
-                                    );
+                                    let label_clicked = ui
+                                        .allocate_ui_with_layout(
+                                            egui::Vec2::new(label_w, 26.0),
+                                            egui::Layout::centered_and_justified(
+                                                egui::Direction::LeftToRight,
+                                            ),
+                                            |ui| {
+                                                ui.add(
+                                                    egui::Label::new(label_rich)
+                                                        .truncate()
+                                                        .sense(egui::Sense::click()),
+                                                )
+                                                .on_hover_text("Open the cue list.")
+                                                .clicked()
+                                            },
+                                        )
+                                        .inner;
+                                    if label_clicked {
+                                        self.show_cue_list_popup = !self.show_cue_list_popup;
+                                    }
 
                                     ui.add_space(GAP);
 
@@ -1267,36 +1287,6 @@ impl eframe::App for HiJackApp {
                                         super::cue_transport::fire_skip(
                                             &self.cue_manager,
                                             &self.runtime,
-                                        );
-                                    }
-
-                                    ui.add_space(GAP);
-
-                                    // UNDO the last recall (cue or direct
-                                    // snapshot). Lives here, by the transport,
-                                    // since cues are fired from this strip.
-                                    let has_undo = self
-                                        .snapshot_engine
-                                        .as_ref()
-                                        .map(|e| e.has_undo())
-                                        .unwrap_or(false);
-                                    let undo_btn = egui::Button::new(
-                                        egui::RichText::new("Undo")
-                                            .color(super::theme::TEXT_PRIMARY)
-                                            .strong(),
-                                    )
-                                    .fill(super::theme::ACCENT_AMBER)
-                                    .corner_radius(4.0)
-                                    .min_size(egui::Vec2::new(UNDO_W, 26.0));
-                                    if ui
-                                        .add_enabled(has_undo, undo_btn)
-                                        .on_hover_text("Undo the last cue / snapshot recall.")
-                                        .clicked()
-                                    {
-                                        super::cue_transport::fire_undo(
-                                            &self.snapshot_engine,
-                                            &self.runtime,
-                                            &self.ui_tx,
                                         );
                                     }
                                 },
