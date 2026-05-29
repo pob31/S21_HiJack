@@ -34,6 +34,51 @@ use super::setup_tab::SetupTabState;
 use super::snapshots_tab::SnapshotsTabState;
 use super::{PendingEngines, Tab, UiEvent};
 
+// ─── Global fit-to-window + physical-size (PPI) UI scaling ──────────────────
+// The UI is authored against this logical "design rectangle"; the top transport
+// bar (Undo/Cues/Prev/Go/Skip + label) needs ~1800 pts wide. Matches the startup
+// window size in `main.rs`. Aspect 1.89 is wider than 16:9/16:10, so on standard
+// monitors WIDTH binds the fit (text follows the generous axis); ultrawides flip
+// to height (the UI stays centered instead of stretching).
+const DESIGN_W: f32 = 1800.0;
+const DESIGN_H: f32 = 950.0;
+
+/// Physical-size reference density. The auto scaler targets `PPI / REF_PPI`
+/// effective pixels-per-point, so a 16 pt font is ~16/96″ ≈ 0.17″ tall on any
+/// display whose real PPI we can detect. Lower it to make everything physically
+/// larger by default.
+const REF_PPI: f32 = 96.0;
+
+// Clamp on the *zoom factor* (effective ppp = zoom × native_ppp).
+const MIN_ZOOM: f32 = 0.70; // readability floor (body 16pt → ~11px at native 1.0)
+const MAX_ZOOM: f32 = 3.00; // sanity ceiling (also bounds the manual ui_scale)
+
+const SCALE_STEP: f32 = 0.02; // snap zoom to 2% steps (kills drag-resize jitter)
+const SCALE_EPS: f32 = 0.005; // dead-band; must be < SCALE_STEP
+const MIN_PHYS_PX: f32 = 200.0; // reject 0-area minimize frames
+const MAX_PHYS_PX: f32 = 20_000.0; // reject egui's 10000×10000 first-frame placeholder
+
+/// Pure core of the UI auto-scaler (unit-tested). Produces the egui *zoom
+/// factor* to apply for a window of `phys_w × phys_h` physical pixels on a
+/// display reporting `native_ppp` as its OS scale factor and (optionally) a
+/// detected real `ppi`.
+///
+/// - `dpi_target` aims for a consistent *physical* size from the real PPI; when
+///   PPI is unknown it is 1.0, i.e. "respect the OS scale factor".
+/// - `fit_cap` is the largest zoom at which the `DESIGN_W × DESIGN_H` layout
+///   still fits the window — it only ever *prevents overflow*, never inflates.
+/// - `ui_scale` is the user's manual multiplier (applied last, may intentionally
+///   exceed the fit cap for distance viewing); the result is clamped for sanity.
+fn compute_zoom(phys_w: f32, phys_h: f32, native_ppp: f32, ppi: Option<f32>, ui_scale: f32) -> f32 {
+    let native_ppp = if native_ppp > 0.0 { native_ppp } else { 1.0 };
+    let dpi_target = match ppi {
+        Some(p) if p > 0.0 => (p / REF_PPI) / native_ppp,
+        _ => 1.0,
+    };
+    let fit_cap = (phys_w / DESIGN_W).min(phys_h / DESIGN_H) / native_ppp;
+    (dpi_target.min(fit_cap) * ui_scale).clamp(MIN_ZOOM, MAX_ZOOM)
+}
+
 /// State for the post-capture confirmation popup — a centered, temporary
 /// window listing the parameters a capture just recorded. It auto-fades after
 /// ~10 s unless the operator clicks or scrolls it (which pins it open), and
@@ -166,6 +211,22 @@ pub struct HiJackApp {
     pub autosave_in_flight: Arc<AtomicBool>,
     /// Active corruption-recovery modal, if any.
     pub recovery_dialog: Option<RecoveryDialog>,
+
+    // ─── DPI-aware UI scaling ────────────────────────────────────────
+    /// Cached physical metrics of all monitors. Refreshed by `current_ppi`
+    /// only when the window's monitor changes (EDID / Core Graphics reads
+    /// are not per-frame).
+    monitors: Vec<crate::platform::MonitorMetrics>,
+    /// Physical resolution of the monitor the window was last seen on; when it
+    /// changes, `monitors` is re-enumerated.
+    last_monitor_px: Option<(u32, u32)>,
+    /// One-shot: the startup window has been sized to 95% of the monitor and
+    /// revealed. Until then the window is hidden (see `main.rs`).
+    window_sized: bool,
+    /// Frames waited for the monitor size before giving up and revealing at the
+    /// fallback size — guards the rare case where `monitor_size` is `None` on
+    /// the first frames.
+    startup_frames: u8,
 }
 
 impl HiJackApp {
@@ -260,6 +321,102 @@ impl HiJackApp {
             generation_changed_at: std::time::Instant::now(),
             autosave_in_flight: Arc::new(AtomicBool::new(false)),
             recovery_dialog: None,
+            monitors: crate::platform::enumerate(),
+            last_monitor_px: None,
+            window_sized: false,
+            startup_frames: 0,
+        }
+    }
+
+    /// Apply global fit-to-window + physical-size UI scaling. Called at the top
+    /// of `update`, before any panel is built. The new zoom takes effect on the
+    /// next pass; egui keeps physical px constant across the change, so this is
+    /// a stable fixed point (no oscillation).
+    fn apply_auto_scale(&mut self, ctx: &egui::Context) {
+        let logical = ctx.content_rect();
+        let ppp = ctx.pixels_per_point(); // effective ppp = zoom × native
+        let native_ppp = ctx.native_pixels_per_point().unwrap_or(1.0);
+        // Real window size in physical px — invariant under our own zoom changes.
+        let phys_w = logical.width() * ppp;
+        let phys_h = logical.height() * ppp;
+        if !(phys_w.is_finite() && phys_h.is_finite())
+            || phys_w < MIN_PHYS_PX
+            || phys_h < MIN_PHYS_PX
+            || phys_w > MAX_PHYS_PX
+            || phys_h > MAX_PHYS_PX
+        {
+            return;
+        }
+
+        // Physical resolution of the monitor the window is on. egui-winit divides
+        // monitor_size by the *effective* ppp, so multiplying back by `ppp`
+        // recovers physical px (stable across our own zoom changes).
+        let monitor_px = ctx
+            .input(|i| i.viewport().monitor_size)
+            .map(|m| ((m.x * ppp).round() as u32, (m.y * ppp).round() as u32));
+        let ppi = self.current_ppi(monitor_px);
+
+        let mut target = compute_zoom(phys_w, phys_h, native_ppp, ppi, self.setup.ui_scale);
+        target = (target / SCALE_STEP).round() * SCALE_STEP; // snap to step
+        if (target - ctx.zoom_factor()).abs() > SCALE_EPS {
+            ctx.set_zoom_factor(target);
+        }
+    }
+
+    /// One-shot startup sizing: resize to 95% of the monitor and center, then
+    /// reveal the (initially hidden) window. Windowed, not maximized — the user
+    /// avoids macOS full-screen-space behavior and desktop battles with QLab
+    /// video out. Falls back to revealing at the builder's fallback size if the
+    /// monitor size never arrives.
+    fn size_window_to_monitor(&mut self, ctx: &egui::Context) {
+        if self.window_sized {
+            return;
+        }
+        self.startup_frames = self.startup_frames.saturating_add(1);
+        match ctx.input(|i| i.viewport().monitor_size) {
+            Some(mon) => {
+                let inner = (mon * 0.95).max(egui::vec2(900.0, 520.0));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(inner));
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
+                    ((mon - inner) * 0.5).to_pos2(),
+                ));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                self.window_sized = true;
+            }
+            // Monitor size not reported yet — wait a few frames, then reveal at
+            // the fallback size rather than staying hidden forever.
+            None if self.startup_frames >= 10 => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                self.window_sized = true;
+            }
+            None => {}
+        }
+    }
+
+    /// Real horizontal PPI of the monitor whose physical resolution is
+    /// `monitor_px`, from a cache of [`crate::platform::enumerate`] refreshed
+    /// only when the monitor changes. Returns `None` when physical metrics are
+    /// unavailable, so the scaler falls back to respecting the OS scale factor.
+    fn current_ppi(&mut self, monitor_px: Option<(u32, u32)>) -> Option<f32> {
+        let monitor_px = monitor_px?;
+        if self.last_monitor_px != Some(monitor_px) {
+            self.monitors = crate::platform::enumerate();
+            self.last_monitor_px = Some(monitor_px);
+        }
+        match self.monitors.as_slice() {
+            [] => None,
+            // Single display: use it regardless of an exact resolution match —
+            // robust for laptops / Pi touchscreens and backends that report the
+            // panel's native rather than its current mode.
+            [only] => Some(only.ppi).filter(|p| *p > 0.0),
+            // Multiple displays: match by physical resolution (±2 px rounding).
+            many => {
+                let close = |a: u32, b: u32| a.abs_diff(b) <= 2;
+                many.iter()
+                    .find(|m| close(m.px_w, monitor_px.0) && close(m.px_h, monitor_px.1))
+                    .map(|m| m.ppi)
+                    .filter(|p| *p > 0.0)
+            }
         }
     }
 
@@ -595,6 +752,7 @@ impl HiJackApp {
                             ui_mode: Some(self.setup.ui_mode),
                             show_diagnostics: self.setup.show_diagnostics,
                             send_pace_us: pace_to_save,
+                            ui_scale: self.setup.ui_scale,
                         };
                         if let Err(e) = prefs.save() {
                             tracing::warn!(error = %e, "Failed to save app preferences after show load");
@@ -1224,6 +1382,14 @@ impl eframe::App for HiJackApp {
         // `OnceLock` keeps it cheap on subsequent frames.
         static FONTS_INSTALLED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
         FONTS_INSTALLED.get_or_init(|| super::fonts::install_fonts(ctx));
+
+        // Global fit-to-window + physical-size UI scaling. Must run before any
+        // panel is built; the new zoom applies on the next pass.
+        self.apply_auto_scale(ctx);
+
+        // First-run window sizing: open at 95% of the monitor, centered, then
+        // reveal the initially-hidden window (no fallback-size flash).
+        self.size_window_to_monitor(ctx);
 
         // Store context on first frame for async repaint
         let _ = self.egui_ctx.set(ctx.clone());
@@ -1953,5 +2119,60 @@ impl eframe::App for HiJackApp {
             &self.runtime,
             &self.ui_tx,
         );
+    }
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+
+    fn approx(z: f32, expected: f32) {
+        assert!((z - expected).abs() <= 0.03, "zoom {z} not ≈ {expected}");
+    }
+
+    #[test]
+    fn large_low_ppi_tv_is_gentle_not_cartoonish() {
+        // 40" 4K @100%: ~110 PPI, 95% window ~3648×1976 → dpi_target binds.
+        approx(compute_zoom(3648.0, 1976.0, 1.0, Some(110.0), 1.0), 110.0 / 96.0);
+    }
+
+    #[test]
+    fn small_high_ppi_panel_is_fit_capped() {
+        // 15" 4K @100%: ~282 PPI; dpi_target ~2.9 but fit caps to what fits.
+        let z = compute_zoom(3648.0, 1976.0, 1.0, Some(282.0), 1.0);
+        approx(z, (3648.0_f32 / DESIGN_W).min(1976.0 / DESIGN_H)); // ≈ 2.03
+    }
+
+    #[test]
+    fn standard_1080p_is_about_unity() {
+        approx(compute_zoom(1824.0, 988.0, 1.0, Some(92.0), 1.0), 0.96);
+    }
+
+    #[test]
+    fn unknown_ppi_respects_os_and_fits_down() {
+        // Large window, no PPI → min(1.0, fit>1) = 1.0 (respect OS scale).
+        approx(compute_zoom(1824.0, 988.0, 1.0, None, 1.0), 1.0);
+        // Tiny window → fit-down below 1.0, never under MIN_ZOOM.
+        let z = compute_zoom(900.0, 500.0, 1.0, None, 1.0);
+        assert!((MIN_ZOOM..1.0).contains(&z));
+    }
+
+    #[test]
+    fn retina_design_wider_than_panel_scales_to_fit() {
+        // 15" Retina: native 2.0, 220 PPI, 1440pt-wide logical → design (1800pt)
+        // is wider than the panel, so it must scale *down* to fit.
+        let z = compute_zoom(2736.0, 1710.0, 2.0, Some(220.0), 1.0);
+        approx(z, (2736.0_f32 / DESIGN_W).min(1710.0 / DESIGN_H) / 2.0); // ≈ 0.76
+        assert!(z < 1.0);
+    }
+
+    #[test]
+    fn manual_ui_scale_and_clamps_apply() {
+        let base = compute_zoom(3648.0, 1976.0, 1.0, Some(110.0), 1.0);
+        // ui_scale > 1 enlarges (distance viewing) ...
+        assert!(compute_zoom(3648.0, 1976.0, 1.0, Some(110.0), 1.5) > base);
+        // ... but the final result is clamped both ways.
+        approx(compute_zoom(3648.0, 1976.0, 1.0, Some(110.0), 100.0), MAX_ZOOM);
+        approx(compute_zoom(3648.0, 1976.0, 1.0, Some(110.0), 0.001), MIN_ZOOM);
     }
 }

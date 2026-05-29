@@ -145,7 +145,7 @@ pub fn draw_recall_popup(
                         ui.label(
                             egui::RichText::new(format!("{}", state.selected_channel))
                                 .strong()
-                                .size(14.0),
+                                .size(theme::FONT_SIZE_SMALL),
                         );
                         if ui
                             .add_enabled(
@@ -360,7 +360,7 @@ fn draw_column(
         ui.label(
             egui::RichText::new(header)
                 .color(theme::TEXT_SECONDARY)
-                .size(11.0),
+                .size(theme::FONT_SIZE_TINY),
         );
         ui.add_space(4.0);
 

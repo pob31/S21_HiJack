@@ -70,6 +70,10 @@ pub struct SetupTabState {
     pub qlab_port: String,
     /// Inter-message pacing delay in microseconds during snapshot recall.
     pub send_pace_us: u64,
+    /// Global UI scale multiplier (Advanced Settings → Display scale). Folded
+    /// on top of the automatic PPI-based scaling; mirrors
+    /// `AppPreferences::ui_scale` and is persisted via `save_app_preferences`.
+    pub ui_scale: f32,
     /// Source-IP CIDR allowlist for the monitor server (audit C2). Round-trips
     /// through the show file. UI editor is a follow-up; for now operators
     /// edit the JSON directly or use the `--monitor-allow-cidr` CLI flag.
@@ -154,6 +158,7 @@ impl SetupTabState {
             qlab_ip: "127.0.0.1".to_string(),
             qlab_port: "53000".to_string(),
             send_pace_us: prefs.send_pace_us,
+            ui_scale: prefs.ui_scale,
             monitor_allow_cidrs: Vec::new(),
             trigger_allow_cidrs: Vec::new(),
             ui_mode: prefs.ui_mode.unwrap_or_default(),
@@ -2456,6 +2461,7 @@ pub(crate) fn save_app_preferences(setup: &SetupTabState) {
         ui_mode: Some(setup.ui_mode),
         show_diagnostics: setup.show_diagnostics,
         send_pace_us: setup.send_pace_us,
+        ui_scale: setup.ui_scale,
     };
     if let Err(e) = prefs.save() {
         tracing::warn!(error = %e, "Failed to save app preferences");

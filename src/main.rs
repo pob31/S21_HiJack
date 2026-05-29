@@ -11,6 +11,7 @@ mod logging;
 mod model;
 mod osc;
 mod persistence;
+mod platform;
 mod ui;
 
 use std::net::SocketAddr;
@@ -529,9 +530,15 @@ fn run_ui(args: Args) {
     let icon = load_app_icon();
 
     let mut viewport = eframe::egui::ViewportBuilder::default()
-        // Wide enough that the top-bar cue transport (Cues / Prev / Go / Skip)
-        // is fully visible at startup without resizing.
+        // Fallback size used only if the monitor size can't be read on the first
+        // frame; normally the app resizes itself to 95% of the monitor (see
+        // `HiJackApp::update`). Wide enough that the top-bar cue transport
+        // (Cues / Prev / Go / Skip) is fully visible.
         .with_inner_size([1800.0, 950.0])
+        .with_min_inner_size([900.0, 520.0])
+        // Start hidden so the first-frame resize to 95% of the monitor doesn't
+        // flash at the fallback size; revealed once sized.
+        .with_visible(false)
         .with_title("S21 HiJack")
         .with_app_id("s21_hijack");
     if let Some(icon) = icon {

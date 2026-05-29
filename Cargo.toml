@@ -51,6 +51,21 @@ imageproc = "0.25"
 ab_glyph = "0.2"
 hidapi = "2"
 
+# ── Physical display metrics (real PPI) for DPI-aware UI scaling ──
+# Per-platform: macOS via Core Graphics, Windows via the raw-DPI monitor API,
+# Linux via DRM sysfs EDID (no extra dep). Each backend degrades to "unknown"
+# (→ respect the OS scale factor) on any failure, so a missing/odd display
+# never breaks the UI.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.24"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi",
+] }
+
 [dev-dependencies]
 # Property-based / random-input testing for the network-boundary OSC parsers
 # (audit M6). Stable Rust; runs as part of `cargo test`. For deeper

@@ -17,6 +17,8 @@ pub const FONT_SIZE_CUE_NEXT: f32 = 24.0;
 pub const FONT_SIZE_GO_BUTTON: f32 = 36.0;
 pub const FONT_SIZE_SECTION: f32 = 20.0;
 pub const FONT_SIZE_BADGE: f32 = 13.0;
+pub const FONT_SIZE_SMALL: f32 = 14.0;
+pub const FONT_SIZE_TINY: f32 = 11.0;
 
 // ─── Background colors ────────────────────────────────────────────────
 

@@ -89,10 +89,6 @@ impl PanLinkTabState {
 const TILE_SIZE: egui::Vec2 = egui::Vec2::new(82.0, 52.0);
 const TILES_PER_INPUT_ROW: u8 = 10;
 const TILES_PER_AUX_ROW: u8 = 4;
-/// Fixed height reserved for both the Inputs and Auxes panel headers
-/// so the first tile row in each column starts at the same y. Tall
-/// enough to fit the 24 px action buttons in the inputs header.
-const PANEL_HEADER_H: f32 = 28.0;
 /// Total width of the input + aux grid content (input panel + 16 px
 /// gap + aux panel). The header card and the grids card both cap
 /// their content to this value so the Apply / Revert buttons in the
@@ -279,10 +275,22 @@ pub fn draw_pan_link_tab(
                 let card_w = GRIDS_CONTENT_W.min(ui.available_width());
                 ui.set_min_width(card_w);
                 ui.set_max_width(card_w);
+                // Headers and grids go in two separate shared rows. Keeping
+                // both headers in one `horizontal_top` and both grids in
+                // another guarantees the input and aux grids start at the same
+                // y regardless of how tall each header's content is (the
+                // inputs header carries a button taller than the aux label) —
+                // so the tile rows always line up.
                 ui.horizontal_top(|ui| {
-                    draw_inputs_panel(ui, tab, state_guard.deref(), input_count);
+                    draw_inputs_header(ui, tab);
                     ui.add_space(16.0);
-                    draw_auxes_panel(ui, tab, &aux_buses);
+                    draw_auxes_header(ui);
+                });
+                ui.add_space(4.0);
+                ui.horizontal_top(|ui| {
+                    draw_inputs_grid(ui, tab, state_guard.deref(), input_count);
+                    ui.add_space(16.0);
+                    draw_auxes_grid(ui, tab, &aux_buses);
                 });
             });
         });
@@ -299,7 +307,40 @@ struct AuxBusInfo {
     stereo: bool,
 }
 
-fn draw_inputs_panel(
+fn draw_inputs_header(ui: &mut egui::Ui, tab: &mut PanLinkTabState) {
+    let panel_width = TILE_SIZE.x * (TILES_PER_INPUT_ROW as f32) + 24.0;
+    ui.vertical(|ui| {
+        ui.set_width(panel_width);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Inputs")
+                    .strong()
+                    .color(theme::TEXT_PRIMARY),
+            );
+            ui.label(
+                egui::RichText::new(format!("({} selected)", tab.selected_inputs.len()))
+                    .color(theme::TEXT_SECONDARY)
+                    .small(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let clear_btn = theme::action_button(
+                    "Clear selection",
+                    theme::BG_ELEVATED,
+                    egui::Vec2::new(110.0, 24.0),
+                );
+                if ui
+                    .add_enabled(!tab.selected_inputs.is_empty(), clear_btn)
+                    .clicked()
+                {
+                    tab.selected_inputs.clear();
+                    tab.range_anchor = None;
+                }
+            });
+        });
+    });
+}
+
+fn draw_inputs_grid(
     ui: &mut egui::Ui,
     tab: &mut PanLinkTabState,
     state: &ConsoleState,
@@ -308,40 +349,6 @@ fn draw_inputs_panel(
     let panel_width = TILE_SIZE.x * (TILES_PER_INPUT_ROW as f32) + 24.0;
     ui.vertical(|ui| {
         ui.set_width(panel_width);
-
-        // Fixed-height header so the first tile row aligns with the
-        // aux panel's first tile row.
-        ui.allocate_ui_with_layout(
-            egui::Vec2::new(panel_width, PANEL_HEADER_H),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.label(
-                    egui::RichText::new("Inputs")
-                        .strong()
-                        .color(theme::TEXT_PRIMARY),
-                );
-                ui.label(
-                    egui::RichText::new(format!("({} selected)", tab.selected_inputs.len()))
-                        .color(theme::TEXT_SECONDARY)
-                        .small(),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let clear_btn = theme::action_button(
-                        "Clear selection",
-                        theme::BG_ELEVATED,
-                        egui::Vec2::new(110.0, 24.0),
-                    );
-                    if ui
-                        .add_enabled(!tab.selected_inputs.is_empty(), clear_btn)
-                        .clicked()
-                    {
-                        tab.selected_inputs.clear();
-                        tab.range_anchor = None;
-                    }
-                });
-            },
-        );
-        ui.add_space(4.0);
 
         if input_count == 0 {
             ui.colored_label(
@@ -416,24 +423,22 @@ fn apply_input_click(tab: &mut PanLinkTabState, ch: u8, shift_held: bool) {
     tab.range_anchor = Some(ch);
 }
 
-fn draw_auxes_panel(ui: &mut egui::Ui, tab: &mut PanLinkTabState, aux_buses: &[AuxBusInfo]) {
+fn draw_auxes_header(ui: &mut egui::Ui) {
     let panel_width = TILE_SIZE.x * (TILES_PER_AUX_ROW as f32) + 24.0;
     ui.vertical(|ui| {
         ui.set_width(panel_width);
-        // Fixed-height header so the first tile row aligns with the
-        // input panel's first tile row.
-        ui.allocate_ui_with_layout(
-            egui::Vec2::new(panel_width, PANEL_HEADER_H),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.label(
-                    egui::RichText::new("Auxes")
-                        .strong()
-                        .color(theme::TEXT_PRIMARY),
-                );
-            },
+        ui.label(
+            egui::RichText::new("Auxes")
+                .strong()
+                .color(theme::TEXT_PRIMARY),
         );
-        ui.add_space(4.0);
+    });
+}
+
+fn draw_auxes_grid(ui: &mut egui::Ui, tab: &mut PanLinkTabState, aux_buses: &[AuxBusInfo]) {
+    let panel_width = TILE_SIZE.x * (TILES_PER_AUX_ROW as f32) + 24.0;
+    ui.vertical(|ui| {
+        ui.set_width(panel_width);
 
         if aux_buses.is_empty() {
             ui.colored_label(theme::TEXT_SECONDARY, "No auxes configured.");

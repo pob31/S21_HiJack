@@ -15,7 +15,7 @@ const PREFS_FILE: &str = "preferences.json";
 ///
 /// `ui_mode = None` means "first run" — the app shows a welcome popup
 /// asking the operator to pick a mode, then saves the choice here.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppPreferences {
     #[serde(default)]
     pub ui_mode: Option<UiMode>,
@@ -27,6 +27,31 @@ pub struct AppPreferences {
     /// the prefs file doesn't carry a value yet.
     #[serde(default)]
     pub send_pace_us: u64,
+    /// User-facing global UI scale multiplier, folded on top of the automatic
+    /// physical-size (PPI) scaling. 1.0 = pure auto-fit. Persisted so a chosen
+    /// scale (e.g. enlarging the UI for a large-TV demo viewed from a distance)
+    /// survives restarts. The scaler clamps the final result to a sane range.
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
+}
+
+/// Default UI scale multiplier — `1.0` means "use the automatic scaling
+/// as-is". A free function (not `Default::default`'s `0.0` for `f32`) so both
+/// the serde fallback and the struct `Default` impl agree on a non-zero value;
+/// a stray `0.0` would collapse the entire UI.
+fn default_ui_scale() -> f32 {
+    1.0
+}
+
+impl Default for AppPreferences {
+    fn default() -> Self {
+        Self {
+            ui_mode: None,
+            show_diagnostics: false,
+            send_pace_us: 0,
+            ui_scale: default_ui_scale(),
+        }
+    }
 }
 
 impl AppPreferences {
@@ -106,6 +131,9 @@ mod tests {
         let prefs: AppPreferences = serde_json::from_str(json).unwrap();
         assert_eq!(prefs.send_pace_us, 0);
         assert!(prefs.show_diagnostics);
+        // Missing ui_scale must default to 1.0, never 0.0 (which would collapse
+        // the UI). Guards the serde + Default footgun.
+        assert_eq!(prefs.ui_scale, 1.0);
     }
 
     #[test]
@@ -114,6 +142,7 @@ mod tests {
         assert!(prefs.ui_mode.is_none());
         assert!(!prefs.show_diagnostics);
         assert_eq!(prefs.send_pace_us, 0);
+        assert_eq!(prefs.ui_scale, 1.0);
     }
 
     #[test]
@@ -122,10 +151,12 @@ mod tests {
             ui_mode: None,
             show_diagnostics: true,
             send_pace_us: 1500,
+            ui_scale: 1.25,
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: AppPreferences = serde_json::from_str(&json).unwrap();
         assert_eq!(prefs.send_pace_us, back.send_pace_us);
         assert_eq!(prefs.show_diagnostics, back.show_diagnostics);
+        assert_eq!(prefs.ui_scale, back.ui_scale);
     }
 }

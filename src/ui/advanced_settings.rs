@@ -111,6 +111,56 @@ pub fn draw_advanced_settings_window(
             ui.separator();
             ui.add_space(8.0);
 
+            // ── Display scale ──
+            ui.label(
+                egui::RichText::new("Display scale")
+                    .strong()
+                    .color(theme::TEXT_PRIMARY),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "Manual UI size, on top of the automatic display scaling. Leave at \
+                     100% unless the UI looks too large or small — e.g. raise it when \
+                     demoing on a big screen viewed from a distance.",
+                )
+                .small()
+                .color(theme::TEXT_SECONDARY),
+            );
+            ui.add_space(2.0);
+            // Slider/value work in percent; the model stores a 0.5–2.5 multiplier.
+            let mut pct = (setup.ui_scale * 100.0).round();
+            const SCALE_VALUE_W: f32 = 84.0;
+            let scale_resp = ui
+                .horizontal(|ui| {
+                    let gap = ui.spacing().item_spacing.x;
+                    let track_w = (ui.available_width() - SCALE_VALUE_W - gap).max(120.0);
+                    ui.spacing_mut().slider_width = track_w;
+                    let slider = ui.add_sized(
+                        [track_w, theme::ROW_H],
+                        egui::Slider::new(&mut pct, 50.0..=250.0)
+                            .step_by(5.0)
+                            .show_value(false),
+                    );
+                    let value = ui.add_sized(
+                        [SCALE_VALUE_W, theme::ROW_H],
+                        egui::DragValue::new(&mut pct)
+                            .speed(1.0)
+                            .range(50.0..=250.0)
+                            .fixed_decimals(0)
+                            .suffix(" %"),
+                    );
+                    slider.union(value)
+                })
+                .inner;
+            if scale_resp.changed() {
+                setup.ui_scale = pct / 100.0;
+                save_app_preferences(setup);
+            }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+
             // ── Coming soon ──
             // Reserved slots for future app-level preferences. Greyed
             // out so the user knows they exist; not yet wired to any

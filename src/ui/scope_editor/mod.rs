@@ -471,7 +471,7 @@ pub fn draw_scope_window(
                 );
                 let btn_size = egui::Vec2::new(100.0, 24.0);
                 let scope_btn =
-                    egui::Button::new(egui::RichText::new("Session Scope").size(10.0).color(
+                    egui::Button::new(egui::RichText::new("Session Scope").size(theme::FONT_SIZE_TINY).color(
                         if state.console_recall.session_scope.active_blocks.is_empty() {
                             theme::TEXT_SECONDARY
                         } else {
@@ -490,7 +490,7 @@ pub fn draw_scope_window(
                     ("Matrix Safe", RecallPopupKind::MatrixSafe),
                     ("CG Safe", RecallPopupKind::CgSafe),
                 ] {
-                    let btn = egui::Button::new(egui::RichText::new(label).size(10.0))
+                    let btn = egui::Button::new(egui::RichText::new(label).size(theme::FONT_SIZE_TINY))
                         .fill(theme::BG_ELEVATED)
                         .min_size(egui::Vec2::new(72.0, 24.0));
                     if ui.add(btn).clicked() {

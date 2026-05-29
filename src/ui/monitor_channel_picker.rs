@@ -266,10 +266,6 @@ fn collect_stereo_auxes(cfg: &ConsoleConfig, aux_count: u8) -> HashSet<u8> {
 const TILE_SIZE: egui::Vec2 = egui::Vec2::new(82.0, 52.0);
 const TILES_PER_INPUT_ROW: u8 = 10;
 const TILES_PER_AUX_ROW: u8 = 4;
-/// Fixed height reserved for both the Inputs and Auxes panel headers
-/// so their first tile row starts at the same y. Tall enough to fit
-/// the 24 px Ripple / Confirm / Cancel buttons in the inputs header.
-const PANEL_HEADER_H: f32 = 28.0;
 /// Total width of the input + aux grid content (input panel + 16 px
 /// gap + aux panel). The picker's title row, separators, and status
 /// row all cap their content to this so Save/Cancel align with the
@@ -344,10 +340,20 @@ pub fn draw_channel_picker(
             ui.separator();
 
             // Two-column grid: inputs on the left, auxes on the right.
+            // Headers and grids go in two separate shared rows so both grids
+            // start at the same y regardless of header content height (the
+            // inputs header carries taller buttons than the aux label) — so
+            // the input and aux tile rows always line up.
             ui.horizontal_top(|ui| {
-                draw_inputs_panel(ui, state);
+                draw_inputs_header(ui, state);
                 ui.add_space(16.0);
-                draw_auxes_panel(ui, state);
+                draw_auxes_header(ui, state);
+            });
+            ui.add_space(4.0);
+            ui.horizontal_top(|ui| {
+                draw_inputs_grid(ui, state);
+                ui.add_space(16.0);
+                draw_auxes_grid(ui, state);
             });
 
             ui.add_space(6.0);
@@ -425,105 +431,103 @@ pub fn draw_channel_picker(
     outcome
 }
 
-fn draw_inputs_panel(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
+fn draw_inputs_header(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
     let panel_width = TILE_SIZE.x * (TILES_PER_INPUT_ROW as f32) + 24.0;
     ui.vertical(|ui| {
         ui.set_width(panel_width);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Inputs")
+                    .strong()
+                    .color(theme::TEXT_PRIMARY),
+            );
+            ui.label(
+                egui::RichText::new(format!(
+                    "({} of {})",
+                    state.selected_inputs.len(),
+                    state.input_count
+                ))
+                .color(theme::TEXT_SECONDARY)
+                .small(),
+            );
 
-        // Fixed-height header so the first tile row aligns with the
-        // aux panel's first tile row.
-        ui.allocate_ui_with_layout(
-            egui::Vec2::new(panel_width, PANEL_HEADER_H),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.label(
-                    egui::RichText::new("Inputs")
-                        .strong()
-                        .color(theme::TEXT_PRIMARY),
-                );
-                ui.label(
-                    egui::RichText::new(format!(
-                        "({} of {})",
-                        state.selected_inputs.len(),
-                        state.input_count
-                    ))
-                    .color(theme::TEXT_SECONDARY)
-                    .small(),
-                );
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    match state.ripple {
-                        RippleState::Confirming { first, last } => {
-                            // Confirmation pair replaces the normal header buttons.
-                            // Order in right-to-left layout: Cancel on the right,
-                            // Confirm to its left. Plain text labels because the
-                            // bundled egui font doesn't render check-mark / X
-                            // dingbats.
-                            let cancel_btn = theme::action_button(
-                                "Cancel",
-                                theme::ACCENT_RED,
-                                egui::Vec2::new(70.0, 24.0),
-                            );
-                            if ui.add(cancel_btn).clicked() {
-                                state.ripple = RippleState::Off;
-                            }
-                            let confirm_btn = theme::action_button(
-                                "Confirm",
-                                theme::ACCENT_GREEN,
-                                egui::Vec2::new(80.0, 24.0),
-                            );
-                            if ui.add(confirm_btn).clicked() {
-                                state.apply_ripple(first, last);
-                                state.ripple = RippleState::Off;
-                            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                match state.ripple {
+                    RippleState::Confirming { first, last } => {
+                        // Confirmation pair replaces the normal header buttons.
+                        // Order in right-to-left layout: Cancel on the right,
+                        // Confirm to its left. Plain text labels because the
+                        // bundled egui font doesn't render check-mark / X
+                        // dingbats.
+                        let cancel_btn = theme::action_button(
+                            "Cancel",
+                            theme::ACCENT_RED,
+                            egui::Vec2::new(70.0, 24.0),
+                        );
+                        if ui.add(cancel_btn).clicked() {
+                            state.ripple = RippleState::Off;
                         }
-                        _ => {
-                            // Ripple toggle button — orange when armed, neutral otherwise.
-                            // Clicking while armed (Pending / GotFirst) cancels back to Off.
-                            let ripple_armed = matches!(
-                                state.ripple,
-                                RippleState::Pending | RippleState::GotFirst { .. }
-                            );
-                            let ripple_btn = theme::action_button(
-                                "Ripple",
-                                if ripple_armed {
-                                    theme::ACCENT_ORANGE
-                                } else {
-                                    theme::BG_ELEVATED
-                                },
-                                egui::Vec2::new(70.0, 24.0),
-                            );
-                            if ui.add(ripple_btn).clicked() {
-                                state.ripple = if ripple_armed {
-                                    RippleState::Off
-                                } else {
-                                    RippleState::Pending
-                                };
-                            }
-
-                            let deselect = theme::action_button(
-                                "Deselect all",
-                                theme::BG_ELEVATED,
-                                egui::Vec2::new(95.0, 24.0),
-                            );
-                            if ui.add(deselect).clicked() {
-                                state.selected_inputs.clear();
-                            }
-                            let select_all = theme::action_button(
-                                "Select all",
-                                theme::BG_ELEVATED,
-                                egui::Vec2::new(85.0, 24.0),
-                            );
-                            if ui.add(select_all).clicked() {
-                                state.selected_inputs = (1..=state.input_count).collect();
-                            }
+                        let confirm_btn = theme::action_button(
+                            "Confirm",
+                            theme::ACCENT_GREEN,
+                            egui::Vec2::new(80.0, 24.0),
+                        );
+                        if ui.add(confirm_btn).clicked() {
+                            state.apply_ripple(first, last);
+                            state.ripple = RippleState::Off;
                         }
                     }
-                });
-            },
-        );
+                    _ => {
+                        // Ripple toggle button — orange when armed, neutral otherwise.
+                        // Clicking while armed (Pending / GotFirst) cancels back to Off.
+                        let ripple_armed = matches!(
+                            state.ripple,
+                            RippleState::Pending | RippleState::GotFirst { .. }
+                        );
+                        let ripple_btn = theme::action_button(
+                            "Ripple",
+                            if ripple_armed {
+                                theme::ACCENT_ORANGE
+                            } else {
+                                theme::BG_ELEVATED
+                            },
+                            egui::Vec2::new(70.0, 24.0),
+                        );
+                        if ui.add(ripple_btn).clicked() {
+                            state.ripple = if ripple_armed {
+                                RippleState::Off
+                            } else {
+                                RippleState::Pending
+                            };
+                        }
 
-        ui.add_space(4.0);
+                        let deselect = theme::action_button(
+                            "Deselect all",
+                            theme::BG_ELEVATED,
+                            egui::Vec2::new(95.0, 24.0),
+                        );
+                        if ui.add(deselect).clicked() {
+                            state.selected_inputs.clear();
+                        }
+                        let select_all = theme::action_button(
+                            "Select all",
+                            theme::BG_ELEVATED,
+                            egui::Vec2::new(85.0, 24.0),
+                        );
+                        if ui.add(select_all).clicked() {
+                            state.selected_inputs = (1..=state.input_count).collect();
+                        }
+                    }
+                }
+            });
+        });
+    });
+}
+
+fn draw_inputs_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
+    let panel_width = TILE_SIZE.x * (TILES_PER_INPUT_ROW as f32) + 24.0;
+    ui.vertical(|ui| {
+        ui.set_width(panel_width);
 
         if state.input_count == 0 {
             ui.colored_label(
@@ -629,35 +633,33 @@ enum RippleHighlight {
     InRange,
 }
 
-fn draw_auxes_panel(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
+fn draw_auxes_header(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
     let panel_width = TILE_SIZE.x * (TILES_PER_AUX_ROW as f32) + 24.0;
     ui.vertical(|ui| {
         ui.set_width(panel_width);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Auxes")
+                    .strong()
+                    .color(theme::TEXT_PRIMARY),
+            );
+            ui.label(
+                egui::RichText::new(format!(
+                    "({} of {})",
+                    state.selected_auxes.len(),
+                    state.aux_count
+                ))
+                .color(theme::TEXT_SECONDARY)
+                .small(),
+            );
+        });
+    });
+}
 
-        // Fixed-height header so the first tile row aligns with the
-        // input panel's first tile row.
-        ui.allocate_ui_with_layout(
-            egui::Vec2::new(panel_width, PANEL_HEADER_H),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.label(
-                    egui::RichText::new("Auxes")
-                        .strong()
-                        .color(theme::TEXT_PRIMARY),
-                );
-                ui.label(
-                    egui::RichText::new(format!(
-                        "({} of {})",
-                        state.selected_auxes.len(),
-                        state.aux_count
-                    ))
-                    .color(theme::TEXT_SECONDARY)
-                    .small(),
-                );
-            },
-        );
-
-        ui.add_space(4.0);
+fn draw_auxes_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
+    let panel_width = TILE_SIZE.x * (TILES_PER_AUX_ROW as f32) + 24.0;
+    ui.vertical(|ui| {
+        ui.set_width(panel_width);
 
         if state.aux_count == 0 {
             ui.colored_label(
