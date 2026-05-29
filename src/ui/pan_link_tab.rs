@@ -184,7 +184,11 @@ pub fn draw_pan_link_tab(
         })
         .collect();
 
-    egui::ScrollArea::vertical()
+    // Both-axis scroll: the header + grids cards self-cap at `GRIDS_CONTENT_W`,
+    // so when the window is narrower than the grids the content scrolls
+    // horizontally instead of clipping the aux tiles (rather than shrinking the
+    // fixed-size tiles to unusable).
+    egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             // Header card: title + dirty indicator + Apply / Revert.

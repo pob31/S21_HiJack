@@ -344,17 +344,24 @@ pub fn draw_channel_picker(
             // start at the same y regardless of header content height (the
             // inputs header carries taller buttons than the aux label) — so
             // the input and aux tile rows always line up.
-            ui.horizontal_top(|ui| {
-                draw_inputs_header(ui, state);
-                ui.add_space(16.0);
-                draw_auxes_header(ui, state);
-            });
-            ui.add_space(4.0);
-            ui.horizontal_top(|ui| {
-                draw_inputs_grid(ui, state);
-                ui.add_space(16.0);
-                draw_auxes_grid(ui, state);
-            });
+            // Horizontal scroll so a window narrower than the fixed-size tile
+            // grids scrolls rather than clipping the aux tiles. The grids have
+            // fixed widths (no available_width reads), so this is safe.
+            egui::ScrollArea::horizontal()
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        draw_inputs_header(ui, state);
+                        ui.add_space(16.0);
+                        draw_auxes_header(ui, state);
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal_top(|ui| {
+                        draw_inputs_grid(ui, state);
+                        ui.add_space(16.0);
+                        draw_auxes_grid(ui, state);
+                    });
+                });
 
             ui.add_space(6.0);
             ui.separator();

@@ -535,8 +535,21 @@ pub fn draw_setup_tab(
     let footer_h: f32 = 36.0;
     let body_h = (avail_h - footer_h - 6.0).max(120.0);
 
-    ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+    // Minimum width at which the connection diagram still renders without
+    // clipping (frame overhead + 2 satellites + hub at MIN width, tight gaps,
+    // card margins). Below this the body scrolls horizontally instead of
+    // clipping the iPad section.
+    const SETUP_MIN_BODY_W: f32 = 920.0;
+    let view_w = ui.available_width();
+    ui.allocate_ui(egui::vec2(view_w, body_h), |ui| {
+    egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+        // Bound the content width to the viewport — egui reports available_width
+        // as INFINITY inside a horizontal ScrollArea, which would blow up the
+        // available_width-based diagram layout — but never below the diagram's
+        // minimum, so a narrow window scrolls rather than clipping.
+        let content_w = view_w.max(SETUP_MIN_BODY_W);
+        ui.set_min_width(content_w);
+        ui.set_max_width(content_w);
         // ── Connection card (W-diagram: hub + 4 satellites) ──
         // Phase 2: the Server hub absorbs Display Mode + Connection Mode +
         // Show File controls; the Console satellite absorbs Channel Config

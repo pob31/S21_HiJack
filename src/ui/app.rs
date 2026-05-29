@@ -34,14 +34,14 @@ use super::setup_tab::SetupTabState;
 use super::snapshots_tab::SnapshotsTabState;
 use super::{PendingEngines, Tab, UiEvent};
 
-// ─── Global fit-to-window + physical-size (PPI) UI scaling ──────────────────
-// The UI is authored against this logical "design rectangle"; the top transport
-// bar (Undo/Cues/Prev/Go/Skip + label) needs ~1800 pts wide. Matches the startup
-// window size in `main.rs`. Aspect 1.89 is wider than 16:9/16:10, so on standard
-// monitors WIDTH binds the fit (text follows the generous axis); ultrawides flip
-// to height (the UI stays centered instead of stretching).
-const DESIGN_W: f32 = 1800.0;
-const DESIGN_H: f32 = 950.0;
+// ─── Global physical-size (PPI) UI scaling ──────────────────────────────────
+// The UI is scaled to a consistent *physical* size derived from the display's
+// real PPI (see `crate::platform`); it deliberately does NOT fit-to-window
+// scale. Fit-to-window pins the logical layout width to a constant and makes the
+// whole UI scale uniformly on resize, which stops tabs from reflowing (gaps can
+// never collapse) and shrinks controls to unusable on small windows. Holding a
+// stable physical size instead lets each tab reflow against the actual window —
+// collapse slack, shrink panels, then scroll.
 
 /// Physical-size reference density. The auto scaler targets `PPI / REF_PPI`
 /// effective pixels-per-point, so a 16 pt font is ~16/96″ ≈ 0.17″ tall on any
@@ -59,24 +59,20 @@ const MIN_PHYS_PX: f32 = 200.0; // reject 0-area minimize frames
 const MAX_PHYS_PX: f32 = 20_000.0; // reject egui's 10000×10000 first-frame placeholder
 
 /// Pure core of the UI auto-scaler (unit-tested). Produces the egui *zoom
-/// factor* to apply for a window of `phys_w × phys_h` physical pixels on a
-/// display reporting `native_ppp` as its OS scale factor and (optionally) a
-/// detected real `ppi`.
+/// factor* for a consistent physical size: `dpi_target = (PPI / REF_PPI) /
+/// native_ppp`, or `1.0` (respect the OS scale factor) when the real PPI is
+/// unknown, times the user's manual `ui_scale`, clamped for sanity.
 ///
-/// - `dpi_target` aims for a consistent *physical* size from the real PPI; when
-///   PPI is unknown it is 1.0, i.e. "respect the OS scale factor".
-/// - `fit_cap` is the largest zoom at which the `DESIGN_W × DESIGN_H` layout
-///   still fits the window — it only ever *prevents overflow*, never inflates.
-/// - `ui_scale` is the user's manual multiplier (applied last, may intentionally
-///   exceed the fit cap for distance viewing); the result is clamped for sanity.
-fn compute_zoom(phys_w: f32, phys_h: f32, native_ppp: f32, ppi: Option<f32>, ui_scale: f32) -> f32 {
+/// Deliberately independent of the window size: the UI keeps a stable physical
+/// size and the tabs *reflow* against the actual window (collapse slack, then
+/// scroll) rather than uniformly shrinking to fit.
+fn compute_zoom(native_ppp: f32, ppi: Option<f32>, ui_scale: f32) -> f32 {
     let native_ppp = if native_ppp > 0.0 { native_ppp } else { 1.0 };
     let dpi_target = match ppi {
         Some(p) if p > 0.0 => (p / REF_PPI) / native_ppp,
         _ => 1.0,
     };
-    let fit_cap = (phys_w / DESIGN_W).min(phys_h / DESIGN_H) / native_ppp;
-    (dpi_target.min(fit_cap) * ui_scale).clamp(MIN_ZOOM, MAX_ZOOM)
+    (dpi_target * ui_scale).clamp(MIN_ZOOM, MAX_ZOOM)
 }
 
 /// State for the post-capture confirmation popup — a centered, temporary
@@ -356,7 +352,7 @@ impl HiJackApp {
             .map(|m| ((m.x * ppp).round() as u32, (m.y * ppp).round() as u32));
         let ppi = self.current_ppi(monitor_px);
 
-        let mut target = compute_zoom(phys_w, phys_h, native_ppp, ppi, self.setup.ui_scale);
+        let mut target = compute_zoom(native_ppp, ppi, self.setup.ui_scale);
         target = (target / SCALE_STEP).round() * SCALE_STEP; // snap to step
         if (target - ctx.zoom_factor()).abs() > SCALE_EPS {
             ctx.set_zoom_factor(target);
@@ -2132,47 +2128,44 @@ mod scale_tests {
 
     #[test]
     fn large_low_ppi_tv_is_gentle_not_cartoonish() {
-        // 40" 4K @100%: ~110 PPI, 95% window ~3648×1976 → dpi_target binds.
-        approx(compute_zoom(3648.0, 1976.0, 1.0, Some(110.0), 1.0), 110.0 / 96.0);
+        // 40" 4K @100%: ~110 PPI → gentle physical-size zoom, not cartoonish.
+        approx(compute_zoom(1.0, Some(110.0), 1.0), 110.0 / 96.0); // ≈ 1.15
     }
 
     #[test]
-    fn small_high_ppi_panel_is_fit_capped() {
-        // 15" 4K @100%: ~282 PPI; dpi_target ~2.9 but fit caps to what fits.
-        let z = compute_zoom(3648.0, 1976.0, 1.0, Some(282.0), 1.0);
-        approx(z, (3648.0_f32 / DESIGN_W).min(1976.0 / DESIGN_H)); // ≈ 2.03
+    fn small_high_ppi_panel_scales_up() {
+        // 15" 4K @100%: ~282 PPI → dpi_target ≈ 2.94 (under the MAX_ZOOM ceiling).
+        // The UI reflows / scrolls to fit rather than shrinking to the window.
+        approx(compute_zoom(1.0, Some(282.0), 1.0), 282.0 / 96.0); // ≈ 2.94
     }
 
     #[test]
     fn standard_1080p_is_about_unity() {
-        approx(compute_zoom(1824.0, 988.0, 1.0, Some(92.0), 1.0), 0.96);
+        approx(compute_zoom(1.0, Some(92.0), 1.0), 0.96);
     }
 
     #[test]
-    fn unknown_ppi_respects_os_and_fits_down() {
-        // Large window, no PPI → min(1.0, fit>1) = 1.0 (respect OS scale).
-        approx(compute_zoom(1824.0, 988.0, 1.0, None, 1.0), 1.0);
-        // Tiny window → fit-down below 1.0, never under MIN_ZOOM.
-        let z = compute_zoom(900.0, 500.0, 1.0, None, 1.0);
-        assert!((MIN_ZOOM..1.0).contains(&z));
+    fn unknown_ppi_respects_os_scale() {
+        // No detected PPI → respect the OS scale factor (zoom 1.0), independent of
+        // window size (tabs reflow / scroll instead of fit-down-scaling).
+        approx(compute_zoom(1.0, None, 1.0), 1.0);
+        approx(compute_zoom(2.0, None, 1.0), 1.0);
     }
 
     #[test]
-    fn retina_design_wider_than_panel_scales_to_fit() {
-        // 15" Retina: native 2.0, 220 PPI, 1440pt-wide logical → design (1800pt)
-        // is wider than the panel, so it must scale *down* to fit.
-        let z = compute_zoom(2736.0, 1710.0, 2.0, Some(220.0), 1.0);
-        approx(z, (2736.0_f32 / DESIGN_W).min(1710.0 / DESIGN_H) / 2.0); // ≈ 0.76
-        assert!(z < 1.0);
+    fn retina_targets_reference_physical_size() {
+        // 15" Retina: native 2.0, ~220 PPI → effective ppp ≈ 220/96, i.e. a zoom
+        // factor of (220/96)/2.0 ≈ 1.15 on top of the OS's 2× scaling.
+        approx(compute_zoom(2.0, Some(220.0), 1.0), (220.0 / 96.0) / 2.0);
     }
 
     #[test]
     fn manual_ui_scale_and_clamps_apply() {
-        let base = compute_zoom(3648.0, 1976.0, 1.0, Some(110.0), 1.0);
+        let base = compute_zoom(1.0, Some(110.0), 1.0);
         // ui_scale > 1 enlarges (distance viewing) ...
-        assert!(compute_zoom(3648.0, 1976.0, 1.0, Some(110.0), 1.5) > base);
+        assert!(compute_zoom(1.0, Some(110.0), 1.5) > base);
         // ... but the final result is clamped both ways.
-        approx(compute_zoom(3648.0, 1976.0, 1.0, Some(110.0), 100.0), MAX_ZOOM);
-        approx(compute_zoom(3648.0, 1976.0, 1.0, Some(110.0), 0.001), MIN_ZOOM);
+        approx(compute_zoom(1.0, Some(110.0), 100.0), MAX_ZOOM);
+        approx(compute_zoom(1.0, Some(110.0), 0.001), MIN_ZOOM);
     }
 }
