@@ -330,8 +330,14 @@ impl HiJackApp {
     /// a stable fixed point (no oscillation).
     fn apply_auto_scale(&mut self, ctx: &egui::Context) {
         let logical = ctx.content_rect();
-        let ppp = ctx.pixels_per_point(); // effective ppp = zoom × native
-        let native_ppp = ctx.native_pixels_per_point().unwrap_or(1.0);
+        let ppp = ctx.pixels_per_point(); // effective ppp = zoom × native — what egui renders at
+        // Derive the OS scale factor from what egui actually renders at, rather
+        // than `native_pixels_per_point()`. The latter can read as 1.0 / None on
+        // some setups (notably a 4K monitor at 200%), which would leave the OS
+        // scale uncorrected in `dpi_target` and render the UI ~2× too big
+        // (spilling off-screen). `pixels_per_point / zoom_factor` is always the
+        // real native scale, because egui renders at exactly that product.
+        let native_ppp = ppp / ctx.zoom_factor().max(0.01);
         // Real window size in physical px — invariant under our own zoom changes.
         let phys_w = logical.width() * ppp;
         let phys_h = logical.height() * ppp;
