@@ -2607,7 +2607,11 @@ fn draw_streamdeck_launcher(
         if ui
             .add_sized(
                 [BTN_W, BTN_H],
-                theme::action_button("Setup…", theme::btn_neutral(), egui::Vec2::new(BTN_W, BTN_H)),
+                theme::action_button(
+                    "Setup…",
+                    theme::btn_neutral(),
+                    egui::Vec2::new(BTN_W, BTN_H),
+                ),
             )
             .on_hover_text(
                 "Open the Stream Deck panel — device selection, \

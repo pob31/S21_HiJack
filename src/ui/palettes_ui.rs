@@ -374,8 +374,7 @@ fn draw_palette_actions(
 
             // Channel the palette belongs to.
             ui.label(
-                egui::RichText::new(format!("{}", palette_info.channel))
-                    .color(theme::label_weak()),
+                egui::RichText::new(format!("{}", palette_info.channel)).color(theme::label_weak()),
             );
 
             if theme::row_action_button(ui, "Re-capture", theme::ACCENT_BLUE, 90.0, is_connected) {

@@ -248,8 +248,7 @@ pub fn on_fill_text(fill: egui::Color32) -> egui::Color32 {
     // Perceived luminance (Rec. 601). Threshold sits above the brightest
     // accent (amber ≈ 164) and below the light neutral fill (≈ 226) so only
     // genuinely light fills get dark text.
-    let luminance =
-        0.299 * fill.r() as f32 + 0.587 * fill.g() as f32 + 0.114 * fill.b() as f32;
+    let luminance = 0.299 * fill.r() as f32 + 0.587 * fill.g() as f32 + 0.114 * fill.b() as f32;
     if luminance > 175.0 {
         egui::Color32::BLACK
     } else {
@@ -528,7 +527,8 @@ pub fn colored_badge(ui: &mut egui::Ui, text: &str, bg_color: egui::Color32) {
 
     ui.painter().rect_filled(rect, 4.0, bg_color);
     let text_pos = rect.center() - text_galley.size() / 2.0;
-    ui.painter().galley(text_pos, text_galley, on_fill_text(bg_color));
+    ui.painter()
+        .galley(text_pos, text_galley, on_fill_text(bg_color));
 }
 
 /// Same as [`colored_badge`] but with an explicit width — useful for
@@ -546,15 +546,20 @@ pub fn colored_badge_sized(ui: &mut egui::Ui, text: &str, bg_color: egui::Color3
 
     ui.painter().rect_filled(rect, 4.0, bg_color);
     let text_pos = rect.center() - text_galley.size() / 2.0;
-    ui.painter().galley(text_pos, text_galley, on_fill_text(bg_color));
+    ui.painter()
+        .galley(text_pos, text_galley, on_fill_text(bg_color));
 }
 
 /// DiGiCo-style action button with colored fill.
 pub fn action_button(text: &str, color: egui::Color32, size: egui::Vec2) -> egui::Button<'_> {
-    egui::Button::new(egui::RichText::new(text).color(on_fill_text(color)).strong())
-        .fill(color)
-        .min_size(size)
-        .corner_radius(6.0)
+    egui::Button::new(
+        egui::RichText::new(text)
+            .color(on_fill_text(color))
+            .strong(),
+    )
+    .fill(color)
+    .min_size(size)
+    .corner_radius(6.0)
 }
 
 // ─── Text-edit sizing primitives ──────────────────────────────────────
@@ -728,7 +733,11 @@ pub fn row_spacer(ui: &mut egui::Ui) {
 /// Returns the response for click detection.
 pub fn toggle_block(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
     let fill = if active { SCOPE_ACTIVE } else { btn_neutral() };
-    let text_color = if active { TEXT_PRIMARY } else { neutral_inactive_text() };
+    let text_color = if active {
+        TEXT_PRIMARY
+    } else {
+        neutral_inactive_text()
+    };
 
     let padding = egui::Vec2::new(10.0, 8.0);
     let text_galley = ui.painter().layout_no_wrap(
@@ -891,7 +900,11 @@ pub fn long_press_button(
 
     let button = egui::Button::new(
         egui::RichText::new(text)
-            .color(if enabled { on_fill_text(color) } else { TEXT_DISABLED })
+            .color(if enabled {
+                on_fill_text(color)
+            } else {
+                TEXT_DISABLED
+            })
             .strong(),
     )
     .fill(fill)

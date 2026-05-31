@@ -1866,9 +1866,10 @@ impl eframe::App for HiJackApp {
                                         .fill(super::theme::btn_neutral())
                                         .corner_radius(4.0)
                                         .min_size(egui::Vec2::new(SKIP_W, 26.0));
-                                    let skip_resp = ui.add_enabled(has_cues, skip_btn).on_hover_text(
-                                        "Skip — advance to the next cue without recalling it.",
-                                    );
+                                    let skip_resp =
+                                        ui.add_enabled(has_cues, skip_btn).on_hover_text(
+                                            "Skip — advance to the next cue without recalling it.",
+                                        );
                                     super::theme::paint_skip_glyph(
                                         ui.painter(),
                                         skip_resp.rect,
