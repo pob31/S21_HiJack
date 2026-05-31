@@ -117,7 +117,7 @@ pub fn draw_monitor_tab(
                                 theme::colored_badge(
                                     ui,
                                     &format!("{total_count} configured"),
-                                    theme::BG_ELEVATED,
+                                    theme::btn_neutral(),
                                 );
                             });
 
@@ -136,7 +136,7 @@ pub fn draw_monitor_tab(
                             if aux_count == 0 {
                                 ui.label(
                                     egui::RichText::new("Connect to console to see aux channels.")
-                                        .color(theme::TEXT_SECONDARY),
+                                        .color(theme::label_weak()),
                                 );
                             } else {
                                 // Force the Ch # and Send # columns to
@@ -162,7 +162,7 @@ pub fn draw_monitor_tab(
                                             egui::Label::new(
                                                 egui::RichText::new("Ch #")
                                                     .strong()
-                                                    .color(theme::TEXT_SECONDARY),
+                                                    .color(theme::label_weak()),
                                             ),
                                         );
                                         ui.add_sized(
@@ -170,7 +170,7 @@ pub fn draw_monitor_tab(
                                             egui::Label::new(
                                                 egui::RichText::new("Name")
                                                     .strong()
-                                                    .color(theme::TEXT_SECONDARY),
+                                                    .color(theme::label_weak()),
                                             ),
                                         );
                                         ui.add_sized(
@@ -178,7 +178,7 @@ pub fn draw_monitor_tab(
                                             egui::Label::new(
                                                 egui::RichText::new("Send #")
                                                     .strong()
-                                                    .color(theme::TEXT_SECONDARY),
+                                                    .color(theme::label_weak()),
                                             ),
                                         );
                                         ui.end_row();
@@ -214,14 +214,14 @@ pub fn draw_monitor_tab(
                                                     } else {
                                                         &name
                                                     })
-                                                    .color(theme::TEXT_PRIMARY),
+                                                    .color(theme::label_color()),
                                                 ),
                                             );
                                             ui.add_sized(
                                                 [SEND_W, row_h],
                                                 egui::Label::new(
                                                     egui::RichText::new(format!("{aux}"))
-                                                        .color(theme::TEXT_SECONDARY),
+                                                        .color(theme::label_weak()),
                                                 ),
                                             );
                                             ui.end_row();
@@ -278,7 +278,7 @@ pub fn draw_monitor_tab(
                             if clients.is_empty() {
                                 ui.label(
                                     egui::RichText::new("No monitoring clients configured.")
-                                        .color(theme::TEXT_SECONDARY),
+                                        .color(theme::label_weak()),
                                 );
                             } else {
                                 let mut to_remove = None;
@@ -292,10 +292,10 @@ pub fn draw_monitor_tab(
                                     let stroke_color = if in_reorder {
                                         theme::ACCENT_BLUE
                                     } else {
-                                        theme::BORDER_SUBTLE
+                                        theme::border_subtle()
                                     };
                                     egui::Frame::new()
-                                        .fill(theme::BG_ELEVATED)
+                                        .fill(theme::bg_elevated())
                                         .stroke(egui::Stroke::new(
                                             if in_reorder { 2.0 } else { 1.0 },
                                             stroke_color,
@@ -318,7 +318,7 @@ pub fn draw_monitor_tab(
                                             ui.label(
                                                 egui::RichText::new(&client.name)
                                                     .strong()
-                                                    .color(theme::TEXT_PRIMARY),
+                                                    .color(theme::label_color()),
                                             );
 
                                             ui.add_space(8.0);
@@ -408,7 +408,7 @@ pub fn draw_monitor_tab(
                                                         .color(if in_reorder {
                                                             theme::ACCENT_BLUE
                                                         } else {
-                                                            theme::TEXT_SECONDARY
+                                                            theme::label_weak()
                                                         })
                                                         .small(),
                                                 );

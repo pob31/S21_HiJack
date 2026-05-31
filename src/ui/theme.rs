@@ -1,6 +1,34 @@
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use eframe::egui;
 
 use crate::model::channel::ChannelId;
+use crate::model::ui_mode::ColorTheme;
+
+// ─── Active colour theme ──────────────────────────────────────────────
+//
+// The whole palette below resolves at runtime through accessor functions
+// so the UI can hot-switch between the dark and light themes. The active
+// theme lives in a process-global atomic: the UI thread writes it once at
+// the top of every frame (in `configure_style`), and the accessor
+// functions — called from deep render code that has no `ColorTheme` to
+// hand — read it back. Single writer + same-frame readers on one thread,
+// so `Relaxed` is sufficient.
+
+static ACTIVE_THEME: AtomicU8 = AtomicU8::new(0); // 0 = Dark, 1 = Light
+
+/// Set the active colour theme. Called once per frame from
+/// [`configure_style`] before any widget is built.
+#[inline]
+pub fn set_active_theme(theme: ColorTheme) {
+    ACTIVE_THEME.store(matches!(theme, ColorTheme::Light) as u8, Ordering::Relaxed);
+}
+
+/// True when the light theme is active.
+#[inline]
+fn is_light() -> bool {
+    ACTIVE_THEME.load(Ordering::Relaxed) == 1
+}
 
 // ─── Touch-friendly sizing constants ───────────────────────────────────
 
@@ -21,13 +49,59 @@ pub const FONT_SIZE_SMALL: f32 = 14.0;
 pub const FONT_SIZE_TINY: f32 = 11.0;
 
 // ─── Background colors ────────────────────────────────────────────────
+//
+// Theme-dependent: the dark theme keeps its original near-black shades;
+// the light theme makes every background level pure white and relies on
+// the (now black) borders/separators for visual separation.
 
-pub const BG_DARK: egui::Color32 = egui::Color32::from_rgb(0x1A, 0x1A, 0x1E);
-pub const BG_PANEL: egui::Color32 = egui::Color32::from_rgb(0x25, 0x25, 0x28);
-pub const BG_ELEVATED: egui::Color32 = egui::Color32::from_rgb(0x2E, 0x2E, 0x32);
-pub const BG_INPUT: egui::Color32 = egui::Color32::from_rgb(0x1E, 0x1E, 0x22);
-pub const BORDER_SUBTLE: egui::Color32 = egui::Color32::from_rgb(0x3A, 0x3A, 0x3E);
-pub const BORDER_FOCUS: egui::Color32 = egui::Color32::from_rgb(0x5A, 0x5A, 0x60);
+#[inline]
+pub fn bg_dark() -> egui::Color32 {
+    if is_light() {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::from_rgb(0x1A, 0x1A, 0x1E)
+    }
+}
+#[inline]
+pub fn bg_panel() -> egui::Color32 {
+    if is_light() {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::from_rgb(0x25, 0x25, 0x28)
+    }
+}
+#[inline]
+pub fn bg_elevated() -> egui::Color32 {
+    if is_light() {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::from_rgb(0x2E, 0x2E, 0x32)
+    }
+}
+#[inline]
+pub fn bg_input() -> egui::Color32 {
+    if is_light() {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::from_rgb(0x1E, 0x1E, 0x22)
+    }
+}
+#[inline]
+pub fn border_subtle() -> egui::Color32 {
+    if is_light() {
+        egui::Color32::BLACK
+    } else {
+        egui::Color32::from_rgb(0x3A, 0x3A, 0x3E)
+    }
+}
+#[inline]
+pub fn border_focus() -> egui::Color32 {
+    if is_light() {
+        egui::Color32::BLACK
+    } else {
+        egui::Color32::from_rgb(0x5A, 0x5A, 0x60)
+    }
+}
 
 // ─── Channel type colors (from DiGiCo channel selector) ───────────────
 
@@ -56,9 +130,26 @@ pub const COLOR_RECORDING: egui::Color32 = egui::Color32::from_rgb(220, 0, 0);
 pub const COLOR_RECORDING_BG: egui::Color32 = egui::Color32::from_rgb(60, 0, 0);
 
 // ─── Cue highlight colors ─────────────────────────────────────────────
+//
+// Theme-dependent: the dark theme uses a dark maroon row tint; the light
+// theme uses a pale red so the current-cue row's (now dark) text reads.
 
-pub const CUE_CURRENT_BG: egui::Color32 = egui::Color32::from_rgb(0x3A, 0x1A, 0x1A);
-pub const CUE_CURRENT_BORDER: egui::Color32 = egui::Color32::from_rgb(0x6A, 0x2A, 0x2A);
+#[inline]
+pub fn cue_current_bg() -> egui::Color32 {
+    if is_light() {
+        egui::Color32::from_rgb(0xFB, 0xE3, 0xE3)
+    } else {
+        egui::Color32::from_rgb(0x3A, 0x1A, 0x1A)
+    }
+}
+#[inline]
+pub fn cue_current_border() -> egui::Color32 {
+    if is_light() {
+        egui::Color32::from_rgb(0xC0, 0x40, 0x40)
+    } else {
+        egui::Color32::from_rgb(0x6A, 0x2A, 0x2A)
+    }
+}
 
 // ─── Scope toggle block colors ────────────────────────────────────────
 
@@ -83,10 +174,157 @@ pub const TEXT_SECONDARY: egui::Color32 = egui::Color32::from_rgb(0x88, 0x88, 0x
 pub const TEXT_DISABLED: egui::Color32 = egui::Color32::from_rgb(0x55, 0x55, 0x55);
 pub const TEXT_WARNING: egui::Color32 = ACCENT_AMBER;
 
+// ─── Body-text colors (theme-dependent) ───────────────────────────────
+//
+// The `TEXT_*` constants above stay white/grey: they are the "on-accent"
+// glyph colours painted on coloured button/badge/toggle fills, which look
+// identical in both themes. These accessors are for *general body text*
+// sitting on a theme background — they go dark in the light theme so
+// labels and headings stay readable on white.
+
+/// Primary body/heading text on a theme background.
+#[inline]
+pub fn label_color() -> egui::Color32 {
+    if is_light() {
+        egui::Color32::from_rgb(0x1A, 0x1A, 0x1E)
+    } else {
+        TEXT_PRIMARY
+    }
+}
+/// Secondary/dimmed body text on a theme background.
+#[inline]
+pub fn label_weak() -> egui::Color32 {
+    if is_light() {
+        egui::Color32::from_rgb(0x55, 0x55, 0x55)
+    } else {
+        TEXT_SECONDARY
+    }
+}
+/// Disabled/placeholder body text on a theme background.
+#[inline]
+pub fn label_disabled() -> egui::Color32 {
+    if is_light() {
+        egui::Color32::from_rgb(0x99, 0x99, 0x99)
+    } else {
+        TEXT_DISABLED
+    }
+}
+
+/// Always-dark background for self-drawn "dimmed" coloured tiles (Monitor
+/// / Pan Link unselected tiles, order badges, inactive pan tracks). These
+/// blend a channel colour toward a dark base and paint white glyph text on
+/// top, so the base must stay dark in both themes — otherwise they'd turn
+/// pale-on-white and the white text would vanish in the light theme.
+#[inline]
+pub fn tile_dim_bg() -> egui::Color32 {
+    egui::Color32::from_rgb(0x2E, 0x2E, 0x32)
+}
+
+/// Neutral fill for un-accented "grey buttons" / inactive segmented buttons /
+/// tabs (the controls that aren't a distinctive DiGiCo accent colour). The
+/// dark theme uses the original elevated grey; the light theme makes them a
+/// light grey so they follow the theme instead of staying black on white.
+/// Their glyph text is chosen by [`on_fill_text`] so it flips to dark on the
+/// light fill automatically.
+#[inline]
+pub fn btn_neutral() -> egui::Color32 {
+    if is_light() {
+        egui::Color32::from_rgb(0xE2, 0xE2, 0xE2)
+    } else {
+        egui::Color32::from_rgb(0x2E, 0x2E, 0x32)
+    }
+}
+
+/// Pick a readable glyph colour (text / icon) for content drawn on top of an
+/// arbitrary `fill`. Returns pure black on light fills and white on dark
+/// fills, keyed off the fill's perceived luminance. This keeps accent buttons
+/// (green/red/blue/amber — all dark enough) showing white glyphs in *both*
+/// themes — so the dark theme is unchanged — while neutral buttons, whose
+/// fill goes light in the light theme, automatically switch to black glyphs.
+/// Black (not just dark grey) is deliberate: the light theme targets bright
+/// outdoor use where maximum contrast reads best.
+#[inline]
+pub fn on_fill_text(fill: egui::Color32) -> egui::Color32 {
+    // Perceived luminance (Rec. 601). Threshold sits above the brightest
+    // accent (amber ≈ 164) and below the light neutral fill (≈ 226) so only
+    // genuinely light fills get dark text.
+    let luminance =
+        0.299 * fill.r() as f32 + 0.587 * fill.g() as f32 + 0.114 * fill.b() as f32;
+    if luminance > 175.0 {
+        egui::Color32::BLACK
+    } else {
+        TEXT_PRIMARY
+    }
+}
+
+/// Glyph colour for the *inactive / unselected* option of a neutral segmented
+/// button, tab, or mode selector (whose fill is [`btn_neutral`]). The dark
+/// theme keeps the original dim secondary grey so it reads as "not selected";
+/// the high-contrast light theme uses pure black for outdoor readability. The
+/// *active* option sits on an accent fill and keeps [`TEXT_PRIMARY`].
+#[inline]
+pub fn neutral_inactive_text() -> egui::Color32 {
+    if is_light() {
+        egui::Color32::BLACK
+    } else {
+        TEXT_SECONDARY
+    }
+}
+
+/// Near-black text painted *on a bright accent fill* (amber / red warning
+/// strips, etc.) where the dark theme used `BG_DARK` as the glyph colour
+/// for contrast. Theme-independent: the fill stays bright in both themes,
+/// so this text must stay dark — using `bg_dark()` would turn it white in
+/// the light theme and lose the contrast.
+pub const TEXT_ON_BRIGHT: egui::Color32 = egui::Color32::from_rgb(0x1A, 0x1A, 0x1E);
+
+/// Fill colour for a slider's rail (groove). egui draws the rail from
+/// `widgets.inactive.bg_fill`, which the light theme sets to white — making
+/// the rail vanish on the white panel. Callers scope this onto the slider so
+/// the track stays visible: a clear mid-grey in the light theme, the original
+/// elevated grey in the dark theme.
+#[inline]
+pub fn slider_track() -> egui::Color32 {
+    if is_light() {
+        egui::Color32::from_rgb(0xC4, 0xC4, 0xCC)
+    } else {
+        egui::Color32::from_rgb(0x2E, 0x2E, 0x32)
+    }
+}
+
+/// Paint a "skip to next" glyph (right-pointing triangle + vertical bar)
+/// centred in `rect`, in `color`. Drawn by hand rather than composed from
+/// font glyphs (`▶` + `|`) so the two parts always share a baseline and read
+/// as one icon — the font composite looked disjointed, especially with the
+/// light theme's heavier face.
+pub fn paint_skip_glyph(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let c = rect.center();
+    let h = 5.0; // half-height of the icon
+    let tri_left = c.x - 6.0;
+    let tri = vec![
+        egui::pos2(tri_left, c.y - h),
+        egui::pos2(tri_left, c.y + h),
+        egui::pos2(c.x + 1.0, c.y),
+    ];
+    painter.add(egui::Shape::convex_polygon(tri, color, egui::Stroke::NONE));
+    let bar = egui::Rect::from_min_max(
+        egui::pos2(c.x + 3.0, c.y - h),
+        egui::pos2(c.x + 5.5, c.y + h),
+    );
+    painter.rect_filled(bar, 0.5, color);
+}
+
 // ─── Style configuration ──────────────────────────────────────────────
 
-/// Configure egui style with the DiGiCo-inspired dark theme.
-pub fn configure_style(ctx: &egui::Context) {
+/// Configure egui style with the DiGiCo-inspired colour theme. Called once
+/// per frame so changing the theme in Advanced Settings hot-switches the UI
+/// without a restart.
+pub fn configure_style(ctx: &egui::Context, theme: ColorTheme) {
+    // Publish the active theme first so every palette accessor below — and
+    // all render code this frame — resolves to the right colours.
+    set_active_theme(theme);
+    let light = matches!(theme, ColorTheme::Light);
+
     let mut style = (*ctx.style()).clone();
 
     // Spacing
@@ -111,14 +349,33 @@ pub fn configure_style(ctx: &egui::Context) {
         egui::FontId::proportional(FONT_SIZE_BADGE),
     );
 
-    // Dark visuals
-    let mut visuals = egui::Visuals::dark();
+    // Base visuals: egui's light/dark template gets shadows, scrollbars and
+    // selection contrast right for the mode; we then override the palette.
+    let mut visuals = if light {
+        egui::Visuals::light()
+    } else {
+        egui::Visuals::dark()
+    };
 
-    visuals.panel_fill = BG_PANEL;
-    visuals.window_fill = BG_DARK;
-    visuals.extreme_bg_color = BG_DARK;
-    visuals.faint_bg_color = BG_ELEVATED;
-    visuals.code_bg_color = BG_INPUT;
+    visuals.panel_fill = bg_panel();
+    visuals.window_fill = bg_dark();
+    visuals.extreme_bg_color = bg_dark();
+    visuals.faint_bg_color = bg_elevated();
+    visuals.code_bg_color = bg_input();
+
+    // Neutral-widget hover/active fills. Dark theme nudges *brighter* than
+    // the elevated base; on white we nudge *darker* so press/hover state
+    // stays visible.
+    let hover_fill = if light {
+        egui::Color32::from_rgb(0xE8, 0xE8, 0xE8)
+    } else {
+        egui::Color32::from_rgb(0x38, 0x38, 0x3E)
+    };
+    let active_fill = if light {
+        egui::Color32::from_rgb(0xD8, 0xD8, 0xD8)
+    } else {
+        egui::Color32::from_rgb(0x40, 0x40, 0x48)
+    };
 
     // Selection. `selection.stroke.color` is what egui copies into
     // `WidgetVisuals::fg_stroke.color` for selected `selectable_label`
@@ -126,43 +383,43 @@ pub fn configure_style(ctx: &egui::Context) {
     // of the accent so the selected item's text reads against the
     // translucent-blue selection background instead of merging into it.
     visuals.selection.bg_fill = egui::Color32::from_rgba_premultiplied(0x2D, 0x8B, 0xC9, 80);
-    visuals.selection.stroke = egui::Stroke::new(1.0, TEXT_PRIMARY);
+    visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
 
     // Hyperlinks
     visuals.hyperlink_color = ACCENT_BLUE;
 
     // Widget visuals — inactive state
-    visuals.widgets.inactive.bg_fill = BG_ELEVATED;
-    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, BORDER_SUBTLE);
-    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, TEXT_SECONDARY);
-    visuals.widgets.inactive.weak_bg_fill = BG_ELEVATED;
+    visuals.widgets.inactive.bg_fill = bg_elevated();
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, border_subtle());
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, label_weak());
+    visuals.widgets.inactive.weak_bg_fill = bg_elevated();
 
     // Widget visuals — hovered state
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(0x38, 0x38, 0x3E);
-    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, BORDER_FOCUS);
-    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, TEXT_PRIMARY);
-    visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(0x38, 0x38, 0x3E);
+    visuals.widgets.hovered.bg_fill = hover_fill;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, border_focus());
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, label_color());
+    visuals.widgets.hovered.weak_bg_fill = hover_fill;
 
     // Widget visuals — active (clicked) state
-    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(0x40, 0x40, 0x48);
+    visuals.widgets.active.bg_fill = active_fill;
     visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, ACCENT_BLUE);
-    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, TEXT_PRIMARY);
-    visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(0x40, 0x40, 0x48);
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, label_color());
+    visuals.widgets.active.weak_bg_fill = active_fill;
 
     // Widget visuals — open (expanded ComboBox, etc.)
-    visuals.widgets.open.bg_fill = BG_ELEVATED;
+    visuals.widgets.open.bg_fill = bg_elevated();
     visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, ACCENT_BLUE);
-    visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, TEXT_PRIMARY);
-    visuals.widgets.open.weak_bg_fill = BG_ELEVATED;
+    visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, label_color());
+    visuals.widgets.open.weak_bg_fill = bg_elevated();
 
     // Widget visuals — non-interactive
-    visuals.widgets.noninteractive.bg_fill = BG_PANEL;
-    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(0.5, BORDER_SUBTLE);
-    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, TEXT_SECONDARY);
-    visuals.widgets.noninteractive.weak_bg_fill = BG_PANEL;
+    visuals.widgets.noninteractive.bg_fill = bg_panel();
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(0.5, border_subtle());
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, label_weak());
+    visuals.widgets.noninteractive.weak_bg_fill = bg_panel();
 
     // Window appearance
-    visuals.window_stroke = egui::Stroke::new(1.0, BORDER_SUBTLE);
+    visuals.window_stroke = egui::Stroke::new(1.0, border_subtle());
 
     // Striped table rows
     visuals.striped = true;
@@ -173,21 +430,21 @@ pub fn configure_style(ctx: &egui::Context) {
 
 // ─── Helper functions ──────────────────────────────────────────────────
 
-/// Standard dark card frame with border and rounding.
+/// Standard card frame with border and rounding.
 pub fn card_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(BG_PANEL)
-        .stroke(egui::Stroke::new(1.0, BORDER_SUBTLE))
+        .fill(bg_panel())
+        .stroke(egui::Stroke::new(1.0, border_subtle()))
         .corner_radius(8.0)
         .inner_margin(egui::Margin::same(12))
         .outer_margin(egui::Margin::symmetric(4, 0))
 }
 
-/// Slightly brighter card for nested/elevated content.
+/// Slightly elevated card for nested content.
 pub fn elevated_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(BG_ELEVATED)
-        .stroke(egui::Stroke::new(1.0, BORDER_SUBTLE))
+        .fill(bg_elevated())
+        .stroke(egui::Stroke::new(1.0, border_subtle()))
         .corner_radius(6.0)
         .inner_margin(egui::Margin::same(10))
 }
@@ -198,12 +455,12 @@ pub fn section_heading(ui: &mut egui::Ui, text: &str) {
         egui::RichText::new(text)
             .size(FONT_SIZE_SECTION)
             .strong()
-            .color(TEXT_PRIMARY),
+            .color(label_color()),
     );
     ui.add_space(2.0);
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(width, 1.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, BORDER_SUBTLE);
+    ui.painter().rect_filled(rect, 0.0, border_subtle());
     ui.add_space(6.0);
 }
 
@@ -264,14 +521,14 @@ pub fn colored_badge(ui: &mut egui::Ui, text: &str, bg_color: egui::Color32) {
     let text_galley = ui.painter().layout_no_wrap(
         text.to_string(),
         egui::FontId::proportional(FONT_SIZE_BADGE),
-        TEXT_PRIMARY,
+        on_fill_text(bg_color),
     );
     let desired_size = text_galley.size() + padding * 2.0;
     let (rect, _) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
 
     ui.painter().rect_filled(rect, 4.0, bg_color);
     let text_pos = rect.center() - text_galley.size() / 2.0;
-    ui.painter().galley(text_pos, text_galley, TEXT_PRIMARY);
+    ui.painter().galley(text_pos, text_galley, on_fill_text(bg_color));
 }
 
 /// Same as [`colored_badge`] but with an explicit width — useful for
@@ -282,19 +539,19 @@ pub fn colored_badge_sized(ui: &mut egui::Ui, text: &str, bg_color: egui::Color3
     let text_galley = ui.painter().layout_no_wrap(
         text.to_string(),
         egui::FontId::proportional(FONT_SIZE_BADGE),
-        TEXT_PRIMARY,
+        on_fill_text(bg_color),
     );
     let height = text_galley.size().y + padding_y * 2.0;
     let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(width, height), egui::Sense::hover());
 
     ui.painter().rect_filled(rect, 4.0, bg_color);
     let text_pos = rect.center() - text_galley.size() / 2.0;
-    ui.painter().galley(text_pos, text_galley, TEXT_PRIMARY);
+    ui.painter().galley(text_pos, text_galley, on_fill_text(bg_color));
 }
 
 /// DiGiCo-style action button with colored fill.
 pub fn action_button(text: &str, color: egui::Color32, size: egui::Vec2) -> egui::Button<'_> {
-    egui::Button::new(egui::RichText::new(text).color(TEXT_PRIMARY).strong())
+    egui::Button::new(egui::RichText::new(text).color(on_fill_text(color)).strong())
         .fill(color)
         .min_size(size)
         .corner_radius(6.0)
@@ -449,12 +706,12 @@ pub fn row_combo<R>(
             ui.spacing_mut().interact_size.y = ROW_H;
             ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
             let v = ui.visuals_mut();
-            v.widgets.inactive.bg_fill = BG_INPUT;
-            v.widgets.inactive.weak_bg_fill = BG_INPUT;
-            v.widgets.hovered.bg_fill = BG_INPUT;
-            v.widgets.hovered.weak_bg_fill = BG_INPUT;
-            v.widgets.open.bg_fill = BG_INPUT;
-            v.widgets.open.weak_bg_fill = BG_INPUT;
+            v.widgets.inactive.bg_fill = bg_input();
+            v.widgets.inactive.weak_bg_fill = bg_input();
+            v.widgets.hovered.bg_fill = bg_input();
+            v.widgets.hovered.weak_bg_fill = bg_input();
+            v.widgets.open.bg_fill = bg_input();
+            v.widgets.open.weak_bg_fill = bg_input();
             add_combo(ui)
         })
         .inner
@@ -470,8 +727,8 @@ pub fn row_spacer(ui: &mut egui::Ui) {
 /// Scope/section toggle block — green when active, grey when inactive.
 /// Returns the response for click detection.
 pub fn toggle_block(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
-    let fill = if active { SCOPE_ACTIVE } else { SCOPE_INACTIVE };
-    let text_color = if active { TEXT_PRIMARY } else { TEXT_SECONDARY };
+    let fill = if active { SCOPE_ACTIVE } else { btn_neutral() };
+    let text_color = if active { TEXT_PRIMARY } else { neutral_inactive_text() };
 
     let padding = egui::Vec2::new(10.0, 8.0);
     let text_galley = ui.painter().layout_no_wrap(
@@ -493,6 +750,12 @@ pub fn toggle_block(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Respo
     };
 
     ui.painter().rect_filled(rect, 6.0, fill);
+    ui.painter().rect_stroke(
+        rect,
+        6.0,
+        egui::Stroke::new(1.0, border_subtle()),
+        egui::StrokeKind::Inside,
+    );
 
     // Center text in the block
     let text_pos = rect.center() - text_galley.size() / 2.0;
@@ -513,12 +776,12 @@ pub fn toggle_block_tristate(
     } else if any_selected {
         SCOPE_PARTIAL
     } else {
-        SCOPE_INACTIVE
+        btn_neutral()
     };
     let text_color = if all_selected || any_selected {
         TEXT_PRIMARY
     } else {
-        TEXT_SECONDARY
+        neutral_inactive_text()
     };
 
     let padding = egui::Vec2::new(10.0, 8.0);
@@ -540,6 +803,12 @@ pub fn toggle_block_tristate(
     };
 
     ui.painter().rect_filled(rect, 6.0, fill);
+    ui.painter().rect_stroke(
+        rect,
+        6.0,
+        egui::Stroke::new(1.0, border_subtle()),
+        egui::StrokeKind::Inside,
+    );
 
     let text_pos = rect.center() - text_galley.size() / 2.0;
     ui.painter().galley(text_pos, text_galley, text_color);
@@ -622,7 +891,7 @@ pub fn long_press_button(
 
     let button = egui::Button::new(
         egui::RichText::new(text)
-            .color(if enabled { TEXT_PRIMARY } else { TEXT_DISABLED })
+            .color(if enabled { on_fill_text(color) } else { TEXT_DISABLED })
             .strong(),
     )
     .fill(fill)

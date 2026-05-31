@@ -76,13 +76,13 @@ pub fn draw_cue_list_popup(
         .default_size([460.0, 420.0])
         .show(ctx, |ui| {
             if rows.is_empty() {
-                ui.label(egui::RichText::new("No cues yet.").color(theme::TEXT_SECONDARY));
+                ui.label(egui::RichText::new("No cues yet.").color(theme::label_weak()));
                 return;
             }
             if !is_connected {
                 ui.label(
                     egui::RichText::new("Connect to the console to fire cues.")
-                        .color(theme::TEXT_SECONDARY)
+                        .color(theme::label_weak())
                         .small(),
                 );
                 ui.add_space(4.0);
@@ -92,12 +92,12 @@ pub fn draw_cue_list_popup(
                 .show(ui, |ui| {
                     for row in &rows {
                         let bg = if row.is_current {
-                            theme::CUE_CURRENT_BG
+                            theme::cue_current_bg()
                         } else {
-                            theme::BG_PANEL
+                            theme::bg_panel()
                         };
                         let stroke = if row.is_current {
-                            egui::Stroke::new(1.0, theme::CUE_CURRENT_BORDER)
+                            egui::Stroke::new(1.0, theme::cue_current_border())
                         } else {
                             egui::Stroke::NONE
                         };
@@ -140,7 +140,7 @@ pub fn draw_cue_list_popup(
                                                 .color(if row.is_current {
                                                     theme::ACCENT_BLUE
                                                 } else {
-                                                    theme::TEXT_PRIMARY
+                                                    theme::label_color()
                                                 }),
                                             )
                                             .sense(egui::Sense::click()),
@@ -152,7 +152,7 @@ pub fn draw_cue_list_popup(
                                             ui.add(
                                                 egui::Label::new(
                                                     egui::RichText::new(&row.name)
-                                                        .color(theme::TEXT_PRIMARY),
+                                                        .color(theme::label_color()),
                                                 )
                                                 .sense(egui::Sense::click()),
                                             ),
@@ -178,7 +178,7 @@ pub fn draw_cue_list_popup(
                                             if !meta.is_empty() {
                                                 ui.label(
                                                     egui::RichText::new(meta)
-                                                        .color(theme::TEXT_SECONDARY)
+                                                        .color(theme::label_weak())
                                                         .small(),
                                                 );
                                             }

@@ -123,7 +123,7 @@ pub fn draw_palettes_section(
 
     // ── Capture palette ─────────────────────────────────────────
     ui.horizontal(|ui| {
-        theme::row_label(ui, "Channel:", theme::TEXT_PRIMARY);
+        theme::row_label(ui, "Channel:", theme::label_color());
         theme::row_combo(ui, 0, |ui| {
             egui::ComboBox::from_id_salt("palette_capture_ch_type")
                 .selected_text(state.capture_channel_type.label())
@@ -143,7 +143,7 @@ pub fn draw_palettes_section(
             "",
         );
 
-        theme::row_label(ui, "Name:", theme::TEXT_PRIMARY);
+        theme::row_label(ui, "Name:", theme::label_color());
         theme::padded_text_edit_sized(
             ui,
             &mut state.new_palette_name,
@@ -155,7 +155,7 @@ pub fn draw_palettes_section(
     });
 
     ui.horizontal(|ui| {
-        theme::row_label(ui, "Include:", theme::TEXT_PRIMARY);
+        theme::row_label(ui, "Include:", theme::label_color());
         for (i, kind) in PaletteKind::all().iter().enumerate() {
             ui.checkbox(&mut state.capture_kinds[i], kind.label());
         }
@@ -210,15 +210,15 @@ pub fn draw_palettes_section(
                 if palettes.is_empty() {
                     ui.label(
                         egui::RichText::new("No palettes yet. Capture one above.")
-                            .color(theme::TEXT_SECONDARY),
+                            .color(theme::label_weak()),
                     );
                 }
                 for palette in palettes {
                     let selected = state.selected_palette_id == Some(palette.id);
                     let bg = if selected {
-                        theme::BG_ELEVATED
+                        theme::bg_elevated()
                     } else {
-                        theme::BG_PANEL
+                        theme::bg_panel()
                     };
 
                     let mut clicked = false;
@@ -237,7 +237,7 @@ pub fn draw_palettes_section(
                                     egui::Label::new(
                                         egui::RichText::new(&palette.name)
                                             .strong()
-                                            .color(theme::TEXT_PRIMARY),
+                                            .color(theme::label_color()),
                                     )
                                     .sense(egui::Sense::click()),
                                 );
@@ -250,7 +250,7 @@ pub fn draw_palettes_section(
                                             palette.parameter_count(),
                                             palette.referencing_snapshots.len(),
                                         ))
-                                        .color(theme::TEXT_SECONDARY)
+                                        .color(theme::label_weak())
                                         .small(),
                                     )
                                     .sense(egui::Sense::click()),
@@ -326,7 +326,7 @@ fn draw_palette_actions(
             // row so the layout reads the same as when one is selected.
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                theme::row_label(ui, "Name:", theme::TEXT_PRIMARY);
+                theme::row_label(ui, "Name:", theme::label_color());
                 let mut empty = String::new();
                 let _ =
                     theme::padded_text_edit_sized(ui, &mut empty, 160.0, theme::ROW_H, false, "");
@@ -339,7 +339,7 @@ fn draw_palette_actions(
                 egui::RichText::new(
                     "Select a palette below to edit it and assign it to snapshots.",
                 )
-                .color(theme::TEXT_SECONDARY),
+                .color(theme::label_weak()),
             );
             return;
         };
@@ -347,7 +347,7 @@ fn draw_palette_actions(
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            theme::row_label(ui, "Name:", theme::TEXT_PRIMARY);
+            theme::row_label(ui, "Name:", theme::label_color());
             // Draft buffer is only present while editing; fall back to the
             // stored name. We bind the TextEdit to a local string and write
             // through to the draft on change.
@@ -375,7 +375,7 @@ fn draw_palette_actions(
             // Channel the palette belongs to.
             ui.label(
                 egui::RichText::new(format!("{}", palette_info.channel))
-                    .color(theme::TEXT_SECONDARY),
+                    .color(theme::label_weak()),
             );
 
             if theme::row_action_button(ui, "Re-capture", theme::ACCENT_BLUE, 90.0, is_connected) {
@@ -434,13 +434,13 @@ fn draw_assign_overlay(
                 );
                 ui.label(
                     egui::RichText::new(format!("{}", info.channel))
-                        .color(theme::TEXT_SECONDARY)
+                        .color(theme::label_weak())
                         .small(),
                 );
                 ui.separator();
 
                 if rows.is_empty() {
-                    ui.label(egui::RichText::new("No snapshots yet.").color(theme::TEXT_SECONDARY));
+                    ui.label(egui::RichText::new("No snapshots yet.").color(theme::label_weak()));
                     return;
                 }
 
@@ -455,7 +455,7 @@ fn draw_assign_overlay(
                                     egui::RichText::new(k.label())
                                         .small()
                                         .strong()
-                                        .color(theme::TEXT_SECONDARY),
+                                        .color(theme::label_weak()),
                                 );
                             },
                         );
@@ -463,7 +463,7 @@ fn draw_assign_overlay(
                     ui.label(
                         egui::RichText::new("Snapshot")
                             .small()
-                            .color(theme::TEXT_SECONDARY),
+                            .color(theme::label_weak()),
                     );
                 });
 
@@ -520,7 +520,7 @@ fn draw_assign_overlay(
                                     [name_w, 18.0],
                                     egui::Label::new(
                                         egui::RichText::new(&row.snapshot_name)
-                                            .color(theme::TEXT_PRIMARY),
+                                            .color(theme::label_color()),
                                     )
                                     .truncate(),
                                 );

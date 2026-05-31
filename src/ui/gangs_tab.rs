@@ -270,13 +270,13 @@ pub fn draw_gangs_tab(
                 egui::RichText::new("Smart Ganging")
                     .size(theme::FONT_SIZE_SECTION)
                     .strong()
-                    .color(theme::TEXT_PRIMARY),
+                    .color(theme::label_color()),
             );
             ui.add_space(12.0);
             theme::colored_badge(
                 ui,
                 &format!("{active_count} active / {total_count} total"),
-                theme::BG_ELEVATED,
+                theme::btn_neutral(),
             );
         });
 
@@ -328,7 +328,7 @@ pub fn draw_gangs_tab(
                             .num_columns(2)
                             .spacing([10.0, 10.0])
                             .show(ui, |ui| {
-                                theme::row_label(ui, "Name:", theme::TEXT_SECONDARY);
+                                theme::row_label(ui, "Name:", theme::label_weak());
                                 theme::padded_text_edit_sized(
                                     ui,
                                     &mut tab.new_gang_name,
@@ -339,7 +339,7 @@ pub fn draw_gangs_tab(
                                 );
                                 ui.end_row();
 
-                                theme::row_label(ui, "Channel type:", theme::TEXT_SECONDARY);
+                                theme::row_label(ui, "Channel type:", theme::label_weak());
                                 theme::row_combo(ui, 0, |ui| {
                                     egui::ComboBox::from_id_salt("gang_channel_type")
                                         .width(240.0)
@@ -356,7 +356,7 @@ pub fn draw_gangs_tab(
                                 });
                                 ui.end_row();
 
-                                theme::row_label(ui, "Members:", theme::TEXT_SECONDARY);
+                                theme::row_label(ui, "Members:", theme::label_weak());
                                 let hint =
                                     if tab.new_gang_channel_type == ChannelTypeSelection::Mixed {
                                         "I1-4,A1-2,G5"
@@ -396,7 +396,7 @@ pub fn draw_gangs_tab(
                         ui.label(
                             egui::RichText::new("Linked Sections")
                                 .strong()
-                                .color(theme::TEXT_PRIMARY),
+                                .color(theme::label_color()),
                         );
                         ui.add_space(4.0);
                         // Section toggle blocks. Non-applicable sections
@@ -498,7 +498,7 @@ pub fn draw_gangs_tab(
                 if editing {
                     let cancel_btn = theme::action_button(
                         "Cancel",
-                        theme::BG_ELEVATED,
+                        theme::btn_neutral(),
                         egui::Vec2::new(80.0, 32.0),
                     );
                     if ui.add(cancel_btn).clicked() {
@@ -552,7 +552,7 @@ pub fn draw_gangs_tab(
                     if groups.is_empty() {
                         ui.label(
                             egui::RichText::new("No gang groups configured.")
-                                .color(theme::TEXT_SECONDARY),
+                                .color(theme::label_weak()),
                         );
                     } else {
                         let mut to_remove = None;
@@ -563,13 +563,13 @@ pub fn draw_gangs_tab(
 
                         for group in &groups {
                             let bg = if !group.enabled || group.paused {
-                                theme::BG_PANEL // dimmed when disabled or paused
+                                theme::bg_panel() // dimmed when disabled or paused
                             } else {
-                                theme::BG_ELEVATED
+                                theme::bg_elevated()
                             };
                             egui::Frame::new()
                                 .fill(bg)
-                                .stroke(egui::Stroke::new(1.0, theme::BORDER_SUBTLE))
+                                .stroke(egui::Stroke::new(1.0, theme::border_subtle()))
                                 .corner_radius(6.0)
                                 .inner_margin(egui::Margin::same(8))
                                 .show(ui, |ui| {
@@ -587,12 +587,12 @@ pub fn draw_gangs_tab(
                                         let toggle_color = if group.enabled {
                                             theme::ACCENT_GREEN
                                         } else {
-                                            theme::BG_ELEVATED
+                                            theme::btn_neutral()
                                         };
                                         let toggle_label = if group.enabled { "ON" } else { "OFF" };
                                         let toggle_btn = egui::Button::new(
                                             egui::RichText::new(toggle_label)
-                                                .color(theme::TEXT_PRIMARY)
+                                                .color(theme::on_fill_text(toggle_color))
                                                 .strong()
                                                 .small(),
                                         )
@@ -606,13 +606,13 @@ pub fn draw_gangs_tab(
                                         let pause_color = if group.paused {
                                             theme::ACCENT_ORANGE
                                         } else {
-                                            theme::BG_ELEVATED
+                                            theme::btn_neutral()
                                         };
                                         let pause_label =
                                             if group.paused { "PAUSED" } else { "||" };
                                         let pause_btn = egui::Button::new(
                                             egui::RichText::new(pause_label)
-                                                .color(theme::TEXT_PRIMARY)
+                                                .color(theme::on_fill_text(pause_color))
                                                 .small(),
                                         )
                                         .fill(pause_color)
@@ -645,7 +645,7 @@ pub fn draw_gangs_tab(
                                         ui.label(
                                             egui::RichText::new(&group.name)
                                                 .strong()
-                                                .color(theme::TEXT_PRIMARY),
+                                                .color(theme::label_color()),
                                         );
 
                                         ui.add_space(8.0);
@@ -654,7 +654,7 @@ pub fn draw_gangs_tab(
                                         let member_color = if !group.members.is_empty() {
                                             theme::channel_color(&group.members[0])
                                         } else {
-                                            theme::BG_ELEVATED
+                                            theme::btn_neutral()
                                         };
                                         theme::colored_badge(ui, &member_text, member_color);
                                     });

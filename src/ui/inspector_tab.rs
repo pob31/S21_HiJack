@@ -117,12 +117,12 @@ pub fn draw_inspector_tab(
             let fill = if all_active {
                 theme::ACCENT_BLUE
             } else {
-                theme::BG_ELEVATED
+                theme::btn_neutral()
             };
             let text_color = if all_active {
                 theme::TEXT_PRIMARY
             } else {
-                theme::TEXT_SECONDARY
+                theme::neutral_inactive_text()
             };
             if ui
                 .add(
@@ -140,12 +140,12 @@ pub fn draw_inspector_tab(
                 let fill = if is_active {
                     theme::ACCENT_BLUE
                 } else {
-                    theme::BG_ELEVATED
+                    theme::btn_neutral()
                 };
                 let text_color = if is_active {
                     theme::TEXT_PRIMARY
                 } else {
-                    theme::TEXT_SECONDARY
+                    theme::neutral_inactive_text()
                 };
                 if ui
                     .add(
@@ -168,7 +168,7 @@ pub fn draw_inspector_tab(
                     "{} parameters in state mirror",
                     st.parameter_count()
                 ))
-                .color(theme::TEXT_SECONDARY)
+                .color(theme::label_weak())
                 .small(),
             );
         }
@@ -304,7 +304,7 @@ pub fn draw_inspector_tab(
                             ui.label(&entry.parameter);
                         });
                         row.col(|ui| {
-                            ui.label(egui::RichText::new(&entry.value).color(theme::TEXT_PRIMARY));
+                            ui.label(egui::RichText::new(&entry.value).color(theme::label_color()));
                         });
                     });
                 });

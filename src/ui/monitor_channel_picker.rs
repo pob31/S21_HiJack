@@ -314,7 +314,7 @@ pub fn draw_channel_picker(
             // Header row: name field + Save/Cancel buttons, all sized to
             // ROW_H so the label, text box and buttons share a baseline.
             ui.horizontal(|ui| {
-                theme::row_label(ui, "Name:", theme::TEXT_PRIMARY);
+                theme::row_label(ui, "Name:", theme::label_color());
                 theme::padded_text_edit_sized(
                     ui,
                     &mut state.name,
@@ -350,7 +350,11 @@ pub fn draw_channel_picker(
             // a short window. Headers and grids go in two separate shared rows so
             // the input and aux tile rows always line up.
             egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
+                // Fill the width (responsive tiles) but shrink to content
+                // vertically, so the window is only as tall as the channel
+                // grids need — not always near-full-screen — while still
+                // scrolling when a tall input count exceeds the viewport.
+                .auto_shrink([false, true])
                 .show(ui, |ui| {
                     // A few px of slack so float rounding never clips the last
                     // aux column. The enclosing rows force item_spacing.x = 0 so
@@ -424,7 +428,7 @@ pub fn draw_channel_picker(
                     RippleState::Off => {
                         if state.save_enabled() {
                             ui.colored_label(
-                                theme::TEXT_SECONDARY,
+                                theme::label_weak(),
                                 format!(
                                     "Ready to save — {} input(s), {} aux(es) selected.",
                                     state.selected_inputs.len(),
@@ -458,7 +462,7 @@ fn draw_inputs_header(ui: &mut egui::Ui, state: &mut ChannelPickerState, panel_w
             ui.label(
                 egui::RichText::new("Inputs")
                     .strong()
-                    .color(theme::TEXT_PRIMARY),
+                    .color(theme::label_color()),
             );
             ui.label(
                 egui::RichText::new(format!(
@@ -466,7 +470,7 @@ fn draw_inputs_header(ui: &mut egui::Ui, state: &mut ChannelPickerState, panel_w
                     state.selected_inputs.len(),
                     state.input_count
                 ))
-                .color(theme::TEXT_SECONDARY)
+                .color(theme::label_weak())
                 .small(),
             );
 
@@ -508,7 +512,7 @@ fn draw_inputs_header(ui: &mut egui::Ui, state: &mut ChannelPickerState, panel_w
                             if ripple_armed {
                                 theme::ACCENT_ORANGE
                             } else {
-                                theme::BG_ELEVATED
+                                theme::btn_neutral()
                             },
                             egui::Vec2::new(70.0, 24.0),
                         );
@@ -522,7 +526,7 @@ fn draw_inputs_header(ui: &mut egui::Ui, state: &mut ChannelPickerState, panel_w
 
                         let deselect = theme::action_button(
                             "Deselect all",
-                            theme::BG_ELEVATED,
+                            theme::btn_neutral(),
                             egui::Vec2::new(95.0, 24.0),
                         );
                         if ui.add(deselect).clicked() {
@@ -530,7 +534,7 @@ fn draw_inputs_header(ui: &mut egui::Ui, state: &mut ChannelPickerState, panel_w
                         }
                         let select_all = theme::action_button(
                             "Select all",
-                            theme::BG_ELEVATED,
+                            theme::btn_neutral(),
                             egui::Vec2::new(85.0, 24.0),
                         );
                         if ui.add(select_all).clicked() {
@@ -550,7 +554,7 @@ fn draw_inputs_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState, tile_w: f
 
         if state.input_count == 0 {
             ui.colored_label(
-                theme::TEXT_SECONDARY,
+                theme::label_weak(),
                 "No inputs configured — connect to console or load a show file.",
             );
             return;
@@ -661,7 +665,7 @@ fn draw_auxes_header(ui: &mut egui::Ui, state: &mut ChannelPickerState, panel_w:
             ui.label(
                 egui::RichText::new("Auxes")
                     .strong()
-                    .color(theme::TEXT_PRIMARY),
+                    .color(theme::label_color()),
             );
             ui.label(
                 egui::RichText::new(format!(
@@ -669,7 +673,7 @@ fn draw_auxes_header(ui: &mut egui::Ui, state: &mut ChannelPickerState, panel_w:
                     state.selected_auxes.len(),
                     state.aux_count
                 ))
-                .color(theme::TEXT_SECONDARY)
+                .color(theme::label_weak())
                 .small(),
             );
         });
@@ -683,7 +687,7 @@ fn draw_auxes_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState, tile_w: f3
 
         if state.aux_count == 0 {
             ui.colored_label(
-                theme::TEXT_SECONDARY,
+                theme::label_weak(),
                 "No auxes configured — connect to console or load a show file.",
             );
             return;
@@ -749,8 +753,10 @@ fn draw_tile(
     let fill = if selected {
         base_color
     } else {
-        // Mix base_color towards BG_ELEVATED at ~30% strength.
-        blend(base_color, theme::BG_ELEVATED, 0.7)
+        // Mix base_color towards a dark base at ~30% strength. Theme-
+        // independent (tile_dim_bg) so the white glyph text stays readable
+        // on the dimmed tile in the light theme too.
+        blend(base_color, theme::tile_dim_bg(), 0.7)
     };
     let hover_fill = if response.hovered() {
         blend(fill, theme::TEXT_PRIMARY, 0.85)
@@ -763,7 +769,7 @@ fn draw_tile(
     let stroke = if selected {
         egui::Stroke::new(2.0, theme::TEXT_PRIMARY)
     } else {
-        egui::Stroke::new(1.0, theme::BORDER_SUBTLE)
+        egui::Stroke::new(1.0, theme::border_subtle())
     };
     painter.rect_stroke(rect, 4.0, stroke, egui::StrokeKind::Inside);
 
@@ -832,7 +838,7 @@ fn draw_tile(
         let right_inset = if stereo { 16.0 } else { 11.0 };
         let badge_center = egui::pos2(rect.max.x - right_inset, rect.max.y - 11.0);
         let badge_radius = 9.0;
-        painter.circle_filled(badge_center, badge_radius, theme::BG_DARK);
+        painter.circle_filled(badge_center, badge_radius, theme::tile_dim_bg());
         painter.circle_stroke(
             badge_center,
             badge_radius,

@@ -158,7 +158,7 @@ pub fn draw_recall_popup(
                         }
                         ui.label(
                             egui::RichText::new(format!("/ {max}"))
-                                .color(theme::TEXT_SECONDARY)
+                                .color(theme::label_weak())
                                 .small(),
                         );
                         // Channel name
@@ -177,7 +177,7 @@ pub fn draw_recall_popup(
                                 ui.add_space(8.0);
                                 ui.label(
                                     egui::RichText::new(name)
-                                        .color(theme::TEXT_PRIMARY)
+                                        .color(theme::label_color())
                                         .strong(),
                                 );
                             }
@@ -224,7 +224,7 @@ pub fn draw_recall_popup(
                     config,
                 );
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new("►").color(theme::TEXT_SECONDARY));
+                ui.label(egui::RichText::new("►").color(theme::label_weak()));
                 ui.add_space(4.0);
 
                 // Input Processing
@@ -238,7 +238,7 @@ pub fn draw_recall_popup(
                     config,
                 );
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new("►").color(theme::TEXT_SECONDARY));
+                ui.label(egui::RichText::new("►").color(theme::label_weak()));
                 ui.add_space(4.0);
 
                 // Insert A
@@ -252,7 +252,7 @@ pub fn draw_recall_popup(
                     config,
                 );
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new("►").color(theme::TEXT_SECONDARY));
+                ui.label(egui::RichText::new("►").color(theme::label_weak()));
                 ui.add_space(4.0);
 
                 // Channel Processing
@@ -266,7 +266,7 @@ pub fn draw_recall_popup(
                     config,
                 );
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new("►").color(theme::TEXT_SECONDARY));
+                ui.label(egui::RichText::new("►").color(theme::label_weak()));
                 ui.add_space(4.0);
 
                 // Insert B
@@ -280,7 +280,7 @@ pub fn draw_recall_popup(
                     config,
                 );
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new("►").color(theme::TEXT_SECONDARY));
+                ui.label(egui::RichText::new("►").color(theme::label_weak()));
                 ui.add_space(4.0);
 
                 // Outputs
@@ -359,7 +359,7 @@ fn draw_column(
     ui.vertical(|ui| {
         ui.label(
             egui::RichText::new(header)
-                .color(theme::TEXT_SECONDARY)
+                .color(theme::label_weak())
                 .size(theme::FONT_SIZE_TINY),
         );
         ui.add_space(4.0);
@@ -410,8 +410,11 @@ fn draw_block_button(
 ) {
     let size = egui::Vec2::new(95.0, 40.0);
 
+    // Toggle block: kept theme-independent so it looks identical in both
+    // themes (matching the scope `toggle_block` helper). Off/unavailable
+    // states stay dark; active stays the green/red accent.
     let fill = if !available {
-        theme::BG_PANEL
+        theme::SCOPE_UNAVAILABLE
     } else if active {
         if is_scope {
             egui::Color32::from_rgb(0, 120, 0)
@@ -419,7 +422,7 @@ fn draw_block_button(
             egui::Color32::from_rgb(180, 30, 30)
         }
     } else {
-        theme::BG_ELEVATED
+        theme::btn_neutral()
     };
 
     let text_color = if !available {
@@ -427,7 +430,7 @@ fn draw_block_button(
     } else if active {
         egui::Color32::WHITE
     } else {
-        theme::TEXT_SECONDARY
+        theme::neutral_inactive_text()
     };
 
     // Manual paint to avoid egui Button adding checkbox-like decorations
@@ -448,7 +451,7 @@ fn draw_block_button(
     ui.painter().rect_stroke(
         rect,
         4.0,
-        egui::Stroke::new(1.0, theme::BORDER_SUBTLE),
+        egui::Stroke::new(1.0, theme::border_subtle()),
         egui::StrokeKind::Outside,
     );
 

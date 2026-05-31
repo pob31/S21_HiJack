@@ -56,7 +56,12 @@ const REF_PPI: f32 = 96.0;
 /// "reference" size), and the slider multiplies further on top. Tuned on a
 /// 15.6" 4K @ 200% panel where the bare OS scale (2.0) was a touch cramped and
 /// ~1.15× (≈2.3) made the best use of the screen.
-const COMFORT_FACTOR: f32 = 1.15;
+///
+/// Folds in a 0.95 factor (1.15 × 0.95 ≈ 1.0925): the Noto Sans Regular body
+/// font has slightly larger metrics than the old Ubuntu-Light, so the UI read
+/// ~5% bigger — operators were dialing the slider down to 95% to compensate.
+/// Baking it in means 100% now maps to that comfortable density out of the box.
+const COMFORT_FACTOR: f32 = 1.0925;
 
 /// Below this native scale factor the OS is considered to be doing little or no
 /// scaling (Linux / Raspberry Pi report exactly 1.0; small fractional values are
@@ -850,6 +855,7 @@ impl HiJackApp {
                             show_diagnostics: self.setup.show_diagnostics,
                             send_pace_us: pace_to_save,
                             ui_scale: self.setup.ui_scale,
+                            color_theme: self.setup.color_theme,
                         };
                         if let Err(e) = prefs.save() {
                             tracing::warn!(error = %e, "Failed to save app preferences after show load");
@@ -1474,9 +1480,10 @@ impl HiJackApp {
 
 impl eframe::App for HiJackApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // First-frame init: install embedded fonts (NotoSans fallback so
-        // Unicode arrows / symbols don't tofu) before the style pass.
-        // `OnceLock` keeps it cheap on subsequent frames.
+        // First-frame init: install embedded fonts (Noto Sans Regular primary
+        // + NotoSans symbol fallbacks so Unicode arrows / symbols don't tofu)
+        // before the style pass. Theme-independent, so `OnceLock` keeps it
+        // cheap on subsequent frames.
         static FONTS_INSTALLED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
         FONTS_INSTALLED.get_or_init(|| super::fonts::install_fonts(ctx));
 
@@ -1491,8 +1498,9 @@ impl eframe::App for HiJackApp {
         // Store context on first frame for async repaint
         let _ = self.egui_ctx.set(ctx.clone());
 
-        // Configure style on first frame
-        super::theme::configure_style(ctx);
+        // Configure style every frame so changing the colour theme in
+        // Advanced Settings hot-switches the UI without a restart.
+        super::theme::configure_style(ctx, self.setup.color_theme);
 
         // egui only repaints on UI events by default — so OSC-driven
         // state changes (faders moving on the desk, parameters arriving
@@ -1513,7 +1521,7 @@ impl eframe::App for HiJackApp {
         egui::TopBottomPanel::top("tab_bar")
             .frame(
                 egui::Frame::new()
-                    .fill(super::theme::BG_DARK)
+                    .fill(super::theme::bg_dark())
                     .inner_margin(egui::Margin::symmetric(8, 4)),
             )
             .show(ctx, |ui| {
@@ -1557,12 +1565,12 @@ impl eframe::App for HiJackApp {
                         let fill = if is_active {
                             super::theme::ACCENT_BLUE
                         } else {
-                            super::theme::BG_ELEVATED
+                            super::theme::btn_neutral()
                         };
                         let text_color = if is_active {
                             super::theme::TEXT_PRIMARY
                         } else {
-                            super::theme::TEXT_SECONDARY
+                            super::theme::neutral_inactive_text()
                         };
                         let btn = egui::Button::new(
                             egui::RichText::new(label).color(text_color).strong(),
@@ -1603,12 +1611,12 @@ impl eframe::App for HiJackApp {
                         let fill = if is_offline {
                             super::theme::ACCENT_AMBER
                         } else {
-                            super::theme::BG_ELEVATED
+                            super::theme::btn_neutral()
                         };
                         let text_color = if is_offline {
-                            super::theme::BG_DARK
+                            super::theme::TEXT_ON_BRIGHT
                         } else {
-                            super::theme::TEXT_SECONDARY
+                            super::theme::neutral_inactive_text()
                         };
                         // Fixed min-size so the button doesn't change
                         // width between "Online" (6 chars) and "OFFLINE"
@@ -1794,10 +1802,10 @@ impl eframe::App for HiJackApp {
                                     // popup (replaces the old "Cues" button).
                                     let label_rich = match &current_cue_text {
                                         Some(s) => egui::RichText::new(s)
-                                            .color(super::theme::TEXT_PRIMARY)
+                                            .color(super::theme::label_color())
                                             .strong(),
                                         None => egui::RichText::new("—")
-                                            .color(super::theme::TEXT_DISABLED),
+                                            .color(super::theme::label_disabled()),
                                     };
                                     let label_clicked = ui
                                         .allocate_ui_with_layout(
@@ -1847,26 +1855,30 @@ impl eframe::App for HiJackApp {
 
                                     ui.add_space(GAP);
 
-                                    // SKIP (advance without firing). Built from
-                                    // `▶` (U+25B6, Geometric Shapes — same font
-                                    // family as the working ◀/▶) plus an ASCII
-                                    // bar, since the arrows-block `⇥` rendered as
-                                    // tofu. Reads as skip-to-next (▶|).
-                                    let skip_btn = egui::Button::new(
-                                        egui::RichText::new("▶|")
-                                            .color(super::theme::TEXT_PRIMARY)
-                                            .strong(),
-                                    )
-                                    .fill(super::theme::BG_ELEVATED)
-                                    .corner_radius(4.0)
-                                    .min_size(egui::Vec2::new(SKIP_W, 26.0));
-                                    if ui
-                                        .add_enabled(has_cues, skip_btn)
-                                        .on_hover_text(
-                                            "Skip — advance to the next cue without recalling it.",
-                                        )
-                                        .clicked()
-                                    {
+                                    // SKIP (advance without firing). The icon —
+                                    // a right triangle + bar — is hand-painted
+                                    // over an empty button so it always reads as
+                                    // one cohesive "skip to next" mark; the old
+                                    // `▶|` font composite looked disjointed
+                                    // (symbol-vs-text baselines), worse with the
+                                    // light theme's heavier face.
+                                    let skip_btn = egui::Button::new("")
+                                        .fill(super::theme::btn_neutral())
+                                        .corner_radius(4.0)
+                                        .min_size(egui::Vec2::new(SKIP_W, 26.0));
+                                    let skip_resp = ui.add_enabled(has_cues, skip_btn).on_hover_text(
+                                        "Skip — advance to the next cue without recalling it.",
+                                    );
+                                    super::theme::paint_skip_glyph(
+                                        ui.painter(),
+                                        skip_resp.rect,
+                                        if has_cues {
+                                            super::theme::on_fill_text(super::theme::btn_neutral())
+                                        } else {
+                                            super::theme::TEXT_DISABLED
+                                        },
+                                    );
+                                    if skip_resp.clicked() {
                                         super::cue_transport::fire_skip(
                                             &self.cue_manager,
                                             &self.runtime,
@@ -1896,14 +1908,14 @@ impl eframe::App for HiJackApp {
                         ui.label(
                             egui::RichText::new("⚠ OFFLINE MODE")
                                 .strong()
-                                .color(super::theme::BG_DARK),
+                                .color(super::theme::TEXT_ON_BRIGHT),
                         );
                         ui.label(
                             egui::RichText::new(
                                 "— no OSC in/out. State mirror is frozen. \
                                  Edits will not affect the console.",
                             )
-                            .color(super::theme::BG_DARK),
+                            .color(super::theme::TEXT_ON_BRIGHT),
                         );
                     });
                 });
@@ -1929,14 +1941,14 @@ impl eframe::App for HiJackApp {
                         ui.label(
                             egui::RichText::new("⚠ DISCONNECTED")
                                 .strong()
-                                .color(super::theme::BG_DARK),
+                                .color(super::theme::TEXT_ON_BRIGHT),
                         );
                         ui.label(
                             egui::RichText::new(
                                 "— connect to console for gang propagation \
                                  to take effect.",
                             )
-                            .color(super::theme::BG_DARK),
+                            .color(super::theme::TEXT_ON_BRIGHT),
                         );
                     });
                 });
@@ -1961,11 +1973,11 @@ impl eframe::App for HiJackApp {
                         ui.label(
                             egui::RichText::new("⚠ DISCONNECTED")
                                 .strong()
-                                .color(super::theme::BG_DARK),
+                                .color(super::theme::TEXT_ON_BRIGHT),
                         );
                         ui.label(
                             egui::RichText::new("— connect to console to capture snapshots.")
-                                .color(super::theme::BG_DARK),
+                                .color(super::theme::TEXT_ON_BRIGHT),
                         );
                     });
                 });
@@ -1993,7 +2005,7 @@ impl eframe::App for HiJackApp {
                         ui.label(
                             egui::RichText::new("⚠ NETWORK")
                                 .strong()
-                                .color(super::theme::BG_DARK),
+                                .color(super::theme::TEXT_ON_BRIGHT),
                         );
                         ui.label(
                             egui::RichText::new(
@@ -2001,7 +2013,7 @@ impl eframe::App for HiJackApp {
                                  Pick a different NIC or change the console IP to match. \
                                  Click here to dismiss.",
                             )
-                            .color(super::theme::BG_DARK),
+                            .color(super::theme::TEXT_ON_BRIGHT),
                         );
                     });
                     // Make the whole strip clickable so the operator
@@ -2038,7 +2050,7 @@ impl eframe::App for HiJackApp {
                         ui.label(
                             egui::RichText::new("⚠ GANG OVERLAP")
                                 .strong()
-                                .color(super::theme::BG_DARK),
+                                .color(super::theme::TEXT_ON_BRIGHT),
                         );
                         let plural = if overlap_count == 1 { "" } else { "s" };
                         ui.label(
@@ -2047,7 +2059,7 @@ impl eframe::App for HiJackApp {
                                  gangs sharing parameters. Propagation will fight; remove the \
                                  overlap in the Gangs tab.",
                             ))
-                            .color(super::theme::BG_DARK),
+                            .color(super::theme::TEXT_ON_BRIGHT),
                         );
                     });
                 });

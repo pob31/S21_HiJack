@@ -206,7 +206,7 @@ pub fn draw_pan_link_tab(
                         egui::RichText::new("Pan Link")
                             .size(theme::FONT_SIZE_SECTION)
                             .strong()
-                            .color(theme::TEXT_PRIMARY),
+                            .color(theme::label_color()),
                     );
 
                     let dirty = tab.dirty();
@@ -223,7 +223,7 @@ pub fn draw_pan_link_tab(
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let revert_btn = theme::action_button(
                             "Revert",
-                            theme::BG_ELEVATED,
+                            theme::btn_neutral(),
                             egui::Vec2::new(80.0, 26.0),
                         );
                         if ui
@@ -266,7 +266,7 @@ pub fn draw_pan_link_tab(
                          aux tiles to stage links across all selected inputs. Diagonal \
                          stripes mean partial — click promotes to all-linked first.",
                     )
-                    .color(theme::TEXT_SECONDARY)
+                    .color(theme::label_weak())
                     .small(),
                 );
             });
@@ -317,17 +317,17 @@ fn draw_inputs_header(ui: &mut egui::Ui, tab: &mut PanLinkTabState, panel_w: f32
             ui.label(
                 egui::RichText::new("Inputs")
                     .strong()
-                    .color(theme::TEXT_PRIMARY),
+                    .color(theme::label_color()),
             );
             ui.label(
                 egui::RichText::new(format!("({} selected)", tab.selected_inputs.len()))
-                    .color(theme::TEXT_SECONDARY)
+                    .color(theme::label_weak())
                     .small(),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let clear_btn = theme::action_button(
                     "Clear selection",
-                    theme::BG_ELEVATED,
+                    theme::btn_neutral(),
                     egui::Vec2::new(110.0, 24.0),
                 );
                 if ui
@@ -356,7 +356,7 @@ fn draw_inputs_grid(
 
         if input_count == 0 {
             ui.colored_label(
-                theme::TEXT_SECONDARY,
+                theme::label_weak(),
                 "No inputs configured — connect to console or load a show file.",
             );
             return;
@@ -443,7 +443,7 @@ fn draw_auxes_header(ui: &mut egui::Ui, panel_w: f32) {
         ui.label(
             egui::RichText::new("Auxes")
                 .strong()
-                .color(theme::TEXT_PRIMARY),
+                .color(theme::label_color()),
         );
     });
 }
@@ -460,7 +460,7 @@ fn draw_auxes_grid(
         ui.spacing_mut().item_spacing.x = theme::TILE_GAP; // reset (grid row forces 0)
 
         if aux_buses.is_empty() {
-            ui.colored_label(theme::TEXT_SECONDARY, "No auxes configured.");
+            ui.colored_label(theme::label_weak(), "No auxes configured.");
             return;
         }
 
@@ -562,7 +562,7 @@ fn draw_input_tile(
     let fill = if selected {
         theme::CH_INPUT
     } else {
-        blend(theme::CH_INPUT, theme::BG_ELEVATED, 0.7)
+        blend(theme::CH_INPUT, theme::tile_dim_bg(), 0.7)
     };
     let hover_fill = if response.hovered() {
         blend(fill, theme::TEXT_PRIMARY, 0.85)
@@ -574,7 +574,7 @@ fn draw_input_tile(
     let stroke = if selected {
         egui::Stroke::new(2.0, theme::TEXT_PRIMARY)
     } else {
-        egui::Stroke::new(1.0, theme::BORDER_SUBTLE)
+        egui::Stroke::new(1.0, theme::border_subtle())
     };
     painter.rect_stroke(rect, 4.0, stroke, egui::StrokeKind::Inside);
 
@@ -604,7 +604,7 @@ fn draw_input_tile(
     if has_link {
         let center = egui::pos2(rect.max.x - 8.0, rect.min.y + 8.0);
         painter.circle_filled(center, 4.0, theme::ACCENT_GREEN);
-        painter.circle_stroke(center, 4.0, egui::Stroke::new(1.0, theme::BG_DARK));
+        painter.circle_stroke(center, 4.0, egui::Stroke::new(1.0, theme::tile_dim_bg()));
     }
 
     // Pan slider — bidirectional, mirrors the desk's tile graphic:
@@ -621,7 +621,7 @@ fn draw_input_tile(
             egui::pos2(track_left, track_y - track_h / 2.0),
             egui::pos2(track_right, track_y + track_h / 2.0),
         );
-        painter.rect_filled(track_rect, track_h / 2.0, theme::BG_DARK);
+        painter.rect_filled(track_rect, track_h / 2.0, theme::tile_dim_bg());
 
         let pan_clamped = pan_val.clamp(-1.0, 1.0);
         let half_w = (track_right - track_left) / 2.0;
@@ -671,11 +671,11 @@ fn draw_aux_tile(
 
     let base = theme::CH_AUX;
     let fill = match state {
-        AuxState::Mono => theme::BG_ELEVATED,
-        AuxState::NoSelection => blend(base, theme::BG_ELEVATED, 0.4),
-        AuxState::NoneLinked => blend(base, theme::BG_ELEVATED, 0.55),
+        AuxState::Mono => theme::tile_dim_bg(),
+        AuxState::NoSelection => blend(base, theme::tile_dim_bg(), 0.4),
+        AuxState::NoneLinked => blend(base, theme::tile_dim_bg(), 0.55),
         AuxState::AllLinked => base,
-        AuxState::Mixed => blend(base, theme::BG_ELEVATED, 0.55),
+        AuxState::Mixed => blend(base, theme::tile_dim_bg(), 0.55),
     };
     let hover_fill = if link_clickable && response.hovered() {
         blend(fill, theme::TEXT_PRIMARY, 0.85)
@@ -710,7 +710,7 @@ fn draw_aux_tile(
     let stroke = if matches!(state, AuxState::AllLinked) {
         egui::Stroke::new(2.0, theme::TEXT_PRIMARY)
     } else {
-        egui::Stroke::new(1.0, theme::BORDER_SUBTLE)
+        egui::Stroke::new(1.0, theme::border_subtle())
     };
     painter.rect_stroke(rect, 4.0, stroke, egui::StrokeKind::Inside);
 
@@ -768,10 +768,10 @@ fn draw_aux_tile(
         egui::vec2(m_size, m_size),
     );
     let (m_fill, m_text_color, m_label_text) = if mono_override {
-        (theme::ACCENT_AMBER, theme::BG_DARK, "M")
+        (theme::ACCENT_AMBER, theme::TEXT_ON_BRIGHT, "M")
     } else {
         (
-            blend(theme::BG_DARK, theme::TEXT_SECONDARY, 0.7),
+            blend(theme::tile_dim_bg(), theme::TEXT_SECONDARY, 0.7),
             theme::TEXT_SECONDARY,
             "S",
         )
@@ -780,7 +780,7 @@ fn draw_aux_tile(
     painter.rect_stroke(
         m_rect,
         3.0,
-        egui::Stroke::new(1.0, theme::BORDER_SUBTLE),
+        egui::Stroke::new(1.0, theme::border_subtle()),
         egui::StrokeKind::Inside,
     );
     painter.text(

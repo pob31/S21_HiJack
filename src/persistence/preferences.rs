@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::model::ui_mode::UiMode;
+use crate::model::ui_mode::{ColorTheme, UiMode};
 
 const APP_DIR: &str = "s21_hijack";
 const PREFS_FILE: &str = "preferences.json";
@@ -33,6 +33,11 @@ pub struct AppPreferences {
     /// survives restarts. The scaler clamps the final result to a sane range.
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f32,
+    /// Operator's chosen colour theme (Advanced Settings → Appearance).
+    /// Defaults to `Dark` for preference files saved before this field
+    /// existed, preserving the original look.
+    #[serde(default)]
+    pub color_theme: ColorTheme,
 }
 
 /// Default UI scale multiplier — `1.0` means "use the automatic scaling
@@ -50,6 +55,7 @@ impl Default for AppPreferences {
             show_diagnostics: false,
             send_pace_us: 0,
             ui_scale: default_ui_scale(),
+            color_theme: ColorTheme::default(),
         }
     }
 }
@@ -134,6 +140,8 @@ mod tests {
         // Missing ui_scale must default to 1.0, never 0.0 (which would collapse
         // the UI). Guards the serde + Default footgun.
         assert_eq!(prefs.ui_scale, 1.0);
+        // Missing color_theme defaults to Dark — older files keep the old look.
+        assert_eq!(prefs.color_theme, ColorTheme::Dark);
     }
 
     #[test]
@@ -143,6 +151,7 @@ mod tests {
         assert!(!prefs.show_diagnostics);
         assert_eq!(prefs.send_pace_us, 0);
         assert_eq!(prefs.ui_scale, 1.0);
+        assert_eq!(prefs.color_theme, ColorTheme::Dark);
     }
 
     #[test]
@@ -152,11 +161,13 @@ mod tests {
             show_diagnostics: true,
             send_pace_us: 1500,
             ui_scale: 1.25,
+            color_theme: ColorTheme::Light,
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: AppPreferences = serde_json::from_str(&json).unwrap();
         assert_eq!(prefs.send_pace_us, back.send_pace_us);
         assert_eq!(prefs.show_diagnostics, back.show_diagnostics);
         assert_eq!(prefs.ui_scale, back.ui_scale);
+        assert_eq!(prefs.color_theme, back.color_theme);
     }
 }

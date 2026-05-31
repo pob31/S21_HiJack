@@ -30,7 +30,7 @@ use crate::model::parameter::PROTOCOL_COVERAGE;
 use crate::model::recall_scope::ConsoleRecallConfig;
 use crate::model::snapshot::CueList;
 use crate::model::state::ConsoleState;
-use crate::model::ui_mode::UiMode;
+use crate::model::ui_mode::{ColorTheme, UiMode};
 use crate::osc::client::OscClient;
 use crate::osc::ipad_client::IpadSender;
 use crate::osc::monitor_server::MonitorServer;
@@ -74,6 +74,10 @@ pub struct SetupTabState {
     /// on top of the automatic PPI-based scaling; mirrors
     /// `AppPreferences::ui_scale` and is persisted via `save_app_preferences`.
     pub ui_scale: f32,
+    /// Active colour theme (Advanced Settings → Appearance). Mirrors
+    /// `AppPreferences::color_theme`, persisted via `save_app_preferences`,
+    /// and read each frame by `theme::configure_style` for the hot-switch.
+    pub color_theme: ColorTheme,
     /// Source-IP CIDR allowlist for the monitor server (audit C2). Round-trips
     /// through the show file. UI editor is a follow-up; for now operators
     /// edit the JSON directly or use the `--monitor-allow-cidr` CLI flag.
@@ -159,6 +163,7 @@ impl SetupTabState {
             qlab_port: "53000".to_string(),
             send_pace_us: prefs.send_pace_us,
             ui_scale: prefs.ui_scale,
+            color_theme: prefs.color_theme,
             monitor_allow_cidrs: Vec::new(),
             trigger_allow_cidrs: Vec::new(),
             ui_mode: prefs.ui_mode.unwrap_or_default(),
@@ -565,7 +570,7 @@ pub fn draw_setup_tab(
                     egui::RichText::new("Connection")
                         .size(theme::FONT_SIZE_SECTION)
                         .strong()
-                        .color(theme::TEXT_PRIMARY),
+                        .color(theme::label_color()),
                 );
                 let avail = ui.available_size();
                 ui.allocate_ui_with_layout(
@@ -619,7 +624,7 @@ pub fn draw_setup_tab(
             // hand-rolled strip looks consistent with section headings elsewhere.
             let strip_w = ui.available_width();
             let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(strip_w, 1.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, theme::BORDER_SUBTLE);
+            ui.painter().rect_filled(rect, 0.0, theme::border_subtle());
             ui.add_space(6.0);
 
             let uses_ipad = setup.operating_mode.uses_ipad_protocol();
@@ -658,7 +663,8 @@ pub fn draw_setup_tab(
                 // Console (S21) satellite — top-left
                 peer_section(ui, "Console (S21)", theme::ACCENT_BLUE, w_sat, MIN_TOP_HEIGHT, false, console_status, |ui| {
                     ui.horizontal(|ui| {
-                        theme::row_label(ui, "IP:", theme::TEXT_PRIMARY);
+                        theme::row_label(ui, "IP:", theme::label_color());
+                        ui.add_space(6.0);
                         let mismatch = console_ip_mismatch(setup);
                         let show_warn_icon = mismatch && !setup.console_ip_warning_dismissed;
                         // Reserve 24 px on the right of the edit for the
@@ -716,7 +722,7 @@ pub fn draw_setup_tab(
                             ui.label(
                                 egui::RichText::new("GP OSC")
                                     .small()
-                                    .color(theme::TEXT_SECONDARY),
+                                    .color(theme::label_weak()),
                             );
                             ui.label("");
                             ui.label("");
@@ -729,12 +735,12 @@ pub fn draw_setup_tab(
                                 "",
                                 "Console port — daemon sends GP OSC here.",
                             );
-                            ui.label(egui::RichText::new("←").color(theme::TEXT_SECONDARY));
-                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("←").color(theme::label_weak()));
+                            ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
                             ui.end_row();
 
-                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
-                            ui.label(egui::RichText::new("→").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
+                            ui.label(egui::RichText::new("→").color(theme::label_weak()));
                             port_edit_enabled(
                                 ui,
                                 &mut setup.local_port,
@@ -774,21 +780,21 @@ pub fn draw_setup_tab(
                             );
                             ui.add_visible(
                                 uses_ipad,
-                                egui::Label::new(egui::RichText::new("←").color(theme::TEXT_SECONDARY)),
+                                egui::Label::new(egui::RichText::new("←").color(theme::label_weak())),
                             );
                             ui.add_visible(
                                 uses_ipad,
-                                egui::Label::new(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY)),
+                                egui::Label::new(egui::RichText::new("Tx").color(theme::label_weak())),
                             );
                             ui.end_row();
 
                             ui.add_visible(
                                 uses_ipad,
-                                egui::Label::new(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY)),
+                                egui::Label::new(egui::RichText::new("Tx").color(theme::label_weak())),
                             );
                             ui.add_visible(
                                 uses_ipad,
-                                egui::Label::new(egui::RichText::new("→").color(theme::TEXT_SECONDARY)),
+                                egui::Label::new(egui::RichText::new("→").color(theme::label_weak())),
                             );
                             port_edit_visible(
                                 ui,
@@ -833,17 +839,17 @@ pub fn draw_setup_tab(
                                 .spacing([8.0, 2.0])
                                 .show(ui, |ui| {
                                     if !cfg.console_name.is_empty() {
-                                        ui.label(egui::RichText::new("Console:").color(theme::TEXT_SECONDARY).small());
+                                        ui.label(egui::RichText::new("Console:").color(theme::label_weak()).small());
                                         ui.label(egui::RichText::new(&cfg.console_name).strong().small());
                                         ui.end_row();
                                     }
                                     if !cfg.console_serial.is_empty() {
-                                        ui.label(egui::RichText::new("Serial:").color(theme::TEXT_SECONDARY).small());
+                                        ui.label(egui::RichText::new("Serial:").color(theme::label_weak()).small());
                                         ui.label(egui::RichText::new(&cfg.console_serial).small());
                                         ui.end_row();
                                     }
                                     if let Some(ref session) = cfg.session_filename {
-                                        ui.label(egui::RichText::new("Session:").color(theme::TEXT_SECONDARY).small());
+                                        ui.label(egui::RichText::new("Session:").color(theme::label_weak()).small());
                                         ui.label(egui::RichText::new(session).small());
                                         ui.end_row();
                                     }
@@ -851,7 +857,7 @@ pub fn draw_setup_tab(
                             ui.add_space(6.0);
                         }
 
-                        ui.label(egui::RichText::new("Channel Configuration").color(theme::TEXT_SECONDARY).small());
+                        ui.label(egui::RichText::new("Channel Configuration").color(theme::label_weak()).small());
                         ui.add_space(2.0);
                         // 5 channel-count pills sized to fit 3 per row
                         // with the panel's item_spacing as the gutter,
@@ -897,11 +903,13 @@ pub fn draw_setup_tab(
                     // Mode toggles, Parameter coverage…, Open…, Save /
                     // Save As… / New) at the same rendered height by
                     // ensuring no button's natural size (text + 2 *
-                    // padding.y) exceeds the shared 28 px min_size.
-                    // Default button_padding (~12, 8) made bare-row
-                    // buttons render at ~30 px while grid-row buttons
-                    // sat at exactly 28 — visible 2 px misalignment.
-                    ui.spacing_mut().button_padding = egui::Vec2::new(10.0, 6.0);
+                    // padding.y) exceeds the shared 28 px min_size, so the
+                    // forced 28 px wins and every button lines up with the
+                    // 28 px row labels. The vertical padding is small so this
+                    // holds for the light theme's heavier (taller) font too —
+                    // the visible inner padding still comes from centring the
+                    // text in the 28 px button, not from this value.
+                    ui.spacing_mut().button_padding = egui::Vec2::new(10.0, 2.0);
                     // Each main labeled row is its own 2-column grid that shares
                     // a fixed `LABEL_COL_W`, so labels line up across sections
                     // and widgets all start at the same X. Sub-rows
@@ -909,7 +917,11 @@ pub fn draw_setup_tab(
                     // grid with a matching `add_space` indent — avoids the
                     // "missing label" look of empty col-0 cells and gives the
                     // sub-row content the full hub width to grow into.
-                    const LABEL_COL_W: f32 = 140.0;
+                    // Wide enough for the longest label ("Connection Mode:") in
+                    // the light theme's heavier font — otherwise that one grid's
+                    // column outgrows the others and its button group shifts
+                    // right, breaking the cross-row left alignment.
+                    const LABEL_COL_W: f32 = 156.0;
                     const GRID_SPACING_X: f32 = 14.0;
                     let subrow_indent = LABEL_COL_W + GRID_SPACING_X;
                     let server_grid = |id: &'static str| {
@@ -932,7 +944,7 @@ pub fn draw_setup_tab(
 
                     // ── Display Mode ──
                     server_grid("server_display_grid").show(ui, |ui| {
-                        theme::row_label(ui, "Display Mode:", theme::TEXT_PRIMARY);
+                        theme::row_label(ui, "Display Mode:", theme::label_color());
                         ui.horizontal(|ui| {
                             // All 3 toggles share `action_btn_w` so the
                             // row spans `action_row_w` — same width as
@@ -940,8 +952,8 @@ pub fn draw_setup_tab(
                             // button_padding is set panel-wide above.
                             for mode in UiMode::ALL {
                                 let is_active = setup.ui_mode == mode;
-                                let fill = if is_active { theme::ACCENT_BLUE } else { theme::BG_ELEVATED };
-                                let text_color = if is_active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
+                                let fill = if is_active { theme::ACCENT_BLUE } else { theme::btn_neutral() };
+                                let text_color = if is_active { theme::TEXT_PRIMARY } else { theme::neutral_inactive_text() };
                                 let btn = egui::Button::new(
                                     egui::RichText::new(mode.label()).color(text_color),
                                 )
@@ -968,7 +980,7 @@ pub fn draw_setup_tab(
 
                     // ── Network + bind-IP read-out ──
                     server_grid("server_network_grid").show(ui, |ui| {
-                        theme::row_label(ui, "Network:", theme::TEXT_PRIMARY);
+                        theme::row_label(ui, "Network:", theme::label_color());
                         ui.add_enabled_ui(!is_connected, |ui| {
                             let interfaces = net_interfaces::list_interfaces();
                             let current_label = if setup.local_ip.is_empty() {
@@ -1030,13 +1042,13 @@ pub fn draw_setup_tab(
 
                     // ── Connection Mode ──
                     server_grid("server_conn_grid").show(ui, |ui| {
-                        theme::row_label(ui, "Connection Mode:", theme::TEXT_PRIMARY);
+                        theme::row_label(ui, "Connection Mode:", theme::label_color());
                         ui.horizontal(|ui| {
                             // button_padding is set panel-wide above.
                             for mode in [OperatingMode::Mode1, OperatingMode::Mode2, OperatingMode::Mode3] {
                                 let is_active = setup.operating_mode == mode;
-                                let fill = if is_active { theme::ACCENT_BLUE } else { theme::BG_ELEVATED };
-                                let text_color = if is_active { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
+                                let fill = if is_active { theme::ACCENT_BLUE } else { theme::btn_neutral() };
+                                let text_color = if is_active { theme::TEXT_PRIMARY } else { theme::neutral_inactive_text() };
                                 let btn = egui::Button::new(
                                     egui::RichText::new(mode.short_label()).color(text_color),
                                 )
@@ -1066,7 +1078,7 @@ pub fn draw_setup_tab(
                         if ui
                             .add(theme::action_button(
                                 "Parameter coverage…",
-                                theme::BG_ELEVATED,
+                                theme::btn_neutral(),
                                 egui::Vec2::new(action_row_w, 28.0),
                             ))
                             .clicked()
@@ -1081,7 +1093,7 @@ pub fn draw_setup_tab(
 
                     // ── Show File ──
                     server_grid("server_show_file_grid").show(ui, |ui| {
-                        theme::row_label(ui, "Show file:", theme::TEXT_PRIMARY);
+                        theme::row_label(ui, "Show file:", theme::label_color());
                         ui.horizontal(|ui| {
                             // Display only the filename with a leading
                             // "…/" so a long path doesn't blow out the
@@ -1268,13 +1280,13 @@ pub fn draw_setup_tab(
                 //   Mode 3 → full IP + Tx/Rx + status content.
                 match setup.operating_mode {
                     OperatingMode::Mode1 => {
-                        peer_section(ui, "iPad", theme::TEXT_DISABLED, w_sat, MIN_TOP_HEIGHT, false, None, |ui| {
+                        peer_section(ui, "iPad", theme::label_disabled(), w_sat, MIN_TOP_HEIGHT, false, None, |ui| {
                             ui.label(
                                 egui::RichText::new(
                                     "Mode 1 is GP OSC only — the iPad protocol is not used. \
                                      Switch to Mode 2 or Mode 3 to expose iPad-protocol features.",
                                 )
-                                .color(theme::TEXT_DISABLED)
+                                .color(theme::label_disabled())
                                 .small(),
                             );
                         });
@@ -1288,7 +1300,7 @@ pub fn draw_setup_tab(
                                      the official DiGiCo iPad app at the same time, switch to \
                                      Mode 3 (iPad Proxy).",
                                 )
-                                .color(theme::TEXT_SECONDARY)
+                                .color(theme::label_weak())
                                 .small(),
                             );
                         });
@@ -1296,7 +1308,8 @@ pub fn draw_setup_tab(
                     OperatingMode::Mode3 => {
                         peer_section(ui, "iPad", theme::ACCENT_ORANGE, w_sat, MIN_TOP_HEIGHT, false, ipad_status, |ui| {
                             ui.horizontal(|ui| {
-                                theme::row_label(ui, "IP:", theme::TEXT_PRIMARY);
+                                theme::row_label(ui, "IP:", theme::label_color());
+                                ui.add_space(6.0);
                                 theme::padded_text_edit_sized(
                                     ui,
                                     &mut setup.ipad_ip,
@@ -1320,8 +1333,8 @@ pub fn draw_setup_tab(
                                     ui.label(egui::RichText::new("iPad").strong().color(theme::ACCENT_ORANGE));
                                     ui.end_row();
 
-                                    ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
-                                    ui.label(egui::RichText::new("→").color(theme::TEXT_SECONDARY));
+                                    ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
+                                    ui.label(egui::RichText::new("→").color(theme::label_weak()));
                                     port_edit_enabled(
                                         ui,
                                         &mut setup.ipad_reply_port,
@@ -1338,8 +1351,8 @@ pub fn draw_setup_tab(
                                         "",
                                         "Local port the daemon listens on for iPad→daemon traffic.",
                                     );
-                                    ui.label(egui::RichText::new("←").color(theme::TEXT_SECONDARY));
-                                    ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
+                                    ui.label(egui::RichText::new("←").color(theme::label_weak()));
+                                    ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
                                     ui.end_row();
                                 });
                         });
@@ -1385,7 +1398,8 @@ pub fn draw_setup_tab(
                 // QLab satellite — bottom-left
                 peer_section(ui, "QLab", theme::ACCENT_AMBER, w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
                     ui.horizontal(|ui| {
-                        theme::row_label(ui, "IP:", theme::TEXT_PRIMARY);
+                        theme::row_label(ui, "IP:", theme::label_color());
+                        ui.add_space(6.0);
                         theme::padded_text_edit_sized(
                             ui,
                             &mut setup.qlab_ip,
@@ -1424,13 +1438,13 @@ pub fn draw_setup_tab(
                                 "53000",
                                 "QLab's OSC listen port — daemon sends cue-build commands here.",
                             );
-                            ui.label(egui::RichText::new("←").color(theme::TEXT_SECONDARY));
-                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("←").color(theme::label_weak()));
+                            ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
                             ui.end_row();
 
                             // QLab Tx → Server listen (trigger_port)
-                            ui.label(egui::RichText::new("Tx").color(theme::TEXT_SECONDARY));
-                            ui.label(egui::RichText::new("→").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
+                            ui.label(egui::RichText::new("→").color(theme::label_weak()));
                             port_edit_enabled(
                                 ui,
                                 &mut setup.trigger_port,
@@ -1442,13 +1456,13 @@ pub fn draw_setup_tab(
                         });
                 });
                 } else {
-                    peer_section(ui, "QLab", theme::TEXT_DISABLED, w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
+                    peer_section(ui, "QLab", theme::label_disabled(), w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
                         ui.label(
                             egui::RichText::new(
                                 "Live Music mode hides Snapshots, so QLab cue triggering is \
                                  disabled. Switch to Full or Theatre mode to enable QLab.",
                             )
-                            .color(theme::TEXT_DISABLED)
+                            .color(theme::label_disabled())
                             .small(),
                         );
                     });
@@ -1460,14 +1474,14 @@ pub fn draw_setup_tab(
 
                 if monitor_active {
                 // Monitor satellite — bottom-right
-                peer_section(ui, "Monitor", theme::TEXT_SECONDARY, w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
+                peer_section(ui, "Monitor", theme::label_weak(), w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
                     egui::Grid::new("monitor_flow_grid")
                         .num_columns(3)
                         .spacing([6.0, 6.0])
                         .show(ui, |ui| {
                             ui.label(egui::RichText::new("Server").strong().color(theme::ACCENT_GREEN));
                             ui.label("");
-                            ui.label(egui::RichText::new("Mobile / Web").strong().color(theme::TEXT_PRIMARY));
+                            ui.label(egui::RichText::new("Mobile / Web").strong().color(theme::label_color()));
                             ui.end_row();
 
                             // Editable port goes directly in the flow grid —
@@ -1480,22 +1494,22 @@ pub fn draw_setup_tab(
                                 "off",
                                 "Local port for the Flutter monitor app — leave blank to disable.",
                             );
-                            ui.label(egui::RichText::new("↔").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("↔").color(theme::label_weak()));
                             ui.label(
-                                egui::RichText::new("any LAN client").color(theme::TEXT_SECONDARY),
+                                egui::RichText::new("any LAN client").color(theme::label_weak()),
                             );
                             ui.end_row();
                         });
                 });
                 } else {
-                    peer_section(ui, "Monitor", theme::TEXT_DISABLED, w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
+                    peer_section(ui, "Monitor", theme::label_disabled(), w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
                         ui.label(
                             egui::RichText::new(
                                 "Theatre mode targets a single operator on this machine, so the \
                                  mobile / web monitor is disabled. Switch to Full or Live Music \
                                  mode to enable it.",
                             )
-                            .color(theme::TEXT_DISABLED)
+                            .color(theme::label_disabled())
                             .small(),
                         );
                     });
@@ -1529,7 +1543,7 @@ pub fn draw_setup_tab(
                         } else {
                             "Mode 1 is GP OSC only — several parameters require switching to Mode 2 or 3."
                         })
-                        .color(theme::TEXT_SECONDARY),
+                        .color(theme::label_weak()),
                     );
                     ui.add_space(6.0);
                     egui::Grid::new("protocol_coverage_grid_popup")
@@ -1542,11 +1556,11 @@ pub fn draw_setup_tab(
                             for row in PROTOCOL_COVERAGE {
                                 let available = row.gp || (uses_ipad && row.ipad);
                                 let (mark, color) = if available {
-                                    ("yes", theme::TEXT_PRIMARY)
+                                    ("yes", theme::label_color())
                                 } else if row.gp || row.ipad {
-                                    ("needs Mode 2/3", theme::TEXT_SECONDARY)
+                                    ("needs Mode 2/3", theme::label_weak())
                                 } else {
-                                    ("console surface only", theme::TEXT_SECONDARY)
+                                    ("console surface only", theme::label_weak())
                                 };
                                 ui.label(row.label);
                                 ui.label(egui::RichText::new(mark).color(color));
@@ -1590,7 +1604,7 @@ pub fn draw_setup_tab(
         if ui
             .add(theme::action_button(
                 "Advanced…",
-                theme::BG_ELEVATED,
+                theme::btn_neutral(),
                 egui::Vec2::new(110.0, 28.0),
             ))
             .on_hover_text("Pacing, diagnostics, and other application preferences.")
@@ -2475,6 +2489,7 @@ pub(crate) fn save_app_preferences(setup: &SetupTabState) {
         show_diagnostics: setup.show_diagnostics,
         send_pace_us: setup.send_pace_us,
         ui_scale: setup.ui_scale,
+        color_theme: setup.color_theme,
     };
     if let Err(e) = prefs.save() {
         tracing::warn!(error = %e, "Failed to save app preferences");
@@ -2500,7 +2515,7 @@ fn draw_first_run_popup(ui: &mut egui::Ui, setup: &mut SetupTabState) {
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new("You can change this any time on the Setup tab.")
-                    .color(theme::TEXT_SECONDARY),
+                    .color(theme::label_weak()),
             );
             ui.add_space(10.0);
 
@@ -2530,7 +2545,7 @@ fn draw_first_run_popup(ui: &mut egui::Ui, setup: &mut SetupTabState) {
                         setup.show_first_run_popup = false;
                         save_app_preferences(setup);
                     }
-                    ui.label(egui::RichText::new(desc).color(theme::TEXT_SECONDARY));
+                    ui.label(egui::RichText::new(desc).color(theme::label_weak()));
                 });
             }
         });

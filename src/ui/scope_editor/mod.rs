@@ -245,7 +245,7 @@ pub fn draw_scope_window(
 
                 let clear_btn = theme::action_button(
                     "Clear All",
-                    theme::BG_ELEVATED,
+                    theme::btn_neutral(),
                     egui::Vec2::new(80.0, 28.0),
                 );
                 if ui.add(clear_btn).clicked() {
@@ -311,7 +311,7 @@ pub fn draw_scope_window(
                 // this frame returns (we only have a borrow of the tracker).
                 let clear_changes_btn = theme::action_button(
                     "Clear changes",
-                    theme::BG_ELEVATED,
+                    theme::btn_neutral(),
                     egui::Vec2::new(120.0, 28.0),
                 );
                 if ui
@@ -325,7 +325,7 @@ pub fn draw_scope_window(
                 ui.add_space(8.0);
                 ui.label(
                     egui::RichText::new("Click any header to bulk toggle.")
-                        .color(theme::TEXT_SECONDARY)
+                        .color(theme::label_weak())
                         .size(theme::FONT_SIZE_BADGE),
                 );
             });
@@ -333,7 +333,7 @@ pub fn draw_scope_window(
             // ── Templates row ─────────────────────────────────────────
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                theme::row_label(ui, "Templates:", theme::TEXT_PRIMARY);
+                theme::row_label(ui, "Templates:", theme::label_color());
                 let current_name = state
                     .selected_template_id
                     .and_then(|id| templates.iter().find(|(tid, _)| *tid == id))
@@ -377,7 +377,7 @@ pub fn draw_scope_window(
                 ui.separator();
                 ui.add_space(4.0);
 
-                theme::row_label(ui, "Save as:", theme::TEXT_PRIMARY);
+                theme::row_label(ui, "Save as:", theme::label_color());
                 theme::padded_text_edit_sized(
                     ui,
                     &mut state.template_name_buf,
@@ -466,7 +466,7 @@ pub fn draw_scope_window(
                 // Console Recall buttons (left side)
                 ui.label(
                     egui::RichText::new("Console Recall:")
-                        .color(theme::TEXT_SECONDARY)
+                        .color(theme::label_weak())
                         .small(),
                 );
                 let btn_size = egui::Vec2::new(100.0, 24.0);
@@ -481,7 +481,7 @@ pub fn draw_scope_window(
                             },
                         ),
                 )
-                .fill(theme::BG_ELEVATED)
+                .fill(theme::btn_neutral())
                 .min_size(btn_size);
                 if ui.add(scope_btn).clicked() {
                     state.recall_popup.open = Some(RecallPopupKind::SessionScope);
@@ -495,7 +495,7 @@ pub fn draw_scope_window(
                 ] {
                     let btn =
                         egui::Button::new(egui::RichText::new(label).size(theme::FONT_SIZE_TINY))
-                            .fill(theme::BG_ELEVATED)
+                            .fill(theme::btn_neutral())
                             .min_size(egui::Vec2::new(72.0, 24.0));
                     if ui.add(btn).clicked() {
                         state.recall_popup.open = Some(kind);
@@ -517,7 +517,7 @@ pub fn draw_scope_window(
                     ui.add_space(8.0);
                     let cancel_btn = theme::action_button(
                         "Cancel",
-                        theme::BG_ELEVATED,
+                        theme::btn_neutral(),
                         egui::Vec2::new(90.0, 28.0),
                     );
                     if ui.add(cancel_btn).clicked() {

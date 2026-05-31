@@ -1,7 +1,9 @@
 //! Embedded fonts.
 //!
-//! Registers two symbol fallbacks for both the Proportional and Monospace
-//! families. Primary text still uses egui's bundled Ubuntu-Light.
+//! Primary body text is the bundled Noto Sans Regular (a normal weight, heavier
+//! than egui's default Ubuntu-Light) — used in both themes for stronger, more
+//! legible text. Two symbol fallbacks are registered for both the Proportional
+//! and Monospace families.
 //!
 //! - `NotoSansSymbols2` (subset, Geometric Shapes block) is inserted *ahead*
 //!   of egui's emoji fallback. egui's emoji font only carries the play-button
@@ -20,13 +22,32 @@ use eframe::egui;
 const NOTO_SANS_SYMBOLS: &[u8] = include_bytes!("../../assets/fonts/NotoSansSymbols-Regular.ttf");
 const NOTO_SANS_SYMBOLS2_GEOMETRIC: &[u8] =
     include_bytes!("../../assets/fonts/NotoSansSymbols2-Geometric-subset.ttf");
+/// Bundled regular-weight body font. Heavier than egui's default Ubuntu-Light,
+/// so it serves as the primary proportional face in both themes for stronger,
+/// more legible text.
+const NOTO_SANS_REGULAR: &[u8] = include_bytes!("../../assets/fonts/NotoSans-Regular.ttf");
 
+/// Install the UI fonts. Noto Sans Regular is the primary proportional face
+/// (ahead of egui's lighter Ubuntu-Light) so body text renders with more
+/// weight; the two Noto symbol fonts are registered as fallbacks. Called once
+/// at startup — the font is theme-independent, so no re-install on theme change.
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         "noto_sans_symbols".into(),
         Arc::new(egui::FontData::from_static(NOTO_SANS_SYMBOLS)),
     );
+    fonts.font_data.insert(
+        "noto_sans_regular".into(),
+        Arc::new(egui::FontData::from_static(NOTO_SANS_REGULAR)),
+    );
+    // Make Noto Sans Regular the primary proportional face (ahead of
+    // Ubuntu-Light), so all body text renders with more weight.
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "noto_sans_regular".into());
     fonts.font_data.insert(
         "noto_sans_symbols2".into(),
         // Nudge the geometric glyphs (▶ ◀ ▼ ▲ …) downward so they share the

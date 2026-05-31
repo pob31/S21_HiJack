@@ -20,6 +20,7 @@ use eframe::egui;
 
 use super::setup_tab::{SetupTabState, save_app_preferences};
 use super::theme;
+use crate::model::ui_mode::ColorTheme;
 
 /// Render the Advanced Settings window. `open` is the standard
 /// egui pattern: passing `&mut bool` lets the window manage its own
@@ -43,7 +44,7 @@ pub fn draw_advanced_settings_window(
             ui.label(
                 egui::RichText::new("Pacing")
                     .strong()
-                    .color(theme::TEXT_PRIMARY),
+                    .color(theme::label_color()),
             );
             ui.label(
                 egui::RichText::new(
@@ -51,7 +52,7 @@ pub fn draw_advanced_settings_window(
                      during long sequences. Applies to snapshot recall and macros.",
                 )
                 .small()
-                .color(theme::TEXT_SECONDARY),
+                .color(theme::label_weak()),
             );
             ui.add_space(2.0);
             let mut pace = setup.send_pace_us as f32;
@@ -66,12 +67,23 @@ pub fn draw_advanced_settings_window(
                     let gap = ui.spacing().item_spacing.x;
                     let track_w = (ui.available_width() - VALUE_W - gap).max(120.0);
                     ui.spacing_mut().slider_width = track_w;
-                    let slider = ui.add_sized(
-                        [track_w, theme::ROW_H],
-                        egui::Slider::new(&mut pace, 0.0..=5000.0)
-                            .step_by(100.0)
-                            .show_value(false),
-                    );
+                    // Make the slider rail visible — the light theme's white
+                    // widget fill would otherwise hide the groove on the white
+                    // panel. Scoped so only the slider is affected.
+                    let slider = ui
+                        .scope(|ui| {
+                            let t = theme::slider_track();
+                            ui.visuals_mut().widgets.inactive.bg_fill = t;
+                            ui.visuals_mut().widgets.inactive.weak_bg_fill = t;
+                            ui.visuals_mut().extreme_bg_color = t;
+                            ui.add_sized(
+                                [track_w, theme::ROW_H],
+                                egui::Slider::new(&mut pace, 0.0..=5000.0)
+                                    .step_by(100.0)
+                                    .show_value(false),
+                            )
+                        })
+                        .inner;
                     let value = ui.add_sized(
                         [VALUE_W, theme::ROW_H],
                         egui::DragValue::new(&mut pace)
@@ -98,7 +110,7 @@ pub fn draw_advanced_settings_window(
             ui.label(
                 egui::RichText::new("Diagnostics")
                     .strong()
-                    .color(theme::TEXT_PRIMARY),
+                    .color(theme::label_color()),
             );
             let diag_resp = ui
                 .checkbox(&mut setup.show_diagnostics, "Show diagnostic tabs")
@@ -115,7 +127,7 @@ pub fn draw_advanced_settings_window(
             ui.label(
                 egui::RichText::new("Display scale")
                     .strong()
-                    .color(theme::TEXT_PRIMARY),
+                    .color(theme::label_color()),
             );
             ui.label(
                 egui::RichText::new(
@@ -124,7 +136,7 @@ pub fn draw_advanced_settings_window(
                      demoing on a big screen viewed from a distance.",
                 )
                 .small()
-                .color(theme::TEXT_SECONDARY),
+                .color(theme::label_weak()),
             );
             ui.add_space(2.0);
             // Slider/value work in percent; the model stores a 0.5–2.5 multiplier.
@@ -135,12 +147,21 @@ pub fn draw_advanced_settings_window(
                     let gap = ui.spacing().item_spacing.x;
                     let track_w = (ui.available_width() - SCALE_VALUE_W - gap).max(120.0);
                     ui.spacing_mut().slider_width = track_w;
-                    let slider = ui.add_sized(
-                        [track_w, theme::ROW_H],
-                        egui::Slider::new(&mut pct, 50.0..=250.0)
-                            .step_by(5.0)
-                            .show_value(false),
-                    );
+                    // Visible rail in the light theme (see Pacing slider above).
+                    let slider = ui
+                        .scope(|ui| {
+                            let t = theme::slider_track();
+                            ui.visuals_mut().widgets.inactive.bg_fill = t;
+                            ui.visuals_mut().widgets.inactive.weak_bg_fill = t;
+                            ui.visuals_mut().extreme_bg_color = t;
+                            ui.add_sized(
+                                [track_w, theme::ROW_H],
+                                egui::Slider::new(&mut pct, 50.0..=250.0)
+                                    .step_by(5.0)
+                                    .show_value(false),
+                            )
+                        })
+                        .inner;
                     let value = ui.add_sized(
                         [SCALE_VALUE_W, theme::ROW_H],
                         egui::DragValue::new(&mut pct)
@@ -161,25 +182,58 @@ pub fn draw_advanced_settings_window(
             ui.separator();
             ui.add_space(8.0);
 
+            // ── Appearance ──
+            ui.label(
+                egui::RichText::new("Appearance")
+                    .strong()
+                    .color(theme::label_color()),
+            );
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                theme::row_label(ui, "Color theme:", theme::label_color());
+                let before = setup.color_theme;
+                // The active choice is filled with the accent so it reads as
+                // selected; the other stays neutral.
+                let dark_fill = if setup.color_theme == ColorTheme::Dark {
+                    theme::ACCENT_BLUE
+                } else {
+                    theme::btn_neutral()
+                };
+                let light_fill = if setup.color_theme == ColorTheme::Light {
+                    theme::ACCENT_BLUE
+                } else {
+                    theme::btn_neutral()
+                };
+                if theme::row_action_button(ui, "Dark", dark_fill, 80.0, true) {
+                    setup.color_theme = ColorTheme::Dark;
+                }
+                if theme::row_action_button(ui, "Light", light_fill, 80.0, true) {
+                    setup.color_theme = ColorTheme::Light;
+                }
+                // configure_style reads setup.color_theme next frame, so the
+                // switch is immediate — just persist the new choice.
+                if setup.color_theme != before {
+                    save_app_preferences(setup);
+                }
+            });
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+
             // ── Coming soon ──
-            // Reserved slots for future app-level preferences. Greyed
-            // out so the user knows they exist; not yet wired to any
-            // backing state.
+            // Reserved slot for a future app-level preference. Greyed out so
+            // the user knows it exists; not yet wired to any backing state.
             ui.label(
                 egui::RichText::new("Coming soon")
                     .strong()
-                    .color(theme::TEXT_SECONDARY),
+                    .color(theme::label_weak()),
             );
             ui.add_enabled_ui(false, |ui| {
                 ui.horizontal(|ui| {
-                    theme::row_label(ui, "Color theme:", theme::TEXT_DISABLED);
+                    theme::row_label(ui, "Help-bubble language:", theme::label_disabled());
                     let _ =
-                        theme::row_action_button(ui, "Default", theme::BG_ELEVATED, 110.0, true);
-                });
-                ui.horizontal(|ui| {
-                    theme::row_label(ui, "Help-bubble language:", theme::TEXT_DISABLED);
-                    let _ =
-                        theme::row_action_button(ui, "English", theme::BG_ELEVATED, 110.0, true);
+                        theme::row_action_button(ui, "English", theme::btn_neutral(), 110.0, true);
                 });
             });
         });

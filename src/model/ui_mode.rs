@@ -48,6 +48,26 @@ impl UiMode {
     pub const ALL: [UiMode; 3] = [UiMode::Full, UiMode::LiveMusic, UiMode::Theatre];
 }
 
+/// UI colour theme. `Default = Dark` is the serde fallback for preference
+/// files saved before this field existed — they keep the original dark look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ColorTheme {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl ColorTheme {
+    pub fn label(self) -> &'static str {
+        match self {
+            ColorTheme::Dark => "Dark",
+            ColorTheme::Light => "Light",
+        }
+    }
+
+    pub const ALL: [ColorTheme; 2] = [ColorTheme::Dark, ColorTheme::Light];
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -45,7 +45,7 @@ pub(super) fn draw_channel_group_block(
     let group_any = state.is_any_selected(&data.channels, &data.paths, &data.available);
 
     egui::Frame::new()
-        .fill(theme::BG_ELEVATED)
+        .fill(theme::bg_elevated())
         .corner_radius(4.0)
         .inner_margin(egui::Margin::symmetric(8, 4))
         .show(ui, |ui| {
@@ -55,7 +55,7 @@ pub(super) fn draw_channel_group_block(
                 let tri_resp = ui.add(
                     egui::Label::new(
                         egui::RichText::new(triangle)
-                            .color(theme::TEXT_PRIMARY)
+                            .color(theme::label_color())
                             .size(theme::FONT_SIZE_BODY),
                     )
                     .sense(egui::Sense::click()),
@@ -78,7 +78,7 @@ pub(super) fn draw_channel_group_block(
                             data.channels.len()
                         ))
                         .strong()
-                        .color(theme::TEXT_PRIMARY)
+                        .color(theme::label_color())
                         .size(theme::FONT_SIZE_SECTION),
                     )
                     .sense(egui::Sense::click()),
@@ -108,7 +108,7 @@ pub(super) fn draw_channel_group_block(
     // Body: matrix only if expanded.
     if group_expanded {
         egui::Frame::new()
-            .fill(theme::BG_PANEL)
+            .fill(theme::bg_panel())
             .corner_radius(4.0)
             .inner_margin(egui::Margin::symmetric(6, 6))
             .show(ui, |ui| {
@@ -126,7 +126,7 @@ fn draw_group_matrix(ui: &mut egui::Ui, state: &mut ScopeEditorState, data: &Gro
     if data.paths.is_empty() {
         ui.label(
             egui::RichText::new("(no parameters)")
-                .color(theme::TEXT_SECONDARY)
+                .color(theme::label_weak())
                 .small(),
         );
         return;
@@ -333,13 +333,13 @@ fn draw_group_matrix(ui: &mut egui::Ui, state: &mut ScopeEditorState, data: &Gro
                             let galley = ui.painter().layout_no_wrap(
                                 label_text,
                                 egui::FontId::proportional(theme::FONT_SIZE_BADGE),
-                                theme::TEXT_SECONDARY,
+                                theme::label_weak(),
                             );
                             let text_pos = egui::pos2(
                                 rect.left() + 4.0,
                                 rect.center().y - galley.size().y / 2.0,
                             );
-                            ui.painter().galley(text_pos, galley, theme::TEXT_SECONDARY);
+                            ui.painter().galley(text_pos, galley, theme::label_weak());
                             ui.add_space(CELL_SPACING);
 
                             // Per-channel timing inputs — paint value text inside
@@ -522,14 +522,14 @@ fn section_header_row(
     let tri_galley = ui.painter().layout_no_wrap(
         triangle.to_string(),
         egui::FontId::proportional(theme::FONT_SIZE_BODY),
-        theme::TEXT_PRIMARY,
+        theme::label_color(),
     );
     let tri_pos = egui::pos2(
         tri_rect.left() + 2.0,
         tri_rect.center().y - tri_galley.size().y / 2.0,
     );
     ui.painter()
-        .galley(tri_pos, tri_galley, theme::TEXT_PRIMARY);
+        .galley(tri_pos, tri_galley, theme::label_color());
     if tri_resp.clicked() {
         click = SectionHeaderClick::Triangle;
     }
@@ -546,7 +546,7 @@ fn section_header_row(
     } else if any_selected {
         theme::SCOPE_PARTIAL
     } else {
-        theme::BG_ELEVATED
+        theme::bg_elevated()
     };
     let bg = if label_resp.hovered() {
         theme::lighten(bg, 25)
@@ -558,7 +558,7 @@ fn section_header_row(
     let text_color = if all_selected || any_selected {
         theme::TEXT_PRIMARY
     } else {
-        theme::TEXT_SECONDARY
+        theme::label_weak()
     };
     let label_galley = ui.painter().layout_no_wrap(
         label.to_string(),
@@ -594,7 +594,7 @@ fn path_row_label(
     } else if any_selected {
         theme::SCOPE_PARTIAL
     } else {
-        theme::BG_PANEL
+        theme::bg_panel()
     };
     let bg = if response.hovered() {
         theme::lighten(bg, 25)
@@ -606,7 +606,7 @@ fn path_row_label(
     let text_color = if all_selected || any_selected {
         theme::TEXT_PRIMARY
     } else {
-        theme::TEXT_SECONDARY
+        theme::label_weak()
     };
     let galley = ui.painter().layout_no_wrap(
         label.to_string(),

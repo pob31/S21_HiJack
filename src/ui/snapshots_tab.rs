@@ -161,7 +161,7 @@ pub fn draw_snapshots_tab(
                             if count == 1 { "" } else { "s" },
                             if channel_count == 1 { "" } else { "s" },
                         ))
-                        .color(theme::TEXT_SECONDARY),
+                        .color(theme::label_weak()),
                     );
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
@@ -184,7 +184,7 @@ pub fn draw_snapshots_tab(
                         ui.add_space(8.0);
                         let clear_btn = theme::action_button(
                             "Clear",
-                            theme::BG_ELEVATED,
+                            theme::btn_neutral(),
                             egui::Vec2::new(70.0, 30.0),
                         );
                         if ui.add(clear_btn).clicked() {
@@ -261,7 +261,7 @@ pub fn draw_snapshots_tab(
                         // to "Recall without scope" to restore the entire
                         // saved state in one shot).
                         ui.horizontal(|ui| {
-                            theme::row_label(ui, "Apply scope:", theme::TEXT_PRIMARY);
+                            theme::row_label(ui, "Apply scope:", theme::label_color());
                             ui.radio_value(
                                 &mut snap_state.pending_kind,
                                 SnapshotKind::ApplyOnSave,
@@ -278,7 +278,7 @@ pub fn draw_snapshots_tab(
                         // populated scope (the whole state is captured) so
                         // the selection-count gate only applies to ApplyOnSave.
                         ui.horizontal(|ui| {
-                            theme::row_label(ui, "Name:", theme::TEXT_PRIMARY);
+                            theme::row_label(ui, "Name:", theme::label_color());
                             theme::padded_text_edit_sized(
                                 ui,
                                 &mut snap_state.new_snapshot_name,
@@ -469,7 +469,7 @@ pub fn draw_snapshots_tab(
                                     "Pacing: {pace} μs (Setup → Advanced…)"
                                 ))
                                 .small()
-                                .color(theme::TEXT_SECONDARY),
+                                .color(theme::label_weak()),
                             );
                         });
 
@@ -562,7 +562,7 @@ pub fn draw_snapshots_tab(
                             && snap_state.scope_editor.selection_count() == 0
                         {
                             ui.add_space(4.0);
-                            ui.label(egui::RichText::new("Select scope parameters to capture (or switch to 'On recall').").color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("Select scope parameters to capture (or switch to 'On recall').").color(theme::label_weak()));
                         }
 
                         ui.add_space(8.0);
@@ -585,14 +585,14 @@ pub fn draw_snapshots_tab(
 
                                     for snap in snapshots {
                                         let selected = snap_state.selected_snapshot_id == Some(snap.id);
-                                        let bg = if selected { theme::BG_ELEVATED } else { theme::BG_PANEL };
+                                        let bg = if selected { theme::bg_elevated() } else { theme::bg_panel() };
 
                                         let kind_label = match snap.kind {
                                             SnapshotKind::ApplyOnSave => "scope: save",
                                             SnapshotKind::ApplyOnRecall => "scope: recall",
                                         };
                                         let kind_color = match snap.kind {
-                                            SnapshotKind::ApplyOnSave => theme::BG_ELEVATED,
+                                            SnapshotKind::ApplyOnSave => theme::btn_neutral(),
                                             SnapshotKind::ApplyOnRecall => theme::ACCENT_BLUE,
                                         };
                                         let meta = format!(
@@ -627,7 +627,7 @@ pub fn draw_snapshots_tab(
                                                         // so they share one baseline.
                                                         ui.label(
                                                             egui::RichText::new(meta)
-                                                                .color(theme::TEXT_SECONDARY),
+                                                                .color(theme::label_weak()),
                                                         );
                                                         theme::colored_badge(ui, kind_label, kind_color);
                                                         let name_w = ui.available_width();
@@ -639,7 +639,7 @@ pub fn draw_snapshots_tab(
                                                                     egui::Label::new(
                                                                         egui::RichText::new(&snap.name)
                                                                             .strong()
-                                                                            .color(theme::TEXT_PRIMARY),
+                                                                            .color(theme::label_color()),
                                                                     )
                                                                     .truncate(),
                                                                 );
@@ -663,7 +663,7 @@ pub fn draw_snapshots_tab(
                                     }
 
                                     if mgr.snapshots.is_empty() {
-                                        ui.label(egui::RichText::new("No snapshots yet.").color(theme::TEXT_SECONDARY));
+                                        ui.label(egui::RichText::new("No snapshots yet.").color(theme::label_weak()));
                                     }
                                 }
                             });
@@ -710,7 +710,7 @@ pub fn draw_snapshots_tab(
                             egui::RichText::new("Add Cue")
                                 .size(theme::FONT_SIZE_SECTION)
                                 .strong()
-                                .color(theme::TEXT_PRIMARY),
+                                .color(theme::label_color()),
                         );
                         if can_add {
                             ui.with_layout(
@@ -731,20 +731,20 @@ pub fn draw_snapshots_tab(
                     let add_underline_w = ui.available_width();
                     let (add_rect, _) = ui
                         .allocate_exact_size(egui::vec2(add_underline_w, 1.0), egui::Sense::hover());
-                    ui.painter().rect_filled(add_rect, 0.0, theme::BORDER_SUBTLE);
+                    ui.painter().rect_filled(add_rect, 0.0, theme::border_subtle());
                     ui.add_space(6.0);
 
                     // Add Cue form
                     ui.horizontal(|ui| {
-                        theme::row_label(ui, "Cue #:", theme::TEXT_PRIMARY);
+                        theme::row_label(ui, "Cue #:", theme::label_color());
                         theme::padded_text_edit_sized(ui, &mut snap_state.new_cue_number, 60.0, theme::ROW_H, true, "");
-                        theme::row_label(ui, "Name:", theme::TEXT_PRIMARY);
+                        theme::row_label(ui, "Name:", theme::label_color());
                         theme::padded_text_edit_sized(ui, &mut snap_state.new_cue_name, 130.0, theme::ROW_H, true, "");
-                        theme::row_label(ui, "CS:", theme::TEXT_PRIMARY);
+                        theme::row_label(ui, "CS:", theme::label_color());
                         theme::padded_text_edit_sized(ui, &mut snap_state.new_cue_console_row, 50.0, theme::ROW_H, true, "");
                     });
                     ui.horizontal(|ui| {
-                        theme::row_label(ui, "Local snapshot:", theme::TEXT_PRIMARY);
+                        theme::row_label(ui, "Local snapshot:", theme::label_color());
                         if let Ok(mgr) = cue_manager.try_read() {
                             let snaps = sorted_snapshot_list(&mgr);
                             theme::row_combo(ui, 0, |ui| {
@@ -792,7 +792,7 @@ pub fn draw_snapshots_tab(
                                 ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
                                 ui.add(theme::action_button(
                                     "Shift console snapshots…",
-                                    theme::BG_ELEVATED,
+                                    theme::btn_neutral(),
                                     egui::Vec2::new(190.0, theme::ROW_H),
                                 ))
                             })
@@ -874,7 +874,7 @@ pub fn draw_snapshots_tab(
                                 egui::RichText::new("Cue Editor")
                                     .size(theme::FONT_SIZE_SECTION)
                                     .strong()
-                                    .color(theme::TEXT_PRIMARY),
+                                    .color(theme::label_color()),
                             );
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -907,7 +907,7 @@ pub fn draw_snapshots_tab(
                         let underline_w = ui.available_width();
                         let (rect, _) = ui
                             .allocate_exact_size(egui::vec2(underline_w, 1.0), egui::Sense::hover());
-                        ui.painter().rect_filled(rect, 0.0, theme::BORDER_SUBTLE);
+                        ui.painter().rect_filled(rect, 0.0, theme::border_subtle());
                         ui.add_space(6.0);
 
                         ui.add_enabled_ui(has_selection, |ui| {
@@ -918,7 +918,7 @@ pub fn draw_snapshots_tab(
                                 .num_columns(2)
                                 .spacing([12.0, 10.0])
                                 .show(ui, |ui| {
-                                    theme::row_label(ui, "Cue #:", theme::TEXT_PRIMARY);
+                                    theme::row_label(ui, "Cue #:", theme::label_color());
                                     theme::padded_text_edit_sized(
                                         ui,
                                         &mut snap_state.editing_cue_number,
@@ -929,7 +929,7 @@ pub fn draw_snapshots_tab(
                                     );
                                     ui.end_row();
 
-                                    theme::row_label(ui, "Local snapshot:", theme::TEXT_PRIMARY);
+                                    theme::row_label(ui, "Local snapshot:", theme::label_color());
                                     let snaps = sorted_snapshot_list(&mgr);
                                     theme::row_combo(ui, 0, |ui| {
                                         filtered_snapshot_combo(
@@ -943,7 +943,7 @@ pub fn draw_snapshots_tab(
                                     });
                                     ui.end_row();
 
-                                    theme::row_label(ui, "Console snapshot:", theme::TEXT_PRIMARY);
+                                    theme::row_label(ui, "Console snapshot:", theme::label_color());
                                     theme::padded_text_edit_sized(
                                         ui,
                                         &mut snap_state.editing_console_snapshot,
@@ -1088,7 +1088,7 @@ pub fn draw_snapshots_tab(
                             text_cell(
                                 ui,
                                 w,
-                                egui::RichText::new(title).small().color(theme::TEXT_SECONDARY),
+                                egui::RichText::new(title).small().color(theme::label_weak()),
                             );
                         }
                     });
@@ -1112,14 +1112,14 @@ pub fn draw_snapshots_tab(
                                         .map(|s| s.name.as_str())
                                         .unwrap_or("(no overlay)");
                                     let bg = if is_current {
-                                        theme::CUE_CURRENT_BG
+                                        theme::cue_current_bg()
                                     } else if selected {
-                                        theme::BG_ELEVATED
+                                        theme::bg_elevated()
                                     } else {
-                                        theme::BG_PANEL
+                                        theme::bg_panel()
                                     };
                                     let border = if is_current {
-                                        egui::Stroke::new(1.0, theme::CUE_CURRENT_BORDER)
+                                        egui::Stroke::new(1.0, theme::cue_current_border())
                                     } else if selected {
                                         egui::Stroke::new(1.0, theme::ACCENT_BLUE)
                                     } else {
@@ -1140,7 +1140,7 @@ pub fn draw_snapshots_tab(
                                                 theme::colored_badge_sized(
                                                     ui,
                                                     &format!("{:.1}", cue.cue_number),
-                                                    if is_current { theme::ACCENT_RED } else { theme::BG_ELEVATED },
+                                                    if is_current { theme::ACCENT_RED } else { theme::btn_neutral() },
                                                     COL_NUM_W,
                                                 );
                                                 // Name.
@@ -1149,7 +1149,7 @@ pub fn draw_snapshots_tab(
                                                     COL_NAME_W,
                                                     egui::RichText::new(&cue.name)
                                                         .strong()
-                                                        .color(theme::TEXT_PRIMARY),
+                                                        .color(theme::label_color()),
                                                 );
                                                 // Console-snapshot row.
                                                 ui.allocate_ui_with_layout(
@@ -1170,7 +1170,7 @@ pub fn draw_snapshots_tab(
                                                     ui,
                                                     COL_SNAP_W,
                                                     egui::RichText::new(snap_name)
-                                                        .color(theme::TEXT_SECONDARY),
+                                                        .color(theme::label_weak()),
                                                 );
                                                 // Scope-override flag (trailing).
                                                 if cue.scope_override.is_some() {
@@ -1191,7 +1191,7 @@ pub fn draw_snapshots_tab(
                                     ui.add_space(2.0);
                                 }
                                 if mgr.cue_list.cues.is_empty() {
-                                    ui.label(egui::RichText::new("No cues yet. Add one below.").color(theme::TEXT_SECONDARY));
+                                    ui.label(egui::RichText::new("No cues yet. Add one below.").color(theme::label_weak()));
                                 }
                             }
                         });
@@ -1214,7 +1214,7 @@ pub fn draw_snapshots_tab(
                          Use this after inserting or deleting a snapshot on the console \
                          so all linked rows still point to the right place.",
                     )
-                    .color(theme::TEXT_SECONDARY)
+                    .color(theme::label_weak())
                     .small(),
                 );
                 ui.add_space(8.0);
@@ -1383,7 +1383,7 @@ fn filtered_snapshot_combo(
                 }
             }
             if matches.is_empty() && !needle.is_empty() {
-                ui.label(egui::RichText::new("No match").color(theme::TEXT_SECONDARY));
+                ui.label(egui::RichText::new("No match").color(theme::label_weak()));
             }
         });
 

@@ -480,7 +480,7 @@ pub fn draw_macros_tab(
                     // Status messages
                     if let Some(info) = &macros_state.last_execution_info {
                         ui.add_space(4.0);
-                        ui.label(egui::RichText::new(info).color(theme::TEXT_SECONDARY));
+                        ui.label(egui::RichText::new(info).color(theme::label_weak()));
                     }
                     if let Some(msg) = &macros_state.status_message {
                         ui.add_space(2.0);
@@ -507,13 +507,13 @@ pub fn draw_macros_tab(
                             egui::RichText::new("Stream Deck setup")
                                 .size(theme::FONT_SIZE_SECTION)
                                 .strong()
-                                .color(theme::TEXT_PRIMARY),
+                                .color(theme::label_color()),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .add(theme::action_button(
                                     "Close",
-                                    theme::BG_ELEVATED,
+                                    theme::btn_neutral(),
                                     egui::Vec2::new(60.0, 24.0),
                                 ))
                                 .on_hover_text(
@@ -532,7 +532,7 @@ pub fn draw_macros_tab(
                     let (sep_rect, _) =
                         ui.allocate_exact_size(egui::Vec2::new(sep_w, 1.0), egui::Sense::hover());
                     ui.painter()
-                        .rect_filled(sep_rect, 0.0, theme::BORDER_SUBTLE);
+                        .rect_filled(sep_rect, 0.0, theme::border_subtle());
                     ui.add_space(6.0);
                     draw_streamdeck_panel(
                         ui,
@@ -706,7 +706,7 @@ fn draw_macro_list(
     }
 
     if macros_state.cached_list.is_empty() {
-        ui.label(egui::RichText::new("No macros defined").color(theme::TEXT_SECONDARY));
+        ui.label(egui::RichText::new("No macros defined").color(theme::label_weak()));
         return;
     }
 
@@ -732,14 +732,14 @@ fn draw_macro_list(
                 // otherwise. Selection also gets a blue left border
                 // to make the active row unmistakable.
                 let bg = if selected {
-                    theme::BG_ELEVATED
+                    theme::bg_elevated()
                 } else if response.hovered() {
                     // Halfway between panel and elevated so the row
                     // visibly responds to the pointer without
                     // looking selected.
-                    theme::BG_ELEVATED
+                    theme::bg_elevated()
                 } else {
-                    theme::BG_PANEL
+                    theme::bg_panel()
                 };
                 let painter = ui.painter_at(rect);
                 painter.rect_filled(rect, 4.0, bg);
@@ -764,7 +764,7 @@ fn draw_macro_list(
                     egui::Align2::LEFT_CENTER,
                     name,
                     egui::FontId::proportional(14.0),
-                    theme::TEXT_PRIMARY,
+                    theme::label_color(),
                 );
                 let count_label = format!("{} steps", step_count);
                 painter.text(
@@ -772,7 +772,7 @@ fn draw_macro_list(
                     egui::Align2::RIGHT_CENTER,
                     count_label,
                     egui::FontId::proportional(12.0),
-                    theme::TEXT_SECONDARY,
+                    theme::label_weak(),
                 );
 
                 if response.clicked() {
@@ -858,7 +858,7 @@ fn draw_step_editor(
     let Some(selected_id) = macros_state.selected_macro_id else {
         theme::section_heading(ui, "Step Editor");
         ui.label(
-            egui::RichText::new("Select a macro to edit its steps").color(theme::TEXT_SECONDARY),
+            egui::RichText::new("Select a macro to edit its steps").color(theme::label_weak()),
         );
         return;
     };
@@ -902,7 +902,7 @@ fn draw_step_editor(
         .is_some_and(|c| c.macro_id == selected_id);
 
     let Some(cached) = macros_state.cached_steps.clone().filter(|_| cache_matches) else {
-        ui.label(egui::RichText::new("Loading macro…").color(theme::TEXT_SECONDARY));
+        ui.label(egui::RichText::new("Loading macro…").color(theme::label_weak()));
         return;
     };
     let macro_name = cached.name;
@@ -967,7 +967,7 @@ fn draw_step_editor(
             ui.label(
                 egui::RichText::new("Macro:")
                     .strong()
-                    .color(theme::TEXT_PRIMARY)
+                    .color(theme::label_color())
                     .size(theme::FONT_SIZE_SECTION),
             );
             let resp = ui.add(
@@ -1010,7 +1010,7 @@ fn draw_step_editor(
         ui.add_space(2.0);
         let strip_w = ui.available_width();
         let (rect, _) = ui.allocate_exact_size(egui::vec2(strip_w, 1.0), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 0.0, theme::BORDER_SUBTLE);
+        ui.painter().rect_filled(rect, 0.0, theme::border_subtle());
         ui.add_space(6.0);
 
         // Drop selections that point past the current step
@@ -1097,7 +1097,7 @@ fn draw_step_editor(
         if steps.is_empty() {
             ui.label(
                 egui::RichText::new("No steps — add one below or use Learn mode")
-                    .color(theme::TEXT_SECONDARY),
+                    .color(theme::label_weak()),
             );
             macros_state.step_keep_hover_idx = None;
         } else {
@@ -1196,7 +1196,7 @@ fn draw_step_editor(
                                     let badge_resp = step_number_badge(
                                         ui,
                                         &format!("#{}", i + 1),
-                                        theme::BG_ELEVATED,
+                                        theme::btn_neutral(),
                                         is_selected,
                                         badge_w,
                                     )
@@ -1232,7 +1232,7 @@ fn draw_step_editor(
                                                                     "{}",
                                                                     address
                                                                 ))
-                                                                .color(theme::TEXT_PRIMARY),
+                                                                .color(theme::label_color()),
                                                             )
                                                             .truncate()
                                                             .sense(egui::Sense::click()),
@@ -1251,7 +1251,7 @@ fn draw_step_editor(
                                             let kind_resp = ui.add(
                                                 egui::Label::new(
                                                     egui::RichText::new(describe_step_kind(kind))
-                                                        .color(theme::TEXT_PRIMARY)
+                                                        .color(theme::label_color())
                                                         .strong(),
                                                 )
                                                 .sense(egui::Sense::click()),
@@ -1592,7 +1592,7 @@ fn draw_add_step(
             ui.label(
                 egui::RichText::new("Add Step")
                     .strong()
-                    .color(theme::TEXT_PRIMARY),
+                    .color(theme::label_color()),
             );
             ui.add_space(8.0);
             ui.label("Kind:");
@@ -2540,7 +2540,7 @@ fn draw_streamdeck_launcher(
             egui::RichText::new("Stream Deck")
                 .size(theme::FONT_SIZE_SECTION)
                 .strong()
-                .color(theme::TEXT_PRIMARY),
+                .color(theme::label_color()),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             theme::status_dot(ui, dot_color);
@@ -2550,7 +2550,7 @@ fn draw_streamdeck_launcher(
     let sep_w = ui.available_width();
     let (sep_rect, _) = ui.allocate_exact_size(egui::Vec2::new(sep_w, 1.0), egui::Sense::hover());
     ui.painter()
-        .rect_filled(sep_rect, 0.0, theme::BORDER_SUBTLE);
+        .rect_filled(sep_rect, 0.0, theme::border_subtle());
     ui.add_space(6.0);
 
     // ── State toggle + Setup… on a single row ──
@@ -2564,9 +2564,16 @@ fn draw_streamdeck_launcher(
     } else {
         theme::ACCENT_RED
     };
-    const BTN_W: f32 = 64.0;
+    // Wide enough that the longer label ("Setup…") fits inside the forced
+    // width in the light theme's heavier font, so both buttons render at the
+    // same size instead of one growing past it.
+    const BTN_W: f32 = 80.0;
     const BTN_H: f32 = 32.0;
     ui.horizontal(|ui| {
+        // Small vertical padding so the forced BTN_H wins for the heavier
+        // font too (text + 2·padding stays under BTN_H); both buttons then
+        // render at exactly BTN_W × BTN_H and line up.
+        ui.spacing_mut().button_padding = egui::Vec2::new(8.0, 2.0);
         let toggle_resp = ui
             .add_sized(
                 [BTN_W, BTN_H],
@@ -2600,7 +2607,7 @@ fn draw_streamdeck_launcher(
         if ui
             .add_sized(
                 [BTN_W, BTN_H],
-                theme::action_button("Setup…", theme::BG_ELEVATED, egui::Vec2::new(BTN_W, BTN_H)),
+                theme::action_button("Setup…", theme::btn_neutral(), egui::Vec2::new(BTN_W, BTN_H)),
             )
             .on_hover_text(
                 "Open the Stream Deck panel — device selection, \
@@ -2699,7 +2706,7 @@ fn draw_streamdeck_panel(
     };
 
     ui.horizontal(|ui| {
-        theme::row_label(ui, "Device:", theme::TEXT_PRIMARY);
+        theme::row_label(ui, "Device:", theme::label_color());
         theme::row_combo(ui, 0, |ui| {
             egui::ComboBox::from_id_salt("streamdeck_device")
                 .width(260.0)
@@ -2708,13 +2715,13 @@ fn draw_streamdeck_panel(
                     ui.label(
                         egui::RichText::new("Connected / Available")
                             .small()
-                            .color(theme::TEXT_SECONDARY),
+                            .color(theme::label_weak()),
                     );
                     if available.is_empty() {
                         ui.label(
                             egui::RichText::new("(none — plug one in)")
                                 .small()
-                                .color(theme::TEXT_SECONDARY),
+                                .color(theme::label_weak()),
                         );
                     }
                     for dev in &available {
@@ -2753,7 +2760,7 @@ fn draw_streamdeck_panel(
                     ui.label(
                         egui::RichText::new("Templates (offline editing)")
                             .small()
-                            .color(theme::TEXT_SECONDARY),
+                            .color(theme::label_weak()),
                     );
                     for k in template_kinds {
                         let is_selected = connected.is_none()
@@ -2788,7 +2795,7 @@ fn draw_streamdeck_panel(
         if connected.is_some() {
             theme::COLOR_CONNECTED
         } else {
-            theme::TEXT_SECONDARY
+            theme::label_weak()
         },
         status,
     );
@@ -2862,18 +2869,18 @@ fn draw_streamdeck_panel(
                             } else if is_selected {
                                 theme::ACCENT_BLUE
                             } else {
-                                theme::BG_INPUT
+                                theme::btn_neutral()
                             };
                             let stroke_color = if is_selected {
                                 theme::ACCENT_BLUE
                             } else {
-                                theme::BORDER_SUBTLE
+                                theme::border_subtle()
                             };
                             let text_color = if has_step {
                                 let t = step_color.contrast_text();
                                 egui::Color32::from_rgb(t.r, t.g, t.b)
                             } else {
-                                theme::TEXT_PRIMARY
+                                theme::on_fill_text(fill)
                             };
                             let btn = egui::Button::new(
                                 egui::RichText::new(label).color(text_color).small(),
@@ -2915,7 +2922,7 @@ fn draw_streamdeck_panel(
                     ui.label(
                         egui::RichText::new(format!("Add step to button #{}", button_idx + 1))
                             .strong()
-                            .color(theme::TEXT_PRIMARY),
+                            .color(theme::label_color()),
                     );
                     let selected_label = macros_state
                         .streamdeck_add_step_target
@@ -2940,7 +2947,7 @@ fn draw_streamdeck_panel(
                                 }
                                 if sorted_macros.is_empty() {
                                     ui.colored_label(
-                                        theme::TEXT_SECONDARY,
+                                        theme::label_weak(),
                                         "(no macros — create one in the left panel)",
                                     );
                                 }
@@ -3037,7 +3044,7 @@ fn draw_streamdeck_panel(
                      Currently next-to-fire: {next_name}"
                 ))
                 .small()
-                .color(theme::TEXT_SECONDARY),
+                .color(theme::label_weak()),
             );
         });
         ui.add_space(6.0);
@@ -3101,7 +3108,7 @@ fn draw_streamdeck_step_list(
     if button.steps.is_empty() {
         ui.label(
             egui::RichText::new("No steps yet — pick a macro and click Add step on the right.")
-                .color(theme::TEXT_SECONDARY),
+                .color(theme::label_weak()),
         );
         return;
     }
@@ -3132,7 +3139,7 @@ fn draw_streamdeck_step_list(
                             if is_current {
                                 theme::ACCENT_BLUE
                             } else {
-                                theme::BG_ELEVATED
+                                theme::btn_neutral()
                             },
                         );
                         // LCD background color for this step.
@@ -3150,7 +3157,7 @@ fn draw_streamdeck_step_list(
                             .get(&step.macro_id)
                             .cloned()
                             .unwrap_or_else(|| "(deleted)".into());
-                        ui.label(egui::RichText::new(name).color(theme::TEXT_PRIMARY));
+                        ui.label(egui::RichText::new(name).color(theme::label_color()));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .small_button(egui::RichText::new("Del").color(theme::ACCENT_RED))
@@ -3316,7 +3323,7 @@ fn step_number_badge(
     let text_galley = ui.painter().layout_no_wrap(
         text.to_string(),
         egui::FontId::proportional(theme::FONT_SIZE_BADGE),
-        theme::TEXT_PRIMARY,
+        theme::on_fill_text(bg_color),
     );
     let height = text_galley.size().y + padding_y * 2.0;
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::new(width, height), egui::Sense::click());
@@ -3331,7 +3338,7 @@ fn step_number_badge(
     }
     let text_pos = rect.center() - text_galley.size() / 2.0;
     ui.painter()
-        .galley(text_pos, text_galley, theme::TEXT_PRIMARY);
+        .galley(text_pos, text_galley, theme::on_fill_text(bg_color));
     resp
 }
 
@@ -3354,9 +3361,9 @@ fn draw_drag_handle(ui: &mut egui::Ui, payload: usize) -> egui::Response {
     let resp = resp.on_hover_cursor(egui::CursorIcon::Grab);
     let painter = ui.painter();
     let dot_color = if resp.hovered() || resp.dragged() {
-        theme::TEXT_PRIMARY
+        theme::label_color()
     } else {
-        theme::TEXT_SECONDARY
+        theme::label_weak()
     };
     let center = rect.center();
     for &dx in &[-3.0_f32, 3.0] {
@@ -3554,7 +3561,7 @@ fn hue_lightness_pad(ui: &mut egui::Ui, current: &mut crate::model::streamdeck::
     ui.painter().rect_stroke(
         rect,
         3.0,
-        egui::Stroke::new(1.0, theme::BORDER_SUBTLE),
+        egui::Stroke::new(1.0, theme::border_subtle()),
         egui::StrokeKind::Inside,
     );
 
@@ -3664,7 +3671,7 @@ pub fn color_swatch_picker(
 
             ui.label(
                 egui::RichText::new("Standard")
-                    .color(theme::TEXT_SECONDARY)
+                    .color(theme::label_weak())
                     .small(),
             );
             ui.horizontal_wrapped(|ui| {
@@ -3682,7 +3689,7 @@ pub fn color_swatch_picker(
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new("Yours (right-click to remove)")
-                    .color(theme::TEXT_SECONDARY)
+                    .color(theme::label_weak())
                     .small(),
             );
             let mut remove_idx: Option<usize> = None;
@@ -3691,7 +3698,7 @@ pub fn color_swatch_picker(
                     ui.label(
                         egui::RichText::new("(none yet — pick a color below and Save)")
                             .small()
-                            .color(theme::TEXT_SECONDARY),
+                            .color(theme::label_weak()),
                     );
                 }
                 for (i, color) in user_swatches.iter().enumerate() {
@@ -3714,7 +3721,7 @@ pub fn color_swatch_picker(
             ui.separator();
             ui.label(
                 egui::RichText::new("Custom — drag to pick")
-                    .color(theme::TEXT_SECONDARY)
+                    .color(theme::label_weak())
                     .small(),
             );
             ui.label(
@@ -3722,7 +3729,7 @@ pub fn color_swatch_picker(
                     "Left/right = hue, top = lighter (white), bottom = darker (black).",
                 )
                 .small()
-                .color(theme::TEXT_SECONDARY),
+                .color(theme::label_weak()),
             );
             if hue_lightness_pad(ui, current) {
                 changed = true;

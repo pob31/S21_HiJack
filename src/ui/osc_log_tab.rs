@@ -76,7 +76,7 @@ pub fn draw_osc_log_tab(ui: &mut egui::Ui, tab: &mut OscLogTabState, log: &OscLo
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     egui::RichText::new(format!("{} entries", log.len()))
-                        .color(theme::TEXT_SECONDARY)
+                        .color(theme::label_weak())
                         .small(),
                 );
             });
@@ -146,7 +146,7 @@ pub fn draw_osc_log_tab(ui: &mut egui::Ui, tab: &mut OscLogTabState, log: &OscLo
                         row.col(|ui| {
                             ui.label(
                                 egui::RichText::new(entry.timestamp.format("%H:%M:%S").to_string())
-                                    .color(theme::TEXT_SECONDARY)
+                                    .color(theme::label_weak())
                                     .small(),
                             );
                         });
@@ -161,7 +161,7 @@ pub fn draw_osc_log_tab(ui: &mut egui::Ui, tab: &mut OscLogTabState, log: &OscLo
                             ui.label(&entry.path);
                         });
                         row.col(|ui| {
-                            ui.label(egui::RichText::new(&entry.args).color(theme::TEXT_SECONDARY));
+                            ui.label(egui::RichText::new(&entry.args).color(theme::label_weak()));
                         });
                     });
                 });
