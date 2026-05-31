@@ -49,30 +49,81 @@ use super::{PendingEngines, Tab, UiEvent};
 /// larger by default.
 const REF_PPI: f32 = 96.0;
 
-// Clamp on the *zoom factor* (effective ppp = zoom × native_ppp).
-const MIN_ZOOM: f32 = 0.70; // readability floor (body 16pt → ~11px at native 1.0)
-const MAX_ZOOM: f32 = 3.00; // sanity ceiling (also bounds the manual ui_scale)
+/// A modest global enlargement applied on top of the computed base size, so the
+/// control-dense UI gets a little more breathing room than the OS/PPI baseline
+/// alone — viewed at arm's length on a console, the bare OS scale reads slightly
+/// small. This is what the manual Display-Scale slider's 100% maps to (i.e. the
+/// "reference" size), and the slider multiplies further on top. Tuned on a
+/// 15.6" 4K @ 200% panel where the bare OS scale (2.0) was a touch cramped and
+/// ~1.15× (≈2.3) made the best use of the screen.
+const COMFORT_FACTOR: f32 = 1.15;
 
-const SCALE_STEP: f32 = 0.02; // snap zoom to 2% steps (kills drag-resize jitter)
+/// Below this native scale factor the OS is considered to be doing little or no
+/// scaling (Linux / Raspberry Pi report exactly 1.0; small fractional values are
+/// noise). At or above it, the OS scale factor is a deliberate user choice and is
+/// treated as authoritative — real-PPI physical sizing must NOT override it
+/// (Windows 125% / 150% / 200%, macOS Retina). PPI sizing only steps in *below*
+/// this threshold, to rescue a high-PPI panel the OS left unscaled. The cutoff
+/// sits between 1.0 (unscaled) and Windows' first real step of 1.25; the
+/// discontinuity there is intentional and benign given those discrete steps.
+const NATIVE_SCALING_THRESHOLD: f32 = 1.10;
+
+// Clamp on the *effective pixels-per-point* (what egui renders at), not on a
+// zoom factor. This is the absolute target we hand to `set_pixels_per_point`,
+// so the bounds are independent of the display's native scale factor.
+const MIN_PPP: f32 = 0.80; // readability floor (body 16pt → ~13px)
+const MAX_PPP: f32 = 5.00; // sanity ceiling (15" 4K ≈2.9, Pi @250% slider ≈4.4)
+
+const SCALE_STEP: f32 = 0.02; // snap ppp to 2% steps (kills drag-resize jitter)
 const SCALE_EPS: f32 = 0.005; // dead-band; must be < SCALE_STEP
 const MIN_PHYS_PX: f32 = 200.0; // reject 0-area minimize frames
 const MAX_PHYS_PX: f32 = 20_000.0; // reject egui's 10000×10000 first-frame placeholder
 
-/// Pure core of the UI auto-scaler (unit-tested). Produces the egui *zoom
-/// factor* for a consistent physical size: `dpi_target = (PPI / REF_PPI) /
-/// native_ppp`, or `1.0` (respect the OS scale factor) when the real PPI is
-/// unknown, times the user's manual `ui_scale`, clamped for sanity.
+/// Consecutive converged frames `size_window_to_monitor` waits for before the
+/// one-shot resize. egui's `monitor_size` lags our zoom change by one pass, so
+/// the first settled frame still reports the pre-zoom (stale) monitor size; a
+/// small hold lets it catch up so the 95% sizing is computed against a
+/// `monitor_size` consistent with the settled ppp.
+const SETTLE_HOLD_FRAMES: u8 = 3;
+
+/// Pure core of the UI auto-scaler (unit-tested). Produces the *absolute
+/// effective pixels-per-point* egui should render at.
+///
+/// Policy: the OS scale factor (`native_ppp`) is AUTHORITATIVE whenever the OS
+/// is actually scaling (`native_ppp > NATIVE_SCALING_THRESHOLD`) — it already
+/// encodes the physical size the user chose in their Windows/macOS display
+/// settings, so we respect it and never let raw-EDID PPI scale the UI up past
+/// it. Only when the OS is doing little/no scaling (`native_ppp ≈ 1.0`, e.g. a
+/// Raspberry Pi touchscreen or a high-PPI 4K panel misconfigured at 100%) do we
+/// fall back to real-PPI physical sizing (`PPI / REF_PPI`) so the UI isn't
+/// microscopic — floored at `native_ppp` so a low-PPI panel is never shrunk
+/// below 1×.
+///
+/// The base is then enlarged by [`COMFORT_FACTOR`] (the "reference" size the
+/// slider's 100% maps to) and the user's manual `ui_scale` multiplies on top;
+/// clamped for sanity. We target an absolute ppp (applied via
+/// `Context::set_pixels_per_point`) rather than an egui *zoom factor*, so egui
+/// performs the native division with its own current `native_pixels_per_point`
+/// — removing the cross-frame inconsistency that previously doubled the scale
+/// during the hidden-window startup transient.
 ///
 /// Deliberately independent of the window size: the UI keeps a stable physical
 /// size and the tabs *reflow* against the actual window (collapse slack, then
 /// scroll) rather than uniformly shrinking to fit.
-fn compute_zoom(native_ppp: f32, ppi: Option<f32>, ui_scale: f32) -> f32 {
+fn compute_target_ppp(native_ppp: f32, ppi: Option<f32>, ui_scale: f32) -> f32 {
     let native_ppp = if native_ppp > 0.0 { native_ppp } else { 1.0 };
-    let dpi_target = match ppi {
-        Some(p) if p > 0.0 => (p / REF_PPI) / native_ppp,
-        _ => 1.0,
+    let base = if native_ppp > NATIVE_SCALING_THRESHOLD {
+        // OS is deliberately scaling — that is the authority. Respect it.
+        native_ppp
+    } else {
+        // OS is not scaling. Use real PPI to reach a sane physical size on a
+        // high-PPI panel, but never shrink below what the OS reported.
+        match ppi {
+            Some(p) if p > 0.0 => (p / REF_PPI).max(native_ppp),
+            _ => native_ppp, // PPI unknown → respect the OS scale factor
+        }
     };
-    (dpi_target * ui_scale).clamp(MIN_ZOOM, MAX_ZOOM)
+    (base * COMFORT_FACTOR * ui_scale).clamp(MIN_PPP, MAX_PPP)
 }
 
 /// State for the post-capture confirmation popup — a centered, temporary
@@ -223,6 +274,16 @@ pub struct HiJackApp {
     /// fallback size — guards the rare case where `monitor_size` is `None` on
     /// the first frames.
     startup_frames: u8,
+    /// True on a frame where `apply_auto_scale` saw the effective ppp within the
+    /// dead-band of the target — i.e. the scale has converged this frame.
+    scale_settled: bool,
+    /// Count of *consecutive* converged frames. egui's reported `monitor_size`
+    /// lags our zoom changes by a frame (it is computed from the previous pass's
+    /// effective ppp), so `scale_settled` alone is not enough — on the first
+    /// settled frame `monitor_size` is still stale. `size_window_to_monitor`
+    /// waits for this to reach [`SETTLE_HOLD_FRAMES`] so `monitor_size` has
+    /// caught up to the settled ppp before the one-shot resize.
+    settled_frames: u8,
 }
 
 impl HiJackApp {
@@ -321,24 +382,26 @@ impl HiJackApp {
             last_monitor_px: None,
             window_sized: false,
             startup_frames: 0,
+            scale_settled: false,
+            settled_frames: 0,
         }
     }
 
-    /// Apply global fit-to-window + physical-size UI scaling. Called at the top
-    /// of `update`, before any panel is built. The new zoom takes effect on the
-    /// next pass; egui keeps physical px constant across the change, so this is
-    /// a stable fixed point (no oscillation).
+    /// Apply global physical-size UI scaling. Called at the top of `update`,
+    /// before any panel is built. The new ppp takes effect on the next pass;
+    /// egui keeps physical px constant across the change, so this is a stable
+    /// fixed point (no oscillation).
     fn apply_auto_scale(&mut self, ctx: &egui::Context) {
         let logical = ctx.content_rect();
-        let ppp = ctx.pixels_per_point(); // effective ppp = zoom × native — what egui renders at
-        // Derive the OS scale factor from what egui actually renders at, rather
-        // than `native_pixels_per_point()`. The latter can read as 1.0 / None on
-        // some setups (notably a 4K monitor at 200%), which would leave the OS
-        // scale uncorrected in `dpi_target` and render the UI ~2× too big
-        // (spilling off-screen). `pixels_per_point / zoom_factor` is always the
-        // real native scale, because egui renders at exactly that product.
-        let native_ppp = ppp / ctx.zoom_factor().max(0.01);
-        // Real window size in physical px — invariant under our own zoom changes.
+        // Effective ppp egui currently renders at = zoom_factor × native_ppp.
+        let ppp = ctx.pixels_per_point();
+        // OS scale factor. egui-winit always reports this as the window's
+        // scale_factor (2.0 on a 4K@200% panel), seeded before the first frame,
+        // so it is reliable here. Used only as the fallback when the real PPI is
+        // unknown — we target an absolute ppp and let `set_pixels_per_point` do
+        // the native division itself, so there is no cross-frame native mismatch.
+        let native_ppp = ctx.native_pixels_per_point().unwrap_or(1.0);
+        // Real window size in physical px — invariant under our own scale changes.
         let phys_w = logical.width() * ppp;
         let phys_h = logical.height() * ppp;
         if !(phys_w.is_finite() && phys_h.is_finite())
@@ -352,16 +415,34 @@ impl HiJackApp {
 
         // Physical resolution of the monitor the window is on. egui-winit divides
         // monitor_size by the *effective* ppp, so multiplying back by `ppp`
-        // recovers physical px (stable across our own zoom changes).
+        // recovers physical px. This cancels exactly in steady state; during the
+        // startup zoom transient `monitor_size` lags our zoom by one pass, so the
+        // product is briefly off (self-corrects within a couple frames, which is
+        // why window sizing waits for `SETTLE_HOLD_FRAMES`).
         let monitor_px = ctx
             .input(|i| i.viewport().monitor_size)
             .map(|m| ((m.x * ppp).round() as u32, (m.y * ppp).round() as u32));
         let ppi = self.current_ppi(monitor_px);
 
-        let mut target = compute_zoom(native_ppp, ppi, self.setup.ui_scale);
+        let mut target = compute_target_ppp(native_ppp, ppi, self.setup.ui_scale);
         target = (target / SCALE_STEP).round() * SCALE_STEP; // snap to step
-        if (target - ctx.zoom_factor()).abs() > SCALE_EPS {
-            ctx.set_zoom_factor(target);
+
+        // Converged once the rendered ppp matches the target within the dead-band.
+        // Track *consecutive* converged frames so `size_window_to_monitor` can
+        // wait for egui's `monitor_size` (which lags our zoom by a pass) to catch
+        // up to the settled ppp before the one-shot resize.
+        self.scale_settled = (target - ppp).abs() <= SCALE_EPS;
+        self.settled_frames = if self.scale_settled {
+            self.settled_frames.saturating_add(1)
+        } else {
+            0
+        };
+        if !self.scale_settled {
+            // Target an absolute ppp; egui converts to a zoom factor using its own
+            // native value (no cross-frame native mismatch / doubling). Not
+            // persisted — eframe's `persistence` feature is off in this build, so
+            // each launch starts at zoom 1.0 and re-derives from ui_scale + PPI.
+            ctx.set_pixels_per_point(target);
         }
     }
 
@@ -375,6 +456,20 @@ impl HiJackApp {
             return;
         }
         self.startup_frames = self.startup_frames.saturating_add(1);
+
+        // Don't size the window until the scale has converged AND held for a few
+        // frames: monitor_size is reported in logical points (physical ÷ effective
+        // ppp), and InnerSize is re-multiplied by the effective ppp when applied.
+        // egui's monitor_size lags our zoom by one pass, so on the *first* settled
+        // frame it is still the pre-zoom value while ppp has already moved — sizing
+        // then yields a window at the wrong fraction of the screen (e.g. ~71%
+        // instead of 95%, off-center). Waiting `SETTLE_HOLD_FRAMES` lets
+        // monitor_size catch up to the settled ppp so the round-trip cancels. The
+        // 10-frame escape hatch still guarantees we never stay hidden forever.
+        if self.settled_frames < SETTLE_HOLD_FRAMES && self.startup_frames < 10 {
+            return;
+        }
+
         match ctx.input(|i| i.viewport().monitor_size) {
             Some(mon) => {
                 let inner = (mon * 0.95).max(egui::vec2(900.0, 520.0));
@@ -1497,8 +1592,9 @@ impl eframe::App for HiJackApp {
                         } else {
                             (super::theme::COLOR_DISCONNECTED, "Disconnected")
                         };
-                        ui.colored_label(color, text);
-                        super::theme::status_dot(ui, color);
+                        // Dot only (no text label) to reclaim top-bar width; the
+                        // Connected/Disconnected wording is available on hover.
+                        super::theme::status_dot(ui, color).on_hover_text(text);
 
                         ui.add_space(12.0);
                         // Offline mode toggle — freezes all OSC traffic both ways.
@@ -1610,6 +1706,12 @@ impl eframe::App for HiJackApp {
                                 egui::Vec2::new(leftover_w, leftover_h),
                                 egui::Layout::left_to_right(egui::Align::Center),
                                 |ui| {
+                                    // Explicit `pad` / `GAP` spaces are the only
+                                    // spacing here; zero egui's per-item spacing so
+                                    // the width budget above (buttons_w / pref_w /
+                                    // label_w) is exact and Skip can't overflow onto
+                                    // the Online toggle.
+                                    ui.spacing_mut().item_spacing.x = 0.0;
                                     ui.add_space(pad);
 
                                     let (current_cue_text, has_cues) = {
@@ -2128,50 +2230,124 @@ impl eframe::App for HiJackApp {
 mod scale_tests {
     use super::*;
 
-    fn approx(z: f32, expected: f32) {
-        assert!((z - expected).abs() <= 0.03, "zoom {z} not ≈ {expected}");
+    // `compute_target_ppp` returns an *absolute effective pixels-per-point*, so
+    // expectations below are ppp values (independent of the display's native
+    // scale) — egui itself divides by native inside `set_pixels_per_point`. Every
+    // expectation includes the global `COMFORT_FACTOR` the slider's 100% maps to.
+    fn approx(p: f32, expected: f32) {
+        assert!((p - expected).abs() <= 0.03, "ppp {p} not ≈ {expected}");
     }
 
     #[test]
     fn large_low_ppi_tv_is_gentle_not_cartoonish() {
-        // 40" 4K @100%: ~110 PPI → gentle physical-size zoom, not cartoonish.
-        approx(compute_zoom(1.0, Some(110.0), 1.0), 110.0 / 96.0); // ≈ 1.15
+        // 40" 4K @100%: ~110 PPI → base ≈ 110/96, native irrelevant.
+        approx(
+            compute_target_ppp(1.0, Some(110.0), 1.0),
+            110.0 / 96.0 * COMFORT_FACTOR,
+        );
     }
 
     #[test]
     fn small_high_ppi_panel_scales_up() {
-        // 15" 4K @100%: ~282 PPI → dpi_target ≈ 2.94 (under the MAX_ZOOM ceiling).
-        // The UI reflows / scrolls to fit rather than shrinking to the window.
-        approx(compute_zoom(1.0, Some(282.0), 1.0), 282.0 / 96.0); // ≈ 2.94
+        // 15" 4K: ~282 PPI → base ≈ 2.94, still under the MAX_PPP ceiling after
+        // the comfort factor. The UI reflows / scrolls to fit rather than shrinking.
+        approx(
+            compute_target_ppp(1.0, Some(282.0), 1.0),
+            282.0 / 96.0 * COMFORT_FACTOR,
+        );
     }
 
     #[test]
-    fn standard_1080p_is_about_unity() {
-        approx(compute_zoom(1.0, Some(92.0), 1.0), 0.96);
+    fn standard_1080p_not_shrunk_below_unity() {
+        // 1080p @100%: native 1.0, ~92 PPI. The PPI fallback is floored at native,
+        // so the base is 1.0 (not 92/96 ≈ 0.96) before the comfort factor.
+        approx(compute_target_ppp(1.0, Some(92.0), 1.0), COMFORT_FACTOR);
     }
 
     #[test]
     fn unknown_ppi_respects_os_scale() {
-        // No detected PPI → respect the OS scale factor (zoom 1.0), independent of
-        // window size (tabs reflow / scroll instead of fit-down-scaling).
-        approx(compute_zoom(1.0, None, 1.0), 1.0);
-        approx(compute_zoom(2.0, None, 1.0), 1.0);
+        // No detected PPI → base is the OS scale factor itself (independent of
+        // window size; tabs reflow / scroll instead of fit-down-scaling).
+        approx(compute_target_ppp(1.0, None, 1.0), COMFORT_FACTOR);
+        approx(compute_target_ppp(2.0, None, 1.0), 2.0 * COMFORT_FACTOR);
     }
 
     #[test]
-    fn retina_targets_reference_physical_size() {
-        // 15" Retina: native 2.0, ~220 PPI → effective ppp ≈ 220/96, i.e. a zoom
-        // factor of (220/96)/2.0 ≈ 1.15 on top of the OS's 2× scaling.
-        approx(compute_zoom(2.0, Some(220.0), 1.0), (220.0 / 96.0) / 2.0);
+    fn four_k_at_200_percent_respects_os_scale_not_ppi() {
+        // The user's real machine: 15.6" 4K at Windows 200% (native 2.0) with a
+        // detected raw-EDID PPI of 283. The OS scale is authoritative, so the base
+        // is 2.0 — NOT 283/96 ≈ 2.94, which would override the user's deliberate
+        // 200% choice and render the UI ~1.5× too large.
+        approx(
+            compute_target_ppp(2.0, Some(283.0), 1.0),
+            2.0 * COMFORT_FACTOR,
+        );
+    }
+
+    #[test]
+    fn retina_respects_os_scale() {
+        // 15" Retina ~220 PPI at native 2.0: respect the OS like every mac app —
+        // base 2.0, not 220/96.
+        approx(
+            compute_target_ppp(2.0, Some(220.0), 1.0),
+            2.0 * COMFORT_FACTOR,
+        );
+    }
+
+    #[test]
+    fn windows_125_and_150_respected_not_overridden_by_ppi() {
+        // Fractional Windows scales are deliberate OS choices: PPI must not win.
+        approx(
+            compute_target_ppp(1.25, Some(283.0), 1.0),
+            1.25 * COMFORT_FACTOR,
+        );
+        approx(
+            compute_target_ppp(1.5, Some(200.0), 1.0),
+            1.5 * COMFORT_FACTOR,
+        );
+    }
+
+    #[test]
+    fn pi_touchscreen_unscaled_gets_ppi_bump() {
+        // Raspberry Pi touchscreen: OS does no scaling (native 1.0) but the panel
+        // is high-PPI, so the PPI fallback enlarges the UI to a usable size.
+        approx(
+            compute_target_ppp(1.0, Some(150.0), 1.0),
+            150.0 / 96.0 * COMFORT_FACTOR,
+        );
+        approx(
+            compute_target_ppp(1.0, Some(200.0), 1.0),
+            200.0 / 96.0 * COMFORT_FACTOR,
+        );
+    }
+
+    #[test]
+    fn high_ppi_4k_at_100_percent_gets_bump() {
+        // Misconfigured 4K external left at Windows 100% (native 1.0, ~160 PPI):
+        // PPI fallback rescues it from being microscopic.
+        approx(
+            compute_target_ppp(1.0, Some(160.0), 1.0),
+            160.0 / 96.0 * COMFORT_FACTOR,
+        );
+    }
+
+    #[test]
+    fn threshold_boundary_below_uses_ppi_fallback() {
+        // Just under the threshold (an unusual fractional scale) still uses the
+        // PPI fallback; at/above it the OS scale wins (see the 1.25 test above).
+        approx(
+            compute_target_ppp(1.05, Some(200.0), 1.0),
+            200.0 / 96.0 * COMFORT_FACTOR,
+        );
     }
 
     #[test]
     fn manual_ui_scale_and_clamps_apply() {
-        let base = compute_zoom(1.0, Some(110.0), 1.0);
+        let base = compute_target_ppp(1.0, Some(110.0), 1.0);
         // ui_scale > 1 enlarges (distance viewing) ...
-        assert!(compute_zoom(1.0, Some(110.0), 1.5) > base);
+        assert!(compute_target_ppp(1.0, Some(110.0), 1.5) > base);
         // ... but the final result is clamped both ways.
-        approx(compute_zoom(1.0, Some(110.0), 100.0), MAX_ZOOM);
-        approx(compute_zoom(1.0, Some(110.0), 0.001), MIN_ZOOM);
+        approx(compute_target_ppp(1.0, Some(110.0), 100.0), MAX_PPP);
+        approx(compute_target_ppp(1.0, Some(110.0), 0.001), MIN_PPP);
     }
 }

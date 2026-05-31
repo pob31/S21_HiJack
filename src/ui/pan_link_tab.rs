@@ -86,19 +86,15 @@ impl PanLinkTabState {
     }
 }
 
-const TILE_SIZE: egui::Vec2 = egui::Vec2::new(82.0, 52.0);
 const TILES_PER_INPUT_ROW: u8 = 10;
 const TILES_PER_AUX_ROW: u8 = 4;
-/// Total width of the input + aux grid content (input panel + 16 px
-/// gap + aux panel). The header card and the grids card both cap
-/// their content to this value so the Apply / Revert buttons in the
-/// header align with the right edge of the aux tiles, and the card
-/// frames close off at the same x.
-const GRIDS_CONTENT_W: f32 = TILE_SIZE.x * (TILES_PER_INPUT_ROW as f32)
-    + 24.0
-    + 16.0
-    + TILE_SIZE.x * (TILES_PER_AUX_ROW as f32)
-    + 24.0;
+/// Gap between controls inside a panel header. The grid rows force
+/// `item_spacing.x = 0` for exact tile math, so the headers reset it to this.
+/// Tile sizing is responsive — see [`theme::channel_tile_width`].
+const HEADER_GAP: f32 = 8.0;
+/// Horizontal chrome a [`theme::card_frame`] consumes (inner 12 + outer 4 per
+/// side), subtracted from the tab width to get the grids' available width.
+const CARD_CHROME_W: f32 = 32.0;
 
 /// `uses_ipad_protocol`: true when the active operating mode uses the
 /// iPad protocol (Mode 2 / Mode 3). GP OSC alone (Mode 1) doesn't
@@ -184,22 +180,27 @@ pub fn draw_pan_link_tab(
         })
         .collect();
 
-    // Both-axis scroll: the header + grids cards self-cap at `GRIDS_CONTENT_W`,
-    // so when the window is narrower than the grids the content scrolls
-    // horizontally instead of clipping the aux tiles (rather than shrinking the
-    // fixed-size tiles to unusable).
+    // Tiles are responsive — a uniform width makes the Inputs + Auxes grids fill
+    // the tab, so resizing the window resizes the tiles (no clipping, no
+    // horizontal scroll). Both cards are sized to the resulting grid width so the
+    // header's Apply / Revert align with the aux grid's right edge. The both-axis
+    // scroll only engages as a fallback on an unusually narrow window.
     egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            // Header card: title + dirty indicator + Apply / Revert.
-            // Capped at `GRIDS_CONTENT_W` so the right_to_left
-            // Apply/Revert buttons end at the same x as the aux tiles
-            // in the grids card below — and so the card frame's right
-            // border closes off at that same x.
+            // Responsive tile sizing from the tab width (minus the card chrome).
+            let avail = (ui.available_width() - CARD_CHROME_W - 4.0).max(theme::TILE_W_MIN);
+            let tile_w = theme::channel_tile_width(avail, TILES_PER_INPUT_ROW, TILES_PER_AUX_ROW);
+            let in_w = theme::panel_width(tile_w, TILES_PER_INPUT_ROW);
+            let aux_w = theme::panel_width(tile_w, TILES_PER_AUX_ROW);
+            let grids_w = in_w + theme::TILE_COLUMN_GAP + aux_w;
+
+            // Header card: title + dirty indicator + Apply / Revert. Sized to
+            // `grids_w` so the right_to_left Apply/Revert buttons end at the same
+            // x as the aux tiles in the grids card below.
             theme::card_frame().show(ui, |ui| {
-                let card_w = GRIDS_CONTENT_W.min(ui.available_width());
-                ui.set_min_width(card_w);
-                ui.set_max_width(card_w);
+                ui.set_min_width(grids_w);
+                ui.set_max_width(grids_w);
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("Pan Link")
@@ -272,29 +273,26 @@ pub fn draw_pan_link_tab(
 
             ui.add_space(8.0);
 
-            // Input grid + aux grid, side-by-side. Capped at
-            // `GRIDS_CONTENT_W` so the card frame's right border ends
-            // exactly at the aux grid's right edge.
+            // Input grid + aux grid, side-by-side, sized to `grids_w` so the card
+            // frame's right border ends at the aux grid's right edge.
             theme::card_frame().show(ui, |ui| {
-                let card_w = GRIDS_CONTENT_W.min(ui.available_width());
-                ui.set_min_width(card_w);
-                ui.set_max_width(card_w);
-                // Headers and grids go in two separate shared rows. Keeping
-                // both headers in one `horizontal_top` and both grids in
-                // another guarantees the input and aux grids start at the same
-                // y regardless of how tall each header's content is (the
-                // inputs header carries a button taller than the aux label) —
-                // so the tile rows always line up.
+                ui.set_min_width(grids_w);
+                ui.set_max_width(grids_w);
+                // Headers and grids go in two separate shared rows so the input
+                // and aux tile rows always line up. The rows force
+                // item_spacing.x = 0 so the only inter-panel gap is the explicit
+                // COLUMN_GAP and the panel widths stay exact.
+                ui.spacing_mut().item_spacing.x = 0.0;
                 ui.horizontal_top(|ui| {
-                    draw_inputs_header(ui, tab);
-                    ui.add_space(16.0);
-                    draw_auxes_header(ui);
+                    draw_inputs_header(ui, tab, in_w);
+                    ui.add_space(theme::TILE_COLUMN_GAP);
+                    draw_auxes_header(ui, aux_w);
                 });
                 ui.add_space(4.0);
                 ui.horizontal_top(|ui| {
-                    draw_inputs_grid(ui, tab, state_guard.deref(), input_count);
-                    ui.add_space(16.0);
-                    draw_auxes_grid(ui, tab, &aux_buses);
+                    draw_inputs_grid(ui, tab, state_guard.deref(), input_count, tile_w, in_w);
+                    ui.add_space(theme::TILE_COLUMN_GAP);
+                    draw_auxes_grid(ui, tab, &aux_buses, tile_w, aux_w);
                 });
             });
         });
@@ -311,10 +309,10 @@ struct AuxBusInfo {
     stereo: bool,
 }
 
-fn draw_inputs_header(ui: &mut egui::Ui, tab: &mut PanLinkTabState) {
-    let panel_width = TILE_SIZE.x * (TILES_PER_INPUT_ROW as f32) + 24.0;
+fn draw_inputs_header(ui: &mut egui::Ui, tab: &mut PanLinkTabState, panel_w: f32) {
     ui.vertical(|ui| {
-        ui.set_width(panel_width);
+        ui.set_width(panel_w);
+        ui.spacing_mut().item_spacing.x = HEADER_GAP; // reset (grid row forces 0)
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new("Inputs")
@@ -349,10 +347,12 @@ fn draw_inputs_grid(
     tab: &mut PanLinkTabState,
     state: &ConsoleState,
     input_count: u8,
+    tile_w: f32,
+    panel_w: f32,
 ) {
-    let panel_width = TILE_SIZE.x * (TILES_PER_INPUT_ROW as f32) + 24.0;
     ui.vertical(|ui| {
-        ui.set_width(panel_width);
+        ui.set_width(panel_w);
+        ui.spacing_mut().item_spacing.x = theme::TILE_GAP; // reset (grid row forces 0)
 
         if input_count == 0 {
             ui.colored_label(
@@ -391,7 +391,17 @@ fn draw_inputs_grid(
                             ParameterValue::Int(i) => Some(*i as f32),
                             _ => None,
                         });
-                    if draw_input_tile(ui, ch, &name, selected, has_link, pan).clicked() {
+                    if draw_input_tile(
+                        ui,
+                        egui::vec2(tile_w, theme::TILE_H),
+                        ch,
+                        &name,
+                        selected,
+                        has_link,
+                        pan,
+                    )
+                    .clicked()
+                    {
                         clicked_input = Some(ch);
                     }
                 }
@@ -427,10 +437,9 @@ fn apply_input_click(tab: &mut PanLinkTabState, ch: u8, shift_held: bool) {
     tab.range_anchor = Some(ch);
 }
 
-fn draw_auxes_header(ui: &mut egui::Ui) {
-    let panel_width = TILE_SIZE.x * (TILES_PER_AUX_ROW as f32) + 24.0;
+fn draw_auxes_header(ui: &mut egui::Ui, panel_w: f32) {
     ui.vertical(|ui| {
-        ui.set_width(panel_width);
+        ui.set_width(panel_w);
         ui.label(
             egui::RichText::new("Auxes")
                 .strong()
@@ -439,10 +448,16 @@ fn draw_auxes_header(ui: &mut egui::Ui) {
     });
 }
 
-fn draw_auxes_grid(ui: &mut egui::Ui, tab: &mut PanLinkTabState, aux_buses: &[AuxBusInfo]) {
-    let panel_width = TILE_SIZE.x * (TILES_PER_AUX_ROW as f32) + 24.0;
+fn draw_auxes_grid(
+    ui: &mut egui::Ui,
+    tab: &mut PanLinkTabState,
+    aux_buses: &[AuxBusInfo],
+    tile_w: f32,
+    panel_w: f32,
+) {
     ui.vertical(|ui| {
-        ui.set_width(panel_width);
+        ui.set_width(panel_w);
+        ui.spacing_mut().item_spacing.x = theme::TILE_GAP; // reset (grid row forces 0)
 
         if aux_buses.is_empty() {
             ui.colored_label(theme::TEXT_SECONDARY, "No auxes configured.");
@@ -458,6 +473,7 @@ fn draw_auxes_grid(ui: &mut egui::Ui, tab: &mut PanLinkTabState, aux_buses: &[Au
                     let mono_override = tab.staged.is_aux_mono_override(info.bus);
                     let clicks = draw_aux_tile(
                         ui,
+                        egui::vec2(tile_w, theme::TILE_H),
                         &info.label,
                         &info.name,
                         info.stereo,
@@ -533,13 +549,14 @@ fn compute_aux_state(tab: &PanLinkTabState, info: &AuxBusInfo) -> AuxState {
 
 fn draw_input_tile(
     ui: &mut egui::Ui,
+    tile_size: egui::Vec2,
     ch: u8,
     name: &str,
     selected: bool,
     has_link: bool,
     pan: Option<f32>,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(TILE_SIZE, egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(tile_size, egui::Sense::click());
     let painter = ui.painter_at(rect);
 
     let fill = if selected {
@@ -635,6 +652,7 @@ fn draw_input_tile(
 
 fn draw_aux_tile(
     ui: &mut egui::Ui,
+    tile_size: egui::Vec2,
     label: &str,
     name: &str,
     stereo: bool,
@@ -648,7 +666,7 @@ fn draw_aux_tile(
     // Always sense clicks — even when the link is non-interactive
     // (Mono state), the M/S corner toggle has to be reachable so the
     // operator can flip an aux back from mono.
-    let (rect, response) = ui.allocate_exact_size(TILE_SIZE, egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(tile_size, egui::Sense::click());
     let painter = ui.painter_at(rect);
 
     let base = theme::CH_AUX;

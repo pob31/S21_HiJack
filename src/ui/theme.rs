@@ -207,11 +207,55 @@ pub fn section_heading(ui: &mut egui::Ui, text: &str) {
     ui.add_space(6.0);
 }
 
-/// Small colored circle status indicator.
-pub fn status_dot(ui: &mut egui::Ui, color: egui::Color32) {
+/// Small colored circle status indicator. Returns the (hover-sensing) response
+/// so callers can attach a tooltip when the dot stands alone without a label.
+pub fn status_dot(ui: &mut egui::Ui, color: egui::Color32) -> egui::Response {
     let size = 10.0;
-    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), size / 2.0, color);
+    response
+}
+
+// ─── Responsive channel-grid sizing ─────────────────────────────────────────
+// Shared by the Monitor channel picker and the Pan Link tab: both lay out an
+// Inputs grid (10 tiles/row) beside an Auxes grid (4 tiles/row). Rather than
+// fixed-size tiles that clip or scroll when the window is narrow, the tiles
+// stretch to fill the available width — a single uniform tile width makes the
+// two grids together fill the panel, clamped so tiles stay legible but never
+// cartoonish.
+
+/// Fixed tile height (logical points). Only the width is responsive.
+pub const TILE_H: f32 = 52.0;
+/// Minimum responsive tile width — below this "Input 48" + a name stops fitting.
+pub const TILE_W_MIN: f32 = 56.0;
+/// Maximum responsive tile width — past this, growing tiles just looks silly.
+pub const TILE_W_MAX: f32 = 120.0;
+/// Gap between tiles within a grid.
+pub const TILE_GAP: f32 = 8.0;
+/// Gap between the Inputs panel and the Auxes panel.
+pub const TILE_COLUMN_GAP: f32 = 20.0;
+
+/// Uniform tile width so an `inputs_cols`-wide grid + a column gap + an
+/// `aux_cols`-wide grid together fill `avail_w`, clamped to
+/// `[TILE_W_MIN, TILE_W_MAX]`. Callers derive each panel's width with
+/// [`panel_width`].
+pub fn channel_tile_width(avail_w: f32, inputs_cols: u8, aux_cols: u8) -> f32 {
+    let cols = (inputs_cols as f32 + aux_cols as f32).max(1.0);
+    let inner_gaps = TILE_GAP * (inputs_cols.saturating_sub(1) + aux_cols.saturating_sub(1)) as f32;
+    ((avail_w - inner_gaps - TILE_COLUMN_GAP) / cols).clamp(TILE_W_MIN, TILE_W_MAX)
+}
+
+/// Width of a grid panel holding `cols` tiles of width `tile_w` (with `TILE_GAP`
+/// between them). Used to size the panel and its header so they line up.
+pub fn panel_width(tile_w: f32, cols: u8) -> f32 {
+    tile_w * cols as f32 + TILE_GAP * cols.saturating_sub(1) as f32
+}
+
+/// Minimum sensible content width for an inputs+auxes grid pair (tiles at
+/// `TILE_W_MIN`). Windows hosting the grids use this as their `min_width` so the
+/// tiles never shrink below legibility or scroll horizontally.
+pub fn grids_min_width(inputs_cols: u8, aux_cols: u8) -> f32 {
+    panel_width(TILE_W_MIN, inputs_cols) + TILE_COLUMN_GAP + panel_width(TILE_W_MIN, aux_cols)
 }
 
 /// Colored badge with text (number badge, channel type badge, etc.).

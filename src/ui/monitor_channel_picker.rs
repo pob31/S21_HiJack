@@ -263,18 +263,12 @@ fn collect_stereo_auxes(cfg: &ConsoleConfig, aux_count: u8) -> HashSet<u8> {
     out
 }
 
-const TILE_SIZE: egui::Vec2 = egui::Vec2::new(82.0, 52.0);
 const TILES_PER_INPUT_ROW: u8 = 10;
 const TILES_PER_AUX_ROW: u8 = 4;
-/// Total width of the input + aux grid content (input panel + 16 px
-/// gap + aux panel). The picker's title row, separators, and status
-/// row all cap their content to this so Save/Cancel align with the
-/// right edge of the aux tiles.
-const GRIDS_CONTENT_W: f32 = TILE_SIZE.x * (TILES_PER_INPUT_ROW as f32)
-    + 24.0
-    + 16.0
-    + TILE_SIZE.x * (TILES_PER_AUX_ROW as f32)
-    + 24.0;
+/// Gap between controls inside a panel header (labels / buttons). The grid rows
+/// force `item_spacing.x = 0` for exact tile math, so the headers reset it to
+/// this. Tile sizing itself is responsive — see [`theme::channel_tile_width`].
+const HEADER_GAP: f32 = 8.0;
 
 /// Draw the picker window for one frame. The caller owns the open/closed
 /// flag and the picker state; this function returns `Some(outcome)` when
@@ -293,20 +287,30 @@ pub fn draw_channel_picker(
         "Add Monitor Profile"
     };
 
-    // Window default width matches the grid content + a small chrome
-    // budget so the operator doesn't have to resize on first open.
+    // Clamp the window to the host viewport (an egui Window larger than the main
+    // window's content area gets clipped). The grids inside are responsive —
+    // tiles stretch to fill the window width — so there is no fixed content
+    // width to cap, and the window stays freely resizable between a sensible
+    // minimum (tiles at their floor) and the viewport.
+    let avail = ctx.content_rect().size();
+    let max_w = (avail.x - 16.0).max(360.0);
+    let max_h = (avail.y - 16.0).max(320.0);
+    let min_w = (theme::grids_min_width(TILES_PER_INPUT_ROW, TILES_PER_AUX_ROW) + 24.0).min(max_w);
+    // Comfortable initial width: tiles at ~88 pt.
+    let default_w = (theme::panel_width(88.0, TILES_PER_INPUT_ROW)
+        + theme::TILE_COLUMN_GAP
+        + theme::panel_width(88.0, TILES_PER_AUX_ROW)
+        + 28.0)
+        .clamp(min_w, max_w);
     egui::Window::new(title)
         .collapsible(false)
         .resizable(true)
-        .default_width(GRIDS_CONTENT_W + 32.0)
+        .default_width(default_w)
+        .min_width(min_w)
+        .max_width(max_w)
+        .max_height(max_h)
         .open(&mut still_open)
         .show(ctx, |ui| {
-            // Cap the entire picker content to the grid width so the
-            // header's Save / Cancel buttons (right_to_left) end at
-            // the same x as the aux tiles' right edge.
-            let content_w = GRIDS_CONTENT_W.min(ui.available_width());
-            ui.set_min_width(content_w);
-            ui.set_max_width(content_w);
             // Header row: name field + Save/Cancel buttons, all sized to
             // ROW_H so the label, text box and buttons share a baseline.
             ui.horizontal(|ui| {
@@ -339,27 +343,35 @@ pub fn draw_channel_picker(
             ui.add_space(6.0);
             ui.separator();
 
-            // Two-column grid: inputs on the left, auxes on the right.
-            // Headers and grids go in two separate shared rows so both grids
-            // start at the same y regardless of header content height (the
-            // inputs header carries taller buttons than the aux label) — so
+            // Two-column grid: inputs on the left, auxes on the right. Tiles are
+            // responsive — a single uniform width makes the two grids fill the
+            // window, so resizing the window resizes the tiles (no clipping, no
+            // horizontal scroll). Vertical scroll only, for a tall input count in
+            // a short window. Headers and grids go in two separate shared rows so
             // the input and aux tile rows always line up.
-            // Horizontal scroll so a window narrower than the fixed-size tile
-            // grids scrolls rather than clipping the aux tiles. The grids have
-            // fixed widths (no available_width reads), so this is safe.
-            egui::ScrollArea::horizontal()
-                .auto_shrink([false, true])
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    // A few px of slack so float rounding never clips the last
+                    // aux column. The enclosing rows force item_spacing.x = 0 so
+                    // the only inter-panel gap is the explicit COLUMN_GAP and the
+                    // panel widths stay exact.
+                    let avail = (ui.available_width() - 4.0).max(theme::TILE_W_MIN);
+                    let tile_w =
+                        theme::channel_tile_width(avail, TILES_PER_INPUT_ROW, TILES_PER_AUX_ROW);
+                    let in_w = theme::panel_width(tile_w, TILES_PER_INPUT_ROW);
+                    let aux_w = theme::panel_width(tile_w, TILES_PER_AUX_ROW);
+                    ui.spacing_mut().item_spacing.x = 0.0;
                     ui.horizontal_top(|ui| {
-                        draw_inputs_header(ui, state);
-                        ui.add_space(16.0);
-                        draw_auxes_header(ui, state);
+                        draw_inputs_header(ui, state, in_w);
+                        ui.add_space(theme::TILE_COLUMN_GAP);
+                        draw_auxes_header(ui, state, aux_w);
                     });
                     ui.add_space(4.0);
                     ui.horizontal_top(|ui| {
-                        draw_inputs_grid(ui, state);
-                        ui.add_space(16.0);
-                        draw_auxes_grid(ui, state);
+                        draw_inputs_grid(ui, state, tile_w, in_w);
+                        ui.add_space(theme::TILE_COLUMN_GAP);
+                        draw_auxes_grid(ui, state, tile_w, aux_w);
                     });
                 });
 
@@ -438,10 +450,10 @@ pub fn draw_channel_picker(
     outcome
 }
 
-fn draw_inputs_header(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
-    let panel_width = TILE_SIZE.x * (TILES_PER_INPUT_ROW as f32) + 24.0;
+fn draw_inputs_header(ui: &mut egui::Ui, state: &mut ChannelPickerState, panel_w: f32) {
     ui.vertical(|ui| {
-        ui.set_width(panel_width);
+        ui.set_width(panel_w);
+        ui.spacing_mut().item_spacing.x = HEADER_GAP; // reset (grid row forces 0)
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new("Inputs")
@@ -531,10 +543,10 @@ fn draw_inputs_header(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
     });
 }
 
-fn draw_inputs_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
-    let panel_width = TILE_SIZE.x * (TILES_PER_INPUT_ROW as f32) + 24.0;
+fn draw_inputs_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState, tile_w: f32, panel_w: f32) {
     ui.vertical(|ui| {
-        ui.set_width(panel_width);
+        ui.set_width(panel_w);
+        ui.spacing_mut().item_spacing.x = theme::TILE_GAP; // reset (grid row forces 0)
 
         if state.input_count == 0 {
             ui.colored_label(
@@ -563,6 +575,7 @@ fn draw_inputs_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
                     let highlight = ripple_highlight_for(state.ripple, ch);
                     let tile_resp = draw_tile(
                         ui,
+                        egui::vec2(tile_w, theme::TILE_H),
                         &format!("Input {ch}"),
                         name,
                         theme::CH_INPUT,
@@ -640,10 +653,10 @@ enum RippleHighlight {
     InRange,
 }
 
-fn draw_auxes_header(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
-    let panel_width = TILE_SIZE.x * (TILES_PER_AUX_ROW as f32) + 24.0;
+fn draw_auxes_header(ui: &mut egui::Ui, state: &mut ChannelPickerState, panel_w: f32) {
     ui.vertical(|ui| {
-        ui.set_width(panel_width);
+        ui.set_width(panel_w);
+        ui.spacing_mut().item_spacing.x = HEADER_GAP; // reset (grid row forces 0)
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new("Auxes")
@@ -663,10 +676,10 @@ fn draw_auxes_header(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
     });
 }
 
-fn draw_auxes_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
-    let panel_width = TILE_SIZE.x * (TILES_PER_AUX_ROW as f32) + 24.0;
+fn draw_auxes_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState, tile_w: f32, panel_w: f32) {
     ui.vertical(|ui| {
-        ui.set_width(panel_width);
+        ui.set_width(panel_w);
+        ui.spacing_mut().item_spacing.x = theme::TILE_GAP; // reset (grid row forces 0)
 
         if state.aux_count == 0 {
             ui.colored_label(
@@ -690,6 +703,7 @@ fn draw_auxes_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
                     let name = state.aux_names.get(&ch).map(String::as_str).unwrap_or("");
                     if draw_tile(
                         ui,
+                        egui::vec2(tile_w, theme::TILE_H),
                         &format!("Aux {ch}"),
                         name,
                         theme::CH_AUX,
@@ -717,6 +731,7 @@ fn draw_auxes_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState) {
 /// progress.
 fn draw_tile(
     ui: &mut egui::Ui,
+    tile_size: egui::Vec2,
     title: &str,
     name: &str,
     base_color: egui::Color32,
@@ -724,7 +739,7 @@ fn draw_tile(
     stereo: bool,
     ripple_highlight: RippleHighlight,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(TILE_SIZE, egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(tile_size, egui::Sense::click());
 
     let painter = ui.painter_at(rect);
     let selected = order.is_some();
