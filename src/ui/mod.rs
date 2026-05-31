@@ -4,6 +4,7 @@ pub mod cue_list_popup;
 pub mod cue_transport;
 pub mod fonts;
 pub mod gangs_tab;
+pub mod help;
 pub mod inspector_tab;
 pub mod macros_tab;
 pub mod monitor_channel_picker;

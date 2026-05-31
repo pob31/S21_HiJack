@@ -16,6 +16,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use super::UiEvent;
+use super::help::{HelpKey, help};
 use super::theme;
 use crate::console::cue_manager::CueManager;
 use crate::console::palette_manager::PaletteManager;
@@ -125,7 +126,7 @@ pub fn draw_palettes_section(
     ui.horizontal(|ui| {
         theme::row_label(ui, "Channel:", theme::label_color());
         theme::row_combo(ui, 0, |ui| {
-            egui::ComboBox::from_id_salt("palette_capture_ch_type")
+            let combo = egui::ComboBox::from_id_salt("palette_capture_ch_type")
                 .selected_text(state.capture_channel_type.label())
                 .width(70.0)
                 .show_ui(ui, |ui| {
@@ -133,6 +134,9 @@ pub fn draw_palettes_section(
                         ui.selectable_value(&mut state.capture_channel_type, ch, ch.label());
                     }
                 });
+            combo
+                .response
+                .on_hover_text(help(HelpKey::PaletteChannelType));
         });
         theme::padded_text_edit_sized(
             ui,
@@ -141,7 +145,8 @@ pub fn draw_palettes_section(
             theme::ROW_H,
             true,
             "",
-        );
+        )
+        .on_hover_text(help(HelpKey::PaletteChannelNumber));
 
         theme::row_label(ui, "Name:", theme::label_color());
         theme::padded_text_edit_sized(
@@ -151,18 +156,27 @@ pub fn draw_palettes_section(
             theme::ROW_H,
             true,
             "",
-        );
+        )
+        .on_hover_text(help(HelpKey::PaletteName));
     });
 
     ui.horizontal(|ui| {
         theme::row_label(ui, "Include:", theme::label_color());
         for (i, kind) in PaletteKind::all().iter().enumerate() {
-            ui.checkbox(&mut state.capture_kinds[i], kind.label());
+            ui.checkbox(&mut state.capture_kinds[i], kind.label())
+                .on_hover_text(help(HelpKey::PaletteInclude));
         }
 
         let any_kind = state.capture_kinds.iter().any(|on| *on);
         let can_capture = is_connected && !state.new_palette_name.is_empty() && any_kind;
-        if theme::row_action_button(ui, "Capture", theme::ACCENT_GREEN, 90.0, can_capture) {
+        if theme::row_action_button(
+            ui,
+            "Capture",
+            theme::ACCENT_GREEN,
+            90.0,
+            can_capture,
+            help(HelpKey::PaletteCapture),
+        ) {
             capture_palette(state, console_state, palette_manager, runtime, ui_tx);
         }
     });
@@ -330,9 +344,22 @@ fn draw_palette_actions(
                 let mut empty = String::new();
                 let _ =
                     theme::padded_text_edit_sized(ui, &mut empty, 160.0, theme::ROW_H, false, "");
-                let _ = theme::row_action_button(ui, "Re-capture", theme::ACCENT_BLUE, 90.0, false);
-                let _ =
-                    theme::row_action_button(ui, "Delete Palette", theme::ACCENT_RED, 100.0, false);
+                let _ = theme::row_action_button(
+                    ui,
+                    "Re-capture",
+                    theme::ACCENT_BLUE,
+                    90.0,
+                    false,
+                    help(HelpKey::PaletteRecapture),
+                );
+                let _ = theme::row_action_button(
+                    ui,
+                    "Delete Palette",
+                    theme::ACCENT_RED,
+                    100.0,
+                    false,
+                    help(HelpKey::PaletteDelete),
+                );
             });
             ui.add_space(6.0);
             ui.label(
@@ -355,7 +382,8 @@ fn draw_palette_actions(
                 Some((id, draft)) if *id == pid => draft.clone(),
                 _ => palette_info.name.clone(),
             };
-            let resp = theme::padded_text_edit_sized(ui, &mut buf, 160.0, theme::ROW_H, true, "");
+            let resp = theme::padded_text_edit_sized(ui, &mut buf, 160.0, theme::ROW_H, true, "")
+                .on_hover_text(help(HelpKey::PaletteRename));
             if resp.changed() {
                 state.rename_draft = Some((pid, buf.clone()));
             }
@@ -377,10 +405,24 @@ fn draw_palette_actions(
                 egui::RichText::new(format!("{}", palette_info.channel)).color(theme::label_weak()),
             );
 
-            if theme::row_action_button(ui, "Re-capture", theme::ACCENT_BLUE, 90.0, is_connected) {
+            if theme::row_action_button(
+                ui,
+                "Re-capture",
+                theme::ACCENT_BLUE,
+                90.0,
+                is_connected,
+                help(HelpKey::PaletteRecapture),
+            ) {
                 recapture_palette(pid, console_state, palette_manager, runtime, ui_tx);
             }
-            if theme::row_action_button(ui, "Delete Palette", theme::ACCENT_RED, 100.0, true) {
+            if theme::row_action_button(
+                ui,
+                "Delete Palette",
+                theme::ACCENT_RED,
+                100.0,
+                true,
+                help(HelpKey::PaletteDelete),
+            ) {
                 delete_palette(pid, cue_manager, palette_manager, runtime);
                 state.selected_palette_id = None;
                 state.rename_draft = None;

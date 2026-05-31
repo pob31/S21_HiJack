@@ -5,6 +5,7 @@ use eframe::egui;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+use super::help::{HelpKey, help};
 use super::monitor_channel_picker::{self, ChannelPickerState, PickerOutcome};
 use super::theme;
 use crate::console::monitor_manager::MonitorManager;
@@ -243,7 +244,12 @@ pub fn draw_monitor_tab(
                                     theme::ACCENT_GREEN,
                                     egui::Vec2::new(120.0, 32.0),
                                 );
-                                if ui.add(add_btn).clicked() && tab.picker.is_none() {
+                                if ui
+                                    .add(add_btn)
+                                    .on_hover_text(help(HelpKey::MonitorAddProfile))
+                                    .clicked()
+                                    && tab.picker.is_none()
+                                {
                                     let st = runtime.block_on(console_state.read());
                                     tab.picker = Some(ChannelPickerState::for_new_client(&st));
                                 }
@@ -438,6 +444,9 @@ pub fn draw_monitor_tab(
                                                         );
                                                         if ui
                                                             .add_enabled(!in_reorder, edit_btn)
+                                                            .on_hover_text(help(
+                                                                HelpKey::MonitorEditProfile,
+                                                            ))
                                                             .clicked()
                                                         {
                                                             to_edit = Some((*client).clone());
@@ -453,7 +462,15 @@ pub fn draw_monitor_tab(
                                                             color,
                                                             egui::Vec2::new(70.0, 24.0),
                                                         );
-                                                        if ui.add(reorder_btn).clicked() {
+                                                        if ui
+                                                            .add(reorder_btn)
+                                                            .on_hover_text(help(if in_reorder {
+                                                                HelpKey::MonitorReorderDone
+                                                            } else {
+                                                                HelpKey::MonitorReorder
+                                                            }))
+                                                            .clicked()
+                                                        {
                                                             tab.reorder_for = if in_reorder {
                                                                 None
                                                             } else {

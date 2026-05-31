@@ -21,6 +21,7 @@ use std::sync::atomic::AtomicBool;
 use eframe::egui;
 use tokio::sync::RwLock;
 
+use super::help::{HelpKey, help};
 use super::theme;
 use crate::model::channel::ChannelId;
 use crate::model::config::ChannelMode;
@@ -228,9 +229,7 @@ pub fn draw_pan_link_tab(
                         );
                         if ui
                             .add_enabled(dirty, revert_btn)
-                            .on_hover_text(
-                                "Discard staged changes and resync with the live bindings.",
-                            )
+                            .on_hover_text(help(HelpKey::PanLinkRevert))
                             .clicked()
                         {
                             tab.revert();
@@ -243,10 +242,7 @@ pub fn draw_pan_link_tab(
                         );
                         if ui
                             .add_enabled(dirty, apply_btn)
-                            .on_hover_text(
-                                "Commit staged links. Aux send pans don't move until \
-                                 the input main pan next changes.",
-                            )
+                            .on_hover_text(help(HelpKey::PanLinkApply))
                             .clicked()
                         {
                             let staged_clone = tab.staged.clone();
@@ -332,6 +328,7 @@ fn draw_inputs_header(ui: &mut egui::Ui, tab: &mut PanLinkTabState, panel_w: f32
                 );
                 if ui
                     .add_enabled(!tab.selected_inputs.is_empty(), clear_btn)
+                    .on_hover_text(help(HelpKey::PanLinkClearSelection))
                     .clicked()
                 {
                     tab.selected_inputs.clear();

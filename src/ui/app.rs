@@ -24,6 +24,7 @@ use crate::osc::ipad_client::IpadSender;
 use crate::persistence::preferences::AppPreferences;
 
 use super::gangs_tab::GangsTabState;
+use super::help::{HelpKey, help};
 use super::inspector_tab::InspectorTabState;
 use super::macros_tab::MacrosTabState;
 use super::monitor_tab::MonitorTabState;
@@ -592,7 +593,11 @@ impl HiJackApp {
                             .strong(),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("×").on_hover_text("Dismiss").clicked() {
+                            if ui
+                                .button("×")
+                                .on_hover_text(help(HelpKey::Dismiss))
+                                .clicked()
+                            {
                                 dismiss = true;
                             }
                         });
@@ -622,7 +627,7 @@ impl HiJackApp {
                             [ui.available_width(), 28.0],
                             egui::Button::new("Reload snapshot to verify"),
                         )
-                        .on_hover_text("Re-recall this snapshot now to confirm nothing drifted")
+                        .on_hover_text(help(HelpKey::SnapshotReRecall))
                         .clicked()
                     {
                         reload = true;
@@ -856,6 +861,7 @@ impl HiJackApp {
                             send_pace_us: pace_to_save,
                             ui_scale: self.setup.ui_scale,
                             color_theme: self.setup.color_theme,
+                            help_language: self.setup.help_language.clone(),
                         };
                         if let Err(e) = prefs.save() {
                             tracing::warn!(error = %e, "Failed to save app preferences after show load");
@@ -1405,6 +1411,10 @@ impl HiJackApp {
                                     ui.horizontal(|ui| {
                                         if ui
                                             .add_enabled(cand.valid, egui::Button::new("Load this"))
+                                            .on_hover_text(help(HelpKey::RecoveryLoad))
+                                            .on_disabled_hover_text(help(
+                                                HelpKey::RecoveryLoadInvalid,
+                                            ))
                                             .clicked()
                                         {
                                             action = Action::Load(cand.path.clone());
@@ -1417,10 +1427,19 @@ impl HiJackApp {
 
                     ui.separator();
                     ui.horizontal(|ui| {
-                        if rd.recovered && ui.button("Save recovered to original path").clicked() {
+                        if rd.recovered
+                            && ui
+                                .button("Save recovered to original path")
+                                .on_hover_text(help(HelpKey::RecoverySaveOriginal))
+                                .clicked()
+                        {
                             action = Action::SaveToOriginal;
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui
+                            .button("Cancel")
+                            .on_hover_text(help(HelpKey::RecoveryCancel))
+                            .clicked()
+                        {
                             action = Action::Cancel;
                         }
                     });
@@ -1486,6 +1505,16 @@ impl eframe::App for HiJackApp {
         // cheap on subsequent frames.
         static FONTS_INSTALLED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
         FONTS_INSTALLED.get_or_init(|| super::fonts::install_fonts(ctx));
+
+        // First-frame init: discover help-bubble translation files and publish
+        // the saved language. Later changes are pushed by the Advanced Settings
+        // dropdown via `help::set_active_language`.
+        static LOCALES_LOADED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        if LOCALES_LOADED.get().is_none() {
+            super::help::load_locales();
+            super::help::set_active_language(&self.setup.help_language);
+            let _ = LOCALES_LOADED.set(());
+        }
 
         // Global fit-to-window + physical-size UI scaling. Must run before any
         // panel is built; the new zoom applies on the next pass.
@@ -1630,12 +1659,7 @@ impl eframe::App for HiJackApp {
                         .min_size(egui::Vec2::new(80.0, 26.0));
                         if ui
                             .add(btn)
-                            .on_hover_text(
-                                "Offline mode: drops every inbound and outbound OSC message. \
-                             Lets you edit show data without affecting the desk. \
-                             Toggle back to Online to resume — the state mirror will be \
-                             stale until you click Refresh on the Setup tab.",
-                            )
+                            .on_hover_text(help(HelpKey::OfflineToggle))
                             .clicked()
                         {
                             is_offline = !is_offline;
@@ -1758,7 +1782,7 @@ impl eframe::App for HiJackApp {
                                     .min_size(egui::Vec2::new(UNDO_W, 26.0));
                                     if ui
                                         .add_enabled(has_undo, undo_btn)
-                                        .on_hover_text("Undo the last cue / snapshot recall.")
+                                        .on_hover_text(help(HelpKey::CueUndo))
                                         .clicked()
                                     {
                                         super::cue_transport::fire_undo(
@@ -1781,7 +1805,7 @@ impl eframe::App for HiJackApp {
                                     .min_size(egui::Vec2::new(PREV_W, 26.0));
                                     if ui
                                         .add_enabled(transport_enabled, prev_btn)
-                                        .on_hover_text("Recall the previous cue.")
+                                        .on_hover_text(help(HelpKey::CuePrev))
                                         .clicked()
                                     {
                                         super::cue_transport::fire_prev(
@@ -1819,7 +1843,7 @@ impl eframe::App for HiJackApp {
                                                         .truncate()
                                                         .sense(egui::Sense::click()),
                                                 )
-                                                .on_hover_text("Open the cue list.")
+                                                .on_hover_text(help(HelpKey::CueListOpen))
                                                 .clicked()
                                             },
                                         )
@@ -1841,7 +1865,7 @@ impl eframe::App for HiJackApp {
                                     .min_size(egui::Vec2::new(GO_W, 26.0));
                                     if ui
                                         .add_enabled(transport_enabled, go_btn)
-                                        .on_hover_text("Recall the next cue.")
+                                        .on_hover_text(help(HelpKey::CueGo))
                                         .clicked()
                                     {
                                         super::cue_transport::fire_go(
@@ -1866,10 +1890,9 @@ impl eframe::App for HiJackApp {
                                         .fill(super::theme::btn_neutral())
                                         .corner_radius(4.0)
                                         .min_size(egui::Vec2::new(SKIP_W, 26.0));
-                                    let skip_resp =
-                                        ui.add_enabled(has_cues, skip_btn).on_hover_text(
-                                            "Skip — advance to the next cue without recalling it.",
-                                        );
+                                    let skip_resp = ui
+                                        .add_enabled(has_cues, skip_btn)
+                                        .on_hover_text(help(HelpKey::CueSkip));
                                     super::theme::paint_skip_glyph(
                                         ui.painter(),
                                         skip_resp.rect,

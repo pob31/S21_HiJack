@@ -3,6 +3,7 @@ use std::sync::Arc;
 use eframe::egui;
 use tokio::sync::RwLock;
 
+use super::help::{HelpKey, help};
 use super::theme;
 use crate::model::channel::ChannelId;
 use crate::model::state::ConsoleState;
@@ -107,7 +108,8 @@ pub fn draw_inspector_tab(
                 egui::TextEdit::singleline(&mut tab.filter)
                     .desired_width(200.0)
                     .hint_text("channel, param, or value..."),
-            );
+            )
+            .on_hover_text(help(HelpKey::InspectorFilter));
 
             ui.add_space(12.0);
             ui.label("Type:");
@@ -130,6 +132,7 @@ pub fn draw_inspector_tab(
                         .fill(fill)
                         .corner_radius(4.0),
                 )
+                .on_hover_text(help(HelpKey::InspectorTypeAll))
                 .clicked()
             {
                 tab.channel_type_filter = None;
@@ -153,6 +156,7 @@ pub fn draw_inspector_tab(
                             .fill(fill)
                             .corner_radius(4.0),
                     )
+                    .on_hover_text(help(HelpKey::InspectorTypeFilter))
                     .clicked()
                 {
                     tab.channel_type_filter = Some(*ct);
@@ -257,6 +261,7 @@ pub fn draw_inspector_tab(
                     header.col(|ui| {
                         if ui
                             .selectable_label(tab.sort_column == SortColumn::Channel, "Channel")
+                            .on_hover_text(help(HelpKey::InspectorSortHeader))
                             .clicked()
                         {
                             if tab.sort_column == SortColumn::Channel {
@@ -270,6 +275,7 @@ pub fn draw_inspector_tab(
                     header.col(|ui| {
                         if ui
                             .selectable_label(tab.sort_column == SortColumn::Parameter, "Parameter")
+                            .on_hover_text(help(HelpKey::InspectorSortHeader))
                             .clicked()
                         {
                             if tab.sort_column == SortColumn::Parameter {
@@ -283,6 +289,7 @@ pub fn draw_inspector_tab(
                     header.col(|ui| {
                         if ui
                             .selectable_label(tab.sort_column == SortColumn::Value, "Value")
+                            .on_hover_text(help(HelpKey::InspectorSortHeader))
                             .clicked()
                         {
                             if tab.sort_column == SortColumn::Value {

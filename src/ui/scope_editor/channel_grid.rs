@@ -13,6 +13,7 @@ use super::state::{
 use crate::model::channel::ChannelId;
 use crate::model::config::ConsoleConfig;
 use crate::model::parameter::{ParameterPath, ParameterSection, TimingCategory};
+use crate::ui::help::{HelpKey, help};
 use crate::ui::theme;
 
 /// Per-group data assembled once per frame, before drawing. Constructed by
@@ -431,11 +432,10 @@ fn draw_group_matrix(ui: &mut egui::Ui, state: &mut ScopeEditorState, data: &Gro
                                         state.toggle_cell(ch, path);
                                     }
                                     if !avail {
-                                        let _ = resp.on_hover_text("no live parameter");
+                                        let _ = resp.on_hover_text(help(HelpKey::ScopeNoLiveParam));
                                     } else if conflict {
-                                        let _ = resp.on_hover_text(
-                                            "In console session scope, not safed for this channel",
-                                        );
+                                        let _ =
+                                            resp.on_hover_text(help(HelpKey::ScopeConsoleConflict));
                                     }
                                 } else {
                                     // In timing modes, path cells are dimmed/read-only

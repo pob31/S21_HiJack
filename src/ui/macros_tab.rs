@@ -7,6 +7,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use super::UiEvent;
+use super::help::{HelpKey, help};
 use super::theme;
 use crate::console::cue_manager::CueManager;
 use crate::console::macro_engine::MacroEngine;
@@ -435,7 +436,8 @@ pub fn draw_macros_tab(
                                 [200.0, ROW_H],
                                 egui::TextEdit::singleline(&mut macros_state.new_macro_name)
                                     .margin(theme::TEXT_EDIT_MARGIN),
-                            );
+                            )
+                            .on_hover_text(help(HelpKey::MacroNewName));
                             let mut clicked = false;
                             ui.scope(|ui| {
                                 ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
@@ -444,7 +446,10 @@ pub fn draw_macros_tab(
                                     theme::ACCENT_GREEN,
                                     egui::Vec2::new(60.0, ROW_H),
                                 );
-                                clicked = ui.add(new_btn).clicked();
+                                clicked = ui
+                                    .add(new_btn)
+                                    .on_hover_text(help(HelpKey::MacroCreate))
+                                    .clicked();
                             });
                             if clicked && !macros_state.new_macro_name.is_empty() {
                                 let name = macros_state.new_macro_name.clone();
@@ -516,10 +521,7 @@ pub fn draw_macros_tab(
                                     theme::btn_neutral(),
                                     egui::Vec2::new(60.0, 24.0),
                                 ))
-                                .on_hover_text(
-                                    "Close Stream Deck setup and go back to the \
-                                         macro step editor.",
-                                )
+                                .on_hover_text(help(HelpKey::StreamDeckClose))
                                 .clicked()
                             {
                                 macros_state.streamdeck_popup_open = false;
@@ -619,7 +621,11 @@ fn draw_learn_section(
                         theme::ACCENT_GREEN,
                         egui::Vec2::new(100.0, 28.0),
                     );
-                    if ui.add(stop_btn).clicked() {
+                    if ui
+                        .add(stop_btn)
+                        .on_hover_text(help(HelpKey::MacroLearnStopSave))
+                        .clicked()
+                    {
                         let name = if macros_state.learn_name.is_empty() {
                             "Recorded Macro".to_string()
                         } else {
@@ -645,7 +651,11 @@ fn draw_learn_section(
                         theme::ACCENT_RED,
                         egui::Vec2::new(80.0, 28.0),
                     );
-                    if ui.add(discard_btn).clicked() {
+                    if ui
+                        .add(discard_btn)
+                        .on_hover_text(help(HelpKey::MacroLearnDiscard))
+                        .clicked()
+                    {
                         let mgr_clone = macro_manager.clone();
                         runtime.spawn(async move {
                             let mut mgr = mgr_clone.write().await;
@@ -670,13 +680,11 @@ fn draw_learn_section(
         let resp = ui
             .add_enabled(is_connected, learn_btn)
             .on_hover_text(if is_connected {
-                "Record every parameter change made on the console into a new macro."
+                help(HelpKey::MacroLearnReady)
             } else {
-                "Connect to the console first — Learn captures inbound parameter changes."
+                help(HelpKey::MacroLearnNeedsConn)
             })
-            .on_disabled_hover_text(
-                "Connect to the console first — Learn captures inbound parameter changes.",
-            );
+            .on_disabled_hover_text(help(HelpKey::MacroLearnNeedsConn));
         if resp.clicked() {
             let mgr_clone = macro_manager.clone();
             runtime.spawn(async move {
@@ -806,6 +814,7 @@ fn draw_action_buttons(
         let run_btn = theme::action_button("Run", theme::ACCENT_GREEN, egui::Vec2::new(70.0, 28.0));
         if ui
             .add_enabled(has_selection && is_connected, run_btn)
+            .on_hover_text(help(HelpKey::MacroRun))
             .clicked()
         {
             if let Some(id) = macros_state.selected_macro_id {
@@ -970,11 +979,13 @@ fn draw_step_editor(
                     .color(theme::label_color())
                     .size(theme::FONT_SIZE_SECTION),
             );
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut macros_state.edit_macro_name)
-                    .desired_width(ui.available_width() - 60.0)
-                    .font(egui::FontId::proportional(theme::FONT_SIZE_SECTION)),
-            );
+            let resp = ui
+                .add(
+                    egui::TextEdit::singleline(&mut macros_state.edit_macro_name)
+                        .desired_width(ui.available_width() - 60.0)
+                        .font(egui::FontId::proportional(theme::FONT_SIZE_SECTION)),
+                )
+                .on_hover_text(help(HelpKey::MacroRename));
             if resp.changed() {
                 let mgr = macro_manager.clone();
                 let cfg = streamdeck_config.clone();
@@ -1027,6 +1038,7 @@ fn draw_step_editor(
             let mut dirty_toggle = mark_dirty;
             if ui
                 .checkbox(&mut dirty_toggle, "Track as modified parameters")
+                .on_hover_text(help(HelpKey::MacroTrackDirty))
                 .changed()
             {
                 let mgr = macro_manager.clone();
@@ -1046,7 +1058,7 @@ fn draw_step_editor(
                     // [Delete] [Keep] [Clear] from left to right.
                     if ui
                         .small_button("Clear")
-                        .on_hover_text("Clear the multi-selection")
+                        .on_hover_text(help(HelpKey::MacroClearSelection))
                         .clicked()
                     {
                         macros_state.step_selection.clear();
@@ -1054,10 +1066,7 @@ fn draw_step_editor(
                     }
                     if ui
                         .small_button("Keep")
-                        .on_hover_text(
-                            "For every selected step, drop other steps with \
-                                 the same (channel, parameter)",
-                        )
+                        .on_hover_text(help(HelpKey::MacroDedupSelected))
                         .clicked()
                     {
                         let indices: Vec<usize> =
@@ -1066,7 +1075,7 @@ fn draw_step_editor(
                     }
                     if ui
                         .small_button("Delete")
-                        .on_hover_text("Remove every selected step")
+                        .on_hover_text(help(HelpKey::MacroDeleteSelected))
                         .clicked()
                     {
                         let indices: Vec<usize> =
@@ -1075,7 +1084,7 @@ fn draw_step_editor(
                     }
                     if ui
                         .small_button("Reset delays to 0")
-                        .on_hover_text("Set delay to 0 ms on every selected step")
+                        .on_hover_text(help(HelpKey::MacroZeroDelaySelected))
                         .clicked()
                     {
                         let indices: Vec<usize> =
@@ -1200,10 +1209,7 @@ fn draw_step_editor(
                                         is_selected,
                                         badge_w,
                                     )
-                                    .on_hover_text(
-                                        "Click to select; Ctrl/Cmd-click to toggle; \
-                                         Shift-click to range-select.",
-                                    );
+                                    .on_hover_text(help(HelpKey::MacroStepSelectHint));
                                     let mut selection_click = false;
                                     if badge_resp.clicked() {
                                         selection_click = true;
@@ -1286,14 +1292,11 @@ fn draw_step_editor(
 
                                             // Keep (rightmost)
                                             let keep_resp = ui
-                                            .add_sized(
-                                                [44.0, W_H],
-                                                egui::Button::new("Keep").small(),
-                                            )
-                                            .on_hover_text(
-                                                "Keep only this step for its (channel, parameter); \
-                                                 remove the rest",
-                                            );
+                                                .add_sized(
+                                                    [44.0, W_H],
+                                                    egui::Button::new("Keep").small(),
+                                                )
+                                                .on_hover_text(help(HelpKey::MacroKeepOnlyStep));
                                             if keep_resp.hovered() {
                                                 new_keep_hover_idx = Some(i);
                                             }
@@ -1306,7 +1309,7 @@ fn draw_step_editor(
                                                     [40.0, W_H],
                                                     egui::Button::new("Del").small(),
                                                 )
-                                                .on_hover_text("Delete this step")
+                                                .on_hover_text(help(HelpKey::MacroDeleteStep))
                                                 .clicked()
                                             {
                                                 action = Some(StepAction::Delete(i));
@@ -1319,19 +1322,21 @@ fn draw_step_editor(
                                                     [40.0, W_H],
                                                     egui::Button::new("\u{25B6}0\u{25C0}").small(),
                                                 )
-                                                .on_hover_text("Reset this step's delay to 0 ms")
+                                                .on_hover_text(help(HelpKey::MacroResetStepDelay))
                                                 .clicked()
                                             {
                                                 macros_state.step_delay_edits[i] = "0".into();
                                                 action = Some(StepAction::UpdateDelay(i));
                                             }
                                             // Delay TextEdit
-                                            let delay_resp = ui.add_sized(
-                                                [50.0, W_H],
-                                                egui::TextEdit::singleline(
-                                                    &mut macros_state.step_delay_edits[i],
-                                                ),
-                                            );
+                                            let delay_resp = ui
+                                                .add_sized(
+                                                    [50.0, W_H],
+                                                    egui::TextEdit::singleline(
+                                                        &mut macros_state.step_delay_edits[i],
+                                                    ),
+                                                )
+                                                .on_hover_text(help(HelpKey::MacroStepDelay));
                                             if delay_resp.changed() || delay_resp.lost_focus() {
                                                 action = Some(StepAction::UpdateDelay(i));
                                             }
@@ -1347,12 +1352,17 @@ fn draw_step_editor(
                                                     StepModeChoice::Fixed
                                                         | StepModeChoice::Relative
                                                 ) {
-                                                    let resp = ui.add_sized(
-                                                        [60.0, W_H],
-                                                        egui::TextEdit::singleline(
-                                                            &mut macros_state.step_value_edits[i],
-                                                        ),
-                                                    );
+                                                    let resp = ui
+                                                        .add_sized(
+                                                            [60.0, W_H],
+                                                            egui::TextEdit::singleline(
+                                                                &mut macros_state
+                                                                    .step_value_edits[i],
+                                                            ),
+                                                        )
+                                                        .on_hover_text(help(
+                                                            HelpKey::MacroStepValue,
+                                                        ));
                                                     if resp.changed() || resp.lost_focus() {
                                                         action = Some(StepAction::UpdateMode(i));
                                                     }
@@ -1370,31 +1380,38 @@ fn draw_step_editor(
                                                     |ui| {
                                                         let mode_id =
                                                             ui.id().with(("step_mode", i));
-                                                        egui::ComboBox::from_id_salt(mode_id)
-                                                            .width(80.0)
-                                                            .selected_text(
-                                                                macros_state.step_mode_edits[i]
-                                                                    .label(),
-                                                            )
-                                                            .show_ui(ui, |ui| {
-                                                                for choice in StepModeChoice::ALL {
-                                                                    if ui
-                                                                        .selectable_value(
-                                                                            &mut macros_state
-                                                                                .step_mode_edits[i],
-                                                                            choice,
-                                                                            choice.label(),
-                                                                        )
-                                                                        .changed()
+                                                        let step_mode_combo =
+                                                            egui::ComboBox::from_id_salt(mode_id)
+                                                                .width(80.0)
+                                                                .selected_text(
+                                                                    macros_state.step_mode_edits[i]
+                                                                        .label(),
+                                                                )
+                                                                .show_ui(ui, |ui| {
+                                                                    for choice in
+                                                                        StepModeChoice::ALL
                                                                     {
-                                                                        action = Some(
-                                                                            StepAction::UpdateMode(
-                                                                                i,
-                                                                            ),
-                                                                        );
+                                                                        if ui
+                                                                            .selectable_value(
+                                                                                &mut macros_state
+                                                                                    .step_mode_edits
+                                                                                    [i],
+                                                                                choice,
+                                                                                choice.label(),
+                                                                            )
+                                                                            .changed()
+                                                                        {
+                                                                            action = Some(
+                                                                                StepAction::UpdateMode(
+                                                                                    i,
+                                                                                ),
+                                                                            );
+                                                                        }
                                                                     }
-                                                                }
-                                                            });
+                                                                });
+                                                        step_mode_combo.response.on_hover_text(
+                                                            help(HelpKey::MacroStepMode),
+                                                        );
                                                     },
                                                 );
                                             }
@@ -1600,7 +1617,7 @@ fn draw_add_step(
                 egui::vec2(180.0, 22.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
-                    egui::ComboBox::from_id_salt("add_step_kind")
+                    let kind_combo = egui::ComboBox::from_id_salt("add_step_kind")
                         .width(180.0)
                         .selected_text(macros_state.add_step_kind.label())
                         .show_ui(ui, |ui| {
@@ -1610,21 +1627,25 @@ fn draw_add_step(
                                 ui.selectable_value(&mut macros_state.add_step_kind, k, k.label());
                             }
                         });
+                    kind_combo
+                        .response
+                        .on_hover_text(help(HelpKey::MacroAddStepKind));
                 },
             );
             ui.add_space(8.0);
             ui.checkbox(&mut macros_state.track_latest_osc, "Track latest OSC")
-                .on_hover_text(
-                    "Mirror the most-recent inbound parameter from the console into \
-                     the form below so you can hit Add Step without retyping.",
-                );
+                .on_hover_text(help(HelpKey::MacroMirrorInbound));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let add_btn = theme::action_button(
                     "Add Step",
                     theme::ACCENT_GREEN,
                     egui::Vec2::new(90.0, 24.0),
                 );
-                if ui.add(add_btn).clicked() {
+                if ui
+                    .add(add_btn)
+                    .on_hover_text(help(HelpKey::MacroAddStepCommit))
+                    .clicked()
+                {
                     add_clicked = true;
                 }
             });
@@ -1662,10 +1683,7 @@ fn draw_add_step(
                         egui::TextEdit::singleline(&mut macros_state.add_step_qlab_cue_number)
                             .hint_text("e.g. 1, 2.5, Q12"),
                     )
-                    .on_hover_text(
-                        "QLab cue number — free-form string (numbers, letters, dots). \
-                         Sent as `/cue/<number>/start`.",
-                    );
+                    .on_hover_text(help(HelpKey::MacroQlabCueNumber));
                 }
                 AddStepKindChoice::GoNextCue
                 | AddStepKindChoice::GoPreviousCue
@@ -1687,7 +1705,7 @@ fn draw_add_step(
                     egui::vec2(80.0, 22.0),
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
-                        egui::ComboBox::from_id_salt("add_mode")
+                        let mode_combo = egui::ComboBox::from_id_salt("add_mode")
                             .width(80.0)
                             .selected_text(macros_state.add_step_mode.label())
                             .show_ui(ui, |ui| {
@@ -1701,6 +1719,9 @@ fn draw_add_step(
                                     );
                                 }
                             });
+                        mode_combo
+                            .response
+                            .on_hover_text(help(HelpKey::MacroStepMode));
                     },
                 );
                 if matches!(
@@ -1711,7 +1732,8 @@ fn draw_add_step(
                     ui.add_sized(
                         [60.0, 22.0],
                         egui::TextEdit::singleline(&mut macros_state.add_step_value),
-                    );
+                    )
+                    .on_hover_text(help(HelpKey::MacroStepValue));
                 }
             }
 
@@ -1720,7 +1742,8 @@ fn draw_add_step(
             ui.add_sized(
                 [50.0, 22.0],
                 egui::TextEdit::singleline(&mut macros_state.add_step_delay),
-            );
+            )
+            .on_hover_text(help(HelpKey::MacroStepDelay));
             ui.label("ms");
         },
     );
@@ -1803,7 +1826,7 @@ fn draw_parameter_wizard(
         egui::vec2(70.0, W_H),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            egui::ComboBox::from_id_salt("add_ch_type")
+            let ct_combo = egui::ComboBox::from_id_salt("add_ch_type")
                 .width(70.0)
                 .selected_text(macros_state.add_step_channel_type.label())
                 .show_ui(ui, |ui| {
@@ -1823,6 +1846,9 @@ fn draw_parameter_wizard(
                         }
                     }
                 });
+            ct_combo
+                .response
+                .on_hover_text(help(HelpKey::MacroWizardChannelType));
         },
     );
 
@@ -1830,7 +1856,8 @@ fn draw_parameter_wizard(
     ui.add_sized(
         [40.0, W_H],
         egui::TextEdit::singleline(&mut macros_state.add_step_channel_number),
-    );
+    )
+    .on_hover_text(help(HelpKey::MacroWizardChannelNumber));
 
     // Section
     let ch_num: u8 = macros_state
@@ -1858,7 +1885,7 @@ fn draw_parameter_wizard(
         egui::vec2(140.0, W_H),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            egui::ComboBox::from_id_salt("add_section")
+            let section_combo = egui::ComboBox::from_id_salt("add_section")
                 .width(140.0)
                 .selected_text(section_label)
                 .show_ui(ui, |ui| {
@@ -1876,6 +1903,9 @@ fn draw_parameter_wizard(
                         }
                     }
                 });
+            section_combo
+                .response
+                .on_hover_text(help(HelpKey::MacroWizardSection));
         },
     );
 
@@ -1901,7 +1931,7 @@ fn draw_parameter_wizard(
         egui::vec2(220.0, W_H),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            egui::ComboBox::from_id_salt("add_param")
+            let param_combo = egui::ComboBox::from_id_salt("add_param")
                 .width(220.0)
                 .selected_text(path_label)
                 .show_ui(ui, |ui| {
@@ -1916,6 +1946,9 @@ fn draw_parameter_wizard(
                         }
                     }
                 });
+            param_combo
+                .response
+                .on_hover_text(help(HelpKey::MacroWizardParameter));
         },
     );
 }
@@ -1962,7 +1995,7 @@ fn draw_fire_macro_picker(
         egui::vec2(220.0, 22.0),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            egui::ComboBox::from_id_salt("add_step_target_macro")
+            let macro_combo = egui::ComboBox::from_id_salt("add_step_target_macro")
                 .width(220.0)
                 .selected_text(selected_label)
                 .show_ui(ui, |ui| {
@@ -1976,6 +2009,9 @@ fn draw_fire_macro_picker(
                         );
                     }
                 });
+            macro_combo
+                .response
+                .on_hover_text(help(HelpKey::MacroTargetMacro));
         },
     );
 }
@@ -2011,7 +2047,7 @@ fn draw_snapshot_picker(
         egui::vec2(220.0, 22.0),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            egui::ComboBox::from_id_salt("add_step_target_snapshot")
+            let snapshot_combo = egui::ComboBox::from_id_salt("add_step_target_snapshot")
                 .width(220.0)
                 .selected_text(selected_label)
                 .show_ui(ui, |ui| {
@@ -2025,6 +2061,9 @@ fn draw_snapshot_picker(
                         );
                     }
                 });
+            snapshot_combo
+                .response
+                .on_hover_text(help(HelpKey::MacroTargetSnapshot));
         },
     );
 }
@@ -2060,7 +2099,7 @@ fn draw_palette_picker(
         egui::vec2(220.0, 22.0),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            egui::ComboBox::from_id_salt("add_step_target_palette")
+            let palette_combo = egui::ComboBox::from_id_salt("add_step_target_palette")
                 .width(220.0)
                 .selected_text(selected_label)
                 .show_ui(ui, |ui| {
@@ -2074,6 +2113,9 @@ fn draw_palette_picker(
                         );
                     }
                 });
+            palette_combo
+                .response
+                .on_hover_text(help(HelpKey::MacroTargetPalette));
         },
     );
     ui.label("Target channel:");
@@ -2081,7 +2123,7 @@ fn draw_palette_picker(
         egui::vec2(70.0, 22.0),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            egui::ComboBox::from_id_salt("add_step_palette_ch_type")
+            let palette_ct_combo = egui::ComboBox::from_id_salt("add_step_palette_ch_type")
                 .width(70.0)
                 .selected_text(macros_state.add_step_palette_channel_type.label())
                 .show_ui(ui, |ui| {
@@ -2095,12 +2137,16 @@ fn draw_palette_picker(
                         );
                     }
                 });
+            palette_ct_combo
+                .response
+                .on_hover_text(help(HelpKey::MacroPaletteChannelType));
         },
     );
     ui.add_sized(
         [40.0, 22.0],
         egui::TextEdit::singleline(&mut macros_state.add_step_palette_channel_number),
-    );
+    )
+    .on_hover_text(help(HelpKey::MacroPaletteChannelNumber));
 }
 
 /// Build a `MacroStepKind` from the current Add Step form state.
@@ -2580,12 +2626,9 @@ fn draw_streamdeck_launcher(
                 theme::action_button(toggle_label, toggle_color, egui::Vec2::new(BTN_W, BTN_H)),
             )
             .on_hover_text(if cfg_snapshot.enabled {
-                "Disable the Stream Deck integration. Disconnects the \
-                 device but preserves your button maps."
+                help(HelpKey::StreamDeckDisable)
             } else {
-                "Enable the Stream Deck integration. Auto-connects to \
-                 the previously-selected device if it's plugged in; \
-                 otherwise open Setup… to pick one."
+                help(HelpKey::StreamDeckEnable)
             });
         if toggle_resp.clicked() {
             let new_enabled = !cfg_snapshot.enabled;
@@ -2613,10 +2656,7 @@ fn draw_streamdeck_launcher(
                     egui::Vec2::new(BTN_W, BTN_H),
                 ),
             )
-            .on_hover_text(
-                "Open the Stream Deck panel — device selection, \
-                 button grid, per-button macro sequences.",
-            )
+            .on_hover_text(help(HelpKey::StreamDeckOpenPanel))
             .clicked()
         {
             macros_state.streamdeck_popup_open = !macros_state.streamdeck_popup_open;
@@ -2712,7 +2752,7 @@ fn draw_streamdeck_panel(
     ui.horizontal(|ui| {
         theme::row_label(ui, "Device:", theme::label_color());
         theme::row_combo(ui, 0, |ui| {
-            egui::ComboBox::from_id_salt("streamdeck_device")
+            let device_combo = egui::ComboBox::from_id_salt("streamdeck_device")
                 .width(260.0)
                 .selected_text(selected_label)
                 .show_ui(ui, |ui| {
@@ -2784,6 +2824,9 @@ fn draw_streamdeck_panel(
                         }
                     }
                 });
+            device_combo
+                .response
+                .on_hover_text(help(HelpKey::StreamDeckDevice));
         });
     });
 
@@ -2938,7 +2981,7 @@ fn draw_streamdeck_panel(
                         })
                         .unwrap_or_else(|| "— select macro —".into());
                     theme::row_combo(ui, 0, |ui| {
-                        egui::ComboBox::from_id_salt("sd_add_step_macro")
+                        let sd_macro_combo = egui::ComboBox::from_id_salt("sd_add_step_macro")
                             .width(200.0)
                             .selected_text(selected_label)
                             .show_ui(ui, |ui| {
@@ -2956,6 +2999,9 @@ fn draw_streamdeck_panel(
                                     );
                                 }
                             });
+                        sd_macro_combo
+                            .response
+                            .on_hover_text(help(HelpKey::StreamDeckButtonMacro));
                     });
                     ui.add_space(4.0);
                     if ui
@@ -2964,6 +3010,7 @@ fn draw_streamdeck_panel(
                             theme::ACCENT_GREEN,
                             egui::Vec2::new(80.0, 26.0),
                         ))
+                        .on_hover_text(help(HelpKey::StreamDeckAddStep))
                         .clicked()
                     {
                         if let Some(macro_id) = macros_state.streamdeck_add_step_target {
@@ -3165,7 +3212,7 @@ fn draw_streamdeck_step_list(
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .small_button(egui::RichText::new("Del").color(theme::ACCENT_RED))
-                                .on_hover_text("Delete this step")
+                                .on_hover_text(help(HelpKey::MacroDeleteStep))
                                 .clicked()
                             {
                                 delete_at = Some(i);
@@ -3665,7 +3712,7 @@ pub fn color_swatch_picker(
     user_swatches: &mut Vec<crate::model::streamdeck::StepColor>,
 ) -> bool {
     let popup_id = ui.id().with(("sd_color_picker", &id_salt));
-    let chip_resp = swatch_button(ui, *current, false).on_hover_text("Pick a color");
+    let chip_resp = swatch_button(ui, *current, false).on_hover_text(help(HelpKey::PickColor));
     let mut changed = false;
     egui::Popup::from_toggle_button_response(&chip_resp)
         .id(popup_id)
@@ -3741,7 +3788,7 @@ pub fn color_swatch_picker(
             ui.horizontal(|ui| {
                 if ui
                     .small_button("Save swatch")
-                    .on_hover_text("Add the current color to your saved swatches (per show)")
+                    .on_hover_text(help(HelpKey::MacroAddSwatch))
                     .clicked()
                     && !user_swatches.contains(current)
                 {

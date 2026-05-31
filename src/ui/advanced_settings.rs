@@ -9,15 +9,15 @@
 //!   `MacroEngine` from the same `Arc<AtomicU64>` so the slider here
 //!   immediately affects both.
 //! - **Show diagnostic tabs** — toggle for the OSC Log + Inspector tabs.
-//!
-//! Future controls (color theme, translated help bubbles) slot into
-//! the placeholder section at the bottom.
+//! - **Display scale** — manual UI size multiplier.
+//! - **Appearance** — colour theme and help-bubble language.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use eframe::egui;
 
+use super::help::{HelpKey, help};
 use super::setup_tab::{SetupTabState, save_app_preferences};
 use super::theme;
 use crate::model::ui_mode::ColorTheme;
@@ -114,7 +114,7 @@ pub fn draw_advanced_settings_window(
             );
             let diag_resp = ui
                 .checkbox(&mut setup.show_diagnostics, "Show diagnostic tabs")
-                .on_hover_text("Adds OSC Log and Inspector tabs to the main tab bar.");
+                .on_hover_text(help(HelpKey::AdvancedDiagnostics));
             if diag_resp.changed() {
                 save_app_preferences(setup);
             }
@@ -204,10 +204,24 @@ pub fn draw_advanced_settings_window(
                 } else {
                     theme::btn_neutral()
                 };
-                if theme::row_action_button(ui, "Dark", dark_fill, 80.0, true) {
+                if theme::row_action_button(
+                    ui,
+                    "Dark",
+                    dark_fill,
+                    80.0,
+                    true,
+                    help(HelpKey::ThemeDark),
+                ) {
                     setup.color_theme = ColorTheme::Dark;
                 }
-                if theme::row_action_button(ui, "Light", light_fill, 80.0, true) {
+                if theme::row_action_button(
+                    ui,
+                    "Light",
+                    light_fill,
+                    80.0,
+                    true,
+                    help(HelpKey::ThemeLight),
+                ) {
                     setup.color_theme = ColorTheme::Light;
                 }
                 // configure_style reads setup.color_theme next frame, so the
@@ -221,20 +235,44 @@ pub fn draw_advanced_settings_window(
             ui.separator();
             ui.add_space(8.0);
 
-            // ── Coming soon ──
-            // Reserved slot for a future app-level preference. Greyed out so
-            // the user knows it exists; not yet wired to any backing state.
+            // ── Help bubbles ──
             ui.label(
-                egui::RichText::new("Coming soon")
+                egui::RichText::new("Help bubbles")
                     .strong()
-                    .color(theme::label_weak()),
+                    .color(theme::label_color()),
             );
-            ui.add_enabled_ui(false, |ui| {
-                ui.horizontal(|ui| {
-                    theme::row_label(ui, "Help-bubble language:", theme::label_disabled());
-                    let _ =
-                        theme::row_action_button(ui, "English", theme::btn_neutral(), 110.0, true);
-                });
+            ui.label(
+                egui::RichText::new(
+                    "Tooltips localise into the chosen language; the rest of the UI \
+                     stays English. Languages are JSON files in the app's locales \
+                     folder — drop one in to add a language.",
+                )
+                .small()
+                .color(theme::label_weak()),
+            );
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                theme::row_label(ui, "Help-bubble language:", theme::label_color());
+                let before = setup.help_language.clone();
+                let current = super::help::language_name(&setup.help_language);
+                egui::ComboBox::from_id_salt("help_language_combo")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        for (code, name) in super::help::available_languages() {
+                            let selected = setup.help_language.eq_ignore_ascii_case(&code)
+                                || (setup.help_language.is_empty()
+                                    && code == super::help::ENGLISH_CODE);
+                            if ui.selectable_label(selected, name).clicked() {
+                                setup.help_language = code;
+                            }
+                        }
+                    });
+                // `help::set_active_language` publishes the choice for the next
+                // frame's tooltips; persist so it survives restarts.
+                if setup.help_language != before {
+                    super::help::set_active_language(&setup.help_language);
+                    save_app_preferences(setup);
+                }
             });
         });
 }

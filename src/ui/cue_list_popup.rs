@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use super::UiEvent;
+use super::help::{HelpKey, help};
 use super::theme;
 use crate::console::cue_manager::CueManager;
 use crate::console::palette_manager::PaletteManager;
@@ -119,7 +120,7 @@ pub fn draw_cue_list_popup(
                                     .min_size(egui::vec2(54.0, 22.0));
                                     if ui
                                         .add_enabled(is_connected, fire)
-                                        .on_hover_text("Jump to this cue and recall it.")
+                                        .on_hover_text(help(HelpKey::CueListJump))
                                         .clicked()
                                     {
                                         fire_id = Some(row.id);

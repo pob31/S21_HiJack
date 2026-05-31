@@ -45,6 +45,7 @@ use crate::model::channel::ChannelId;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::parameter::ParameterPath;
 use crate::model::state::ConsoleState;
+use crate::ui::help::{HelpKey, help};
 use crate::ui::recall_scope_popup::{RecallPopupKind, draw_recall_popup};
 use crate::ui::theme;
 use channel_grid::{GroupRenderData, draw_channel_group_block};
@@ -216,6 +217,7 @@ pub fn draw_scope_window(
                             .selected(state.edit_mode == ScopeEditMode::Scope)
                             .min_size(mode_btn_size),
                     )
+                    .on_hover_text(help(HelpKey::ScopeModeScope))
                     .clicked()
                 {
                     state.edit_mode = ScopeEditMode::Scope;
@@ -226,6 +228,7 @@ pub fn draw_scope_window(
                             .selected(state.edit_mode == ScopeEditMode::PreWait)
                             .min_size(mode_btn_size),
                     )
+                    .on_hover_text(help(HelpKey::ScopeModePreWait))
                     .clicked()
                 {
                     state.edit_mode = ScopeEditMode::PreWait;
@@ -236,6 +239,7 @@ pub fn draw_scope_window(
                             .selected(state.edit_mode == ScopeEditMode::Fade)
                             .min_size(mode_btn_size),
                     )
+                    .on_hover_text(help(HelpKey::ScopeModeFade))
                     .clicked()
                 {
                     state.edit_mode = ScopeEditMode::Fade;
@@ -248,7 +252,11 @@ pub fn draw_scope_window(
                     theme::btn_neutral(),
                     egui::Vec2::new(80.0, 28.0),
                 );
-                if ui.add(clear_btn).clicked() {
+                if ui
+                    .add(clear_btn)
+                    .on_hover_text(help(HelpKey::ScopeClearAll))
+                    .clicked()
+                {
                     state.clear();
                 }
                 ui.add_space(8.0);
@@ -316,6 +324,8 @@ pub fn draw_scope_window(
                 );
                 if ui
                     .add_enabled(dirty_available && dirty_has_any, clear_changes_btn)
+                    .on_hover_text(help(HelpKey::ScopeClearChanges))
+                    .on_disabled_hover_text(help(HelpKey::ScopeClearChangesDisabled))
                     .clicked()
                 {
                     outcome.clear_dirty_requested = true;
@@ -340,7 +350,7 @@ pub fn draw_scope_window(
                     .map(|(_, n)| n.clone())
                     .unwrap_or_else(|| "(select)".into());
                 theme::row_combo(ui, 0, |ui| {
-                    egui::ComboBox::from_id_salt("scope_editor_templates_combo")
+                    let combo = egui::ComboBox::from_id_salt("scope_editor_templates_combo")
                         .selected_text(&current_name)
                         .width(180.0)
                         .height(320.0)
@@ -360,6 +370,9 @@ pub fn draw_scope_window(
                                 }
                             }
                         });
+                    combo
+                        .response
+                        .on_hover_text(help(HelpKey::ScopeTemplateCombo));
                 });
 
                 if theme::row_action_button(
@@ -368,6 +381,7 @@ pub fn draw_scope_window(
                     theme::ACCENT_BLUE,
                     70.0,
                     selected_template_full.is_some(),
+                    help(HelpKey::ScopeTemplateLoad),
                 ) {
                     if let Some(tmpl) = selected_template_full.as_ref() {
                         state.load_template(tmpl, aux_count, group_count, matrix_count);
@@ -387,7 +401,14 @@ pub fn draw_scope_window(
                     "",
                 );
                 let can_save = !state.template_name_buf.trim().is_empty();
-                if theme::row_action_button(ui, "Save", theme::ACCENT_GREEN, 70.0, can_save) {
+                if theme::row_action_button(
+                    ui,
+                    "Save",
+                    theme::ACCENT_GREEN,
+                    70.0,
+                    can_save,
+                    help(HelpKey::ScopeTemplateSave),
+                ) {
                     let name = state.template_name_buf.trim().to_string();
                     let new_tmpl = state.to_scope_template(name);
                     state.template_name_buf.clear();

@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use super::UiEvent;
+use super::help::{HelpKey, help};
 use super::net_interfaces;
 use super::theme;
 use crate::console::connection::ConnectionManager;
@@ -78,6 +79,10 @@ pub struct SetupTabState {
     /// `AppPreferences::color_theme`, persisted via `save_app_preferences`,
     /// and read each frame by `theme::configure_style` for the hot-switch.
     pub color_theme: ColorTheme,
+    /// Active help-bubble language code (Advanced Settings → Appearance).
+    /// Mirrors `AppPreferences::help_language`; persisted via
+    /// `save_app_preferences` and published to `help::set_active_language`.
+    pub help_language: String,
     /// Source-IP CIDR allowlist for the monitor server (audit C2). Round-trips
     /// through the show file. UI editor is a follow-up; for now operators
     /// edit the JSON directly or use the `--monitor-allow-cidr` CLI flag.
@@ -164,6 +169,7 @@ impl SetupTabState {
             send_pace_us: prefs.send_pace_us,
             ui_scale: prefs.ui_scale,
             color_theme: prefs.color_theme,
+            help_language: prefs.help_language.clone(),
             monitor_allow_cidrs: Vec::new(),
             trigger_allow_cidrs: Vec::new(),
             ui_mode: prefs.ui_mode.unwrap_or_default(),
@@ -328,6 +334,25 @@ const PORT_EDIT_H: f32 = 26.0;
 /// of breathing room inside the box.
 const PORT_EDIT_MARGIN: egui::Margin = egui::Margin::symmetric(6, 4);
 
+/// Help key for a UI-mode toggle (the Display-Mode row and the first-run popup
+/// share these).
+fn ui_mode_help(mode: UiMode) -> HelpKey {
+    match mode {
+        UiMode::Full => HelpKey::UiModeFull,
+        UiMode::LiveMusic => HelpKey::UiModeLiveMusic,
+        UiMode::Theatre => HelpKey::UiModeTheatre,
+    }
+}
+
+/// Help key for a connection-mode toggle.
+fn conn_mode_help(mode: OperatingMode) -> HelpKey {
+    match mode {
+        OperatingMode::Mode1 => HelpKey::ConnModeMode1,
+        OperatingMode::Mode2 => HelpKey::ConnModeMode2,
+        OperatingMode::Mode3 => HelpKey::ConnModeMode3,
+    }
+}
+
 /// Render a port-number `TextEdit` with the standard width / height /
 /// margin. `enabled` controls interaction (becomes greyed out when
 /// `is_connected` is true). Optional `hint` paints placeholder text
@@ -337,7 +362,7 @@ fn port_edit_enabled(
     value: &mut String,
     enabled: bool,
     hint: &str,
-    hover: &str,
+    hover: impl Into<egui::WidgetText>,
 ) -> egui::Response {
     let resp = ui
         .add_enabled_ui(enabled, |ui| {
@@ -360,7 +385,7 @@ fn port_edit_visible(
     value: &mut String,
     visible: bool,
     enabled: bool,
-    hover: &str,
+    hover: impl Into<egui::WidgetText>,
 ) -> egui::Response {
     let builder = if visible {
         egui::UiBuilder::new()
@@ -680,7 +705,7 @@ pub fn draw_setup_tab(
                             !is_connected,
                             "",
                         )
-                        .on_hover_text("S21 console IP address.");
+                        .on_hover_text(help(HelpKey::SetupConsoleIp));
                         if resp.changed() {
                             // Operator edited the IP — let the warning
                             // re-evaluate against the new value.
@@ -696,11 +721,7 @@ pub fn draw_setup_tab(
                             .min_size(egui::Vec2::new(20.0, 20.0));
                             if ui
                                 .add(warn_btn)
-                                .on_hover_text(
-                                    "Console IP isn't on the selected NIC's network \
-                                     (first two octets differ — unreachable even with /16). \
-                                     Click to dismiss.",
-                                )
+                                .on_hover_text(help(HelpKey::SetupConsoleIpWarning))
                                 .clicked()
                             {
                                 setup.console_ip_warning_dismissed = true;
@@ -733,7 +754,7 @@ pub fn draw_setup_tab(
                                 &mut setup.console_port,
                                 !is_connected,
                                 "",
-                                "Console port — daemon sends GP OSC here.",
+                                help(HelpKey::SetupConsolePort),
                             );
                             ui.label(egui::RichText::new("←").color(theme::label_weak()));
                             ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
@@ -746,7 +767,7 @@ pub fn draw_setup_tab(
                                 &mut setup.local_port,
                                 !is_connected,
                                 "",
-                                "Local port the daemon listens on for GP OSC from the console.",
+                                help(HelpKey::SetupLocalPort),
                             );
                             ui.end_row();
 
@@ -776,7 +797,7 @@ pub fn draw_setup_tab(
                                 &mut setup.ipad_console_port,
                                 uses_ipad,
                                 !is_connected,
-                                "Console iPad-protocol port — daemon sends here.",
+                                help(HelpKey::SetupIpadConsolePort),
                             );
                             ui.add_visible(
                                 uses_ipad,
@@ -801,7 +822,7 @@ pub fn draw_setup_tab(
                                 &mut setup.ipad_local_port,
                                 uses_ipad,
                                 !is_connected,
-                                "Local port the daemon listens on for iPad-protocol traffic.",
+                                help(HelpKey::SetupIpadLocalPort),
                             );
                             ui.end_row();
                         });
@@ -962,6 +983,7 @@ pub fn draw_setup_tab(
                                 .min_size(egui::Vec2::new(action_btn_w, 28.0));
                                 if ui
                                     .add_sized([action_btn_w, 28.0], btn)
+                                    .on_hover_text(help(ui_mode_help(mode)))
                                     .clicked()
                                     && setup.ui_mode != mode
                                 {
@@ -993,7 +1015,7 @@ pub fn draw_setup_tab(
                                     .unwrap_or_else(|| setup.local_ip.clone())
                             };
                             theme::row_combo(ui, 0, |ui| {
-                            egui::ComboBox::from_id_salt("nic_select")
+                            let nic = egui::ComboBox::from_id_salt("nic_select")
                                 .selected_text(&current_label)
                                 .width(action_row_w)
                                 .show_ui(ui, |ui| {
@@ -1031,6 +1053,7 @@ pub fn draw_setup_tab(
                                         }
                                     }
                                 });
+                            nic.response.on_hover_text(help(HelpKey::SetupNetwork));
                             });
                         });
                         ui.end_row();
@@ -1060,6 +1083,8 @@ pub fn draw_setup_tab(
                                         ui.add_sized([action_btn_w, 28.0], btn)
                                     })
                                     .inner
+                                    .on_hover_text(help(conn_mode_help(mode)))
+                                    .on_disabled_hover_text(help(HelpKey::ConnModeDisabled))
                                     .clicked()
                                 {
                                     setup.operating_mode = mode;
@@ -1081,6 +1106,7 @@ pub fn draw_setup_tab(
                                 theme::btn_neutral(),
                                 egui::Vec2::new(action_row_w, 28.0),
                             ))
+                            .on_hover_text(help(HelpKey::SetupCoverage))
                             .clicked()
                         {
                             setup.show_coverage_popup = true;
@@ -1134,10 +1160,7 @@ pub fn draw_setup_tab(
                                     theme::ACCENT_GREEN,
                                     egui::Vec2::new(action_btn_w, 28.0),
                                 ))
-                                .on_hover_text(
-                                    "Pick a show file and load it. Save As… to save to \
-                                     a new path.",
-                                )
+                                .on_hover_text(help(HelpKey::SetupOpenShow))
                                 .clicked()
                             {
                                 if let Some(path) = rfd::FileDialog::new()
@@ -1171,10 +1194,7 @@ pub fn draw_setup_tab(
                         );
                         if ui
                             .add(save_btn)
-                            .on_hover_text(
-                                "Save to the path shown above. If empty, prompts for a \
-                                 location.",
-                            )
+                            .on_hover_text(help(HelpKey::SetupSaveShow))
                             .clicked()
                         {
                             if setup.show_file_path.is_empty()
@@ -1206,10 +1226,7 @@ pub fn draw_setup_tab(
                         );
                         if ui
                             .add(save_as_btn)
-                            .on_hover_text(
-                                "Pick a new location and save there. Useful when the \
-                                 path field already points at a different file.",
-                            )
+                            .on_hover_text(help(HelpKey::SetupSaveShowAs))
                             .clicked()
                         {
                             // Pre-seed the dialog with the current path's
@@ -1248,7 +1265,11 @@ pub fn draw_setup_tab(
                             theme::ACCENT_ORANGE,
                             egui::Vec2::new(action_btn_w, 28.0),
                         );
-                        if ui.add(new_btn).clicked() {
+                        if ui
+                            .add(new_btn)
+                            .on_hover_text(help(HelpKey::SetupNewShow))
+                            .clicked()
+                        {
                             let cue_mgr = cue_manager.clone();
                             let macro_mgr = macro_manager.clone();
                             let pmgr_arc = palette_manager.clone();
@@ -1318,9 +1339,7 @@ pub fn draw_setup_tab(
                                     !is_connected,
                                     "auto-detect",
                                 )
-                                .on_hover_text(
-                                    "iPad device IP — leave blank to auto-detect from first inbound packet.",
-                                );
+                                .on_hover_text(help(HelpKey::SetupIpadIp));
                             });
                             ui.add_space(6.0);
 
@@ -1340,7 +1359,7 @@ pub fn draw_setup_tab(
                                         &mut setup.ipad_reply_port,
                                         !is_connected,
                                         "",
-                                        "Port on the iPad — daemon sends to it here.",
+                                        help(HelpKey::SetupIpadReplyPort),
                                     );
                                     ui.end_row();
 
@@ -1349,7 +1368,7 @@ pub fn draw_setup_tab(
                                         &mut setup.ipad_listen_port,
                                         !is_connected,
                                         "",
-                                        "Local port the daemon listens on for iPad→daemon traffic.",
+                                        help(HelpKey::SetupIpadListenPort),
                                     );
                                     ui.label(egui::RichText::new("←").color(theme::label_weak()));
                                     ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
@@ -1408,7 +1427,7 @@ pub fn draw_setup_tab(
                             !is_connected,
                             "127.0.0.1",
                         )
-                        .on_hover_text("QLab host — usually 127.0.0.1 if QLab runs on this machine.");
+                        .on_hover_text(help(HelpKey::SetupQlabHost));
                     });
                     ui.add_space(6.0);
 
@@ -1436,7 +1455,7 @@ pub fn draw_setup_tab(
                                 &mut setup.qlab_port,
                                 !is_connected,
                                 "53000",
-                                "QLab's OSC listen port — daemon sends cue-build commands here.",
+                                help(HelpKey::SetupQlabPort),
                             );
                             ui.label(egui::RichText::new("←").color(theme::label_weak()));
                             ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
@@ -1450,7 +1469,7 @@ pub fn draw_setup_tab(
                                 &mut setup.trigger_port,
                                 !is_connected,
                                 "",
-                                "Local port the daemon listens on for cue triggers from QLab.",
+                                help(HelpKey::SetupTriggerPort),
                             );
                             ui.end_row();
                         });
@@ -1492,7 +1511,7 @@ pub fn draw_setup_tab(
                                 &mut setup.monitor_port,
                                 !is_connected,
                                 "off",
-                                "Local port for the Flutter monitor app — leave blank to disable.",
+                                help(HelpKey::SetupMonitorPort),
                             );
                             ui.label(egui::RichText::new("↔").color(theme::label_weak()));
                             ui.label(
@@ -1607,7 +1626,7 @@ pub fn draw_setup_tab(
                 theme::btn_neutral(),
                 egui::Vec2::new(110.0, 28.0),
             ))
-            .on_hover_text("Pacing, diagnostics, and other application preferences.")
+            .on_hover_text(help(HelpKey::SetupAdvanced))
             .clicked()
         {
             setup.show_advanced_panel = !setup.show_advanced_panel;
@@ -2490,6 +2509,7 @@ pub(crate) fn save_app_preferences(setup: &SetupTabState) {
         send_pace_us: setup.send_pace_us,
         ui_scale: setup.ui_scale,
         color_theme: setup.color_theme,
+        help_language: setup.help_language.clone(),
     };
     if let Err(e) = prefs.save() {
         tracing::warn!(error = %e, "Failed to save app preferences");
@@ -2539,6 +2559,7 @@ fn draw_first_run_popup(ui: &mut egui::Ui, setup: &mut SetupTabState) {
                             [120.0, 32.0],
                             egui::Button::new(egui::RichText::new(mode.label()).strong()),
                         )
+                        .on_hover_text(help(ui_mode_help(mode)))
                         .clicked()
                     {
                         setup.ui_mode = mode;

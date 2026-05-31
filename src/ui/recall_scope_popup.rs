@@ -4,6 +4,7 @@
 
 use eframe::egui;
 
+use super::help::{HelpKey, help};
 use super::theme;
 use crate::model::channel::ChannelId;
 use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
@@ -137,6 +138,7 @@ pub fn draw_recall_popup(
                                 state.selected_channel > 1,
                                 egui::Button::new("◀").min_size(egui::Vec2::new(28.0, 22.0)),
                             )
+                            .on_hover_text(help(HelpKey::RecallScopePrevChannel))
                             .clicked()
                         {
                             state.selected_channel =
@@ -152,6 +154,7 @@ pub fn draw_recall_popup(
                                 state.selected_channel < max,
                                 egui::Button::new("▶").min_size(egui::Vec2::new(28.0, 22.0)),
                             )
+                            .on_hover_text(help(HelpKey::RecallScopeNextChannel))
                             .clicked()
                         {
                             state.selected_channel = (state.selected_channel + 1).min(max);

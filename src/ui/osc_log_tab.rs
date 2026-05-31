@@ -1,5 +1,6 @@
 use eframe::egui;
 
+use super::help::{HelpKey, help};
 use super::theme;
 use crate::model::osc_log::{OscDirection, OscLog};
 
@@ -36,11 +37,14 @@ pub fn draw_osc_log_tab(ui: &mut egui::Ui, tab: &mut OscLogTabState, log: &OscLo
                 egui::TextEdit::singleline(&mut tab.filter)
                     .desired_width(200.0)
                     .hint_text("path contains..."),
-            );
+            )
+            .on_hover_text(help(HelpKey::OscLogFilter));
 
             ui.add_space(12.0);
-            ui.checkbox(&mut tab.show_in, "IN");
-            ui.checkbox(&mut tab.show_out, "OUT");
+            ui.checkbox(&mut tab.show_in, "IN")
+                .on_hover_text(help(HelpKey::OscLogShowIn));
+            ui.checkbox(&mut tab.show_out, "OUT")
+                .on_hover_text(help(HelpKey::OscLogShowOut));
 
             ui.add_space(12.0);
 
@@ -57,6 +61,7 @@ pub fn draw_osc_log_tab(ui: &mut egui::Ui, tab: &mut OscLogTabState, log: &OscLo
                     pause_color,
                     egui::Vec2::new(80.0, 28.0),
                 ))
+                .on_hover_text(help(HelpKey::OscLogPause))
                 .clicked()
             {
                 log.set_paused(!paused);
@@ -68,6 +73,7 @@ pub fn draw_osc_log_tab(ui: &mut egui::Ui, tab: &mut OscLogTabState, log: &OscLo
                     theme::ACCENT_RED,
                     egui::Vec2::new(70.0, 28.0),
                 ))
+                .on_hover_text(help(HelpKey::OscLogClear))
                 .clicked()
             {
                 log.clear();

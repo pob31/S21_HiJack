@@ -4,6 +4,7 @@ use std::sync::Arc;
 use eframe::egui;
 use tokio::sync::RwLock;
 
+use super::help::{HelpKey, help};
 use super::theme;
 use crate::console::gang_manager::GangManager;
 use crate::model::channel::ChannelId;
@@ -72,59 +73,27 @@ impl ChannelTypeSelection {
 /// when included in a gang. Surfaces in the UI on hover so the operator
 /// doesn't have to guess at non-obvious sections (Matrix Sends, Graphic
 /// EQ, CG Membership).
-fn section_tooltip(section: &ParameterSection) -> &'static str {
-    match section {
-        ParameterSection::FaderMutePan => "Channel fader level, mute and pan/balance.",
-        ParameterSection::Name => "Channel name string.",
-        ParameterSection::InputGain => {
-            "Head-amp gain, total/computed gain, gain tracking, phantom \
-             power, main/alt input switch, stereo mode (input channels only)."
-        }
-        ParameterSection::Trim => {
-            "Channel trim level (-40 dB to +40 dB). Available on input, \
-             aux, group and matrix channels."
-        }
-        ParameterSection::Polarity => {
-            "Phase / polarity invert. Available on input, aux, group and \
-             matrix channels."
-        }
-        ParameterSection::BalanceWidth => {
-            "Stereo balance (-1 to +1) and width — applies to stereo \
-             input channels only (GP OSC, input-only per the S21 chart)."
-        }
-        ParameterSection::Delay => "Channel delay time and enable.",
-        ParameterSection::Digitube => "Digitube drive, bias and enable.",
-        ParameterSection::Eq => {
-            "Parametric EQ — band gains, Q, freq, dynamic-EQ \
-             settings, EQ on/off."
-        }
-        ParameterSection::Dyn1 => "Dynamics 1 — compressor / gate parameters and on/off.",
-        ParameterSection::Dyn2 => "Dynamics 2 — second processor parameters and on/off.",
-        ParameterSection::Sends => {
-            "Aux send levels and on/off across all aux buses. \
-             Only propagates between members of the same channel type."
-        }
-        ParameterSection::GroupRouting => {
-            "Group routing — which group buses the channel feeds. \
-             Only propagates between same-type members."
-        }
-        ParameterSection::Inserts => "Insert A / B send / return enable.",
-        ParameterSection::CgMembership => {
-            "Control Group membership — which CGs the channel belongs \
-             to. Settable via the iPad protocol only (Mode 2 / Mode 3) \
-             using CGs_level / CGs_mute bitmasks; GP OSC has no \
-             CG-membership writer. Only propagates between same-type \
-             members."
-        }
-        ParameterSection::GraphicEq => {
-            "Graphic EQ band gains. Only meaningful when ganging \
-             Graphic EQ channels (GEQ1, GEQ2, …)."
-        }
-        ParameterSection::MatrixSends => {
-            "Matrix-send levels and on/off. Only meaningful when \
-             ganging Matrix Input channels (MI1, MI2, …)."
-        }
-    }
+fn section_tooltip(section: &ParameterSection) -> std::borrow::Cow<'static, str> {
+    let key = match section {
+        ParameterSection::FaderMutePan => HelpKey::GangFaderMutePan,
+        ParameterSection::Name => HelpKey::GangName,
+        ParameterSection::InputGain => HelpKey::GangInputGain,
+        ParameterSection::Trim => HelpKey::GangTrim,
+        ParameterSection::Polarity => HelpKey::GangPolarity,
+        ParameterSection::BalanceWidth => HelpKey::GangBalanceWidth,
+        ParameterSection::Delay => HelpKey::GangDelay,
+        ParameterSection::Digitube => HelpKey::GangDigitube,
+        ParameterSection::Eq => HelpKey::GangEq,
+        ParameterSection::Dyn1 => HelpKey::GangDyn1,
+        ParameterSection::Dyn2 => HelpKey::GangDyn2,
+        ParameterSection::Sends => HelpKey::GangSends,
+        ParameterSection::GroupRouting => HelpKey::GangGroupRouting,
+        ParameterSection::Inserts => HelpKey::GangInserts,
+        ParameterSection::CgMembership => HelpKey::GangCgMembership,
+        ParameterSection::GraphicEq => HelpKey::GangGraphicEq,
+        ParameterSection::MatrixSends => HelpKey::GangMatrixSends,
+    };
+    help(key)
 }
 
 /// Pre-compute which `ParameterSection` variants fit on each row given
@@ -336,12 +305,13 @@ pub fn draw_gangs_tab(
                                     theme::ROW_H,
                                     true,
                                     "",
-                                );
+                                )
+                                .on_hover_text(help(HelpKey::GangNewName));
                                 ui.end_row();
 
                                 theme::row_label(ui, "Channel type:", theme::label_weak());
                                 theme::row_combo(ui, 0, |ui| {
-                                    egui::ComboBox::from_id_salt("gang_channel_type")
+                                    let combo = egui::ComboBox::from_id_salt("gang_channel_type")
                                         .width(240.0)
                                         .selected_text(tab.new_gang_channel_type.label())
                                         .show_ui(ui, |ui| {
@@ -353,6 +323,7 @@ pub fn draw_gangs_tab(
                                                 );
                                             }
                                         });
+                                    combo.response.on_hover_text(help(HelpKey::GangChannelType));
                                 });
                                 ui.end_row();
 
@@ -370,7 +341,8 @@ pub fn draw_gangs_tab(
                                     theme::ROW_H,
                                     true,
                                     hint,
-                                );
+                                )
+                                .on_hover_text(help(HelpKey::GangNewMembers));
                                 ui.end_row();
                             });
                     },
@@ -456,7 +428,12 @@ pub fn draw_gangs_tab(
                 };
                 let save_btn =
                     theme::action_button(btn_text, btn_color, egui::Vec2::new(100.0, 32.0));
-                if ui.add(save_btn).clicked() && !tab.new_gang_name.trim().is_empty() {
+                if ui
+                    .add(save_btn)
+                    .on_hover_text(help(HelpKey::GangSave))
+                    .clicked()
+                    && !tab.new_gang_name.trim().is_empty()
+                {
                     let members =
                         parse_channel_members(tab.new_gang_channel_type, &tab.new_gang_members);
 
@@ -501,7 +478,11 @@ pub fn draw_gangs_tab(
                         theme::btn_neutral(),
                         egui::Vec2::new(80.0, 32.0),
                     );
-                    if ui.add(cancel_btn).clicked() {
+                    if ui
+                        .add(cancel_btn)
+                        .on_hover_text(help(HelpKey::GangCancelEdit))
+                        .clicked()
+                    {
                         tab.editing_gang_id = None;
                         tab.new_gang_name.clear();
                         tab.new_gang_members.clear();
@@ -598,7 +579,11 @@ pub fn draw_gangs_tab(
                                         )
                                         .fill(toggle_color)
                                         .corner_radius(4.0);
-                                        if ui.add(toggle_btn).clicked() {
+                                        if ui
+                                            .add(toggle_btn)
+                                            .on_hover_text(help(HelpKey::GangEnableToggle))
+                                            .clicked()
+                                        {
                                             to_toggle = Some((group.id, !group.enabled));
                                         }
 
@@ -617,7 +602,12 @@ pub fn draw_gangs_tab(
                                         )
                                         .fill(pause_color)
                                         .corner_radius(4.0);
-                                        if ui.add_enabled(group.enabled, pause_btn).clicked() {
+                                        if ui
+                                            .add_enabled(group.enabled, pause_btn)
+                                            .on_hover_text(help(HelpKey::GangPause))
+                                            .on_disabled_hover_text(help(HelpKey::GangNeedsEnable))
+                                            .clicked()
+                                        {
                                             to_pause = Some((group.id, !group.paused));
                                         }
 
@@ -628,7 +618,12 @@ pub fn draw_gangs_tab(
                                         )
                                         .selected(group.mode == GangMode::Relative)
                                         .corner_radius(4.0);
-                                        if ui.add_enabled(group.enabled, rel_btn).clicked() {
+                                        if ui
+                                            .add_enabled(group.enabled, rel_btn)
+                                            .on_hover_text(help(HelpKey::GangRelative))
+                                            .on_disabled_hover_text(help(HelpKey::GangNeedsEnable))
+                                            .clicked()
+                                        {
                                             to_set_mode = Some((group.id, GangMode::Relative));
                                         }
                                         let abs_btn = egui::Button::new(
@@ -636,7 +631,12 @@ pub fn draw_gangs_tab(
                                         )
                                         .selected(group.mode == GangMode::Absolute)
                                         .corner_radius(4.0);
-                                        if ui.add_enabled(group.enabled, abs_btn).clicked() {
+                                        if ui
+                                            .add_enabled(group.enabled, abs_btn)
+                                            .on_hover_text(help(HelpKey::GangAbsolute))
+                                            .on_disabled_hover_text(help(HelpKey::GangNeedsEnable))
+                                            .clicked()
+                                        {
                                             to_set_mode = Some((group.id, GangMode::Absolute));
                                         }
 
@@ -689,7 +689,11 @@ pub fn draw_gangs_tab(
                                             theme::ACCENT_ORANGE,
                                             egui::Vec2::new(60.0, 24.0),
                                         );
-                                        if ui.add(edit_btn).clicked() {
+                                        if ui
+                                            .add(edit_btn)
+                                            .on_hover_text(help(HelpKey::GangEdit))
+                                            .clicked()
+                                        {
                                             to_edit = Some(group.clone());
                                         }
                                         // Long-press to confirm — matches the

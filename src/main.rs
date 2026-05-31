@@ -44,6 +44,11 @@ use persistence::preferences::AppPreferences;
 #[derive(Parser, Debug)]
 #[command(name = "s21_hijack", version, about)]
 struct Args {
+    /// Print the English help-bubble template as JSON (for translators to
+    /// redirect into a `locales/<code>.json` file) and exit.
+    #[arg(long)]
+    dump_help_template: bool,
+
     /// Console IP address
     #[arg(long, default_value = "192.168.1.1")]
     console_ip: String,
@@ -121,6 +126,16 @@ impl Args {
 }
 
 fn main() {
+    let args = Args::parse();
+
+    // Translator helper: print the English help-bubble template as JSON and
+    // exit before any logging, so stdout carries only the template — redirect
+    // it into a `locales/<code>.json` file, set `_name`, and translate values.
+    if args.dump_help_template {
+        println!("{}", ui::help::english_template_json());
+        return;
+    }
+
     // Initialize logging (stdout + rotating file) and the crash-capturing
     // panic hook. The returned guard flushes the async file writer on exit, so
     // it must stay alive for the whole program — hold it across both the
@@ -135,8 +150,6 @@ fn main() {
             .map(|d| d.display().to_string())
             .unwrap_or_else(|| "<stdout only>".to_string()),
     );
-
-    let args = Args::parse();
 
     let mode = OperatingMode::from_cli(&args.mode).unwrap_or_default();
 

@@ -38,6 +38,12 @@ pub struct AppPreferences {
     /// existed, preserving the original look.
     #[serde(default)]
     pub color_theme: ColorTheme,
+    /// Operator's chosen help-bubble language code (Advanced Settings →
+    /// Appearance). Empty or `"en"` = the English reference; any other value
+    /// names a `locales/<code>.json` translation file. Defaults to English for
+    /// preference files saved before this field existed.
+    #[serde(default)]
+    pub help_language: String,
 }
 
 /// Default UI scale multiplier — `1.0` means "use the automatic scaling
@@ -56,6 +62,7 @@ impl Default for AppPreferences {
             send_pace_us: 0,
             ui_scale: default_ui_scale(),
             color_theme: ColorTheme::default(),
+            help_language: String::new(),
         }
     }
 }
@@ -142,6 +149,8 @@ mod tests {
         assert_eq!(prefs.ui_scale, 1.0);
         // Missing color_theme defaults to Dark — older files keep the old look.
         assert_eq!(prefs.color_theme, ColorTheme::Dark);
+        // Missing help_language defaults to empty = the English reference.
+        assert!(prefs.help_language.is_empty());
     }
 
     #[test]
@@ -152,6 +161,7 @@ mod tests {
         assert_eq!(prefs.send_pace_us, 0);
         assert_eq!(prefs.ui_scale, 1.0);
         assert_eq!(prefs.color_theme, ColorTheme::Dark);
+        assert!(prefs.help_language.is_empty());
     }
 
     #[test]
@@ -162,6 +172,7 @@ mod tests {
             send_pace_us: 1500,
             ui_scale: 1.25,
             color_theme: ColorTheme::Light,
+            help_language: "fr".to_string(),
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: AppPreferences = serde_json::from_str(&json).unwrap();
@@ -169,5 +180,6 @@ mod tests {
         assert_eq!(prefs.show_diagnostics, back.show_diagnostics);
         assert_eq!(prefs.ui_scale, back.ui_scale);
         assert_eq!(prefs.color_theme, back.color_theme);
+        assert_eq!(prefs.help_language, back.help_language);
     }
 }

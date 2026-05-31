@@ -650,6 +650,7 @@ pub fn row_action_button(
     color: egui::Color32,
     width: f32,
     enabled: bool,
+    hover: impl Into<egui::WidgetText> + Clone,
 ) -> bool {
     ui.scope(|ui| {
         ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
@@ -657,6 +658,9 @@ pub fn row_action_button(
             enabled,
             action_button(text, color, egui::Vec2::new(width, ROW_H)),
         )
+        // Show the help text whether the button is enabled or greyed out.
+        .on_hover_text(hover.clone())
+        .on_disabled_hover_text(hover)
         .clicked()
     })
     .inner

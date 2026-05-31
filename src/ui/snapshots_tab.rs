@@ -7,6 +7,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use super::UiEvent;
+use super::help::{HelpKey, help};
 use super::palettes_ui::{PalettesUiState, draw_palettes_section};
 use super::scope_editor::ScopeEditorState;
 use super::theme;
@@ -170,7 +171,11 @@ pub fn draw_snapshots_tab(
                             theme::ACCENT_BLUE,
                             egui::Vec2::new(120.0, 30.0),
                         );
-                        if ui.add(edit_btn).clicked() {
+                        if ui
+                            .add(edit_btn)
+                            .on_hover_text(help(HelpKey::SnapshotEditScope))
+                            .clicked()
+                        {
                             let template = snap_state
                                 .scope_editor
                                 .to_scope_template("Editing".into());
@@ -187,7 +192,11 @@ pub fn draw_snapshots_tab(
                             theme::btn_neutral(),
                             egui::Vec2::new(70.0, 30.0),
                         );
-                        if ui.add(clear_btn).clicked() {
+                        if ui
+                            .add(clear_btn)
+                            .on_hover_text(help(HelpKey::SnapshotClearScope))
+                            .clicked()
+                        {
                             snap_state.scope_editor.clear();
                         }
                     });
@@ -225,11 +234,7 @@ pub fn draw_snapshots_tab(
                             theme::row_spacer(ui);
                             let mut auto = auto_update_on_recall.load(Ordering::Relaxed);
                             if ui.checkbox(&mut auto, "Auto-save previous on recall")
-                                .on_hover_text(
-                                    "When recalling a snapshot, write any dirty parameters \
-                                     within the previous snapshot's scope back into it. \
-                                     Captures mid-show tweaks automatically.",
-                                )
+                                .on_hover_text(help(HelpKey::SnapshotAutoUpdate))
                                 .changed()
                             {
                                 auto_update_on_recall.store(auto, Ordering::Relaxed);
@@ -246,10 +251,7 @@ pub fn draw_snapshots_tab(
                                 console_snapshot_follow.store(follow, Ordering::Relaxed);
                             }
                             if !uses_ipad {
-                                let _ = resp.on_hover_text(
-                                    "Requires Mode 2 or Mode 3 (iPad protocol) — the console \
-                                     snapshot list is only reachable via that protocol.",
-                                );
+                                let _ = resp.on_hover_text(help(HelpKey::SnapshotConsoleFollowReq));
                             }
                         });
                         ui.add_space(4.0);
@@ -304,6 +306,7 @@ pub fn draw_snapshots_tab(
                                 theme::ACCENT_GREEN,
                                 110.0,
                                 can_capture,
+                                help(HelpKey::SnapshotCaptureNow),
                             ) {
                                 capture_snapshot(
                                     snap_state,
@@ -342,6 +345,7 @@ pub fn draw_snapshots_tab(
                                 theme::ACCENT_GREEN,
                                 70.0,
                                 has_selection && engine_ready,
+                                help(HelpKey::SnapshotRecall),
                             ) {
                                 recall_selected_snapshot(
                                     snap_state,
@@ -371,11 +375,9 @@ pub fn draw_snapshots_tab(
                                 })
                                 .inner;
                             if !can_recall_no_scope && has_selection {
-                                let _ = recall_no_scope_resp.clone().on_hover_text(
-                                    "Only available for snapshots captured with 'Apply scope on recall' \
-                                     — ApplyOnSave snapshots already filtered at capture time, so there \
-                                     is nothing outside the saved scope to recall.",
-                                );
+                                let _ = recall_no_scope_resp
+                                    .clone()
+                                    .on_hover_text(help(HelpKey::SnapshotRecallNoScopeReq));
                             }
                             if recall_no_scope_resp.clicked() {
                                 recall_selected_snapshot(
@@ -395,6 +397,7 @@ pub fn draw_snapshots_tab(
                                 theme::ACCENT_BLUE,
                                 85.0,
                                 has_selection && is_connected,
+                                help(HelpKey::SnapshotRecapture),
                             ) {
                                 recapture_snapshot(snap_state, console_state, cue_manager, dirty_tracker, runtime, ui_tx);
                             }
@@ -439,6 +442,7 @@ pub fn draw_snapshots_tab(
                                 theme::ACCENT_AMBER,
                                 160.0,
                                 has_undo && engine_ready,
+                                help(HelpKey::SnapshotUndo),
                             ) {
                                 if let Some(engine) = snapshot_engine.clone() {
                                     let tx = ui_tx.clone();
@@ -722,6 +726,7 @@ pub fn draw_snapshots_tab(
                                         theme::ACCENT_GREEN,
                                         90.0,
                                         true,
+                                        help(HelpKey::CueAdd),
                                     );
                                 },
                             );
@@ -737,11 +742,11 @@ pub fn draw_snapshots_tab(
                     // Add Cue form
                     ui.horizontal(|ui| {
                         theme::row_label(ui, "Cue #:", theme::label_color());
-                        theme::padded_text_edit_sized(ui, &mut snap_state.new_cue_number, 60.0, theme::ROW_H, true, "");
+                        theme::padded_text_edit_sized(ui, &mut snap_state.new_cue_number, 60.0, theme::ROW_H, true, "").on_hover_text(help(HelpKey::CueNumber));
                         theme::row_label(ui, "Name:", theme::label_color());
-                        theme::padded_text_edit_sized(ui, &mut snap_state.new_cue_name, 130.0, theme::ROW_H, true, "");
+                        theme::padded_text_edit_sized(ui, &mut snap_state.new_cue_name, 130.0, theme::ROW_H, true, "").on_hover_text(help(HelpKey::CueName));
                         theme::row_label(ui, "CS:", theme::label_color());
-                        theme::padded_text_edit_sized(ui, &mut snap_state.new_cue_console_row, 50.0, theme::ROW_H, true, "");
+                        theme::padded_text_edit_sized(ui, &mut snap_state.new_cue_console_row, 50.0, theme::ROW_H, true, "").on_hover_text(help(HelpKey::CueConsoleRow));
                     });
                     ui.horizontal(|ui| {
                         theme::row_label(ui, "Local snapshot:", theme::label_color());
@@ -797,10 +802,7 @@ pub fn draw_snapshots_tab(
                                 ))
                             })
                             .inner
-                            .on_hover_text(
-                                "Bulk-shift every cue's console snapshot when you've \
-                                 inserted or removed snapshots on the console.",
-                            );
+                            .on_hover_text(help(HelpKey::SnapshotBulkShift));
                         if shift_resp.clicked() {
                             snap_state.shift_modal_open = true;
                             snap_state.shift_status = None;
@@ -886,6 +888,7 @@ pub fn draw_snapshots_tab(
                                             theme::ACCENT_GREEN,
                                             150.0,
                                             true,
+                                            help(HelpKey::CueSaveChanges),
                                         );
                                     } else {
                                         // Delete is always shown but dimmed when
@@ -961,7 +964,7 @@ pub fn draw_snapshots_tab(
                             // shift the Notes field below it.
                             ui.horizontal(|ui| {
                                 theme::row_spacer(ui);
-                                ui.checkbox(&mut snap_state.editing_scope_override_enabled, "Scope Override");
+                                ui.checkbox(&mut snap_state.editing_scope_override_enabled, "Scope Override").on_hover_text(help(HelpKey::SnapshotScopeOverride));
                                 if snap_state.editing_scope_override_enabled {
                                     ui.add_space(8.0);
                                     let current_name = snap_state.editing_scope_template_id
@@ -969,7 +972,7 @@ pub fn draw_snapshots_tab(
                                         .map(|t| t.name.clone())
                                         .unwrap_or_else(|| "(select)".into());
                                     theme::row_combo(ui, 0, |ui| {
-                                        egui::ComboBox::from_id_salt("scope_override_selector")
+                                        let combo = egui::ComboBox::from_id_salt("scope_override_selector")
                                             .selected_text(&current_name)
                                             .width(140.0)
                                             .height(320.0)
@@ -983,6 +986,9 @@ pub fn draw_snapshots_tab(
                                                     }
                                                 }
                                             });
+                                        combo
+                                            .response
+                                            .on_hover_text(help(HelpKey::SnapshotScopeOverrideTemplate));
                                     });
                                 }
                             });
@@ -1223,15 +1229,21 @@ pub fn draw_snapshots_tab(
                     .spacing([10.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("Starting row (inclusive):");
-                        theme::padded_text_edit(ui, &mut snap_state.shift_from_row, 90.0, true, "");
+                        theme::padded_text_edit(ui, &mut snap_state.shift_from_row, 90.0, true, "")
+                            .on_hover_text(help(HelpKey::ShiftFromRow));
                         ui.end_row();
                         ui.label("Delta (e.g. +1 / -1):");
-                        theme::padded_text_edit(ui, &mut snap_state.shift_delta, 90.0, true, "");
+                        theme::padded_text_edit(ui, &mut snap_state.shift_delta, 90.0, true, "")
+                            .on_hover_text(help(HelpKey::ShiftDelta));
                         ui.end_row();
                     });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Apply").clicked() {
+                    if ui
+                        .button("Apply")
+                        .on_hover_text(help(HelpKey::ShiftApply))
+                        .clicked()
+                    {
                         let from = snap_state.shift_from_row.trim().parse::<i32>();
                         let delta = snap_state.shift_delta.trim().parse::<i32>();
                         match (from, delta) {
@@ -1274,7 +1286,11 @@ pub fn draw_snapshots_tab(
                             }
                         }
                     }
-                    if ui.button("Close").clicked() {
+                    if ui
+                        .button("Close")
+                        .on_hover_text(help(HelpKey::ShiftClose))
+                        .clicked()
+                    {
                         snap_state.shift_modal_open = false;
                     }
                 });
@@ -1386,6 +1402,10 @@ fn filtered_snapshot_combo(
                 ui.label(egui::RichText::new("No match").color(theme::label_weak()));
             }
         });
+
+    resp.response
+        .clone()
+        .on_hover_text(help(HelpKey::SnapshotPicker));
 
     // Popup closed (clicked away / Escape): drop any stale filter text.
     if resp.inner.is_none() && !filter.is_empty() {

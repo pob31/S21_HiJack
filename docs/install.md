@@ -140,3 +140,57 @@ frame. Combine with the existing flags for full control:
 ```
 s21_hijack --console-ip 192.168.1.10 --mode mode2 my_gig.s21show
 ```
+
+---
+
+## Help-bubble translations
+
+The interface is English-only by design, but the hover **help bubbles**
+(tooltips) can be localised. English is always the reference and is shown
+whenever a translation is missing — so a partial translation is fine, and the
+app works with no translation files at all.
+
+Translations are plain JSON files, one per language. At startup the app scans
+these locations, with later ones overriding earlier (so a machine-specific file
+can override a shipped translation):
+
+1. **Beside the binary** — a `locales/` folder next to the executable. This is
+   where translations ship for distribution.
+2. **Project tree** — `assets/locales/` (relative to the working directory),
+   used when running from source with `cargo run`. The repo ships
+   `template.json` (the English reference) and an example `fr.json` here.
+3. **User config** — a `locales/` folder beside `preferences.json`, for
+   per-machine overrides:
+   - **Windows:** `%APPDATA%\s21_hijack\locales\`
+   - **Linux:** `~/.config/s21_hijack/locales/`
+   - **macOS:** `~/Library/Application Support/s21_hijack/locales/`
+
+Each file is named with a language code (e.g. `fr.json`) and maps help keys to
+translated text. Start from the reference template — copy `template.json` (the
+full English key list, in `assets/locales/` and shipped beside the binary) to a
+new `<code>.json`, or regenerate it from the app:
+
+```
+s21_hijack --dump-help-template > fr.json
+```
+
+Then edit `fr.json`: set `"_name"` to the language's display name (shown in the
+picker) and translate each value. Leave the keys unchanged — they are the
+stable identifiers the app looks up. Any key you omit falls back to English.
+
+```json
+{
+  "_name": "Français",
+  "cue.go": "Rappeler le cue suivant.",
+  "cue.undo": "Annuler le dernier rappel de cue / snapshot."
+}
+```
+
+Drop the file into one of those folders, restart the app, and pick the language
+under **Setup → Advanced… → Help bubbles**. Adding or editing a language never
+requires rebuilding the app. `en.json` and `template.json` are ignored — they
+are references, not selectable languages.
+
+Note: languages in non-Latin scripts (CJK, Arabic, Hebrew, …) need a font that
+covers those glyphs; the bundled Noto Sans covers Latin, Cyrillic and Greek, so
+Western-European languages render as-is.

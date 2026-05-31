@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use eframe::egui;
 use uuid::Uuid;
 
+use super::help::{HelpKey, help};
 use super::theme;
 use crate::model::channel::ChannelId;
 use crate::model::config::{ChannelMode, ConsoleConfig};
@@ -325,7 +326,14 @@ pub fn draw_channel_picker(
                 );
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if theme::row_action_button(ui, "Cancel", theme::ACCENT_RED, 80.0, true) {
+                    if theme::row_action_button(
+                        ui,
+                        "Cancel",
+                        theme::ACCENT_RED,
+                        80.0,
+                        true,
+                        help(HelpKey::MonitorPickerCancel),
+                    ) {
                         outcome = Some(PickerOutcome::Cancel);
                     }
                     if theme::row_action_button(
@@ -334,6 +342,7 @@ pub fn draw_channel_picker(
                         theme::ACCENT_GREEN,
                         80.0,
                         state.save_enabled(),
+                        help(HelpKey::MonitorPickerSave),
                     ) {
                         outcome = Some(state.to_save_outcome());
                     }
@@ -487,7 +496,11 @@ fn draw_inputs_header(ui: &mut egui::Ui, state: &mut ChannelPickerState, panel_w
                             theme::ACCENT_RED,
                             egui::Vec2::new(70.0, 24.0),
                         );
-                        if ui.add(cancel_btn).clicked() {
+                        if ui
+                            .add(cancel_btn)
+                            .on_hover_text(help(HelpKey::MonitorRippleCancel))
+                            .clicked()
+                        {
                             state.ripple = RippleState::Off;
                         }
                         let confirm_btn = theme::action_button(
@@ -495,7 +508,11 @@ fn draw_inputs_header(ui: &mut egui::Ui, state: &mut ChannelPickerState, panel_w
                             theme::ACCENT_GREEN,
                             egui::Vec2::new(80.0, 24.0),
                         );
-                        if ui.add(confirm_btn).clicked() {
+                        if ui
+                            .add(confirm_btn)
+                            .on_hover_text(help(HelpKey::MonitorRippleConfirm))
+                            .clicked()
+                        {
                             state.apply_ripple(first, last);
                             state.ripple = RippleState::Off;
                         }
@@ -516,7 +533,11 @@ fn draw_inputs_header(ui: &mut egui::Ui, state: &mut ChannelPickerState, panel_w
                             },
                             egui::Vec2::new(70.0, 24.0),
                         );
-                        if ui.add(ripple_btn).clicked() {
+                        if ui
+                            .add(ripple_btn)
+                            .on_hover_text(help(HelpKey::MonitorRipple))
+                            .clicked()
+                        {
                             state.ripple = if ripple_armed {
                                 RippleState::Off
                             } else {
@@ -529,7 +550,11 @@ fn draw_inputs_header(ui: &mut egui::Ui, state: &mut ChannelPickerState, panel_w
                             theme::btn_neutral(),
                             egui::Vec2::new(95.0, 24.0),
                         );
-                        if ui.add(deselect).clicked() {
+                        if ui
+                            .add(deselect)
+                            .on_hover_text(help(HelpKey::MonitorDeselectAll))
+                            .clicked()
+                        {
                             state.selected_inputs.clear();
                         }
                         let select_all = theme::action_button(
@@ -537,7 +562,11 @@ fn draw_inputs_header(ui: &mut egui::Ui, state: &mut ChannelPickerState, panel_w
                             theme::btn_neutral(),
                             egui::Vec2::new(85.0, 24.0),
                         );
-                        if ui.add(select_all).clicked() {
+                        if ui
+                            .add(select_all)
+                            .on_hover_text(help(HelpKey::MonitorSelectAll))
+                            .clicked()
+                        {
                             state.selected_inputs = (1..=state.input_count).collect();
                         }
                     }
