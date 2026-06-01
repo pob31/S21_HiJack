@@ -36,7 +36,7 @@ use crate::console::monitor_event::MonitorStateEvent;
 use crate::console::monitor_manager::MonitorManager;
 use crate::model::cidr::{self, Ipv4Cidr};
 use crate::model::monitor::ClientEndpoint;
-use crate::model::state::ConsoleState;
+use crate::model::state::{ConnectionHealth, ConsoleState};
 use crate::osc::monitor_server::MonitorCommand;
 
 /// Shared handles the web server needs to bridge browsers to the monitor
@@ -172,9 +172,15 @@ async fn handle_ws(socket: WebSocket, ctx: WebContext) {
     // 3. Welcome.
     let (input_count, console_connected) = {
         let st = ctx.state.read().await;
+        // "Connected" = a live link (healthy/idle ping) and not in offline mode,
+        // not merely that a session was started.
+        let live = matches!(
+            st.health,
+            ConnectionHealth::Connected | ConnectionHealth::Idle
+        );
         (
             st.config.input_channel_count,
-            !ctx.offline_mode.load(Ordering::Relaxed),
+            live && !ctx.offline_mode.load(Ordering::Relaxed),
         )
     };
     let welcome = protocol::ServerMsg::Welcome {

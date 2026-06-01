@@ -666,10 +666,9 @@ pub fn draw_setup_tab(
             let uses_ipad = setup.operating_mode.uses_ipad_protocol();
             let is_proxy = setup.operating_mode == OperatingMode::Mode3;
 
-            let console_status = if is_connected {
-                Some((theme::COLOR_CONNECTED, "Connected"))
-            } else {
-                Some((theme::COLOR_DISCONNECTED, "Disconnected"))
+            let console_status = {
+                let health = runtime.block_on(state.read()).health;
+                Some(theme::console_status(is_connected, health))
             };
             let ipad_status = if is_proxy {
                 Some(if setup.ipad_connected {

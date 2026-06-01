@@ -111,6 +111,7 @@ pub enum HelpKey {
     // ── Monitor ──
     MonitorAddProfile,
     MonitorEditProfile,
+    MonitorProfilePin,
     MonitorReorder,
     MonitorReorderDone,
 
@@ -522,6 +523,11 @@ fn meta(key: HelpKey) -> HelpMeta {
         MonitorEditProfile => (
             "monitor.edit_profile",
             "Edit this profile's name and permitted channels.",
+        ),
+        MonitorProfilePin => (
+            "monitor.profile_pin",
+            "Optional PIN for the web (browser) login. Leave it blank for \
+             name-only login; the native monitor app ignores it.",
         ),
         MonitorReorder => (
             "monitor.reorder",
@@ -1081,6 +1087,7 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::ScopeConsoleConflict,
     HelpKey::MonitorAddProfile,
     HelpKey::MonitorEditProfile,
+    HelpKey::MonitorProfilePin,
     HelpKey::MonitorReorder,
     HelpKey::MonitorReorderDone,
     HelpKey::OscLogFilter,

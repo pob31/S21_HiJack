@@ -366,6 +366,7 @@ pub fn draw_channel_picker(
             });
 
             // Optional per-profile PIN (web login). Blank = name-only.
+            // The explanation lives in a hover bubble so the row stays compact.
             ui.horizontal(|ui| {
                 theme::row_label(ui, "PIN:", theme::label_color());
                 theme::padded_text_edit_sized(
@@ -374,13 +375,9 @@ pub fn draw_channel_picker(
                     220.0,
                     theme::ROW_H,
                     true,
-                    "optional — required for web login",
-                );
-                ui.label(
-                    egui::RichText::new("blank = name-only")
-                        .color(theme::label_weak())
-                        .small(),
-                );
+                    "optional",
+                )
+                .on_hover_text(help(HelpKey::MonitorProfilePin));
             });
 
             ui.add_space(6.0);

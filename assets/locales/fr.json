@@ -90,6 +90,7 @@
   "monitor.edit_profile": "Edit this profile's name and permitted channels.",
   "monitor.picker_cancel": "Discard changes and close without saving the profile.",
   "monitor.picker_save": "Save this monitoring profile and close.",
+  "monitor.profile_pin": "Optional PIN for the web (browser) login. Leave it blank for name-only login; the native monitor app ignores it.",
   "monitor.reorder": "Rearrange this profile's channel order — drag the badges, then click Done.",
   "monitor.reorder_done": "Finish reordering and save the new channel order.",
   "monitor.ripple": "Range-select inputs: click the first, then the last, to select everything between them.",

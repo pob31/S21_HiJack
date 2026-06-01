@@ -1639,13 +1639,13 @@ impl eframe::App for HiJackApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let is_connected =
                             self.connected.load(std::sync::atomic::Ordering::Relaxed);
-                        let (color, text) = if is_connected {
-                            (super::theme::COLOR_CONNECTED, "Connected")
-                        } else {
-                            (super::theme::COLOR_DISCONNECTED, "Disconnected")
-                        };
+                        // Reflect link *health*: green healthy, yellow
+                        // "Connecting…" when a session is up but the console
+                        // isn't currently reachable, red when no session.
+                        let health = self.runtime.block_on(self.state.read()).health;
+                        let (color, text) = super::theme::console_status(is_connected, health);
                         // Dot only (no text label) to reclaim top-bar width; the
-                        // Connected/Disconnected wording is available on hover.
+                        // status wording is available on hover.
                         super::theme::status_dot(ui, color).on_hover_text(text);
 
                         ui.add_space(12.0);
@@ -2098,6 +2098,38 @@ impl eframe::App for HiJackApp {
                                  gangs sharing parameters. Propagation will fight; remove the \
                                  overlap in the Gangs tab.",
                             ))
+                            .color(super::theme::TEXT_ON_BRIGHT),
+                        );
+                    });
+                });
+        }
+
+        // Web monitor configured but not running — its URLs/QR codes won't be
+        // reachable until the operator Connects. Shown on the Monitor tab,
+        // where those URLs/QR live.
+        if self.active_tab == Tab::Monitor
+            && self.setup.web_port.parse::<u16>().unwrap_or(0) > 0
+            && !self.monitor.web_server_running
+        {
+            egui::TopBottomPanel::bottom("web_server_offline_warning")
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(super::theme::ACCENT_AMBER)
+                        .inner_margin(egui::Margin::symmetric(10, 6)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("⚠ WEB MONITOR")
+                                .strong()
+                                .color(super::theme::TEXT_ON_BRIGHT),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                "— not running. Connect to start it; the URLs and QR codes won't \
+                                 be reachable until then.",
+                            )
                             .color(super::theme::TEXT_ON_BRIGHT),
                         );
                     });

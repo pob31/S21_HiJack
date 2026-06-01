@@ -73,21 +73,18 @@ pub fn draw_monitor_tab(
                         theme::card_frame().show(ui, |ui| {
                             theme::section_heading(ui, "Server Status");
 
-                            // Console status — its own row.
+                            // Console status — its own row. Reflects link
+                            // *health* (ping/pong), not just whether a session
+                            // was started, so a failed heartbeat (Stale/Lost)
+                            // no longer reads as connected.
                             ui.horizontal(|ui| {
-                                let console_color = if is_connected {
-                                    theme::COLOR_CONNECTED
-                                } else {
-                                    theme::COLOR_DISCONNECTED
-                                };
+                                let health = runtime.block_on(console_state.read()).health;
+                                let (console_color, base) =
+                                    theme::console_status(is_connected, health);
                                 theme::status_dot(ui, console_color);
                                 ui.label(
-                                    egui::RichText::new(if is_connected {
-                                        "Console Connected"
-                                    } else {
-                                        "Console Disconnected"
-                                    })
-                                    .color(console_color),
+                                    egui::RichText::new(format!("Console {base}"))
+                                        .color(console_color),
                                 );
                             });
 
@@ -151,63 +148,49 @@ pub fn draw_monitor_tab(
                                 );
                             });
 
-                            if tab.web_server_running && web_port > 0 {
+                            // URLs + QR are shown whenever the web port is
+                            // configured — not gated on the server running, so
+                            // the operator can prepare QR codes offline / before
+                            // connecting. The deep-link only depends on the NIC
+                            // IP + port + profile, all known without a console.
+                            if web_port > 0 {
                                 let ifaces = crate::ui::net_interfaces::list_interfaces();
                                 ui.add_space(4.0);
-                                ui.label(
-                                    egui::RichText::new("Open in a phone browser (LAN only):")
+                                if !tab.web_server_running {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "Starts when you Connect — you can prepare QR codes now.",
+                                        )
                                         .color(theme::label_weak())
                                         .small(),
-                                );
-                                for iface in &ifaces {
-                                    ui.label(
-                                        egui::RichText::new(format!(
-                                            "http://{}:{}",
-                                            iface.ip, web_port
-                                        ))
-                                        .monospace(),
                                     );
                                 }
-
-                                // The toggled profile's deep-link QR.
-                                if let Some(id) = tab.qr_for
-                                    && let Some(client) = mgr.clients.get(&id)
-                                    && let Some(iface) = ifaces.first()
-                                {
-                                    let url =
-                                        profile_url(iface.ip, web_port, &client.name, &client.pin);
-                                    let stale =
-                                        tab.qr_tex.as_ref().map(|(cid, _)| *cid) != Some(id);
-                                    if stale && let Some(img) = build_qr_image(&url) {
-                                        let tex = ui.ctx().load_texture(
-                                            format!("qr-{id}"),
-                                            img,
-                                            egui::TextureOptions::NEAREST,
-                                        );
-                                        tab.qr_tex = Some((id, tex));
-                                    }
-                                    ui.add_space(6.0);
+                                if ifaces.is_empty() {
                                     ui.label(
-                                        egui::RichText::new(format!("QR · {}", client.name))
-                                            .strong(),
-                                    );
-                                    if let Some((cid, tex)) = &tab.qr_tex
-                                        && *cid == id
-                                    {
-                                        ui.image(egui::load::SizedTexture::new(
-                                            tex.id(),
-                                            egui::vec2(180.0, 180.0),
-                                        ));
-                                    }
-                                    ui.label(
-                                        egui::RichText::new(if client.pin.is_some() {
-                                            "Scan to log in (name + PIN embedded)."
-                                        } else {
-                                            "Scan to log in (name embedded)."
-                                        })
+                                        egui::RichText::new(
+                                            "No LAN interface detected — join a network to get a URL.",
+                                        )
                                         .color(theme::label_weak())
                                         .small(),
                                     );
+                                } else {
+                                    ui.label(
+                                        egui::RichText::new("Open in a phone browser (LAN only):")
+                                            .color(theme::label_weak())
+                                            .small(),
+                                    );
+                                    for iface in &ifaces {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "http://{}:{}",
+                                                iface.ip, web_port
+                                            ))
+                                            .monospace(),
+                                        );
+                                    }
+                                    // The per-profile QR opens in a centered
+                                    // popup (see the "QR" button on each client
+                                    // row) so it never shifts this card around.
                                 }
                             }
 
@@ -671,6 +654,83 @@ pub fn draw_monitor_tab(
             PickerOutcome::Cancel => {
                 tab.picker = None;
             }
+        }
+    }
+
+    // ── Per-profile web-login QR — a centered popup window so it never shifts
+    //    the Monitor-tab layout. Opened by the "QR" button on a client row. ──
+    if let Some(id) = tab.qr_for {
+        let info = {
+            let mgr = runtime.block_on(monitor_manager.read());
+            mgr.clients
+                .get(&id)
+                .map(|c| (c.name.clone(), c.pin.clone()))
+        };
+        match info {
+            Some((name, pin)) => {
+                let ifaces = crate::ui::net_interfaces::list_interfaces();
+                let mut open = true;
+                egui::Window::new(format!("Web login · {name}"))
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .open(&mut open)
+                    .show(ui.ctx(), |ui| {
+                        if web_port == 0 {
+                            ui.label("The web monitor is off — set a web port in Setup.");
+                            return;
+                        }
+                        let Some(iface) = ifaces.first() else {
+                            ui.label("No LAN interface detected — join a network to get a URL.");
+                            return;
+                        };
+                        let url = profile_url(iface.ip, web_port, &name, &pin);
+                        let stale = tab.qr_tex.as_ref().map(|(cid, _)| *cid) != Some(id);
+                        if stale && let Some(img) = build_qr_image(&url) {
+                            let tex = ui.ctx().load_texture(
+                                format!("qr-{id}"),
+                                img,
+                                egui::TextureOptions::NEAREST,
+                            );
+                            tab.qr_tex = Some((id, tex));
+                        }
+                        ui.vertical_centered(|ui| {
+                            if let Some((cid, tex)) = &tab.qr_tex
+                                && *cid == id
+                            {
+                                ui.image(egui::load::SizedTexture::new(
+                                    tex.id(),
+                                    egui::vec2(240.0, 240.0),
+                                ));
+                            }
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new(&url).monospace().small());
+                            ui.label(
+                                egui::RichText::new(if pin.is_some() {
+                                    "Scan to log in (name + PIN embedded)."
+                                } else {
+                                    "Scan to log in (name embedded)."
+                                })
+                                .color(theme::label_weak())
+                                .small(),
+                            );
+                            if !tab.web_server_running {
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new(
+                                        "⚠ Web server not running — Connect to start it.",
+                                    )
+                                    .color(theme::ACCENT_AMBER),
+                                );
+                            }
+                        });
+                    });
+                if !open {
+                    tab.qr_for = None;
+                }
+            }
+            // Profile was deleted while its QR was open — close the popup.
+            None => tab.qr_for = None,
         }
     }
 }

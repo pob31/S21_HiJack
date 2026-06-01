@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use eframe::egui;
 
 use crate::model::channel::ChannelId;
+use crate::model::state::ConnectionHealth;
 use crate::model::ui_mode::ColorTheme;
 
 // ─── Active colour theme ──────────────────────────────────────────────
@@ -470,6 +471,21 @@ pub fn status_dot(ui: &mut egui::Ui, color: egui::Color32) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), size / 2.0, color);
     response
+}
+
+/// Console GP-OSC link state → status-dot colour + hover/label text, shared by
+/// the top bar, Setup tab, and Monitor tab so they read consistently:
+/// green = healthy; **yellow "Connecting…" = a session is up but the link
+/// isn't currently reachable** (pings unanswered — still retrying); red = no
+/// session at all.
+pub fn console_status(connected: bool, health: ConnectionHealth) -> (egui::Color32, &'static str) {
+    if !connected {
+        (COLOR_DISCONNECTED, "Disconnected")
+    } else if matches!(health, ConnectionHealth::Connected | ConnectionHealth::Idle) {
+        (COLOR_CONNECTED, "Connected")
+    } else {
+        (COLOR_CONNECTING, "Connecting…")
+    }
 }
 
 // ─── Responsive channel-grid sizing ─────────────────────────────────────────
