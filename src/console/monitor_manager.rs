@@ -40,12 +40,14 @@ impl MonitorManager {
         name: String,
         permitted_auxes: Vec<u8>,
         visible_inputs: Vec<u8>,
+        pin: Option<String>,
     ) -> bool {
         if let Some(client) = self.clients.get_mut(&id) {
             info!(%id, name = %name, "Updated monitor client");
             client.name = name;
             client.permitted_auxes = permitted_auxes;
             client.visible_inputs = visible_inputs;
+            client.pin = pin;
             true
         } else {
             false
@@ -135,7 +137,7 @@ mod tests {
         mgr.add_client(client);
 
         // Update auxes + inputs + name
-        let updated = mgr.update_client(id, "Keys 2".into(), vec![3, 4, 5], vec![10, 11]);
+        let updated = mgr.update_client(id, "Keys 2".into(), vec![3, 4, 5], vec![10, 11], None);
         assert!(updated);
 
         let c = mgr.clients.get(&id).unwrap();
@@ -148,7 +150,7 @@ mod tests {
         assert_eq!(c.last_seen, original_seen);
 
         // Unknown id is a no-op
-        assert!(!mgr.update_client(Uuid::new_v4(), "x".into(), vec![1], vec![]));
+        assert!(!mgr.update_client(Uuid::new_v4(), "x".into(), vec![1], vec![], None));
     }
 
     #[test]

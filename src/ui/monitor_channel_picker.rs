@@ -28,6 +28,8 @@ pub struct ChannelPickerState {
     /// `update_client` on Save.
     pub editing: Option<Uuid>,
     pub name: String,
+    /// Optional per-profile PIN (web login). Empty string = no PIN (name-only).
+    pub pin: String,
 
     pub input_count: u8,
     pub aux_count: u8,
@@ -77,6 +79,8 @@ pub enum PickerOutcome {
     Save {
         editing: Option<Uuid>,
         name: String,
+        /// `None` when the PIN field is blank (name-only login).
+        pin: Option<String>,
         permitted_auxes: Vec<u8>,
         visible_inputs: Vec<u8>,
     },
@@ -106,6 +110,7 @@ impl ChannelPickerState {
         Self {
             editing: None,
             name: String::new(),
+            pin: String::new(),
             input_count,
             aux_count,
             selected_inputs,
@@ -139,6 +144,7 @@ impl ChannelPickerState {
         Self {
             editing: Some(client.id),
             name: client.name.clone(),
+            pin: client.pin.clone().unwrap_or_default(),
             input_count,
             aux_count,
             selected_inputs,
@@ -203,9 +209,19 @@ impl ChannelPickerState {
             self.selected_inputs.clone()
         };
 
+        let pin = {
+            let p = self.pin.trim();
+            if p.is_empty() {
+                None
+            } else {
+                Some(p.to_string())
+            }
+        };
+
         PickerOutcome::Save {
             editing: self.editing,
             name: self.name.trim().to_string(),
+            pin,
             permitted_auxes: self.selected_auxes.clone(),
             visible_inputs,
         }
@@ -347,6 +363,24 @@ pub fn draw_channel_picker(
                         outcome = Some(state.to_save_outcome());
                     }
                 });
+            });
+
+            // Optional per-profile PIN (web login). Blank = name-only.
+            ui.horizontal(|ui| {
+                theme::row_label(ui, "PIN:", theme::label_color());
+                theme::padded_text_edit_sized(
+                    ui,
+                    &mut state.pin,
+                    220.0,
+                    theme::ROW_H,
+                    true,
+                    "optional — required for web login",
+                );
+                ui.label(
+                    egui::RichText::new("blank = name-only")
+                        .color(theme::label_weak())
+                        .small(),
+                );
             });
 
             ui.add_space(6.0);
@@ -934,6 +968,7 @@ mod tests {
                 permitted_auxes,
                 name,
                 editing,
+                pin: _,
             } => {
                 assert!(
                     visible_inputs.is_empty(),

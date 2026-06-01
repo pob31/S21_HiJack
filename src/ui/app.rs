@@ -2214,6 +2214,7 @@ impl eframe::App for HiJackApp {
                         &self.state,
                         &self.connected,
                         &self.runtime,
+                        self.setup.web_port.parse().unwrap_or(0),
                     );
                 }
                 Tab::OscLog => {

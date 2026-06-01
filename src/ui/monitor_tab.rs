@@ -28,6 +28,12 @@ pub struct MonitorTabState {
     /// The badges in that row become drag sources; drop them onto each other
     /// to rearrange the saved channel order without opening the picker.
     pub reorder_for: Option<Uuid>,
+    /// Profile whose web-login QR is currently displayed (`None` = none). Only
+    /// one QR shows at a time, by design — avoids a wall of codes.
+    pub qr_for: Option<Uuid>,
+    /// Cached QR texture for `qr_for`; regenerated when the shown profile
+    /// changes or a profile is edited (the picker-save handler clears it).
+    pub qr_tex: Option<(Uuid, egui::TextureHandle)>,
 }
 
 /// Draw the Monitor tab.
@@ -38,6 +44,7 @@ pub fn draw_monitor_tab(
     console_state: &Arc<RwLock<ConsoleState>>,
     connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
+    web_port: u16,
 ) {
     let is_connected = connected.load(Ordering::Relaxed);
 
@@ -123,6 +130,86 @@ pub fn draw_monitor_tab(
                                     theme::btn_neutral(),
                                 );
                             });
+
+                            // ── Web monitor: status, LAN URLs, and the
+                            //    selected profile's QR (one at a time). ──
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                let web_color = if tab.web_server_running {
+                                    theme::COLOR_CONNECTED
+                                } else {
+                                    theme::TEXT_DISABLED
+                                };
+                                theme::status_dot(ui, web_color);
+                                ui.label(
+                                    egui::RichText::new(if tab.web_server_running {
+                                        "Web Server Running"
+                                    } else {
+                                        "Web Server Off"
+                                    })
+                                    .color(web_color),
+                                );
+                            });
+
+                            if tab.web_server_running && web_port > 0 {
+                                let ifaces = crate::ui::net_interfaces::list_interfaces();
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new("Open in a phone browser (LAN only):")
+                                        .color(theme::label_weak())
+                                        .small(),
+                                );
+                                for iface in &ifaces {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "http://{}:{}",
+                                            iface.ip, web_port
+                                        ))
+                                        .monospace(),
+                                    );
+                                }
+
+                                // The toggled profile's deep-link QR.
+                                if let Some(id) = tab.qr_for
+                                    && let Some(client) = mgr.clients.get(&id)
+                                    && let Some(iface) = ifaces.first()
+                                {
+                                    let url =
+                                        profile_url(iface.ip, web_port, &client.name, &client.pin);
+                                    let stale =
+                                        tab.qr_tex.as_ref().map(|(cid, _)| *cid) != Some(id);
+                                    if stale && let Some(img) = build_qr_image(&url) {
+                                        let tex = ui.ctx().load_texture(
+                                            format!("qr-{id}"),
+                                            img,
+                                            egui::TextureOptions::NEAREST,
+                                        );
+                                        tab.qr_tex = Some((id, tex));
+                                    }
+                                    ui.add_space(6.0);
+                                    ui.label(
+                                        egui::RichText::new(format!("QR · {}", client.name))
+                                            .strong(),
+                                    );
+                                    if let Some((cid, tex)) = &tab.qr_tex
+                                        && *cid == id
+                                    {
+                                        ui.image(egui::load::SizedTexture::new(
+                                            tex.id(),
+                                            egui::vec2(180.0, 180.0),
+                                        ));
+                                    }
+                                    ui.label(
+                                        egui::RichText::new(if client.pin.is_some() {
+                                            "Scan to log in (name + PIN embedded)."
+                                        } else {
+                                            "Scan to log in (name embedded)."
+                                        })
+                                        .color(theme::label_weak())
+                                        .small(),
+                                    );
+                                }
+                            }
 
                             drop(mgr);
                         });
@@ -454,6 +541,25 @@ pub fn draw_monitor_tab(
                                                             to_edit = Some((*client).clone());
                                                         }
 
+                                                        // Per-profile web-login QR toggle (one
+                                                        // shown at a time, in the Server Status card).
+                                                        let qr_on = tab.qr_for == Some(client.id);
+                                                        let qr_btn = theme::action_button(
+                                                            if qr_on { "Hide QR" } else { "QR" },
+                                                            theme::ACCENT_GREEN,
+                                                            egui::Vec2::new(64.0, 24.0),
+                                                        );
+                                                        if ui
+                                                            .add_enabled(!in_reorder, qr_btn)
+                                                            .on_hover_text(
+                                                                "Show this profile's web-login QR code",
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            tab.qr_for =
+                                                                if qr_on { None } else { Some(client.id) };
+                                                        }
+
                                                         let (label, color) = if in_reorder {
                                                             ("Done", theme::ACCENT_GREEN)
                                                         } else {
@@ -511,7 +617,8 @@ pub fn draw_monitor_tab(
                                         let mut mgr = mgr_clone.write().await;
                                         if let Some(existing) = mgr.clients.get(&id) {
                                             let name = existing.name.clone();
-                                            mgr.update_client(id, name, auxes, inputs);
+                                            let pin = existing.pin.clone();
+                                            mgr.update_client(id, name, auxes, inputs, pin);
                                         }
                                     });
                                 }
@@ -533,6 +640,7 @@ pub fn draw_monitor_tab(
             PickerOutcome::Save {
                 editing,
                 name,
+                pin,
                 permitted_auxes,
                 visible_inputs,
             } => {
@@ -542,14 +650,13 @@ pub fn draw_monitor_tab(
                     let mut mgr = mgr_clone.write().await;
                     match editing {
                         Some(id) => {
-                            mgr.update_client(id, name, permitted_auxes, visible_inputs);
+                            mgr.update_client(id, name, permitted_auxes, visible_inputs, pin);
                         }
                         None => {
-                            mgr.add_client(MonitorClient::new(
-                                name,
-                                permitted_auxes,
-                                visible_inputs,
-                            ));
+                            let mut client =
+                                MonitorClient::new(name, permitted_auxes, visible_inputs);
+                            client.pin = pin;
+                            mgr.add_client(client);
                         }
                     }
                 });
@@ -558,6 +665,7 @@ pub fn draw_monitor_tab(
                 } else {
                     format!("Added profile '{name_for_status}'")
                 });
+                tab.qr_tex = None; // a name/PIN edit changes the QR
                 tab.picker = None;
             }
             PickerOutcome::Cancel => {
@@ -565,6 +673,59 @@ pub fn draw_monitor_tab(
             }
         }
     }
+}
+
+/// Percent-encode a string for use as a URL fragment value.
+fn enc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Build the deep-link a musician's browser opens — name (and PIN, when set) in
+/// the URL fragment so the web app auto-connects as that profile.
+fn profile_url(ip: std::net::Ipv4Addr, port: u16, name: &str, pin: &Option<String>) -> String {
+    let mut url = format!("http://{ip}:{port}/#name={}", enc(name));
+    if let Some(p) = pin.as_deref().filter(|p| !p.is_empty()) {
+        url.push_str(&format!("&pin={}", enc(p)));
+    }
+    url
+}
+
+/// Rasterize `data` as a QR code into an egui image (black on white, with a
+/// quiet zone). `None` only if the data is too large to encode as a QR.
+fn build_qr_image(data: &str) -> Option<egui::ColorImage> {
+    let code = qrcode::QrCode::new(data.as_bytes()).ok()?;
+    let w = code.width();
+    let colors = code.to_colors();
+    let quiet = 2usize;
+    let scale = 6usize;
+    let dim = (w + 2 * quiet) * scale;
+    let mut px = vec![255u8; dim * dim * 4];
+    for y in 0..w {
+        for x in 0..w {
+            if colors[y * w + x] == qrcode::Color::Dark {
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        let cx = (x + quiet) * scale + dx;
+                        let cy = (y + quiet) * scale + dy;
+                        let i = (cy * dim + cx) * 4;
+                        px[i] = 0;
+                        px[i + 1] = 0;
+                        px[i + 2] = 0;
+                    }
+                }
+            }
+        }
+    }
+    Some(egui::ColorImage::from_rgba_unmultiplied([dim, dim], &px))
 }
 
 /// Render a horizontal row of channel badges that the operator can drag onto
@@ -622,7 +783,33 @@ fn reorder_vec(items: &[u8], src: usize, dst: usize) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::reorder_vec;
+    use super::{build_qr_image, profile_url, reorder_vec};
+
+    #[test]
+    fn profile_url_encodes_name_and_optional_pin() {
+        let ip: std::net::Ipv4Addr = "192.168.1.50".parse().unwrap();
+        assert_eq!(
+            profile_url(ip, 8080, "Lead Vox", &Some("12 34".into())),
+            "http://192.168.1.50:8080/#name=Lead%20Vox&pin=12%2034"
+        );
+        // No PIN → name only; blank PIN treated as no PIN.
+        assert_eq!(
+            profile_url(ip, 8080, "Drums", &None),
+            "http://192.168.1.50:8080/#name=Drums"
+        );
+        assert_eq!(
+            profile_url(ip, 8080, "Drums", &Some(String::new())),
+            "http://192.168.1.50:8080/#name=Drums"
+        );
+    }
+
+    #[test]
+    fn build_qr_image_produces_a_square_bitmap() {
+        let img = build_qr_image("http://192.168.1.50:8080/#name=Drummer&pin=1234")
+            .expect("a short URL always encodes");
+        assert!(img.size[0] > 0);
+        assert_eq!(img.size[0], img.size[1]);
+    }
 
     #[test]
     fn reorder_drag_forward() {
