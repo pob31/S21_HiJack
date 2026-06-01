@@ -51,6 +51,11 @@ imageproc = "0.25"
 ab_glyph = "0.2"
 hidapi = "2"
 
+# Web monitor surface: axum HTTP server (Phase 1 = static page + CIDR gate;
+# later phases add the /ws WebSocket monitor protocol). Default features give
+# axum::serve, ConnectInfo<SocketAddr>, graceful shutdown, and middleware::from_fn.
+axum = "0.8"
+
 # ── Physical display metrics (real PPI) for DPI-aware UI scaling ──
 # Per-platform: macOS via Core Graphics, Windows via the raw-DPI monitor API,
 # Linux via DRM sysfs EDID (no extra dep). Each backend degrades to "unknown"

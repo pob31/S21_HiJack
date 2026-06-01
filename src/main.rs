@@ -13,6 +13,7 @@ mod osc;
 mod persistence;
 mod platform;
 mod ui;
+mod web;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -99,6 +100,16 @@ struct Args {
     /// Empty = accept all. See audit H5.
     #[arg(long = "trigger-allow-cidr")]
     trigger_allow_cidrs: Vec<String>,
+
+    /// Web monitor server port (0 = disabled, default 8080). Serves the
+    /// browser-based personal-monitoring surface over HTTP/WebSocket.
+    #[arg(long, default_value_t = 8080)]
+    web_port: u16,
+
+    /// Repeatable: source-IP CIDR allowed to reach the web monitor server
+    /// (e.g. `192.168.10.0/24`). Empty = accept all. LAN use only.
+    #[arg(long = "web-allow-cidr")]
+    web_allow_cidrs: Vec<String>,
 
     /// Run in headless mode (no UI, daemon only)
     #[arg(long)]
@@ -422,6 +433,18 @@ async fn run_headless(args: Args) {
             Err(e) => {
                 error!("Failed to start monitor server: {e}");
             }
+        }
+    }
+
+    // Start web monitor server (if enabled)
+    if args.web_port > 0 {
+        let web_addr: SocketAddr = format!("0.0.0.0:{}", args.web_port)
+            .parse()
+            .expect("Invalid web address");
+        let web_allowlist = persistence::show_file::parse_cidr_allowlist(&args.web_allow_cidrs);
+        match web::start_web_server(web_addr, cancel_token.clone(), web_allowlist).await {
+            Ok(()) => info!(port = args.web_port, "Web server started"),
+            Err(e) => error!("Failed to start web server: {e}"),
         }
     }
 
