@@ -25,14 +25,14 @@
       html, body {
         margin: 0; height: 100%; background: var(--bg); color: var(--text);
         font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-        overscroll-behavior: none; touch-action: manipulation;
+        overscroll-behavior: none;
       }
       #app { display: flex; flex-direction: column; height: 100dvh; }
 
       /* ── Header ───────────────────────────────────────────── */
       header {
         display: flex; align-items: center; gap: 0.75rem;
-        padding: 0.6rem 0.9rem; background: var(--panel);
+        padding: 0.55rem 0.9rem; background: var(--panel);
         border-bottom: 1px solid var(--line); flex: 0 0 auto;
       }
       header .title { font-weight: 600; font-size: 1.05rem; }
@@ -46,40 +46,65 @@
       /* ── Aux tabs ─────────────────────────────────────────── */
       .tabs { display: flex; gap: 0.4rem; padding: 0.5rem 0.9rem; overflow-x: auto; flex: 0 0 auto; background: var(--bg); }
       .tab {
-        padding: 0.5rem 0.9rem; border-radius: 999px; border: 1px solid var(--line);
-        background: var(--panel); color: var(--text); white-space: nowrap; font-size: 0.9rem;
+        padding: 0.55rem 1rem; border-radius: 999px; border: 1px solid var(--line);
+        background: var(--panel); color: var(--text); white-space: nowrap; font-size: 0.95rem;
       }
       .tab.active { background: var(--accent); color: #06150e; border-color: var(--accent); font-weight: 600; }
 
       /* ── Mix grid ─────────────────────────────────────────── */
       .body { flex: 1; display: flex; min-height: 0; }
-      .grid { flex: 1; display: flex; gap: 0.5rem; padding: 0.7rem; overflow-x: auto; align-items: stretch; }
+      /* Horizontal swipe scrolls between channels; faders own vertical drags. */
+      .grid { flex: 1; display: flex; gap: 0.5rem; padding: 0.6rem; overflow-x: auto; align-items: stretch; touch-action: pan-x; }
       .strip {
-        flex: 0 0 auto; width: 5rem; background: var(--panel); border: 1px solid var(--line);
-        border-radius: 0.6rem; padding: 0.5rem 0.35rem; display: flex; flex-direction: column;
-        align-items: center; gap: 0.45rem;
+        flex: 0 0 auto; width: 5.4rem; display: flex; flex-direction: column; gap: 0.45rem;
       }
-      .strip.master { background: var(--panel2); border-color: var(--accent-dim); width: 5.4rem; }
-      .strip .name { font-size: 0.72rem; color: var(--text); text-align: center; height: 2.1em; overflow: hidden;
-        line-height: 1.05; width: 100%; }
-      .strip .db { font-size: 0.72rem; color: var(--muted); font-variant-numeric: tabular-nums; }
-      .fader-wrap { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 8rem; }
-      input[type="range"].fader {
-        writing-mode: vertical-lr; direction: rtl; width: 2.4rem; height: 100%;
-        accent-color: var(--accent); background: transparent;
+      .strip.master { width: 6rem; }
+
+      /* ── Custom relative fader ────────────────────────────── */
+      .fader {
+        position: relative; flex: 1; width: 100%; min-height: 9rem;
+        background: var(--panel2); border: 1px solid var(--line); border-radius: 0.55rem;
+        overflow: hidden; user-select: none; touch-action: pan-x; cursor: ns-resize;
       }
-      input[type="range"].pan { width: 100%; accent-color: var(--warn); }
-      .pan-label { font-size: 0.62rem; color: var(--muted); }
+      .fader.active { border-color: var(--accent); }
+      .fader .fill {
+        position: absolute; left: 0; right: 0; bottom: 0;
+        background: linear-gradient(0deg, var(--accent-dim), var(--accent));
+        opacity: 0.55;
+      }
+      .fader.master .fill { background: linear-gradient(0deg, #2a5b8f, #4f93d6); }
+      .fader .thumb {
+        position: absolute; left: 0; right: 0; height: 3px; background: var(--text);
+        box-shadow: 0 0 4px rgba(0,0,0,0.7);
+      }
+      /* The channel name: a large vertical label running up the fader. */
+      .fader .vname {
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        writing-mode: vertical-rl; transform: rotate(180deg);
+        font-size: 1.2rem; font-weight: 700; letter-spacing: 0.02em;
+        color: var(--text); text-shadow: 0 1px 3px rgba(0,0,0,0.85);
+        pointer-events: none; overflow: hidden; white-space: nowrap; padding: 0.4rem 0;
+      }
+      .fader .db {
+        position: absolute; top: 0.2rem; left: 0; right: 0; text-align: center;
+        font-size: 0.72rem; color: var(--text); font-variant-numeric: tabular-nums;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.85); pointer-events: none;
+      }
+
+      .pan-row { display: flex; flex-direction: column; gap: 0.15rem; }
+      .pan-row .pan-label { font-size: 0.6rem; color: var(--muted); text-align: center; }
+      input[type="range"].pan { width: 100%; accent-color: var(--warn); height: 1.6rem; }
+
       button.on, button.mute {
-        width: 100%; padding: 0.45rem 0; border-radius: 0.4rem; border: 1px solid var(--line);
-        background: var(--panel2); color: var(--muted); font-weight: 600; font-size: 0.78rem;
+        width: 100%; padding: 0.5rem 0; border-radius: 0.4rem; border: 1px solid var(--line);
+        background: var(--panel2); color: var(--muted); font-weight: 700; font-size: 0.8rem;
       }
       button.on.active { background: var(--accent); color: #06150e; border-color: var(--accent); }
       button.mute.active { background: var(--danger); color: #fff; border-color: var(--danger); }
 
       /* ── Login ────────────────────────────────────────────── */
       .overlay {
-        position: fixed; inset: 0; background: rgba(10, 12, 15, 0.92); display: flex;
+        position: fixed; inset: 0; background: rgba(10, 12, 15, 0.93); display: flex;
         align-items: center; justify-content: center; padding: 1.2rem; z-index: 10;
       }
       .card {
@@ -133,74 +158,94 @@
 
     <script>
       "use strict";
-      // ── Small helpers ──────────────────────────────────────
+      // ── Helpers ────────────────────────────────────────────
       const $ = (id) => document.getElementById(id);
       const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
       const sendKey = (i, a) => i + ":" + a;
-
-      const FADER_MIN = -60, FADER_MAX = 10; // dB range for level/fader sliders
+      const FADER_MIN = -60, FADER_MAX = 10; // dB range for level/fader
+      const dbText = (v) => (v <= FADER_MIN + 0.05 ? "-∞" : (v > 0 ? "+" : "") + v.toFixed(1));
 
       // ── App state ──────────────────────────────────────────
       const S = {
         ws: null, name: "", pin: null, connected: false, consoleConnected: false,
         permittedAuxes: [], visibleInputs: [], inputCount: 48, activeAux: null,
-        sends: new Map(),      // "input:aux" -> {level, pan, on}
-        aux: new Map(),        // aux -> {fader, mute}
-        inputNames: new Map(), // input -> name
-        auxNames: new Map(),   // aux -> name
-        reconnectDelay: 1000, heartbeatTimer: null, wantOpen: false,
-        lastSent: new Map(),   // throttle: key -> ts
+        sends: new Map(), aux: new Map(), inputNames: new Map(), auxNames: new Map(),
+        reconnectDelay: 1000, heartbeatTimer: null, wantOpen: false, lastSent: new Map(),
+        faders: new Map(), // strip key / "master" -> fader controller
       };
 
-      // ── Deep link: #name=...&pin=... ───────────────────────
-      function parseHash() {
-        const h = (location.hash || "").replace(/^#/, "");
-        const p = new URLSearchParams(h);
-        return { name: p.get("name") || "", pin: p.get("pin") };
+      // ── A wide, RELATIVE fader: drag adjusts from the current value (no
+      //    jump-to-touch). Direction-locked so a vertical drag moves the fader
+      //    while a horizontal swipe scrolls between channels. ───────────────
+      function makeFader(label, initial, master, onChange) {
+        const el = document.createElement("div");
+        el.className = "fader" + (master ? " master" : "");
+        const fill = document.createElement("div"); fill.className = "fill";
+        const vname = document.createElement("div"); vname.className = "vname"; vname.textContent = label;
+        const thumb = document.createElement("div"); thumb.className = "thumb";
+        const db = document.createElement("div"); db.className = "db";
+        el.append(fill, vname, thumb, db);
+
+        let value = clamp(initial, FADER_MIN, FADER_MAX);
+        const paint = () => {
+          const pct = (value - FADER_MIN) / (FADER_MAX - FADER_MIN);
+          fill.style.height = (pct * 100).toFixed(2) + "%";
+          thumb.style.bottom = "calc(" + (pct * 100).toFixed(2) + "% - 1.5px)";
+          db.textContent = dbText(value);
+        };
+
+        // Drag state. `mode`: null=undecided, "v"=adjusting, "x"=let it scroll.
+        let down = false, mode = null, startX = 0, startY = 0, startVal = 0, pid = null;
+        const span = FADER_MAX - FADER_MIN;
+
+        el.addEventListener("pointerdown", (e) => {
+          down = true; mode = null; startX = e.clientX; startY = e.clientY; startVal = value; pid = e.pointerId;
+        });
+        el.addEventListener("pointermove", (e) => {
+          if (!down) return;
+          const dx = e.clientX - startX, dy = e.clientY - startY;
+          if (mode === null) {
+            if (Math.abs(dy) < 5 && Math.abs(dx) < 5) return; // wait for intent
+            mode = Math.abs(dy) >= Math.abs(dx) ? "v" : "x";
+            if (mode === "v") { el.setPointerCapture(pid); el.classList.add("active"); }
+            else { down = false; return; } // horizontal → leave it to the scroller
+          }
+          // Relative: dragging the full fader height == full dB range.
+          const h = el.clientHeight || 1;
+          value = clamp(startVal + (startY - e.clientY) / h * span, FADER_MIN, FADER_MAX);
+          paint(); onChange(value);
+          e.preventDefault();
+        });
+        const end = () => {
+          if (mode === "v") { el.classList.remove("active"); onChange(value); }
+          down = false; mode = null;
+        };
+        el.addEventListener("pointerup", end);
+        el.addEventListener("pointercancel", end);
+
+        paint();
+        return { el, set: (v) => { if (!down || mode !== "v") { value = clamp(v, FADER_MIN, FADER_MAX); paint(); } } };
       }
 
       // ── WebSocket ──────────────────────────────────────────
-      function wsUrl() {
-        const proto = location.protocol === "https:" ? "wss:" : "ws:";
-        return proto + "//" + location.host + "/ws";
-      }
-
-      function connect(name, pin) {
-        S.name = name; S.pin = pin; S.wantOpen = true;
-        openSocket();
-      }
-
+      const wsUrl = () => (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/ws";
+      function connect(name, pin) { S.name = name; S.pin = pin; S.wantOpen = true; openSocket(); }
       function openSocket() {
         if (S.ws) { try { S.ws.close(); } catch (e) {} }
-        const ws = new WebSocket(wsUrl());
-        S.ws = ws;
-        ws.onopen = () => {
-          S.reconnectDelay = 1000;
-          send({ type: "hello", name: S.name, pin: S.pin || undefined });
-          startHeartbeat();
-        };
+        const ws = new WebSocket(wsUrl()); S.ws = ws;
+        ws.onopen = () => { S.reconnectDelay = 1000; send({ type: "hello", name: S.name, pin: S.pin || undefined }); startHeartbeat(); };
         ws.onmessage = (ev) => { try { handle(JSON.parse(ev.data)); } catch (e) {} };
         ws.onclose = () => {
           S.connected = false; stopHeartbeat(); renderStatus();
-          if (S.wantOpen) {
-            setTimeout(openSocket, S.reconnectDelay);
-            S.reconnectDelay = Math.min(S.reconnectDelay * 2, 10000);
-          }
+          if (S.wantOpen) { setTimeout(openSocket, S.reconnectDelay); S.reconnectDelay = Math.min(S.reconnectDelay * 2, 10000); }
         };
         ws.onerror = () => { try { ws.close(); } catch (e) {} };
       }
-
-      function send(obj) {
-        if (S.ws && S.ws.readyState === WebSocket.OPEN) S.ws.send(JSON.stringify(obj));
-      }
-
-      function startHeartbeat() {
-        stopHeartbeat();
-        S.heartbeatTimer = setInterval(() => send({ type: "heartbeat" }), 10000);
-      }
+      function send(obj) { if (S.ws && S.ws.readyState === WebSocket.OPEN) S.ws.send(JSON.stringify(obj)); }
+      function startHeartbeat() { stopHeartbeat(); S.heartbeatTimer = setInterval(() => send({ type: "heartbeat" }), 10000); }
       function stopHeartbeat() { if (S.heartbeatTimer) { clearInterval(S.heartbeatTimer); S.heartbeatTimer = null; } }
 
-      // ── Inbound messages ───────────────────────────────────
+      // ── Inbound ────────────────────────────────────────────
       function handle(m) {
         switch (m.type) {
           case "welcome":
@@ -209,11 +254,8 @@
             S.visibleInputs = m.visible_inputs || [];
             S.inputCount = m.input_count || 48;
             S.consoleConnected = !!m.console_connected;
-            if (S.activeAux == null || !S.permittedAuxes.includes(S.activeAux))
-              S.activeAux = S.permittedAuxes[0] ?? null;
-            hideLogin();
-            send({ type: "request_state" });
-            renderAll();
+            if (S.activeAux == null || !S.permittedAuxes.includes(S.activeAux)) S.activeAux = S.permittedAuxes[0] ?? null;
+            hideLogin(); send({ type: "request_state" }); renderAll();
             break;
           case "state":
             S.sends.clear(); S.aux.clear(); S.inputNames.clear(); S.auxNames.clear();
@@ -223,46 +265,31 @@
             for (const a of m.aux_strips || []) S.aux.set(a.aux, { fader: a.fader, mute: a.mute });
             renderAll();
             break;
-          case "send": {
-            S.sends.set(sendKey(m.input, m.aux), { level: m.level, pan: m.pan, on: m.on });
-            updateStrip(m.input, m.aux);
+          case "send":
+            S.sends.set(sendKey(m.input, m.aux), { level: m.level, pan: m.pan, on: m.on }); updateStrip(m.input, m.aux);
             break;
-          }
           case "send_field": {
-            const k = sendKey(m.input, m.aux); const cur = S.sends.get(k) || { level: 0, pan: 0, on: false };
-            if (m.field === "level") cur.level = m.value; else if (m.field === "pan") cur.pan = m.value;
-            S.sends.set(k, cur); updateStrip(m.input, m.aux);
-            break;
+            const k = sendKey(m.input, m.aux), c = S.sends.get(k) || { level: 0, pan: 0, on: false };
+            if (m.field === "level") c.level = m.value; else if (m.field === "pan") c.pan = m.value;
+            S.sends.set(k, c); updateStrip(m.input, m.aux); break;
           }
           case "send_on": {
-            const k = sendKey(m.input, m.aux); const cur = S.sends.get(k) || { level: 0, pan: 0, on: false };
-            cur.on = m.on; S.sends.set(k, cur); updateStrip(m.input, m.aux);
-            break;
+            const k = sendKey(m.input, m.aux), c = S.sends.get(k) || { level: 0, pan: 0, on: false };
+            c.on = m.on; S.sends.set(k, c); updateStrip(m.input, m.aux); break;
           }
           case "aux":
-            S.aux.set(m.aux, { fader: m.fader, mute: m.mute });
-            if (m.aux === S.activeAux) renderMaster();
-            break;
-          case "console_status":
-            S.consoleConnected = !!m.connected; renderStatus(); break;
-          case "auth_error":
-            S.wantOpen = false; stopHeartbeat();
-            showLogin(m.reason); break;
+            S.aux.set(m.aux, { fader: m.fader, mute: m.mute }); if (m.aux === S.activeAux) renderMaster(); break;
+          case "console_status": S.consoleConnected = !!m.connected; renderStatus(); break;
+          case "auth_error": S.wantOpen = false; stopHeartbeat(); showLogin(m.reason); break;
         }
       }
 
       // ── Outbound (throttled ~30 Hz per control) ────────────
-      function throttled(key, fn) {
-        const now = Date.now(); const last = S.lastSent.get(key) || 0;
-        if (now - last >= 33) { S.lastSent.set(key, now); fn(); }
-      }
-      function setSend(input, aux, field, value) {
-        throttled("s" + sendKey(input, aux) + field, () =>
-          send({ type: "set_send", input, aux, field, value }));
-      }
-      function setSendOn(input, aux, on) { send({ type: "set_send_on", input, aux, on }); }
-      function setAuxFader(aux, value) { throttled("af" + aux, () => send({ type: "set_aux_fader", aux, value })); }
-      function setAuxMute(aux, mute) { send({ type: "set_aux_mute", aux, mute }); }
+      function throttled(key, fn) { const n = Date.now(); if (n - (S.lastSent.get(key) || 0) >= 33) { S.lastSent.set(key, n); fn(); } }
+      const setSend = (i, a, field, v) => throttled("s" + sendKey(i, a) + field, () => send({ type: "set_send", input: i, aux: a, field, value: v }));
+      const setSendOn = (i, a, on) => send({ type: "set_send_on", input: i, aux: a, on });
+      const setAuxFader = (a, v) => throttled("af" + a, () => send({ type: "set_aux_fader", aux: a, value: v }));
+      const setAuxMute = (a, mute) => send({ type: "set_aux_mute", aux: a, mute });
 
       // ── Rendering ──────────────────────────────────────────
       function inputsForView() {
@@ -285,88 +312,63 @@
           t.appendChild(b);
         }
       }
-      function dbText(v) { return v <= FADER_MIN + 0.01 ? "-∞" : v.toFixed(1); }
-
       function renderGrid() {
-        const g = $("grid"); g.innerHTML = "";
+        const g = $("grid"); g.innerHTML = ""; S.faders.clear();
         if (!S.connected || S.activeAux == null) {
           const e = document.createElement("div"); e.className = "empty";
-          e.textContent = S.connected ? "No permitted auxes." : "Not connected.";
-          g.appendChild(e); return;
+          e.textContent = S.connected ? "No permitted auxes." : "Not connected."; g.appendChild(e); return;
         }
         const aux = S.activeAux;
-        for (const input of inputsForView()) {
-          g.appendChild(buildStrip(input, aux));
-        }
+        for (const input of inputsForView()) g.appendChild(buildStrip(input, aux));
         g.appendChild(buildMaster(aux));
       }
-
       function buildStrip(input, aux) {
         const k = sendKey(input, aux);
         const st = S.sends.get(k) || { level: 0, pan: 0, on: false };
         const el = document.createElement("div"); el.className = "strip"; el.dataset.k = k;
-        const name = document.createElement("div"); name.className = "name";
-        name.textContent = S.inputNames.get(input) || ("In " + input);
-        const db = document.createElement("div"); db.className = "db"; db.textContent = dbText(st.level);
-        const fw = document.createElement("div"); fw.className = "fader-wrap";
-        const fader = document.createElement("input");
-        fader.type = "range"; fader.className = "fader";
-        fader.min = FADER_MIN; fader.max = FADER_MAX; fader.step = 0.5; fader.value = clamp(st.level, FADER_MIN, FADER_MAX);
-        fader.oninput = () => { const v = parseFloat(fader.value); db.textContent = dbText(v); setSend(input, aux, "level", v); };
-        fw.appendChild(fader);
-        const pan = document.createElement("input");
-        pan.type = "range"; pan.className = "pan"; pan.min = -1; pan.max = 1; pan.step = 0.02; pan.value = st.pan;
-        pan.oninput = () => setSend(input, aux, "pan", parseFloat(pan.value));
+        const name = S.inputNames.get(input) || ("In " + input);
+        const fader = makeFader(name, st.level, false, (v) => setSend(input, aux, "level", v));
+        S.faders.set(k, fader);
+        const panRow = document.createElement("div"); panRow.className = "pan-row";
         const panLbl = document.createElement("div"); panLbl.className = "pan-label"; panLbl.textContent = "PAN";
-        const on = document.createElement("button"); on.className = "on" + (st.on ? " active" : "");
-        on.textContent = "ON";
+        const pan = document.createElement("input"); pan.type = "range"; pan.className = "pan";
+        pan.min = -1; pan.max = 1; pan.step = 0.02; pan.value = st.pan;
+        pan.oninput = () => setSend(input, aux, "pan", parseFloat(pan.value));
+        panRow.append(panLbl, pan);
+        const on = document.createElement("button"); on.className = "on" + (st.on ? " active" : ""); on.textContent = "ON";
         on.onclick = () => { const nv = !on.classList.contains("active"); on.classList.toggle("active", nv); setSendOn(input, aux, nv); };
-        el.append(name, db, fw, panLbl, pan, on);
+        el.append(fader.el, panRow, on);
         return el;
       }
-
       function buildMaster(aux) {
         const a = S.aux.get(aux) || { fader: 0, mute: false };
         const el = document.createElement("div"); el.className = "strip master"; el.id = "master";
-        const name = document.createElement("div"); name.className = "name";
-        name.textContent = (S.auxNames.get(aux) || ("Aux " + aux)) + " mix";
-        const db = document.createElement("div"); db.className = "db"; db.textContent = dbText(a.fader);
-        const fw = document.createElement("div"); fw.className = "fader-wrap";
-        const fader = document.createElement("input");
-        fader.type = "range"; fader.className = "fader"; fader.min = FADER_MIN; fader.max = FADER_MAX; fader.step = 0.5;
-        fader.value = clamp(a.fader, FADER_MIN, FADER_MAX);
-        fader.oninput = () => { const v = parseFloat(fader.value); db.textContent = dbText(v); setAuxFader(aux, v); };
-        fw.appendChild(fader);
-        const mute = document.createElement("button"); mute.className = "mute" + (a.mute ? " active" : "");
-        mute.textContent = "MUTE";
+        const label = (S.auxNames.get(aux) || ("Aux " + aux)) + " ▸ MIX";
+        const fader = makeFader(label, a.fader, true, (v) => setAuxFader(aux, v));
+        S.faders.set("master", fader);
+        const mute = document.createElement("button"); mute.className = "mute" + (a.mute ? " active" : ""); mute.textContent = "MUTE";
         mute.onclick = () => { const nv = !mute.classList.contains("active"); mute.classList.toggle("active", nv); setAuxMute(aux, nv); };
-        el.append(name, db, fw, mute);
+        el.append(fader.el, mute);
         return el;
       }
-
-      // Update one strip in place (incremental message) without rebuilding the grid.
       function updateStrip(input, aux) {
         if (aux !== S.activeAux) return;
-        const k = sendKey(input, aux);
-        const el = document.querySelector('.strip[data-k="' + CSS.escape(k) + '"]');
+        const k = sendKey(input, aux), el = document.querySelector('.strip[data-k="' + CSS.escape(k) + '"]');
         if (!el) return;
         const st = S.sends.get(k) || { level: 0, pan: 0, on: false };
-        const fader = el.querySelector("input.fader"); const pan = el.querySelector("input.pan");
-        const db = el.querySelector(".db"); const on = el.querySelector("button.on");
-        if (document.activeElement !== fader) { fader.value = clamp(st.level, FADER_MIN, FADER_MAX); db.textContent = dbText(st.level); }
-        if (document.activeElement !== pan) pan.value = st.pan;
-        on.classList.toggle("active", st.on);
+        const f = S.faders.get(k); if (f) f.set(st.level);
+        const pan = el.querySelector("input.pan"); if (pan && document.activeElement !== pan) pan.value = st.pan;
+        el.querySelector("button.on").classList.toggle("active", st.on);
       }
       function renderMaster() {
-        const aux = S.activeAux; const el = $("master"); if (!el) return;
-        const a = S.aux.get(aux) || { fader: 0, mute: false };
-        const fader = el.querySelector("input.fader"); const db = el.querySelector(".db"); const mute = el.querySelector("button.mute");
-        if (document.activeElement !== fader) { fader.value = clamp(a.fader, FADER_MIN, FADER_MAX); db.textContent = dbText(a.fader); }
-        mute.classList.toggle("active", a.mute);
+        const el = $("master"); if (!el) return;
+        const a = S.aux.get(S.activeAux) || { fader: 0, mute: false };
+        const f = S.faders.get("master"); if (f) f.set(a.fader);
+        el.querySelector("button.mute").classList.toggle("active", a.mute);
       }
       function renderAll() { renderStatus(); renderTabs(); renderGrid(); }
 
-      // ── Login flow ─────────────────────────────────────────
+      // ── Login ──────────────────────────────────────────────
       function showLogin(reason) {
         $("login").style.display = "flex";
         const err = $("login-err");
@@ -376,17 +378,15 @@
         else err.textContent = "";
       }
       function hideLogin() { $("login").style.display = "none"; }
-
       $("login-go").onclick = () => {
-        const name = $("f-name").value.trim();
-        const pin = $("f-pin").value || null;
+        const name = $("f-name").value.trim(), pin = $("f-pin").value || null;
         if (!name) { $("login-err").textContent = "Enter your name."; return; }
         connect(name, pin);
       };
-      $("f-pin").addEventListener("keydown", (e) => { if (e.key === "Enter") $("login-go").click(); });
-      $("f-name").addEventListener("keydown", (e) => { if (e.key === "Enter") $("login-go").click(); });
+      for (const id of ["f-name", "f-pin"]) $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") $("login-go").click(); });
 
       // ── Boot ───────────────────────────────────────────────
+      function parseHash() { const p = new URLSearchParams((location.hash || "").replace(/^#/, "")); return { name: p.get("name") || "", pin: p.get("pin") }; }
       renderStatus();
       const dl = parseHash();
       if (dl.name) { $("f-name").value = dl.name; if (dl.pin) $("f-pin").value = dl.pin; connect(dl.name, dl.pin); }
