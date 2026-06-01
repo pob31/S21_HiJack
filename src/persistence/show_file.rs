@@ -72,6 +72,14 @@ pub struct ConnectionSettings {
     /// Same semantics as `monitor_allow_cidrs`.
     #[serde(default)]
     pub trigger_allow_cidrs: Vec<String>,
+    /// Web monitor server port (0 = disabled, default 8080). Serves the
+    /// browser-based personal-monitoring surface over HTTP/WebSocket.
+    #[serde(default = "default_web_port")]
+    pub web_port: u16,
+    /// Source-IP CIDR allowlist for the **web** monitor server. Same
+    /// semantics as `monitor_allow_cidrs`. LAN use only.
+    #[serde(default)]
+    pub web_allow_cidrs: Vec<String>,
     /// UI display mode — determines which tabs are visible. Saved per-show
     /// so different shows can prefer different streamlined views. Older
     /// show files (pre-v14) get `UiMode::Full` (all tabs visible).
@@ -110,6 +118,9 @@ fn default_qlab_port() -> u16 {
 fn default_monitor_port() -> u16 {
     8025
 }
+fn default_web_port() -> u16 {
+    8080
+}
 
 impl Default for ConnectionSettings {
     fn default() -> Self {
@@ -133,6 +144,8 @@ impl Default for ConnectionSettings {
             console_snapshot_follow: false,
             monitor_allow_cidrs: Vec::new(),
             trigger_allow_cidrs: Vec::new(),
+            web_port: 8080,
+            web_allow_cidrs: Vec::new(),
             ui_mode: UiMode::default(),
         }
     }

@@ -142,6 +142,8 @@ pub enum UiEvent {
     },
     MonitorServerStarted,
     MonitorServerFailed(String),
+    WebServerStarted,
+    WebServerFailed(String),
 
     // ─── App-internal commands triggered by macro steps ──────────────
     //

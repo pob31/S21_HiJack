@@ -90,6 +90,12 @@ pub struct SetupTabState {
     /// Source-IP CIDR allowlist for the trigger listener (audit H5). Same
     /// semantics as `monitor_allow_cidrs`.
     pub trigger_allow_cidrs: Vec<String>,
+    /// Web monitor server port (editable string; empty / "0" = disabled).
+    /// Round-trips through the show file like `monitor_port`.
+    pub web_port: String,
+    /// Source-IP CIDR allowlist for the web monitor server. Same semantics as
+    /// `monitor_allow_cidrs`.
+    pub web_allow_cidrs: Vec<String>,
     /// UI display mode — selects which tabs are visible. Persisted both
     /// per-show (in `ConnectionSettings`) and as an app-level default
     /// (in `AppPreferences`) so new sessions resume the operator's last
@@ -172,6 +178,11 @@ impl SetupTabState {
             help_language: prefs.help_language.clone(),
             monitor_allow_cidrs: Vec::new(),
             trigger_allow_cidrs: Vec::new(),
+            // Default the web monitor on (matches the headless `--web-port`
+            // default); the operator can disable by clearing the field, and a
+            // loaded show file overrides this.
+            web_port: "8080".to_string(),
+            web_allow_cidrs: Vec::new(),
             ui_mode: prefs.ui_mode.unwrap_or_default(),
             show_diagnostics: prefs.show_diagnostics,
             show_first_run_popup: prefs.ui_mode.is_none(),
@@ -1515,8 +1526,20 @@ pub fn draw_setup_tab(
                             );
                             ui.label(egui::RichText::new("↔").color(theme::label_weak()));
                             ui.label(
-                                egui::RichText::new("any LAN client").color(theme::label_weak()),
+                                egui::RichText::new("native app (UDP)").color(theme::label_weak()),
                             );
+                            ui.end_row();
+
+                            // Web monitor port — browser clients over HTTP/WebSocket.
+                            port_edit_enabled(
+                                ui,
+                                &mut setup.web_port,
+                                !is_connected,
+                                "off",
+                                help(HelpKey::SetupMonitorPort),
+                            );
+                            ui.label(egui::RichText::new("↔").color(theme::label_weak()));
+                            ui.label(egui::RichText::new("web browser").color(theme::label_weak()));
                             ui.end_row();
                         });
                 });
@@ -1760,6 +1783,7 @@ pub(crate) fn start_connection(
     }
 
     let monitor_port: u16 = setup.monitor_port.parse().unwrap_or(0);
+    let web_port: u16 = setup.web_port.parse().unwrap_or(0);
 
     let console_addr_str = format!("{}:{}", setup.console_ip, console_port);
     let console_addr: SocketAddr = match console_addr_str.parse() {
@@ -1802,6 +1826,7 @@ pub(crate) fn start_connection(
     let send_pace_us = send_pace_us.clone();
     let monitor_allow_cidrs = setup.monitor_allow_cidrs.clone();
     let trigger_allow_cidrs = setup.trigger_allow_cidrs.clone();
+    let web_allow_cidrs = setup.web_allow_cidrs.clone();
     let log = osc_log.clone();
     let pending = pending_engines.clone();
     runtime.spawn(async move {
@@ -2132,81 +2157,118 @@ pub(crate) fn start_connection(
             }
         }
 
-        // Start monitor server (if port configured)
+        // Shared monitor plumbing: the native UDP server (the existing Flutter /
+        // OSC path) and the web server both feed one command stream and both
+        // subscribe one state-event broadcast. The engine runs if EITHER is on.
+        let run_monitor_engine = monitor_port > 0 || web_port > 0;
+        let (monitor_cmd_tx, monitor_rx) =
+            tokio::sync::mpsc::channel::<crate::osc::monitor_server::MonitorCommand>(256);
+        let (events_tx, _) = tokio::sync::broadcast::channel::<
+            crate::console::monitor_event::MonitorStateEvent,
+        >(1024);
+
+        // Native UDP monitor server (if enabled) — unchanged OSC path + fan-out.
         if monitor_port > 0 {
             let monitor_addr: SocketAddr = format!("0.0.0.0:{}", monitor_port)
                 .parse()
                 .expect("Invalid monitor address");
             let monitor_allowlist =
                 crate::persistence::show_file::parse_cidr_allowlist(&monitor_allow_cidrs);
-            let (monitor_cmd_tx, mut monitor_rx) = tokio::sync::mpsc::channel(256);
             match MonitorServer::start_with_cancel(
                 monitor_addr,
                 token.clone(),
                 iface_name.as_deref(),
                 monitor_allowlist,
-                monitor_cmd_tx,
+                monitor_cmd_tx.clone(),
             )
             .await
             {
                 Ok(monitor_sender) => {
                     info!(port = monitor_port, "Monitor server started via UI");
-                    // Transport-agnostic output: engine publishes events; a UDP
-                    // fan-out task reproduces today's OSC to native clients.
-                    let (events_tx, _) = tokio::sync::broadcast::channel::<
-                        crate::console::monitor_event::MonitorStateEvent,
-                    >(1024);
-                    let monitor_engine =
-                        MonitorEngine::new(st.clone(), manager.sender(), events_tx.clone());
-                    let mon_mgr_loop = mon_mgr.clone();
-                    let tx_monitor = tx.clone();
-                    let monitor_token = token.clone();
-                    let _ = tx_monitor.send(UiEvent::MonitorServerStarted);
+                    let _ = tx.send(UiEvent::MonitorServerStarted);
                     tokio::spawn(crate::console::monitor_event::run_udp_fanout(
                         events_tx.subscribe(),
                         monitor_sender,
                         mon_mgr.clone(),
                     ));
-                    tokio::spawn(async move {
-                        let mut last_send_state = std::collections::HashMap::new();
-                        let mut last_aux_state = std::collections::HashMap::new();
-                        let mut last_generation: u64 = 0;
-                        let mut last_push_times = std::collections::HashMap::new();
-                        let mut last_aux_push_times = std::collections::HashMap::new();
-                        let mut poll_interval =
-                            tokio::time::interval(std::time::Duration::from_millis(10));
-                        loop {
-                            tokio::select! {
-                                _ = monitor_token.cancelled() => {
-                                    info!("Monitor server shutting down");
-                                    break;
-                                }
-                                Some(cmd) = monitor_rx.recv() => {
-                                    let mut mgr = mon_mgr_loop.write().await;
-                                    monitor_engine.handle_command(
-                                        cmd, &mut mgr, true,
-                                    ).await;
-                                }
-                                _ = poll_interval.tick() => {
-                                    let mgr = mon_mgr_loop.read().await;
-                                    monitor_engine.poll_and_push_state_changes(
-                                        &mut last_send_state,
-                                        &mut last_aux_state,
-                                        &mut last_generation,
-                                        &mut last_push_times,
-                                        &mut last_aux_push_times,
-                                        &mgr,
-                                    ).await;
-                                }
-                            }
-                        }
-                    });
                 }
                 Err(e) => {
                     error!("Failed to start monitor server: {e}");
                     let _ = tx.send(UiEvent::MonitorServerFailed(e.to_string()));
                 }
             }
+        }
+
+        // Web monitor server (if enabled) — shares the command channel + broadcast.
+        if web_port > 0 {
+            let web_addr: SocketAddr = format!("0.0.0.0:{}", web_port)
+                .parse()
+                .expect("Invalid web address");
+            let web_allowlist =
+                crate::persistence::show_file::parse_cidr_allowlist(&web_allow_cidrs);
+            let web_ctx = crate::web::WebContext {
+                state: st.clone(),
+                manager: mon_mgr.clone(),
+                commands: monitor_cmd_tx.clone(),
+                events: events_tx.clone(),
+                offline_mode: offline.clone(),
+                conn_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            };
+            match crate::web::start_web_server(web_addr, token.clone(), web_allowlist, web_ctx)
+                .await
+            {
+                Ok(()) => {
+                    info!(port = web_port, "Web server started via UI");
+                    let _ = tx.send(UiEvent::WebServerStarted);
+                }
+                Err(e) => {
+                    error!("Failed to start web server: {e}");
+                    let _ = tx.send(UiEvent::WebServerFailed(e.to_string()));
+                }
+            }
+        }
+
+        // Monitor engine loop: drains the unified command stream and runs the
+        // 20 Hz poll. Active whenever either transport is enabled.
+        if run_monitor_engine {
+            let monitor_engine =
+                MonitorEngine::new(st.clone(), manager.sender(), events_tx.clone());
+            let mon_mgr_loop = mon_mgr.clone();
+            let monitor_token = token.clone();
+            let mut monitor_rx = monitor_rx;
+            tokio::spawn(async move {
+                let mut last_send_state = std::collections::HashMap::new();
+                let mut last_aux_state = std::collections::HashMap::new();
+                let mut last_generation: u64 = 0;
+                let mut last_push_times = std::collections::HashMap::new();
+                let mut last_aux_push_times = std::collections::HashMap::new();
+                let mut poll_interval = tokio::time::interval(std::time::Duration::from_millis(10));
+                loop {
+                    tokio::select! {
+                        _ = monitor_token.cancelled() => {
+                            info!("Monitor engine shutting down");
+                            break;
+                        }
+                        Some(cmd) = monitor_rx.recv() => {
+                            let mut mgr = mon_mgr_loop.write().await;
+                            monitor_engine.handle_command(cmd, &mut mgr, true).await;
+                        }
+                        _ = poll_interval.tick() => {
+                            let mgr = mon_mgr_loop.read().await;
+                            monitor_engine.poll_and_push_state_changes(
+                                &mut last_send_state,
+                                &mut last_aux_state,
+                                &mut last_generation,
+                                &mut last_push_times,
+                                &mut last_aux_push_times,
+                                &mgr,
+                            ).await;
+                        }
+                    }
+                }
+            });
+        } else {
+            drop(monitor_rx);
         }
 
         let _ = tx.send(UiEvent::ConnectionEstablished);
@@ -2243,6 +2305,8 @@ pub(crate) fn connection_settings_from_setup(
         console_snapshot_follow,
         monitor_allow_cidrs: setup.monitor_allow_cidrs.clone(),
         trigger_allow_cidrs: setup.trigger_allow_cidrs.clone(),
+        web_port: setup.web_port.parse().unwrap_or(0),
+        web_allow_cidrs: setup.web_allow_cidrs.clone(),
         ui_mode: setup.ui_mode,
     }
 }

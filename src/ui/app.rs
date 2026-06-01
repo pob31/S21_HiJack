@@ -708,6 +708,7 @@ impl HiJackApp {
                     self.setup.ipad_connected = false;
                     self.setup.status_message = Some("Disconnected".into());
                     self.monitor.monitor_server_running = false;
+                    self.monitor.web_server_running = false;
                 }
                 UiEvent::SnapshotCaptured { name, param_count } => {
                     self.snapshots.status_message =
@@ -852,6 +853,12 @@ impl HiJackApp {
                         self.setup.send_pace_us = pace_to_save;
                         self.setup.monitor_allow_cidrs = conn.monitor_allow_cidrs;
                         self.setup.trigger_allow_cidrs = conn.trigger_allow_cidrs;
+                        self.setup.web_port = if conn.web_port > 0 {
+                            conn.web_port.to_string()
+                        } else {
+                            String::new()
+                        };
+                        self.setup.web_allow_cidrs = conn.web_allow_cidrs;
                         self.setup.ui_mode = conn.ui_mode;
                         // Mirror the loaded mode to app preferences so a later
                         // launch (without a show file) starts in this mode.
@@ -917,6 +924,14 @@ impl HiJackApp {
                 UiEvent::MonitorServerFailed(msg) => {
                     self.monitor.monitor_server_running = false;
                     self.setup.status_message = Some(format!("Monitor server failed: {msg}"));
+                }
+                UiEvent::WebServerStarted => {
+                    self.monitor.web_server_running = true;
+                    self.setup.status_message = Some("Web monitor server started".into());
+                }
+                UiEvent::WebServerFailed(msg) => {
+                    self.monitor.web_server_running = false;
+                    self.setup.status_message = Some(format!("Web server failed: {msg}"));
                 }
                 // ── Macro-emitted app-internal commands ─────────────
                 UiEvent::MacroFireGo => {

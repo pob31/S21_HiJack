@@ -19,6 +19,8 @@ use crate::model::state::ConsoleState;
 pub struct MonitorTabState {
     pub status_message: Option<String>,
     pub monitor_server_running: bool,
+    /// Whether the web (HTTP/WebSocket) monitor server is currently running.
+    pub web_server_running: bool,
     /// `Some` while the channel picker is open (either adding a new profile
     /// or editing an existing one); `None` when the picker is closed.
     pub picker: Option<ChannelPickerState>,
