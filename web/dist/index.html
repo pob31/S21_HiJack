@@ -93,7 +93,23 @@
 
       .pan-row { display: flex; flex-direction: column; gap: 0.15rem; }
       .pan-row .pan-label { font-size: 0.6rem; color: var(--muted); text-align: center; }
-      input[type="range"].pan { width: 100%; accent-color: var(--warn); height: 1.6rem; }
+      /* Bidirectional pan: JS sets a center-origin fill gradient as the
+         background (yellow grows from the middle); the thumb is custom because
+         appearance:none hides the native one. */
+      input[type="range"].pan {
+        -webkit-appearance: none; appearance: none;
+        width: 100%; height: 1.5rem; border-radius: 0.4rem;
+        background: var(--panel2); outline: none; touch-action: none;
+      }
+      input[type="range"].pan::-webkit-slider-thumb {
+        -webkit-appearance: none; appearance: none;
+        width: 1rem; height: 1.5rem; border-radius: 0.3rem;
+        background: var(--text); border: 1px solid var(--bg); cursor: ew-resize;
+      }
+      input[type="range"].pan::-moz-range-thumb {
+        width: 1rem; height: 1.5rem; border: 1px solid var(--bg);
+        border-radius: 0.3rem; background: var(--text); cursor: ew-resize;
+      }
 
       button.on, button.mute {
         width: 100%; padding: 0.5rem 0; border-radius: 0.4rem; border: 1px solid var(--line);
@@ -164,6 +180,13 @@
       const sendKey = (i, a) => i + ":" + a;
       const FADER_MIN = -60, FADER_MAX = 10; // dB range for level/fader
       const dbText = (v) => (v <= FADER_MIN + 0.05 ? "-∞" : (v > 0 ? "+" : "") + v.toFixed(1));
+      // Pan fill grows from the centre out to the thumb (bidirectional).
+      function panGradient(v) {
+        const pct = (clamp(v, -1, 1) + 1) / 2 * 100;
+        const lo = Math.min(pct, 50), hi = Math.max(pct, 50);
+        return `linear-gradient(90deg, var(--panel2) 0 ${lo}%, var(--warn) ${lo}% ${hi}%, var(--panel2) ${hi}% 100%)`;
+      }
+      function paintPan(pan, v) { pan.value = v; pan.style.background = panGradient(v); }
 
       // ── App state ──────────────────────────────────────────
       const S = {
@@ -332,8 +355,10 @@
         const panRow = document.createElement("div"); panRow.className = "pan-row";
         const panLbl = document.createElement("div"); panLbl.className = "pan-label"; panLbl.textContent = "PAN";
         const pan = document.createElement("input"); pan.type = "range"; pan.className = "pan";
-        pan.min = -1; pan.max = 1; pan.step = 0.02; pan.value = st.pan;
-        pan.oninput = () => setSend(input, aux, "pan", parseFloat(pan.value));
+        pan.min = -1; pan.max = 1; pan.step = 0.02; pan.title = "Double-tap to centre";
+        paintPan(pan, st.pan);
+        pan.oninput = () => { const v = parseFloat(pan.value); paintPan(pan, v); setSend(input, aux, "pan", v); };
+        pan.ondblclick = () => { paintPan(pan, 0); setSend(input, aux, "pan", 0); };
         panRow.append(panLbl, pan);
         const on = document.createElement("button"); on.className = "on" + (st.on ? " active" : ""); on.textContent = "ON";
         on.onclick = () => { const nv = !on.classList.contains("active"); on.classList.toggle("active", nv); setSendOn(input, aux, nv); };
@@ -357,7 +382,7 @@
         if (!el) return;
         const st = S.sends.get(k) || { level: 0, pan: 0, on: false };
         const f = S.faders.get(k); if (f) f.set(st.level);
-        const pan = el.querySelector("input.pan"); if (pan && document.activeElement !== pan) pan.value = st.pan;
+        const pan = el.querySelector("input.pan"); if (pan && document.activeElement !== pan) paintPan(pan, st.pan);
         el.querySelector("button.on").classList.toggle("active", st.on);
       }
       function renderMaster() {
