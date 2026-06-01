@@ -28,6 +28,12 @@ pub struct MonitorClient {
     pub permitted_auxes: Vec<u8>,
     /// Input numbers visible to this client (1-based). Empty = all inputs.
     pub visible_inputs: Vec<u8>,
+    /// Optional per-profile PIN. When `Some`, the web (WebSocket) login must
+    /// present a matching PIN; `None` means name-only login (today's behaviour,
+    /// and always the case for the native UDP path). Persisted in the show file;
+    /// `#[serde(default)]` keeps older shows loading as "no PIN".
+    #[serde(default)]
+    pub pin: Option<String>,
 
     /// Endpoint of the connected client (runtime only): a UDP socket address
     /// or a web-socket connection id. `None` when not connected.
@@ -46,6 +52,7 @@ impl MonitorClient {
             name,
             permitted_auxes,
             visible_inputs,
+            pin: None,
             endpoint: None,
             last_seen: None,
         }

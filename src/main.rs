@@ -380,7 +380,17 @@ async fn run_headless(args: Args) {
             .set_ipad_sender(Some(ipad.clone()));
     }
 
-    // Start monitor server (if enabled)
+    // Shared monitor plumbing: one command channel (the UDP server and every
+    // WebSocket both feed it) and one state-event broadcast (the UDP fan-out
+    // and every WebSocket both subscribe). The engine drains the unified
+    // command stream and runs whenever either transport is enabled.
+    let run_monitor_engine = args.monitor_port > 0 || args.web_port > 0;
+    let (monitor_cmd_tx, monitor_cmd_rx) =
+        tokio::sync::mpsc::channel::<osc::monitor_server::MonitorCommand>(256);
+    let (monitor_events_tx, _) =
+        tokio::sync::broadcast::channel::<console::monitor_event::MonitorStateEvent>(1024);
+
+    // Native UDP monitor server (if enabled): reply socket + UDP fan-out task.
     if args.monitor_port > 0 {
         let monitor_addr: SocketAddr = format!("0.0.0.0:{}", args.monitor_port)
             .parse()
@@ -392,55 +402,17 @@ async fn run_headless(args: Args) {
             cancel_token.clone(),
             None,
             monitor_allowlist,
+            monitor_cmd_tx.clone(),
         )
         .await
         {
-            Ok((monitor_sender, mut monitor_rx)) => {
+            Ok(monitor_sender) => {
                 info!(port = args.monitor_port, "Monitor server started");
-                // Transport-agnostic output: the engine publishes
-                // MonitorStateEvents; a UDP fan-out task reproduces today's OSC
-                // packets to connected native clients (web clients will
-                // subscribe to the same broadcast in a later phase).
-                let (events_tx, _) = tokio::sync::broadcast::channel::<
-                    console::monitor_event::MonitorStateEvent,
-                >(1024);
-                let mut monitor_engine =
-                    MonitorEngine::new(manager.state(), manager.sender(), events_tx.clone());
-                monitor_engine.set_ipad_sender(ipad_sender_for_monitor);
                 tokio::spawn(console::monitor_event::run_udp_fanout(
-                    events_tx.subscribe(),
+                    monitor_events_tx.subscribe(),
                     monitor_sender,
                     monitor_manager.clone(),
                 ));
-                let mon_mgr = monitor_manager.clone();
-                tokio::spawn(async move {
-                    let mut last_send_state = std::collections::HashMap::new();
-                    let mut last_aux_state = std::collections::HashMap::new();
-                    let mut last_generation: u64 = 0;
-                    let mut last_push_times = std::collections::HashMap::new();
-                    let mut last_aux_push_times = std::collections::HashMap::new();
-                    let mut poll_interval =
-                        tokio::time::interval(std::time::Duration::from_millis(10));
-                    loop {
-                        tokio::select! {
-                            Some(cmd) = monitor_rx.recv() => {
-                                let mut mgr = mon_mgr.write().await;
-                                monitor_engine.handle_command(cmd, &mut mgr, true).await;
-                            }
-                            _ = poll_interval.tick() => {
-                                let mgr = mon_mgr.read().await;
-                                monitor_engine.poll_and_push_state_changes(
-                                    &mut last_send_state,
-                                    &mut last_aux_state,
-                                    &mut last_generation,
-                                    &mut last_push_times,
-                                    &mut last_aux_push_times,
-                                    &mgr,
-                                ).await;
-                            }
-                        }
-                    }
-                });
             }
             Err(e) => {
                 error!("Failed to start monitor server: {e}");
@@ -448,13 +420,60 @@ async fn run_headless(args: Args) {
         }
     }
 
-    // Start web monitor server (if enabled)
+    // Monitor engine loop (if either transport is active).
+    if run_monitor_engine {
+        let mut monitor_engine =
+            MonitorEngine::new(manager.state(), manager.sender(), monitor_events_tx.clone());
+        monitor_engine.set_ipad_sender(ipad_sender_for_monitor);
+        let mon_mgr = monitor_manager.clone();
+        let mut monitor_rx = monitor_cmd_rx;
+        tokio::spawn(async move {
+            let mut last_send_state = std::collections::HashMap::new();
+            let mut last_aux_state = std::collections::HashMap::new();
+            let mut last_generation: u64 = 0;
+            let mut last_push_times = std::collections::HashMap::new();
+            let mut last_aux_push_times = std::collections::HashMap::new();
+            let mut poll_interval = tokio::time::interval(std::time::Duration::from_millis(10));
+            loop {
+                tokio::select! {
+                    Some(cmd) = monitor_rx.recv() => {
+                        let mut mgr = mon_mgr.write().await;
+                        monitor_engine.handle_command(cmd, &mut mgr, true).await;
+                    }
+                    _ = poll_interval.tick() => {
+                        let mgr = mon_mgr.read().await;
+                        monitor_engine.poll_and_push_state_changes(
+                            &mut last_send_state,
+                            &mut last_aux_state,
+                            &mut last_generation,
+                            &mut last_push_times,
+                            &mut last_aux_push_times,
+                            &mgr,
+                        ).await;
+                    }
+                }
+            }
+        });
+    } else {
+        // Nothing will drain the command channel; release the receiver.
+        drop(monitor_cmd_rx);
+    }
+
+    // Web monitor server (if enabled): shares the command channel + broadcast.
     if args.web_port > 0 {
         let web_addr: SocketAddr = format!("0.0.0.0:{}", args.web_port)
             .parse()
             .expect("Invalid web address");
         let web_allowlist = persistence::show_file::parse_cidr_allowlist(&args.web_allow_cidrs);
-        match web::start_web_server(web_addr, cancel_token.clone(), web_allowlist).await {
+        let web_ctx = web::WebContext {
+            state: manager.state(),
+            manager: monitor_manager.clone(),
+            commands: monitor_cmd_tx.clone(),
+            events: monitor_events_tx.clone(),
+            offline_mode: offline_mode.clone(),
+            conn_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        };
+        match web::start_web_server(web_addr, cancel_token.clone(), web_allowlist, web_ctx).await {
             Ok(()) => info!(port = args.web_port, "Web server started"),
             Err(e) => error!("Failed to start web server: {e}"),
         }

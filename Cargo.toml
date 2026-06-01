@@ -51,10 +51,12 @@ imageproc = "0.25"
 ab_glyph = "0.2"
 hidapi = "2"
 
-# Web monitor surface: axum HTTP server (Phase 1 = static page + CIDR gate;
-# later phases add the /ws WebSocket monitor protocol). Default features give
+# Web monitor surface: axum HTTP + WebSocket server. `ws` adds the WebSocket
+# extractor for the browser monitor protocol; default features give
 # axum::serve, ConnectInfo<SocketAddr>, graceful shutdown, and middleware::from_fn.
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
+# Split the axum WebSocket into independent read/write halves (StreamExt/SinkExt).
+futures-util = "0.3"
 
 # ── Physical display metrics (real PPI) for DPI-aware UI scaling ──
 # Per-platform: macOS via Core Graphics, Windows via the raw-DPI monitor API,
@@ -77,3 +79,6 @@ windows-sys = { version = "0.59", features = [
 # coverage-guided fuzzing, `cargo install cargo-fuzz` separately + nightly
 # toolchain — proptest is the always-on safety net.
 proptest = "1"
+# WebSocket client for the web-monitor integration test (same version axum
+# pulls in transitively, so no extra download). Drives a real /ws connection.
+tokio-tungstenite = "0.29"

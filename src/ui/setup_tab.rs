@@ -2139,15 +2139,17 @@ pub(crate) fn start_connection(
                 .expect("Invalid monitor address");
             let monitor_allowlist =
                 crate::persistence::show_file::parse_cidr_allowlist(&monitor_allow_cidrs);
+            let (monitor_cmd_tx, mut monitor_rx) = tokio::sync::mpsc::channel(256);
             match MonitorServer::start_with_cancel(
                 monitor_addr,
                 token.clone(),
                 iface_name.as_deref(),
                 monitor_allowlist,
+                monitor_cmd_tx,
             )
             .await
             {
-                Ok((monitor_sender, mut monitor_rx)) => {
+                Ok(monitor_sender) => {
                     info!(port = monitor_port, "Monitor server started via UI");
                     // Transport-agnostic output: engine publishes events; a UDP
                     // fan-out task reproduces today's OSC to native clients.

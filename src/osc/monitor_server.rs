@@ -78,7 +78,11 @@ impl MonitorServer {
     pub async fn start(
         listen_addr: SocketAddr,
     ) -> std::io::Result<(MonitorSender, mpsc::Receiver<MonitorCommand>)> {
-        Self::start_with_cancel(listen_addr, CancellationToken::new(), None, Vec::new()).await
+        let (tx, rx) = mpsc::channel(256);
+        let sender =
+            Self::start_with_cancel(listen_addr, CancellationToken::new(), None, Vec::new(), tx)
+                .await?;
+        Ok((sender, rx))
     }
 
     /// Start the monitor server with a CancellationToken for clean shutdown
@@ -86,16 +90,21 @@ impl MonitorServer {
     /// all sources (current behavior); a non-empty list drops packets from
     /// any source not matching at least one CIDR — see audit C2 for the
     /// closed-LAN deployment rationale.
+    ///
+    /// Decoded commands are pushed onto `commands`. The caller owns the
+    /// receiver, so the same channel can also carry WebSocket-originated
+    /// commands (the engine loop drains one unified stream). Returns the reply
+    /// handle; bind errors propagate.
     pub async fn start_with_cancel(
         listen_addr: SocketAddr,
         cancel: CancellationToken,
         interface_name: Option<&str>,
         allowlist: Vec<Ipv4Cidr>,
-    ) -> std::io::Result<(MonitorSender, mpsc::Receiver<MonitorCommand>)> {
+        commands: mpsc::Sender<MonitorCommand>,
+    ) -> std::io::Result<MonitorSender> {
         let socket = Arc::new(
             crate::ui::net_interfaces::create_bound_udp_socket(listen_addr, interface_name).await?,
         );
-        let (tx, rx) = mpsc::channel(256);
 
         if allowlist.is_empty() {
             info!(%listen_addr, "Monitor server started (no source allowlist)");
@@ -111,9 +120,9 @@ impl MonitorServer {
             socket: socket.clone(),
         };
 
-        tokio::spawn(listen_loop(socket, tx, cancel, allowlist));
+        tokio::spawn(listen_loop(socket, commands, cancel, allowlist));
 
-        Ok((sender, rx))
+        Ok(sender)
     }
 }
 
