@@ -57,6 +57,10 @@ hidapi = "2"
 axum = { version = "0.8", features = ["ws"] }
 # Split the axum WebSocket into independent read/write halves (StreamExt/SinkExt).
 futures-util = "0.3"
+# Embed the browser monitor UI (web/dist) into the binary so the Pi/single-binary
+# build needs no Node — web/dist is committed and rebuilt only when the UI changes.
+rust-embed = "8"
+mime_guess = "2"
 
 # ── Physical display metrics (real PPI) for DPI-aware UI scaling ──
 # Per-platform: macOS via Core Graphics, Windows via the raw-DPI monitor API,

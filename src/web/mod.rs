@@ -9,6 +9,7 @@
 //!
 //! Everything runs on spawned tasks; the egui thread never touches this.
 
+pub mod assets;
 pub mod protocol;
 
 use std::net::SocketAddr;
@@ -23,7 +24,7 @@ use axum::{
     },
     http::StatusCode,
     middleware::{self, Next},
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::get,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -77,8 +78,10 @@ pub async fn start_web_server(
     }
 
     let app = Router::new()
-        .route("/", get(placeholder))
         .route("/ws", get(ws_handler))
+        // Everything else: the embedded web UI (single-page app, falls back to
+        // index.html). CIDR-gated like the WebSocket via the layer below.
+        .fallback(assets::static_handler)
         .layer(middleware::from_fn_with_state(
             Arc::new(allowlist),
             cidr_guard,
@@ -115,17 +118,6 @@ async fn cidr_guard(
     } else {
         StatusCode::FORBIDDEN.into_response()
     }
-}
-
-/// Placeholder landing page. Replaced by the embedded Svelte app in a later
-/// phase; the monitor surface itself is driven over `/ws`.
-async fn placeholder() -> impl IntoResponse {
-    Html(
-        "<!doctype html><meta charset=utf-8>\
-         <title>S21 HiJack — Web Monitor</title>\
-         <h1>S21 HiJack web monitor</h1>\
-         <p>Server is running. The monitor mixer UI ships in a later phase.</p>",
-    )
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(ctx): State<WebContext>) -> Response {
