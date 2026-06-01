@@ -1,6 +1,6 @@
 # S21 HiJack
 
-Middleware daemon and GUI for **DiGiCo S21/S31** mixing consoles. Sits between the console and your workflow tools to add snapshot/cue management, macros, channel palettes, smart ganging, pan link, personal monitoring, and QLab integration — features the console doesn't natively provide.
+Middleware daemon and GUI for **DiGiCo S21/S31** mixing consoles. Sits between the console and your workflow tools to add snapshot/cue management, macros, channel palettes, smart ganging, pan link, personal monitoring (native app **and** browser), and QLab integration — features the console doesn't natively provide.
 
 Communicates with the console over **GP OSC** (the documented open protocol) and optionally the **iPad protocol** (reverse-engineered) for parameters that GP OSC doesn't cover.
 
@@ -58,10 +58,13 @@ Communicates with the console over **GP OSC** (the documented open protocol) and
 
 ### Personal Monitoring (Aux Sends)
 - Define named monitor clients with permitted aux sends and visible input channels
-- Performers connect via OSC from any device and can only adjust their own mix
-- Permission validation — each client can only touch the auxes they're assigned to
-- FOH changes automatically echo to connected clients
-- A companion **Flutter monitor app** (`monitor_app/`) ships alongside for Android/iOS performers — see its own README for build instructions
+- Permission validation — each client can only touch the auxes they're assigned to and the inputs the profile makes visible (re-checked server-side on every command)
+- FOH changes automatically echo to connected clients, **across transports** — a move on a phone shows up on the desk app and on other performers' devices, and vice-versa
+- **Two ways for performers to connect:**
+  - **Browser — no install:** open `http://<daemon-ip>:8080` on a phone or tablet, pick your profile (and PIN, if the operator set one), and get a touch fader surface for your permitted sends — wide relative faders, pan, on/off, and an aux-master strip. The desktop UI's Monitor tab shows the per-interface URLs and a **per-profile QR code** that deep-links the name (and PIN), so a musician just scans it to connect. Served over HTTP + WebSocket with the web UI embedded in the binary — nothing extra to deploy (no Node, no separate web server)
+  - **Native app:** a companion **Flutter monitor app** (`monitor_app/`) for Android/iOS performers over OSC/UDP — see its own README for build instructions
+- **Optional per-profile PIN** hardens the browser login; the native UDP path stays name-only
+- **LAN use only** (plain HTTP). Optional source-IP CIDR allowlists gate both the UDP (`--monitor-allow-cidr`) and web (`--web-allow-cidr`) servers
 
 ### QLab / External Trigger Integration
 - **Inbound (trigger listener)**: OSC trigger listener accepts `/cue/go`, `/cue/previous`, `/cue/fire`, `/cue/current`, `/macro/fire`, `/snapshot/recall`, and `/snapshot/recall_full`. Drive cue recall from QLab, companion apps, Stream Deck, or any OSC sender — see the [OSC Trigger Commands](#osc-trigger-commands) table for argument types.
@@ -85,7 +88,7 @@ Communicates with the console over **GP OSC** (the documented open protocol) and
 
 ### Prerequisites
 
-- **Rust toolchain** 1.85 or newer (pinned via `rust-version` in [Cargo.toml](Cargo.toml) — required by edition 2024). Install via [rustup](https://rustup.rs/):
+- **Rust toolchain** 1.88 or newer (the `rust-version` MSRV in [Cargo.toml](Cargo.toml); edition 2024). Install via [rustup](https://rustup.rs/):
   ```
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   ```
@@ -142,7 +145,11 @@ cargo run --release -- --console-ip 127.0.0.1 --console-port 8000
 | `--ipad-receive-port` | — | Local port to receive iPad protocol messages |
 | `--ipad-port` | `0` | Legacy: single port for both send/receive |
 | `--ipad-ip` | — | iPad device IP (for Mode 3 proxy) |
-| `--monitor-port` | `0` | Personal monitor server port (0 = disabled) |
+| `--monitor-port` | `8025` | Native (UDP/OSC) monitor server port (0 = disabled) |
+| `--monitor-allow-cidr` | — | Repeatable: source-IP CIDR allowed to reach the monitor server (empty = accept all) |
+| `--web-port` | `8080` | Browser (HTTP/WebSocket) monitor server port (0 = disabled) |
+| `--web-allow-cidr` | — | Repeatable: source-IP CIDR allowed to reach the web monitor server (empty = accept all) |
+| `--trigger-allow-cidr` | — | Repeatable: source-IP CIDR allowed to reach the trigger listener (empty = accept all) |
 | `--headless` | `false` | Run without the GUI |
 
 ## OSC Trigger Commands
@@ -161,7 +168,7 @@ Send these to the trigger port (default 53001) from QLab, Stream Deck, or any OS
 
 ## Monitor Client OSC Protocol
 
-Performers connect to the monitor port with these messages. `{name}` is the client's configured monitor profile name.
+The **native** app connects to the UDP monitor port (`--monitor-port`) with these OSC messages; `{name}` is the client's configured monitor profile name. (Browser clients instead speak a JSON protocol over the WebSocket at `/ws` on the web port — a 1:1 mapping of the same commands, units identical; see [src/web/protocol.rs](src/web/protocol.rs).)
 
 | OSC Path | Args | Action |
 |---|---|---|
@@ -193,7 +200,12 @@ src/
                        palette manager, iPad handshake & proxy
   persistence/         Show file save/load (versioned, backward-compatible)
   ui/                  Native egui desktop UI (one file per tab + scope editor)
+  web/                 Browser monitor server — axum HTTP + WebSocket, JSON
+                       protocol (protocol.rs), embedded static UI (assets.rs)
   bin/mock_console.rs  Mock console simulator for testing without hardware
+web/
+  dist/index.html      Browser monitor touch UI (HTML/CSS/JS) — embedded into
+                       the binary at build time via rust-embed (no Node/build step)
 Documentation/
   PRD.md                                       Full product requirements document
   GP_OSC_help.jpeg                             GP OSC protocol reference image
@@ -207,7 +219,7 @@ Documentation/
 cargo test
 ```
 
-346 tests covering the data model, OSC protocol parsing/encoding, engine logic, persistence backward compatibility, and UI parsing utilities. Continuous integration runs `cargo check`, `cargo test`, `cargo fmt --check`, `cargo clippy`, and `cargo audit` on a Linux/macOS/Windows matrix on every push and PR — see [.github/workflows/ci.yml](.github/workflows/ci.yml).
+513 tests covering the data model, OSC protocol parsing/encoding, engine logic, persistence backward compatibility, the web monitor protocol + UDP fan-out (cross-transport echo), and UI parsing utilities. Continuous integration runs `cargo check`, `cargo test`, `cargo fmt --check`, `cargo clippy`, and `cargo audit` on a Linux/macOS/Windows matrix on every push and PR — see [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 ## Stream Deck integration (Linux setup)
 
