@@ -1,9 +1,7 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::Arc;
 
-use rosc::OscType;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, info, warn};
 
 use crate::model::channel::ChannelId;
@@ -14,8 +12,9 @@ use crate::osc::client::OscSender;
 use crate::osc::encode;
 use crate::osc::ipad_client::IpadSender;
 use crate::osc::ipad_encode;
-use crate::osc::monitor_server::{MonitorCommand, MonitorSender};
+use crate::osc::monitor_server::MonitorCommand;
 
+use super::monitor_event::{ClientStateSnapshot, MonitorStateEvent};
 use super::monitor_manager::MonitorManager;
 
 /// Which send parameter is being changed.
@@ -26,20 +25,29 @@ pub enum SendParam {
     On,
 }
 
-/// Processes monitoring client commands: validates permissions, forwards to console,
-/// echoes to other clients.
+/// Processes monitoring client commands: validates permissions, forwards to
+/// the console, and publishes transport-neutral [`MonitorStateEvent`]s for the
+/// client-facing transports (the UDP fan-out today, WebSocket later) to deliver.
 pub struct MonitorEngine {
     state: Arc<RwLock<ConsoleState>>,
     sender: OscSender,
     ipad_sender: Option<IpadSender>,
+    /// Publishes server→client output; subscribed by the UDP fan-out task and
+    /// (later) each WebSocket connection. See [`super::monitor_event`].
+    events: broadcast::Sender<MonitorStateEvent>,
 }
 
 impl MonitorEngine {
-    pub fn new(state: Arc<RwLock<ConsoleState>>, sender: OscSender) -> Self {
+    pub fn new(
+        state: Arc<RwLock<ConsoleState>>,
+        sender: OscSender,
+        events: broadcast::Sender<MonitorStateEvent>,
+    ) -> Self {
         Self {
             state,
             sender,
             ipad_sender: None,
+            events,
         }
     }
 
@@ -47,40 +55,45 @@ impl MonitorEngine {
         self.ipad_sender = sender;
     }
 
+    /// Publish a server→client event to all transports. Best-effort: a send
+    /// error just means there are currently no subscribers.
+    fn publish(&self, event: MonitorStateEvent) {
+        let _ = self.events.send(event);
+    }
+
     /// Handle a single monitor command.
     pub async fn handle_command(
         &self,
         cmd: MonitorCommand,
         manager: &mut MonitorManager,
-        monitor_sender: &MonitorSender,
         console_connected: bool,
     ) {
         match cmd {
             MonitorCommand::Connect {
                 client_name,
-                reply_addr,
+                endpoint,
             } => {
                 if manager.find_by_name(&client_name).is_none() {
                     warn!(name = %client_name, "Monitor connect: unknown client");
                     return;
                 }
-                manager.update_last_seen(&client_name, reply_addr);
-                info!(name = %client_name, %reply_addr, "Monitor client connected");
+                manager.update_last_seen(&client_name, endpoint);
+                info!(name = %client_name, ?endpoint, "Monitor client connected");
 
-                // Send full permitted state
+                // Publish full permitted state to the connecting client.
                 if let Some(client) = manager.find_by_name(&client_name) {
                     let client = client.clone();
-                    self.send_client_state(&client, monitor_sender).await;
+                    self.publish_client_state(&client).await;
                 }
             }
             MonitorCommand::RequestState {
                 client_name,
-                reply_addr,
+                endpoint,
             } => {
-                manager.update_last_seen(&client_name, reply_addr);
+                manager.update_last_seen(&client_name, endpoint);
                 if let Some(client) = manager.find_by_name(&client_name) {
                     let client = client.clone();
-                    self.send_client_state(&client, monitor_sender).await;
+                    self.publish_client_state(&client).await;
                 } else {
                     warn!(name = %client_name, "Monitor state: unknown client");
                 }
@@ -90,9 +103,9 @@ impl MonitorEngine {
                 input_ch,
                 aux_ch,
                 value,
-                reply_addr,
+                endpoint,
             } => {
-                manager.update_last_seen(&client_name, reply_addr);
+                manager.update_last_seen(&client_name, endpoint);
                 self.handle_send_change(
                     &client_name,
                     input_ch,
@@ -100,7 +113,6 @@ impl MonitorEngine {
                     SendParam::Level,
                     ParameterValue::Float(value),
                     manager,
-                    monitor_sender,
                 )
                 .await;
             }
@@ -109,9 +121,9 @@ impl MonitorEngine {
                 input_ch,
                 aux_ch,
                 value,
-                reply_addr,
+                endpoint,
             } => {
-                manager.update_last_seen(&client_name, reply_addr);
+                manager.update_last_seen(&client_name, endpoint);
                 self.handle_send_change(
                     &client_name,
                     input_ch,
@@ -119,7 +131,6 @@ impl MonitorEngine {
                     SendParam::Pan,
                     ParameterValue::Float(value),
                     manager,
-                    monitor_sender,
                 )
                 .await;
             }
@@ -128,9 +139,9 @@ impl MonitorEngine {
                 input_ch,
                 aux_ch,
                 on,
-                reply_addr,
+                endpoint,
             } => {
-                manager.update_last_seen(&client_name, reply_addr);
+                manager.update_last_seen(&client_name, endpoint);
                 self.handle_send_change(
                     &client_name,
                     input_ch,
@@ -138,7 +149,6 @@ impl MonitorEngine {
                     SendParam::On,
                     ParameterValue::Bool(on),
                     manager,
-                    monitor_sender,
                 )
                 .await;
             }
@@ -146,9 +156,9 @@ impl MonitorEngine {
                 client_name,
                 aux_ch,
                 value,
-                reply_addr,
+                endpoint,
             } => {
-                manager.update_last_seen(&client_name, reply_addr);
+                manager.update_last_seen(&client_name, endpoint);
                 self.handle_aux_change(
                     &client_name,
                     aux_ch,
@@ -162,9 +172,9 @@ impl MonitorEngine {
                 client_name,
                 aux_ch,
                 mute,
-                reply_addr,
+                endpoint,
             } => {
-                manager.update_last_seen(&client_name, reply_addr);
+                manager.update_last_seen(&client_name, endpoint);
                 self.handle_aux_change(
                     &client_name,
                     aux_ch,
@@ -174,7 +184,7 @@ impl MonitorEngine {
                 )
                 .await;
             }
-            MonitorCommand::Discover { reply_addr } => {
+            MonitorCommand::Discover { endpoint } => {
                 let state = self.state.read().await;
                 let name = if state.config.console_name.is_empty() {
                     "S21_HiJack".to_string()
@@ -182,23 +192,21 @@ impl MonitorEngine {
                     state.config.console_name.clone()
                 };
                 drop(state);
-                let monitor_port = monitor_sender.local_port();
-                let _ = monitor_sender
-                    .send_to(
-                        reply_addr,
-                        "/monitor/discovered",
-                        vec![OscType::String(name), OscType::Int(monitor_port as i32)],
-                    )
-                    .await;
-                info!(%reply_addr, monitor_port, "Monitor discovery reply sent");
+                self.publish(MonitorStateEvent::Discovered {
+                    endpoint,
+                    console_name: name,
+                });
+                info!(?endpoint, "Monitor discovery reply queued");
             }
-            MonitorCommand::QueryConsoleStatus { reply_addr } => {
-                self.handle_status_console(reply_addr, console_connected, monitor_sender)
-                    .await;
+            MonitorCommand::QueryConsoleStatus { endpoint } => {
+                self.publish(MonitorStateEvent::ConsoleStatus {
+                    endpoint,
+                    connected: console_connected,
+                });
             }
-            MonitorCommand::QueryClientCount { reply_addr } => {
-                self.handle_status_clients(reply_addr, manager, monitor_sender)
-                    .await;
+            MonitorCommand::QueryClientCount { endpoint } => {
+                let count = manager.connected_count() as i32;
+                self.publish(MonitorStateEvent::ClientCount { endpoint, count });
             }
         }
     }
@@ -272,25 +280,28 @@ impl MonitorEngine {
         param: SendParam,
         value: ParameterValue,
         manager: &MonitorManager,
-        monitor_sender: &MonitorSender,
     ) {
-        let client = match manager.find_by_name(client_name) {
-            Some(c) => c,
+        // Validate, and capture the originating endpoint so the echo can skip
+        // the source. `update_last_seen` ran just before this, so a connected
+        // client has its endpoint set.
+        let source = match manager.find_by_name(client_name) {
+            Some(c) => {
+                if !c.is_permitted(input_ch, aux_ch) {
+                    warn!(
+                        name = %client_name, input_ch, aux_ch,
+                        "Monitor send change: permission denied"
+                    );
+                    return;
+                }
+                c.endpoint
+            }
             None => {
                 warn!(name = %client_name, "Monitor send change: unknown client");
                 return;
             }
         };
 
-        if !client.is_permitted(input_ch, aux_ch) {
-            warn!(
-                name = %client_name, input_ch, aux_ch,
-                "Monitor send change: permission denied"
-            );
-            return;
-        }
-
-        // Forward to console
+        // Forward to console.
         let forwarded = self
             .forward_send_change(input_ch, aux_ch, param, &value)
             .await;
@@ -301,28 +312,30 @@ impl MonitorEngine {
                 "Monitor: forwarded send change to console"
             );
 
-            // Echo to other connected clients with overlapping aux permissions
-            self.echo_to_other_clients(
-                client_name,
-                input_ch,
-                aux_ch,
-                param,
-                &value,
-                manager,
-                monitor_sender,
-            )
-            .await;
+            // Echo to other connected clients with overlapping aux permissions.
+            // The fan-out/WS subscribers apply the per-client permission filter
+            // and skip the source endpoint.
+            if let Some(source) = source {
+                self.publish(MonitorStateEvent::SendEcho {
+                    source,
+                    input: input_ch,
+                    aux: aux_ch,
+                    param,
+                    value,
+                });
+            }
         }
     }
 
-    /// Send current state of all permitted sends to a client.
-    async fn send_client_state(&self, client: &MonitorClient, monitor_sender: &MonitorSender) {
-        let Some(addr) = client.connected_addr else {
+    /// Build and publish the full permitted-state snapshot for a client
+    /// (reply to `Connect`/`RequestState`). The transport delivers it to the
+    /// client identified by `client.endpoint`.
+    async fn publish_client_state(&self, client: &MonitorClient) {
+        let Some(endpoint) = client.endpoint else {
             return;
         };
 
         let state = self.state.read().await;
-        let mut sends = Vec::new();
 
         // Determine input range
         let inputs: Vec<u8> = if client.visible_inputs.is_empty() {
@@ -331,6 +344,7 @@ impl MonitorEngine {
             client.visible_inputs.clone()
         };
 
+        let mut sends = Vec::new();
         for &input in &inputs {
             for &aux in &client.permitted_auxes {
                 let level = state
@@ -361,41 +375,28 @@ impl MonitorEngine {
             }
         }
 
-        if let Err(e) = monitor_sender.send_client_state(addr, &sends).await {
-            warn!(name = %client.name, "Failed to send state: {e}");
-        }
-
-        // Send channel names for inputs and permitted auxes
+        // Channel names for inputs and permitted auxes (only those that have one).
+        let mut input_names = Vec::new();
         for &input in &inputs {
             if let Some(ParameterValue::String(s)) = state.get(&ParameterAddress {
                 channel: ChannelId::Input(input),
                 parameter: ParameterPath::Name,
             }) {
-                let _ = monitor_sender
-                    .send_to(
-                        addr,
-                        &format!("/monitor/state/name/input/{input}"),
-                        vec![OscType::String(s.clone())],
-                    )
-                    .await;
+                input_names.push((input, s.clone()));
             }
         }
+        let mut aux_names = Vec::new();
         for &aux in &client.permitted_auxes {
             if let Some(ParameterValue::String(s)) = state.get(&ParameterAddress {
                 channel: ChannelId::Aux(aux),
                 parameter: ParameterPath::Name,
             }) {
-                let _ = monitor_sender
-                    .send_to(
-                        addr,
-                        &format!("/monitor/state/name/aux/{aux}"),
-                        vec![OscType::String(s.clone())],
-                    )
-                    .await;
+                aux_names.push((aux, s.clone()));
             }
         }
 
-        // Send aux fader/mute for each permitted aux
+        // Aux fader/mute for each permitted aux.
+        let mut aux_strips = Vec::new();
         for &aux in &client.permitted_auxes {
             let fader = state
                 .get(&ParameterAddress {
@@ -411,19 +412,25 @@ impl MonitorEngine {
                 })
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let _ = monitor_sender
-                .send_to(
-                    addr,
-                    &format!("/monitor/state/aux/{aux}"),
-                    vec![OscType::Float(fader), OscType::Bool(mute)],
-                )
-                .await;
+            aux_strips.push((aux, fader, mute));
         }
+        drop(state);
+
+        let send_count = sends.len();
+        self.publish(MonitorStateEvent::ClientState {
+            endpoint,
+            snapshot: ClientStateSnapshot {
+                sends,
+                input_names,
+                aux_names,
+                aux_strips,
+            },
+        });
 
         debug!(
             name = %client.name,
-            send_count = sends.len(),
-            "Sent full state to monitor client"
+            send_count,
+            "Published full state to monitor client"
         );
     }
 
@@ -488,45 +495,6 @@ impl MonitorEngine {
         }
     }
 
-    /// Echo a send change to all OTHER connected clients with overlapping aux permissions.
-    async fn echo_to_other_clients(
-        &self,
-        source_name: &str,
-        input_ch: u8,
-        aux_ch: u8,
-        param: SendParam,
-        value: &ParameterValue,
-        manager: &MonitorManager,
-        monitor_sender: &MonitorSender,
-    ) {
-        let param_name = match param {
-            SendParam::Level => "level",
-            SendParam::Pan => "pan",
-            SendParam::On => "on",
-        };
-        let path = format!("/monitor/state/send/{input_ch}/{aux_ch}/{param_name}");
-        let args = match value {
-            ParameterValue::Float(f) => vec![rosc::OscType::Float(*f)],
-            ParameterValue::Bool(b) => vec![rosc::OscType::Bool(*b)],
-            ParameterValue::Int(i) => vec![rosc::OscType::Int(*i)],
-            ParameterValue::String(s) => vec![rosc::OscType::String(s.clone())],
-        };
-
-        for client in manager.clients.values() {
-            // Skip the source client
-            if client.name.eq_ignore_ascii_case(source_name) {
-                continue;
-            }
-            // Only echo to connected clients with matching aux permission
-            if !client.is_connected() || !client.permitted_auxes.contains(&aux_ch) {
-                continue;
-            }
-            if let Some(addr) = client.connected_addr {
-                let _ = monitor_sender.send_to(addr, &path, args.clone()).await;
-            }
-        }
-    }
-
     /// PRD 5.7 step 5: Poll ConsoleState for send + aux parameter changes and push updates.
     /// Uses a generation counter to skip scanning when nothing changed.
     /// Per-parameter rate limited to 20Hz via `last_push_times`.
@@ -538,7 +506,6 @@ impl MonitorEngine {
         last_push_times: &mut HashMap<(u8, u8), std::time::Instant>,
         last_aux_push_times: &mut HashMap<u8, std::time::Instant>,
         manager: &MonitorManager,
-        monitor_sender: &MonitorSender,
     ) {
         let state = self.state.read().await;
 
@@ -625,33 +592,18 @@ impl MonitorEngine {
                     }
                 }
 
-                // State changed — push to affected clients
+                // State changed — publish once; the transports fan it out to
+                // each permitted+visible client.
                 last_send_state.insert(key, new_state);
                 last_push_times.insert(key, now);
 
-                for client in manager.clients.values() {
-                    if !client.is_connected() || !client.permitted_auxes.contains(&aux) {
-                        continue;
-                    }
-                    let input_visible =
-                        client.visible_inputs.is_empty() || client.visible_inputs.contains(&input);
-                    if !input_visible {
-                        continue;
-                    }
-                    if let Some(addr) = client.connected_addr {
-                        let _ = monitor_sender
-                            .send_to(
-                                addr,
-                                &format!("/monitor/state/send/{input}/{aux}"),
-                                vec![
-                                    rosc::OscType::Float(level),
-                                    rosc::OscType::Float(pan),
-                                    rosc::OscType::Bool(on),
-                                ],
-                            )
-                            .await;
-                    }
-                }
+                self.publish(MonitorStateEvent::SendState {
+                    input,
+                    aux,
+                    level,
+                    pan,
+                    on,
+                });
             }
         }
 
@@ -686,54 +638,8 @@ impl MonitorEngine {
             last_aux_state.insert(aux, new_aux_state);
             last_aux_push_times.insert(aux, now);
 
-            for client in manager.clients.values() {
-                if !client.is_connected() || !client.permitted_auxes.contains(&aux) {
-                    continue;
-                }
-                if let Some(addr) = client.connected_addr {
-                    let _ = monitor_sender
-                        .send_to(
-                            addr,
-                            &format!("/monitor/state/aux/{aux}"),
-                            vec![rosc::OscType::Float(fader), rosc::OscType::Bool(mute)],
-                        )
-                        .await;
-                }
-            }
+            self.publish(MonitorStateEvent::AuxState { aux, fader, mute });
         }
-    }
-
-    /// PRD 6.4: Reply to `/status/console`.
-    async fn handle_status_console(
-        &self,
-        reply_addr: SocketAddr,
-        connected: bool,
-        monitor_sender: &MonitorSender,
-    ) {
-        let _ = monitor_sender
-            .send_to(
-                reply_addr,
-                "/status/console",
-                vec![rosc::OscType::Int(if connected { 1 } else { 0 })],
-            )
-            .await;
-    }
-
-    /// PRD 6.4: Reply to `/status/clients`.
-    async fn handle_status_clients(
-        &self,
-        reply_addr: SocketAddr,
-        manager: &MonitorManager,
-        monitor_sender: &MonitorSender,
-    ) {
-        let count = manager.connected_count() as i32;
-        let _ = monitor_sender
-            .send_to(
-                reply_addr,
-                "/status/clients",
-                vec![rosc::OscType::Int(count)],
-            )
-            .await;
     }
 }
 
@@ -741,7 +647,8 @@ impl MonitorEngine {
 mod tests {
     use super::*;
     use crate::model::config::ConsoleConfig;
-    use crate::model::monitor::MonitorClient;
+    use crate::model::monitor::{ClientEndpoint, MonitorClient};
+    use std::net::SocketAddr;
     use std::time::Instant;
 
     /// Create a test engine with a dummy sender that will fail to send
@@ -755,14 +662,15 @@ mod tests {
             let console_addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
             OscSender::new(std::sync::Arc::new(socket), console_addr)
         });
-        MonitorEngine::new(state, sender)
+        let (events, _events_rx) = broadcast::channel(16);
+        MonitorEngine::new(state, sender, events)
     }
 
     fn make_manager_with_clients() -> MonitorManager {
         let mut mgr = MonitorManager::new();
 
         let mut drummer = MonitorClient::new("Drummer".into(), vec![1, 2], vec![]);
-        drummer.connected_addr = Some("192.168.1.100:9000".parse().unwrap());
+        drummer.endpoint = Some(ClientEndpoint::Udp("192.168.1.100:9000".parse().unwrap()));
         drummer.last_seen = Some(Instant::now());
         mgr.add_client(drummer);
 
@@ -824,5 +732,153 @@ mod tests {
             })
             .collect();
         assert!(connected.is_empty());
+    }
+
+    /// Consume and discard every datagram queued on `sock` (used to flush the
+    /// connect-time state snapshot before asserting on later traffic).
+    async fn drain(sock: &tokio::net::UdpSocket) {
+        let mut buf = [0u8; 4096];
+        while tokio::time::timeout(
+            std::time::Duration::from_millis(150),
+            sock.recv_from(&mut buf),
+        )
+        .await
+        .is_ok()
+        {}
+    }
+
+    /// Receive one OSC message's address path, or `None` if nothing arrives in
+    /// 200 ms (reliable on loopback as a "nothing was sent" check).
+    async fn recv_path(sock: &tokio::net::UdpSocket) -> Option<String> {
+        let mut buf = [0u8; 4096];
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            sock.recv_from(&mut buf),
+        )
+        .await
+        {
+            Ok(Ok((n, _))) => match rosc::decoder::decode_udp(&buf[..n]) {
+                Ok((_, rosc::OscPacket::Message(m))) => Some(m.addr),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// End-to-end coexistence gate (no web server): two native clients sharing
+    /// aux 1. A move on client A forwards to the console and echoes to client B
+    /// but not back to A — the pre-bridge behaviour, now via the broadcast +
+    /// UDP fan-out.
+    #[tokio::test]
+    async fn end_to_end_command_forwards_and_echoes_to_peer_not_source() {
+        use crate::console::monitor_event::{MonitorStateEvent, run_udp_fanout};
+        use crate::osc::monitor_server::MonitorServer;
+        use std::time::Duration;
+        use tokio::net::UdpSocket;
+
+        // A real "console" socket so the GP-OSC forward succeeds — the echo
+        // only fires when the forward succeeds.
+        let console_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let console_addr = console_sock.local_addr().unwrap();
+        let local_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let console_sender = OscSender::new(local_sock, console_addr);
+
+        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
+        let (events_tx, _) = broadcast::channel::<MonitorStateEvent>(256);
+        let engine = MonitorEngine::new(state, console_sender, events_tx.clone());
+
+        // Two native clients; both permit aux 1, all inputs.
+        let client_a = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client_b = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr_a = client_a.local_addr().unwrap();
+        let addr_b = client_b.local_addr().unwrap();
+
+        let manager = Arc::new(RwLock::new(MonitorManager::new()));
+        {
+            let mut mgr = manager.write().await;
+            mgr.add_client(MonitorClient::new("A".into(), vec![1], vec![]));
+            mgr.add_client(MonitorClient::new("B".into(), vec![1], vec![]));
+        }
+
+        let (monitor_sender, _rx) = MonitorServer::start("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        tokio::spawn(run_udp_fanout(
+            events_tx.subscribe(),
+            monitor_sender,
+            manager.clone(),
+        ));
+
+        // Both clients connect (sets endpoint + triggers a full-state snapshot).
+        {
+            let mut mgr = manager.write().await;
+            engine
+                .handle_command(
+                    MonitorCommand::Connect {
+                        client_name: "A".into(),
+                        endpoint: ClientEndpoint::Udp(addr_a),
+                    },
+                    &mut mgr,
+                    true,
+                )
+                .await;
+            engine
+                .handle_command(
+                    MonitorCommand::Connect {
+                        client_name: "B".into(),
+                        endpoint: ClientEndpoint::Udp(addr_b),
+                    },
+                    &mut mgr,
+                    true,
+                )
+                .await;
+        }
+
+        // The snapshot reaches A, then flush both clients' snapshot bursts.
+        let mut buf = [0u8; 4096];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), client_a.recv_from(&mut buf))
+                .await
+                .is_ok(),
+            "A should receive a state snapshot on connect"
+        );
+        drain(&client_a).await;
+        drain(&client_b).await;
+
+        // A moves a send on aux 1.
+        {
+            let mut mgr = manager.write().await;
+            engine
+                .handle_command(
+                    MonitorCommand::SetSendLevel {
+                        client_name: "A".into(),
+                        input_ch: 5,
+                        aux_ch: 1,
+                        value: -6.0,
+                        endpoint: ClientEndpoint::Udp(addr_a),
+                    },
+                    &mut mgr,
+                    true,
+                )
+                .await;
+        }
+
+        // Console received the forwarded change.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), console_sock.recv_from(&mut buf))
+                .await
+                .is_ok(),
+            "console should receive the forwarded send change"
+        );
+
+        // B received the echo; A (the source) did not.
+        let b_path = recv_path(&client_b)
+            .await
+            .expect("B should receive the echo");
+        assert_eq!(b_path, "/monitor/state/send/5/1/level");
+        assert!(
+            recv_path(&client_a).await.is_none(),
+            "source A must not receive its own echo"
+        );
     }
 }

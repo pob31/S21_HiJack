@@ -2149,11 +2149,22 @@ pub(crate) fn start_connection(
             {
                 Ok((monitor_sender, mut monitor_rx)) => {
                     info!(port = monitor_port, "Monitor server started via UI");
-                    let monitor_engine = MonitorEngine::new(st.clone(), manager.sender());
+                    // Transport-agnostic output: engine publishes events; a UDP
+                    // fan-out task reproduces today's OSC to native clients.
+                    let (events_tx, _) = tokio::sync::broadcast::channel::<
+                        crate::console::monitor_event::MonitorStateEvent,
+                    >(1024);
+                    let monitor_engine =
+                        MonitorEngine::new(st.clone(), manager.sender(), events_tx.clone());
                     let mon_mgr_loop = mon_mgr.clone();
                     let tx_monitor = tx.clone();
                     let monitor_token = token.clone();
                     let _ = tx_monitor.send(UiEvent::MonitorServerStarted);
+                    tokio::spawn(crate::console::monitor_event::run_udp_fanout(
+                        events_tx.subscribe(),
+                        monitor_sender,
+                        mon_mgr.clone(),
+                    ));
                     tokio::spawn(async move {
                         let mut last_send_state = std::collections::HashMap::new();
                         let mut last_aux_state = std::collections::HashMap::new();
@@ -2171,7 +2182,7 @@ pub(crate) fn start_connection(
                                 Some(cmd) = monitor_rx.recv() => {
                                     let mut mgr = mon_mgr_loop.write().await;
                                     monitor_engine.handle_command(
-                                        cmd, &mut mgr, &monitor_sender, true,
+                                        cmd, &mut mgr, true,
                                     ).await;
                                 }
                                 _ = poll_interval.tick() => {
@@ -2183,7 +2194,6 @@ pub(crate) fn start_connection(
                                         &mut last_push_times,
                                         &mut last_aux_push_times,
                                         &mgr,
-                                        &monitor_sender,
                                     ).await;
                                 }
                             }

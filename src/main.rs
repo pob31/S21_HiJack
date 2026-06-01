@@ -397,8 +397,21 @@ async fn run_headless(args: Args) {
         {
             Ok((monitor_sender, mut monitor_rx)) => {
                 info!(port = args.monitor_port, "Monitor server started");
-                let mut monitor_engine = MonitorEngine::new(manager.state(), manager.sender());
+                // Transport-agnostic output: the engine publishes
+                // MonitorStateEvents; a UDP fan-out task reproduces today's OSC
+                // packets to connected native clients (web clients will
+                // subscribe to the same broadcast in a later phase).
+                let (events_tx, _) = tokio::sync::broadcast::channel::<
+                    console::monitor_event::MonitorStateEvent,
+                >(1024);
+                let mut monitor_engine =
+                    MonitorEngine::new(manager.state(), manager.sender(), events_tx.clone());
                 monitor_engine.set_ipad_sender(ipad_sender_for_monitor);
+                tokio::spawn(console::monitor_event::run_udp_fanout(
+                    events_tx.subscribe(),
+                    monitor_sender,
+                    monitor_manager.clone(),
+                ));
                 let mon_mgr = monitor_manager.clone();
                 tokio::spawn(async move {
                     let mut last_send_state = std::collections::HashMap::new();
@@ -412,7 +425,7 @@ async fn run_headless(args: Args) {
                         tokio::select! {
                             Some(cmd) = monitor_rx.recv() => {
                                 let mut mgr = mon_mgr.write().await;
-                                monitor_engine.handle_command(cmd, &mut mgr, &monitor_sender, true).await;
+                                monitor_engine.handle_command(cmd, &mut mgr, true).await;
                             }
                             _ = poll_interval.tick() => {
                                 let mgr = mon_mgr.read().await;
@@ -423,7 +436,6 @@ async fn run_headless(args: Args) {
                                     &mut last_push_times,
                                     &mut last_aux_push_times,
                                     &mgr,
-                                    &monitor_sender,
                                 ).await;
                             }
                         }

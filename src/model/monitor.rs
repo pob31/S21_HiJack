@@ -7,6 +7,17 @@ use uuid::Uuid;
 /// Connection timeout: a client is considered disconnected after this duration of silence.
 const CONNECTION_TIMEOUT_SECS: u64 = 30;
 
+/// Identifies a connected monitoring client across transports. Native clients
+/// are addressed by their UDP source address; browser clients (the web
+/// monitor) by an opaque per-connection id. Runtime-only — never persisted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ClientEndpoint {
+    /// Native client over UDP/OSC, addressed by its source socket address.
+    Udp(SocketAddr),
+    /// Browser client over WebSocket, keyed by a per-connection id.
+    Ws(u64),
+}
+
 /// A monitoring client profile: a musician who can control specific sends from a tablet.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MonitorClient {
@@ -18,9 +29,10 @@ pub struct MonitorClient {
     /// Input numbers visible to this client (1-based). Empty = all inputs.
     pub visible_inputs: Vec<u8>,
 
-    /// Current UDP address of the connected client (runtime only).
+    /// Endpoint of the connected client (runtime only): a UDP socket address
+    /// or a web-socket connection id. `None` when not connected.
     #[serde(skip)]
-    pub connected_addr: Option<SocketAddr>,
+    pub endpoint: Option<ClientEndpoint>,
     /// Timestamp of the last received message (runtime only).
     #[serde(skip)]
     pub last_seen: Option<Instant>,
@@ -34,7 +46,7 @@ impl MonitorClient {
             name,
             permitted_auxes,
             visible_inputs,
-            connected_addr: None,
+            endpoint: None,
             last_seen: None,
         }
     }
@@ -66,7 +78,7 @@ mod tests {
         assert_eq!(client.name, "Drummer");
         assert_eq!(client.permitted_auxes, vec![1, 2]);
         assert_eq!(client.visible_inputs, vec![1, 2, 3]);
-        assert!(client.connected_addr.is_none());
+        assert!(client.endpoint.is_none());
         assert!(client.last_seen.is_none());
         assert!(!client.is_connected());
     }
@@ -108,7 +120,7 @@ mod tests {
         assert_eq!(loaded.permitted_auxes, vec![2, 4]);
         assert_eq!(loaded.visible_inputs, vec![1, 2]);
         // Skipped fields should be None after deserialization
-        assert!(loaded.connected_addr.is_none());
+        assert!(loaded.endpoint.is_none());
         assert!(loaded.last_seen.is_none());
     }
 

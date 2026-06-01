@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::model::cidr::{self, Ipv4Cidr};
+use crate::model::monitor::ClientEndpoint;
 
 /// Commands parsed from incoming monitoring client OSC messages.
 #[derive(Debug)]
@@ -15,12 +16,12 @@ pub enum MonitorCommand {
     /// Client connecting (acts as heartbeat).
     Connect {
         client_name: String,
-        reply_addr: SocketAddr,
+        endpoint: ClientEndpoint,
     },
     /// Client requests its full permitted state.
     RequestState {
         client_name: String,
-        reply_addr: SocketAddr,
+        endpoint: ClientEndpoint,
     },
     /// Set a send level: `/monitor/{name}/send/{input}/{aux}/level {value}`
     SetSendLevel {
@@ -28,7 +29,7 @@ pub enum MonitorCommand {
         input_ch: u8,
         aux_ch: u8,
         value: f32,
-        reply_addr: SocketAddr,
+        endpoint: ClientEndpoint,
     },
     /// Set a send pan: `/monitor/{name}/send/{input}/{aux}/pan {value}`
     SetSendPan {
@@ -36,7 +37,7 @@ pub enum MonitorCommand {
         input_ch: u8,
         aux_ch: u8,
         value: f32,
-        reply_addr: SocketAddr,
+        endpoint: ClientEndpoint,
     },
     /// Set a send on/off: `/monitor/{name}/send/{input}/{aux}/on {0|1}`
     SetSendOn {
@@ -44,28 +45,28 @@ pub enum MonitorCommand {
         input_ch: u8,
         aux_ch: u8,
         on: bool,
-        reply_addr: SocketAddr,
+        endpoint: ClientEndpoint,
     },
     /// Set aux output fader: `/monitor/{name}/aux/{aux}/fader {value}`
     SetAuxFader {
         client_name: String,
         aux_ch: u8,
         value: f32,
-        reply_addr: SocketAddr,
+        endpoint: ClientEndpoint,
     },
     /// Set aux output mute: `/monitor/{name}/aux/{aux}/mute {0|1}`
     SetAuxMute {
         client_name: String,
         aux_ch: u8,
         mute: bool,
-        reply_addr: SocketAddr,
+        endpoint: ClientEndpoint,
     },
     /// Discovery: `/monitor/discover` — app broadcasts to find daemons on the LAN.
-    Discover { reply_addr: SocketAddr },
+    Discover { endpoint: ClientEndpoint },
     /// PRD 6.4: `/status/console` — query console connection status.
-    QueryConsoleStatus { reply_addr: SocketAddr },
+    QueryConsoleStatus { endpoint: ClientEndpoint },
     /// PRD 6.4: `/status/clients` — query connected monitoring client count.
-    QueryClientCount { reply_addr: SocketAddr },
+    QueryClientCount { endpoint: ClientEndpoint },
 }
 
 /// Binds a UDP socket and spawns a receive loop for monitoring clients.
@@ -259,15 +260,21 @@ pub fn parse_monitor_message(
 ) -> Option<MonitorCommand> {
     // Status endpoints (PRD 6.4)
     if path == "/status/console" {
-        return Some(MonitorCommand::QueryConsoleStatus { reply_addr: src });
+        return Some(MonitorCommand::QueryConsoleStatus {
+            endpoint: ClientEndpoint::Udp(src),
+        });
     }
     if path == "/status/clients" {
-        return Some(MonitorCommand::QueryClientCount { reply_addr: src });
+        return Some(MonitorCommand::QueryClientCount {
+            endpoint: ClientEndpoint::Udp(src),
+        });
     }
 
     // Discovery: /monitor/discover (no client name)
     if path == "/monitor/discover" {
-        return Some(MonitorCommand::Discover { reply_addr: src });
+        return Some(MonitorCommand::Discover {
+            endpoint: ClientEndpoint::Udp(src),
+        });
     }
 
     // Monitor paths: /monitor/{name}/...
@@ -283,11 +290,11 @@ pub fn parse_monitor_message(
     match action {
         "connect" => Some(MonitorCommand::Connect {
             client_name,
-            reply_addr: src,
+            endpoint: ClientEndpoint::Udp(src),
         }),
         "state" => Some(MonitorCommand::RequestState {
             client_name,
-            reply_addr: src,
+            endpoint: ClientEndpoint::Udp(src),
         }),
         _ => {
             // Try aux path: aux/{aux}/{param}
@@ -305,7 +312,7 @@ pub fn parse_monitor_message(
                             client_name,
                             aux_ch,
                             value,
-                            reply_addr: src,
+                            endpoint: ClientEndpoint::Udp(src),
                         })
                     }
                     "mute" => {
@@ -319,7 +326,7 @@ pub fn parse_monitor_message(
                             client_name,
                             aux_ch,
                             mute,
-                            reply_addr: src,
+                            endpoint: ClientEndpoint::Udp(src),
                         })
                     }
                     _ => None,
@@ -348,7 +355,7 @@ pub fn parse_monitor_message(
                         input_ch,
                         aux_ch,
                         value,
-                        reply_addr: src,
+                        endpoint: ClientEndpoint::Udp(src),
                     })
                 }
                 "pan" => {
@@ -362,7 +369,7 @@ pub fn parse_monitor_message(
                         input_ch,
                         aux_ch,
                         value,
-                        reply_addr: src,
+                        endpoint: ClientEndpoint::Udp(src),
                     })
                 }
                 "on" => {
@@ -377,7 +384,7 @@ pub fn parse_monitor_message(
                         input_ch,
                         aux_ch,
                         on,
-                        reply_addr: src,
+                        endpoint: ClientEndpoint::Udp(src),
                     })
                 }
                 _ => None,
@@ -400,10 +407,10 @@ mod tests {
         match cmd {
             MonitorCommand::Connect {
                 client_name,
-                reply_addr,
+                endpoint,
             } => {
                 assert_eq!(client_name, "drummer");
-                assert_eq!(reply_addr, src());
+                assert_eq!(endpoint, ClientEndpoint::Udp(src()));
             }
             _ => panic!("Expected Connect"),
         }
@@ -415,10 +422,10 @@ mod tests {
         match cmd {
             MonitorCommand::RequestState {
                 client_name,
-                reply_addr,
+                endpoint,
             } => {
                 assert_eq!(client_name, "keys");
-                assert_eq!(reply_addr, src());
+                assert_eq!(endpoint, ClientEndpoint::Udp(src()));
             }
             _ => panic!("Expected RequestState"),
         }

@@ -1,11 +1,10 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::time::Instant;
 
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::model::monitor::MonitorClient;
+use crate::model::monitor::{ClientEndpoint, MonitorClient};
 
 /// Manages monitoring client profiles — CRUD, connection tracking, and timeout.
 pub struct MonitorManager {
@@ -34,7 +33,7 @@ impl MonitorManager {
 
     /// Mutate an existing client's name, permitted auxes, and visible inputs.
     /// Returns `true` if a client with that id existed and was updated.
-    /// Connection-tracking fields (`connected_addr`, `last_seen`) are preserved.
+    /// Connection-tracking fields (`endpoint`, `last_seen`) are preserved.
     pub fn update_client(
         &mut self,
         id: Uuid,
@@ -72,23 +71,23 @@ impl MonitorManager {
         clients
     }
 
-    /// Update a client's last-seen timestamp and address (called on each received message).
-    pub fn update_last_seen(&mut self, name: &str, addr: SocketAddr) {
+    /// Update a client's last-seen timestamp and endpoint (called on each received message).
+    pub fn update_last_seen(&mut self, name: &str, endpoint: ClientEndpoint) {
         if let Some(client) = self.find_by_name_mut(name) {
             client.last_seen = Some(Instant::now());
-            client.connected_addr = Some(addr);
-            debug!(name, %addr, "Monitor client heartbeat");
+            client.endpoint = Some(endpoint);
+            debug!(name, ?endpoint, "Monitor client heartbeat");
         }
     }
 
     /// Mark clients as disconnected if they haven't been seen within the timeout.
-    /// Clears `connected_addr` and `last_seen` for timed-out clients.
+    /// Clears `endpoint` and `last_seen` for timed-out clients.
     pub fn mark_disconnected_clients(&mut self) -> Vec<String> {
         let mut disconnected = Vec::new();
         for client in self.clients.values_mut() {
-            if client.connected_addr.is_some() && !client.is_connected() {
+            if client.endpoint.is_some() && !client.is_connected() {
                 info!(name = %client.name, "Monitor client timed out");
-                client.connected_addr = None;
+                client.endpoint = None;
                 client.last_seen = None;
                 disconnected.push(client.name.clone());
             }
@@ -106,6 +105,7 @@ impl MonitorManager {
 mod tests {
     use super::*;
     use crate::model::monitor::MonitorClient;
+    use std::net::SocketAddr;
 
     fn make_client(name: &str) -> MonitorClient {
         MonitorClient::new(name.to_string(), vec![1, 2], vec![])
@@ -180,10 +180,10 @@ mod tests {
         mgr.add_client(make_client("Drummer"));
 
         let addr: SocketAddr = "192.168.1.100:9000".parse().unwrap();
-        mgr.update_last_seen("drummer", addr);
+        mgr.update_last_seen("drummer", ClientEndpoint::Udp(addr));
 
         let client = mgr.find_by_name("Drummer").unwrap();
-        assert_eq!(client.connected_addr, Some(addr));
+        assert_eq!(client.endpoint, Some(ClientEndpoint::Udp(addr)));
         assert!(client.last_seen.is_some());
         assert!(client.is_connected());
     }
@@ -197,8 +197,8 @@ mod tests {
         let addr: SocketAddr = "192.168.1.100:9000".parse().unwrap();
 
         // Mark both as seen
-        mgr.update_last_seen("Active", addr);
-        mgr.update_last_seen("Stale", addr);
+        mgr.update_last_seen("Active", ClientEndpoint::Udp(addr));
+        mgr.update_last_seen("Stale", ClientEndpoint::Udp(addr));
 
         // Force the stale client to have an old timestamp
         if let Some(client) = mgr.find_by_name_mut("Stale") {
@@ -211,7 +211,7 @@ mod tests {
 
         // Stale should be cleared
         let stale = mgr.find_by_name("Stale").unwrap();
-        assert!(stale.connected_addr.is_none());
+        assert!(stale.endpoint.is_none());
         assert!(!stale.is_connected());
 
         // Active should still be connected
@@ -228,10 +228,10 @@ mod tests {
         assert_eq!(mgr.connected_count(), 0);
 
         let addr: SocketAddr = "192.168.1.100:9000".parse().unwrap();
-        mgr.update_last_seen("A", addr);
+        mgr.update_last_seen("A", ClientEndpoint::Udp(addr));
         assert_eq!(mgr.connected_count(), 1);
 
-        mgr.update_last_seen("B", addr);
+        mgr.update_last_seen("B", ClientEndpoint::Udp(addr));
         assert_eq!(mgr.connected_count(), 2);
     }
 }
