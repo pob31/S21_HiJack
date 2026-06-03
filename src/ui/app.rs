@@ -1514,12 +1514,12 @@ impl HiJackApp {
 
 impl eframe::App for HiJackApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // First-frame init: install embedded fonts (Noto Sans Regular primary
-        // + NotoSans symbol fallbacks so Unicode arrows / symbols don't tofu)
-        // before the style pass. Theme-independent, so `OnceLock` keeps it
-        // cheap on subsequent frames.
-        static FONTS_INSTALLED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-        FONTS_INSTALLED.get_or_init(|| super::fonts::install_fonts(ctx));
+        // Install embedded fonts (Noto Sans Regular primary + NotoSans symbol
+        // fallbacks so Unicode arrows / symbols don't tofu) before the style
+        // pass, and swap the CJK fallback to match the help-bubble language so
+        // zh/ja/ko render with their region's glyph shapes. Self-gating: only
+        // rebuilds when the CJK choice changes, so it's cheap every frame.
+        super::fonts::install_fonts_for(ctx, &self.setup.help_language);
 
         // First-frame init: discover help-bubble translation files and publish
         // the saved language. Later changes are pushed by the Advanced Settings

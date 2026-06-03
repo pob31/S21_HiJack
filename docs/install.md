@@ -191,6 +191,11 @@ under **Setup → Advanced… → Help bubbles**. Adding or editing a language n
 requires rebuilding the app. `en.json` and `template.json` are ignored — they
 are references, not selectable languages.
 
-Note: languages in non-Latin scripts (CJK, Arabic, Hebrew, …) need a font that
-covers those glyphs; the bundled Noto Sans covers Latin, Cyrillic and Greek, so
-Western-European languages render as-is.
+Note: a language renders only if a bundled font covers its script. The bundled
+Noto Sans covers Latin, Cyrillic and Greek (Western-European languages render
+as-is), and per-language Noto Sans CJK subsets cover **Chinese, Japanese and
+Korean** (the app swaps to the matching subset when you pick zh/ja/ko). Other
+non-Latin scripts (Arabic, Hebrew, Thai, …) would need a covering font added to
+`src/ui/fonts.rs` first. If you edit the zh/ja/ko text, regenerate the CJK
+subsets with `python scripts/subset_cjk.py` (needs `fonttools`) so any new
+glyphs are embedded.

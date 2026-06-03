@@ -84,7 +84,7 @@ Communicates with the console over **GP OSC** (the documented open protocol) and
 - Translations are plain JSON files (one per language) loaded at runtime from `assets/locales/` (shipped), a `locales/` folder beside the executable, or a per-machine `locales/` folder next to `preferences.json` — drop a file in to add or edit a language, **no rebuild**
 - Bundled: **English** (reference) and **French** (proofread), plus machine-translated **German, Spanish, Italian, Portuguese, Chinese, Japanese, Korean** (awaiting native proofreading). Choose one in **Setup → Advanced… → Help bubbles** (also offered to performers in the browser monitor client)
 - `s21_hijack --dump-help-template` prints the full English key list to seed a new translation; see [docs/install.md](docs/install.md) for the workflow
-- A trimmed subset of **Noto Sans CJK SC** is embedded so Chinese/Japanese/Korean render too (~160 KB — only the glyphs those locales use). Shared Han ideographs use Simplified-Chinese shapes (a one-font compromise across zh/ja); regenerate the subset (command in `src/ui/fonts.rs`) if the zh/ja/ko text changes
+- Per-language **Noto Sans CJK** subsets (SC / JP / KR) are embedded so Chinese, Japanese and Korean each render with their region's glyph shapes; the app swaps the active subset when you change the help language. Each subset is tiny (~40–90 KB — only the glyphs that locale uses). Regenerate them with `python scripts/subset_cjk.py` (needs `fonttools`) if the zh/ja/ko text changes
 
 ### Show File Persistence
 - Save/load the entire show (snapshots, cue list, macros, palettes, monitor clients, gang groups, pan links, recall safes, console memory refs, workflow toggles, console layout) as a single JSON file
