@@ -32,8 +32,9 @@ const NOTO_SANS_REGULAR: &[u8] = include_bytes!("../../assets/fonts/NotoSans-Reg
 /// fallback so Chinese/Japanese/Korean tooltips render; Latin text still uses
 /// Noto Sans Regular. CFF outlines — ab_glyph / ttf-parser rasterize them.
 ///
-/// Regenerate after editing the zh/ja/ko locales (the source `.otf` is kept
-/// locally, git-ignored):
+/// Regenerate after editing the zh/ja/ko locales (the source
+/// `NotoSansCJKsc-Regular.otf` is committed alongside, so this works on any
+/// machine; needs `fonttools`):
 ///   union the characters in assets/locales/{zh,ja,ko}.json into a text file, then
 ///   `python -m fontTools.subset assets/fonts/NotoSansCJKsc-Regular.otf \
 ///     --text-file=<chars> --output-file=assets/fonts/NotoSansCJKsc-subset.otf \

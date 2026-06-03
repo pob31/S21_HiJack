@@ -13,8 +13,9 @@ Builds
 S21_test_*
 test_s21
 
-# Full CJK source fonts — kept locally for re-subsetting only. The committed,
-# embedded font is the small subset assets/fonts/NotoSansCJKsc-subset.otf.
-/assets/fonts/NotoSansCJKsc-Regular.otf
+# The CJK subset source (NotoSansCJKsc-Regular.otf) IS committed so the subset
+# can be regenerated on any machine. These two SC variants are git-ignored —
+# they lack Korean hangul, so they can't produce the zh/ja/ko subset (kept
+# locally only, if at all).
 /assets/fonts/NotoSansSC-Regular.ttf
 /assets/fonts/NotoSansSC-VariableFont_wght.ttf
