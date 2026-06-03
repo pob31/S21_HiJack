@@ -172,7 +172,7 @@
   "streamdeck.button_macro": "Macro à ajouter comme pas suivant pour le bouton sélectionné.",
   "streamdeck.close": "Fermer la configuration Stream Deck et revenir à l'éditeur de pas de macro.",
   "streamdeck.device": "Choisir le Stream Deck à contrôler, ou un modèle pour éditer l'affectation des boutons hors ligne.",
-  "streamdeck.disable": "Désactiver l'intégration Stream Deck. Déconnecte l'appareil mais conserve vos mappages de boutons.",
+  "streamdeck.disable": "Désactiver l'intégration Stream Deck. Déconnecte l'appareil mais conserve l'affectation des boutons.",
   "streamdeck.enable": "Activer l'intégration Stream Deck. Se connecte automatiquement à l'appareil précédemment sélectionné s'il est branché ; sinon ouvrez Setup… pour en choisir un.",
   "streamdeck.open_panel": "Ouvrir le panneau Stream Deck — sélection d'appareil, grille de boutons, séquences de macros par bouton.",
   "theme.dark": "Utiliser le thème de couleurs sombre.",
