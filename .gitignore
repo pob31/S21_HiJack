@@ -12,3 +12,9 @@ Builds
 *.s21show
 S21_test_*
 test_s21
+
+# Full CJK source fonts — kept locally for re-subsetting only. The committed,
+# embedded font is the small subset assets/fonts/NotoSansCJKsc-subset.otf.
+/assets/fonts/NotoSansCJKsc-Regular.otf
+/assets/fonts/NotoSansSC-Regular.ttf
+/assets/fonts/NotoSansSC-VariableFont_wght.ttf
