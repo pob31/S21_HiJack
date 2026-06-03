@@ -79,6 +79,13 @@ Communicates with the console over **GP OSC** (the documented open protocol) and
 - **OSC Log tab**: live tail of every inbound and outbound OSC message with filtering, useful for protocol debugging and reverse-engineering
 - **Inspector tab**: searchable view of the full state mirror — every (channel, parameter) → value the daemon currently knows about
 
+### Help-Bubble Localization
+- Every interactive control has a hover help bubble (tooltip). The main UI stays **English**; only the help bubbles localize, with English as the always-present per-key fallback
+- Translations are plain JSON files (one per language) loaded at runtime from `assets/locales/` (shipped), a `locales/` folder beside the executable, or a per-machine `locales/` folder next to `preferences.json` — drop a file in to add or edit a language, **no rebuild**
+- Bundled: **English** (reference) and **French** (proofread), plus machine-translated **German, Spanish, Italian, Portuguese, Chinese, Japanese, Korean** (awaiting native proofreading). Choose one in **Setup → Advanced… → Help bubbles** (also offered to performers in the browser monitor client)
+- `s21_hijack --dump-help-template` prints the full English key list to seed a new translation; see [docs/install.md](docs/install.md) for the workflow
+- *Note:* Chinese/Japanese/Korean need a CJK-covering font bundled before they render (the current Noto Sans covers Latin/Cyrillic/Greek); the Latin-script languages render today
+
 ### Show File Persistence
 - Save/load the entire show (snapshots, cue list, macros, palettes, monitor clients, gang groups, pan links, recall safes, console memory refs, workflow toggles, console layout) as a single JSON file
 - Console variant (S21 / S21+) and channel layout are restored on load, so offline editing reflects the saved console shape until you reconnect
