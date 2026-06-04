@@ -47,7 +47,12 @@ fn value_to_osc_type(value: &ParameterValue) -> OscType {
     match value {
         ParameterValue::Float(f) => OscType::Float(*f),
         ParameterValue::Int(i) => OscType::Int(*i),
-        ParameterValue::Bool(b) => OscType::Int(if *b { 1 } else { 0 }),
+        // The iPad protocol sends toggles (mute, solo, *_enabled, …) as a
+        // FLOAT 0.0/1.0 — confirmed in the live OSC log ("0f"/"1f"). This is a
+        // different convention from GP OSC (OSC booleans); only genuinely
+        // boolean params reach this arm, so enum-ish iPad ints (stereo_mode,
+        // main_alt_in) — which are `ParameterValue::Int` — are unaffected.
+        ParameterValue::Bool(b) => OscType::Float(if *b { 1.0 } else { 0.0 }),
         ParameterValue::String(s) => OscType::String(s.clone()),
     }
 }
@@ -75,7 +80,8 @@ mod tests {
         };
         let (path, args) = encode_ipad_parameter(&addr, &ParameterValue::Bool(true)).unwrap();
         assert_eq!(path, "/Input_Channels/1/Insert/insert_A_in");
-        assert_eq!(args, vec![OscType::Int(1)]);
+        // iPad toggles are float 0.0/1.0, not int.
+        assert_eq!(args, vec![OscType::Float(1.0)]);
     }
 
     #[test]

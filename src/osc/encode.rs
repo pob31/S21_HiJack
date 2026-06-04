@@ -73,14 +73,11 @@ fn value_to_osc_type(_parameter: &ParameterPath, value: &ParameterValue) -> OscT
         ParameterValue::Float(f) => OscType::Float(*f),
         ParameterValue::Int(i) => OscType::Int(*i),
         ParameterValue::Bool(b) => {
-            // The real S21+ console is strict on argument types and wants an
-            // integer 0/1 for boolean params (mute, solo, *enabled, send on…),
-            // NOT an OSC 1.1 T/F type tag — sending `Bool` is silently rejected.
-            // This matches the iPad-protocol encoder and the console's own wire
-            // format (`/…/mute 0`). (Reverts the spec-driven Bool encoding from
-            // commit 6163df6; the published OSC CSV lists these as Boolean, but
-            // the hardware disagrees.)
-            OscType::Int(if *b { 1 } else { 0 })
+            // GP OSC toggles are OSC 1.1 booleans (T/F type tags) — confirmed
+            // both by the DiGiCo OSC CSV (mute/solo/…/enabled = "Boolean
+            // true/false") and the live OSC log. The iPad protocol uses a
+            // different convention (float 0.0/1.0) — see `ipad_encode`.
+            OscType::Bool(*b)
         }
         ParameterValue::String(s) => OscType::String(s.clone()),
     }
@@ -110,8 +107,8 @@ mod tests {
         };
         let (path, args) = encode_parameter(&addr, &ParameterValue::Bool(true)).unwrap();
         assert_eq!(path, "/channel/70/mute");
-        // The strict console wants an integer 0/1 for booleans, not an OSC T/F tag.
-        assert_eq!(args, vec![OscType::Int(1)]);
+        // GP OSC toggles are OSC booleans (T/F).
+        assert_eq!(args, vec![OscType::Bool(true)]);
     }
 
     #[test]
