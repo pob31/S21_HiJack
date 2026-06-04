@@ -3,6 +3,16 @@ use std::fmt;
 
 use super::channel::ChannelId;
 
+/// Fader dB at the very bottom of the track: −150 dB reads as −inf (fully off).
+/// The console owns the taper; the proxy only ever passes raw dB.
+pub const FADER_INF_DB: f32 = -150.0;
+
+/// Below this level a fader is inaudible and the physical track compresses a
+/// huge dB range into a sliver. Gang propagation treats everything below this
+/// as a single point (−inf) so a tiny nudge of a parked fader can't slam a
+/// large dB delta onto an audible sibling. See `gang_engine`.
+pub const FADER_GANG_FLOOR_DB: f32 = -60.0;
+
 /// A specific parameter on a specific channel.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ParameterAddress {

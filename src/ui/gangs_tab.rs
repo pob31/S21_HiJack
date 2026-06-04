@@ -9,8 +9,15 @@ use super::theme;
 use crate::console::gang_manager::GangManager;
 use crate::model::channel::ChannelId;
 use crate::model::gang::{GangGroup, GangMode, GangPanMode};
-use crate::model::parameter::ParameterSection;
+use crate::model::parameter::{
+    FADER_GANG_FLOOR_DB, FADER_INF_DB, ParameterAddress, ParameterPath, ParameterSection,
+};
+use crate::model::state::ConsoleState;
 use uuid::Uuid;
+
+/// Audible-level spread (in dB, measured in gang-floored space) above which a
+/// fader-linked gang warns the operator that a real offset will be kept.
+const GANG_SPREAD_WARN_DB: f32 = 20.0;
 
 /// Label for a parameter section *within the Gangs tab*. Pan is now a
 /// separate per-gang control, so the `FaderMutePan` section reads as
@@ -21,6 +28,28 @@ fn gang_section_label(section: &ParameterSection) -> String {
         ParameterSection::FaderMutePan => "Fader/Mute".to_string(),
         other => other.to_string(),
     }
+}
+
+/// Largest fader-level gap across `members`, measured in gang-floored space
+/// (everything below the floor collapses to a single point, so a set of parked
+/// faders reports no spread). Unknown faders default to −inf. Mirrors the
+/// flooring the gang engine applies, so the warning matches actual behaviour.
+fn floored_fader_spread(state: &ConsoleState, members: &[ChannelId]) -> Option<f32> {
+    let mut lo = f32::INFINITY;
+    let mut hi = f32::NEG_INFINITY;
+    for ch in members {
+        let db = state
+            .get(&ParameterAddress {
+                channel: ch.clone(),
+                parameter: ParameterPath::Fader,
+            })
+            .and_then(|v| v.as_float())
+            .unwrap_or(FADER_INF_DB)
+            .max(FADER_GANG_FLOOR_DB);
+        lo = lo.min(db);
+        hi = hi.max(db);
+    }
+    (lo.is_finite() && hi.is_finite()).then_some(hi - lo)
 }
 
 /// Draw an OFF / ON / REV segmented control for a gang's pan mode. Returns the
@@ -271,6 +300,7 @@ pub fn draw_gangs_tab(
     ui: &mut egui::Ui,
     tab: &mut GangsTabState,
     gang_manager: &Arc<RwLock<GangManager>>,
+    state: &Arc<RwLock<ConsoleState>>,
     runtime: &tokio::runtime::Handle,
 ) {
     // Header + form sit in the top region and stay anchored — only the
@@ -526,6 +556,26 @@ pub fn draw_gangs_tab(
                         let pan_mode = tab.new_gang_pan_mode;
                         let mgr_clone = gang_manager.clone();
 
+                        // Heads-up if this gang links the fader and its members
+                        // sit at very different audible levels: in Relative mode
+                        // that offset is preserved, so they won't be matched. The
+                        // engine already collapses the inaudible bottom of the
+                        // track (gang_engine floor), so this flags only real,
+                        // above-floor spreads. Non-blocking — the gang is created.
+                        let spread = if sections.contains(&ParameterSection::FaderMutePan) {
+                            let st = runtime.block_on(state.read());
+                            floored_fader_spread(&st, &members)
+                                .filter(|s| *s > GANG_SPREAD_WARN_DB)
+                        } else {
+                            None
+                        };
+                        let spread_note = |base: String| match spread {
+                            Some(s) => format!(
+                                "{base} — faders span {s:.0} dB; in Relative mode they keep that offset"
+                            ),
+                            None => base,
+                        };
+
                         if let Some(edit_id) = tab.editing_gang_id.take() {
                             runtime.spawn(async move {
                                 let mut mgr = mgr_clone.write().await;
@@ -536,14 +586,14 @@ pub fn draw_gangs_tab(
                                     group.pan_mode = Some(pan_mode);
                                 }
                             });
-                            tab.status_message = Some("Gang updated".into());
+                            tab.status_message = Some(spread_note("Gang updated".into()));
                         } else {
                             let mut group = GangGroup::new(name.clone(), members, sections);
                             group.pan_mode = Some(pan_mode);
                             runtime.spawn(async move {
                                 mgr_clone.write().await.add_group(group);
                             });
-                            tab.status_message = Some(format!("Added gang '{name}'"));
+                            tab.status_message = Some(spread_note(format!("Added gang '{name}'")));
                         }
 
                         tab.new_gang_name.clear();

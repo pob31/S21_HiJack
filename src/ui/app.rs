@@ -2375,6 +2375,7 @@ impl eframe::App for HiJackApp {
                         ui,
                         &mut self.gangs,
                         &self.gang_manager,
+                        &self.state,
                         &self.runtime,
                     );
                 }

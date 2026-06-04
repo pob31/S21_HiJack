@@ -6,7 +6,10 @@ use std::time::Instant;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
-use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterSection, ParameterValue};
+use crate::model::parameter::{
+    FADER_GANG_FLOOR_DB, FADER_INF_DB, ParameterAddress, ParameterPath, ParameterSection,
+    ParameterValue,
+};
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
 use crate::osc::encode;
@@ -111,6 +114,7 @@ impl GangEngine {
 
         let is_routing = ROUTING_SECTIONS.contains(&section);
         let is_continuous = addr.parameter.is_continuous();
+        let is_fader = addr.parameter == ParameterPath::Fader;
 
         // 4. For each matching gang, propagate to other members
         for gang in gangs {
@@ -120,9 +124,34 @@ impl GangEngine {
                 continue;
             }
 
-            // Compute delta for relative mode (continuous params only)
+            // Fader dead-zone (Relative mode only): when the source moves
+            // entirely below the gang floor it's inaudible at both ends, yet the
+            // compressed bottom of the track turns a tiny physical nudge into a
+            // large dB delta. Propagating that delta would rocket an audible
+            // sibling up the track, so siblings hold. Done as a skip (NOT a zero
+            // delta) — a `None` delta would fall through to the absolute-copy
+            // fallback below and re-introduce the bug. Absolute mode is left
+            // alone: it intentionally copies the raw value, dead zone or not.
+            if is_fader && gang.mode == GangMode::Relative {
+                if let (Some(ParameterValue::Float(o)), ParameterValue::Float(n)) =
+                    (old_value, new_value)
+                {
+                    if *o <= FADER_GANG_FLOOR_DB && *n <= FADER_GANG_FLOOR_DB {
+                        debug!(gang = %gang.name, "Gang fader: source swept inaudible dead zone — holding siblings");
+                        continue;
+                    }
+                }
+            }
+
+            // Compute delta for relative mode (continuous params only). The
+            // fader uses floored-space deltas so the inaudible bottom of the
+            // track collapses to a single point (see `fader_gang_delta`).
             let delta = if is_continuous && gang.mode == GangMode::Relative {
-                old_value.and_then(|old| compute_delta(old, new_value))
+                if is_fader {
+                    old_value.and_then(|old| fader_gang_delta(old, new_value))
+                } else {
+                    old_value.and_then(|old| compute_delta(old, new_value))
+                }
             } else {
                 None
             };
@@ -145,10 +174,14 @@ impl GangEngine {
                     // Relative mode: apply delta to target's current value
                     let current = self.state.read().await.get(&target_addr).cloned();
                     match current {
-                        Some(ref cv) => match apply_delta(cv, d) {
-                            Some(v) => v,
-                            None => new_value.clone(), // fallback to absolute
-                        },
+                        Some(ref cv) => {
+                            let applied = if is_fader {
+                                apply_fader_gang_delta(cv, d)
+                            } else {
+                                apply_delta(cv, d)
+                            };
+                            applied.unwrap_or_else(|| new_value.clone()) // fallback to absolute
+                        }
                         None => new_value.clone(), // no current value, use absolute
                     }
                 } else {
@@ -307,6 +340,46 @@ fn apply_delta(current: &ParameterValue, delta: f32) -> Option<ParameterValue> {
     }
 }
 
+/// Gang-effective fader level: collapse the inaudible sub-floor region to a
+/// single point so relative gang offsets are preserved in audible space, not in
+/// the compressed bottom of the dB track.
+fn gang_floor(db: f32) -> f32 {
+    db.max(FADER_GANG_FLOOR_DB)
+}
+
+/// Delta between two fader values in floored space. A move entirely within the
+/// sub-floor dead zone yields `0.0` (both ends floor to the same point); a move
+/// above the floor matches the raw delta. `None` for non-float values — faders
+/// are always floats, so this is purely defensive.
+///
+/// Scoped to the main `Fader`; send/CG levels share the taper but are
+/// deliberately left on raw-delta semantics to keep this change small.
+fn fader_gang_delta(old: &ParameterValue, new: &ParameterValue) -> Option<f32> {
+    match (old, new) {
+        (ParameterValue::Float(a), ParameterValue::Float(b)) => {
+            Some(gang_floor(*b) - gang_floor(*a))
+        }
+        _ => None,
+    }
+}
+
+/// Apply a floored fader delta to a sibling's current value, snapping to −inf
+/// when the result lands at or below the floor (everything below floor reads as
+/// fully off). `None` for non-float values.
+fn apply_fader_gang_delta(current: &ParameterValue, delta: f32) -> Option<ParameterValue> {
+    match current {
+        ParameterValue::Float(f) => {
+            let t = gang_floor(*f) + delta;
+            Some(ParameterValue::Float(if t <= FADER_GANG_FLOOR_DB {
+                FADER_INF_DB
+            } else {
+                t
+            }))
+        }
+        _ => None,
+    }
+}
+
 /// Check if two parameter values match (with float tolerance for suppression).
 fn values_match(a: &ParameterValue, b: &ParameterValue) -> bool {
     match (a, b) {
@@ -374,6 +447,106 @@ mod tests {
     #[test]
     fn apply_delta_bool_returns_none() {
         assert_eq!(apply_delta(&ParameterValue::Bool(true), 1.0), None);
+    }
+
+    // ---- Fader floor (gang dead-zone) pure-function tests ----
+
+    #[test]
+    fn gang_floor_clamps_below_threshold() {
+        assert_eq!(gang_floor(-150.0), FADER_GANG_FLOOR_DB);
+        assert_eq!(gang_floor(-60.0), FADER_GANG_FLOOR_DB);
+        assert_eq!(gang_floor(-59.9), -59.9);
+        assert_eq!(gang_floor(0.0), 0.0);
+    }
+
+    #[test]
+    fn fader_gang_delta_zero_when_both_subfloor() {
+        // A move that stays entirely within the inaudible dead zone produces
+        // no gang delta — both ends floor to the same point.
+        assert_eq!(
+            fader_gang_delta(
+                &ParameterValue::Float(-150.0),
+                &ParameterValue::Float(-90.0)
+            ),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn fader_gang_delta_crossing_and_above_floor() {
+        // Rising out of the dead zone, and a fully-above-floor move, both
+        // measure from the floor / raw value respectively.
+        assert_eq!(
+            fader_gang_delta(
+                &ParameterValue::Float(-150.0),
+                &ParameterValue::Float(-50.0)
+            ),
+            Some(10.0)
+        );
+        assert_eq!(
+            fader_gang_delta(&ParameterValue::Float(-80.0), &ParameterValue::Float(-50.0)),
+            Some(10.0)
+        );
+        // Above the floor it matches the raw delta.
+        assert_eq!(
+            fader_gang_delta(&ParameterValue::Float(-20.0), &ParameterValue::Float(-10.0)),
+            Some(10.0)
+        );
+    }
+
+    #[test]
+    fn fader_gang_delta_downward_clamped_at_floor() {
+        // −30 → −150 clamps to a −30 dB drop (to the floor), not −120.
+        assert_eq!(
+            fader_gang_delta(
+                &ParameterValue::Float(-30.0),
+                &ParameterValue::Float(-150.0)
+            ),
+            Some(-30.0)
+        );
+    }
+
+    #[test]
+    fn fader_gang_delta_non_float_none() {
+        assert_eq!(
+            fader_gang_delta(&ParameterValue::Int(1), &ParameterValue::Int(2)),
+            None
+        );
+    }
+
+    #[test]
+    fn apply_fader_gang_delta_normal_above_floor() {
+        assert_eq!(
+            apply_fader_gang_delta(&ParameterValue::Float(-30.0), 10.0),
+            Some(ParameterValue::Float(-20.0))
+        );
+        // A sub-floor sibling floors to −60 before the delta is applied.
+        assert_eq!(
+            apply_fader_gang_delta(&ParameterValue::Float(-100.0), 10.0),
+            Some(ParameterValue::Float(-50.0))
+        );
+    }
+
+    #[test]
+    fn apply_fader_gang_delta_snaps_to_inf_at_or_below_floor() {
+        // Result below the floor snaps to −inf.
+        assert_eq!(
+            apply_fader_gang_delta(&ParameterValue::Float(-50.0), -30.0),
+            Some(ParameterValue::Float(FADER_INF_DB))
+        );
+        // Boundary: a result of exactly the floor also snaps (`<=`).
+        assert_eq!(
+            apply_fader_gang_delta(&ParameterValue::Float(-50.0), -10.0),
+            Some(ParameterValue::Float(FADER_INF_DB))
+        );
+    }
+
+    #[test]
+    fn apply_fader_gang_delta_non_float_none() {
+        assert_eq!(
+            apply_fader_gang_delta(&ParameterValue::Bool(true), 1.0),
+            None
+        );
     }
 
     #[test]
@@ -891,5 +1064,266 @@ mod tests {
         let state = engine.state.read().await;
         assert!(state.get(&pan(ChannelId::Input(2))).is_none());
         assert!(state.get(&pan(ChannelId::Input(3))).is_none());
+    }
+
+    // ---- Fader floor (gang dead-zone) integration tests ----
+
+    fn fader(channel: ChannelId) -> ParameterAddress {
+        ParameterAddress {
+            channel,
+            parameter: ParameterPath::Fader,
+        }
+    }
+
+    /// Build a Relative-mode gang linking Fader/Mute/Pan over the given inputs
+    /// and pre-seed each sibling's fader state.
+    async fn relative_fader_gang(
+        engine: &GangEngine,
+        manager: &mut GangManager,
+        members: &[(u8, f32)],
+    ) {
+        let mut group = GangGroup::new(
+            "Faders".into(),
+            members.iter().map(|(n, _)| ChannelId::Input(*n)).collect(),
+            HashSet::from([ParameterSection::FaderMutePan]),
+        );
+        group.mode = GangMode::Relative;
+        manager.add_group(group);
+        let mut state = engine.state.write().await;
+        for (n, db) in members {
+            state.update(fader(ChannelId::Input(*n)), ParameterValue::Float(*db));
+        }
+    }
+
+    async fn fader_db(engine: &GangEngine, ch: u8) -> Option<f32> {
+        match engine.state.read().await.get(&fader(ChannelId::Input(ch))) {
+            Some(ParameterValue::Float(f)) => Some(*f),
+            _ => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn fader_gang_deadzone_does_not_move_sibling() {
+        // The core regression: source nudged within the inaudible dead zone
+        // (−150 → −90) must NOT touch an audible-ish sibling parked at −60.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        relative_fader_gang(&engine, &mut manager, &[(1, -150.0), (2, -60.0)]).await;
+
+        engine
+            .process_gang_update(
+                &fader(ChannelId::Input(1)),
+                &ParameterValue::Float(-90.0),
+                Some(&ParameterValue::Float(-150.0)),
+                &manager,
+            )
+            .await;
+
+        assert_eq!(fader_db(&engine, 2).await, Some(-60.0));
+    }
+
+    #[tokio::test]
+    async fn fader_gang_lockstep_from_inf() {
+        // Raising the parked fader above the floor brings the sibling up with it.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        relative_fader_gang(&engine, &mut manager, &[(1, -150.0), (2, -60.0)]).await;
+
+        engine
+            .process_gang_update(
+                &fader(ChannelId::Input(1)),
+                &ParameterValue::Float(-50.0),
+                Some(&ParameterValue::Float(-150.0)),
+                &manager,
+            )
+            .await;
+
+        assert_eq!(fader_db(&engine, 2).await, Some(-50.0));
+    }
+
+    #[tokio::test]
+    async fn fader_gang_both_subfloor_rise() {
+        // Two sub-floor faders both rise to the same audible level.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        relative_fader_gang(&engine, &mut manager, &[(1, -80.0), (2, -100.0)]).await;
+
+        engine
+            .process_gang_update(
+                &fader(ChannelId::Input(1)),
+                &ParameterValue::Float(-50.0),
+                Some(&ParameterValue::Float(-80.0)),
+                &manager,
+            )
+            .await;
+
+        assert_eq!(fader_db(&engine, 2).await, Some(-50.0));
+    }
+
+    #[tokio::test]
+    async fn fader_gang_above_floor_normal() {
+        // Wholly above the floor, behaviour is plain relative — unchanged.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        relative_fader_gang(&engine, &mut manager, &[(1, -20.0), (2, -30.0)]).await;
+
+        engine
+            .process_gang_update(
+                &fader(ChannelId::Input(1)),
+                &ParameterValue::Float(-10.0),
+                Some(&ParameterValue::Float(-20.0)),
+                &manager,
+            )
+            .await;
+
+        assert_eq!(fader_db(&engine, 2).await, Some(-20.0));
+    }
+
+    #[tokio::test]
+    async fn fader_gang_lowering_snaps_sibling_to_inf() {
+        // Pulling the source down into the dead zone drives the sibling fully off.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        relative_fader_gang(&engine, &mut manager, &[(1, -30.0), (2, -50.0)]).await;
+
+        engine
+            .process_gang_update(
+                &fader(ChannelId::Input(1)),
+                &ParameterValue::Float(-150.0),
+                Some(&ParameterValue::Float(-30.0)),
+                &manager,
+            )
+            .await;
+
+        assert_eq!(fader_db(&engine, 2).await, Some(FADER_INF_DB));
+    }
+
+    #[tokio::test]
+    async fn fader_gang_continuous_drag_accumulates() {
+        // A continuous sweep up from −inf: the sub-floor steps no-op, then the
+        // sibling tracks the above-floor portion. Sibling starts at −55.
+        // Net move above floor: (−58 − (−60)) + (−40 − (−58)) = 2 + 18 = 20.
+        // So −55 + 20 = −35.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        relative_fader_gang(&engine, &mut manager, &[(1, -150.0), (2, -55.0)]).await;
+
+        let steps = [
+            (-150.0, -120.0),
+            (-120.0, -90.0),
+            (-90.0, -62.0),
+            (-62.0, -58.0),
+            (-58.0, -40.0),
+        ];
+        for (old, new) in steps {
+            engine
+                .process_gang_update(
+                    &fader(ChannelId::Input(1)),
+                    &ParameterValue::Float(new),
+                    Some(&ParameterValue::Float(old)),
+                    &manager,
+                )
+                .await;
+        }
+
+        let v = fader_db(&engine, 2).await.unwrap();
+        assert!((v - (-35.0)).abs() < 1e-3, "expected −35, got {v}");
+    }
+
+    #[tokio::test]
+    async fn fader_gang_three_members_independent() {
+        // Each sibling is floored against its own current value.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        relative_fader_gang(
+            &engine,
+            &mut manager,
+            &[(1, -80.0), (2, -100.0), (3, -20.0)],
+        )
+        .await;
+
+        engine
+            .process_gang_update(
+                &fader(ChannelId::Input(1)),
+                &ParameterValue::Float(-50.0),
+                Some(&ParameterValue::Float(-80.0)),
+                &manager,
+            )
+            .await;
+
+        // Δg = g(−50) − g(−80) = −50 − (−60) = +10.
+        assert_eq!(fader_db(&engine, 2).await, Some(-50.0)); // g(−100)+10 = −50
+        assert_eq!(fader_db(&engine, 3).await, Some(-10.0)); // −20 + 10 = −10
+    }
+
+    #[tokio::test]
+    async fn fader_gang_absolute_mode_copies_raw() {
+        // Absolute mode is untouched: it copies the raw source value, even from
+        // deep in the dead zone — no flooring.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        let mut group = GangGroup::new(
+            "Abs".into(),
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        );
+        group.mode = GangMode::Absolute;
+        manager.add_group(group);
+        engine
+            .state
+            .write()
+            .await
+            .update(fader(ChannelId::Input(2)), ParameterValue::Float(-60.0));
+
+        engine
+            .process_gang_update(
+                &fader(ChannelId::Input(1)),
+                &ParameterValue::Float(-90.0),
+                Some(&ParameterValue::Float(-150.0)),
+                &manager,
+            )
+            .await;
+
+        assert_eq!(fader_db(&engine, 2).await, Some(-90.0));
+    }
+
+    #[tokio::test]
+    async fn send_level_gang_is_not_floored() {
+        // Scoping guard: the floor is Fader-only. A Relative Sends gang keeps
+        // raw-delta semantics, so a sub-floor source move still propagates.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        let mut group = GangGroup::new(
+            "Sends".into(),
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::Sends]),
+        );
+        group.mode = GangMode::Relative;
+        manager.add_group(group);
+        let send = |ch| ParameterAddress {
+            channel: ChannelId::Input(ch),
+            parameter: ParameterPath::SendLevel(1),
+        };
+        engine
+            .state
+            .write()
+            .await
+            .update(send(2), ParameterValue::Float(-60.0));
+
+        engine
+            .process_gang_update(
+                &send(1),
+                &ParameterValue::Float(-90.0),
+                Some(&ParameterValue::Float(-150.0)),
+                &manager,
+            )
+            .await;
+
+        // Raw delta +60 applied: −60 + 60 = 0 (NOT floored to a no-op).
+        let v = match engine.state.read().await.get(&send(2)) {
+            Some(ParameterValue::Float(f)) => Some(*f),
+            _ => None,
+        };
+        assert_eq!(v, Some(0.0));
     }
 }

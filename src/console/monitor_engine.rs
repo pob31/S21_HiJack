@@ -6,7 +6,7 @@ use tracing::{debug, info, warn};
 
 use crate::model::channel::ChannelId;
 use crate::model::monitor::MonitorClient;
-use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
+use crate::model::parameter::{FADER_INF_DB, ParameterAddress, ParameterPath, ParameterValue};
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
 use crate::osc::encode;
@@ -404,7 +404,7 @@ impl MonitorEngine {
                     parameter: ParameterPath::Fader,
                 })
                 .and_then(|v| v.as_float())
-                .unwrap_or(-150.0);
+                .unwrap_or(FADER_INF_DB);
             let mute = state
                 .get(&ParameterAddress {
                     channel: ChannelId::Aux(aux),
@@ -618,7 +618,7 @@ impl MonitorEngine {
                 parameter: ParameterPath::Mute,
             });
 
-            let fader = fader_val.and_then(|v| v.as_float()).unwrap_or(-150.0);
+            let fader = fader_val.and_then(|v| v.as_float()).unwrap_or(FADER_INF_DB);
             let mute = mute_val.and_then(|v| v.as_bool()).unwrap_or(false);
 
             let new_aux_state = (fader, mute);
