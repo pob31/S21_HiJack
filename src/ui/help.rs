@@ -119,6 +119,8 @@ pub enum HelpKey {
     OscLogFilter,
     OscLogShowIn,
     OscLogShowOut,
+    OscLogShowIpadToConsole,
+    OscLogShowIpadFromConsole,
     OscLogPause,
     OscLogClear,
 
@@ -549,11 +551,19 @@ fn meta(key: HelpKey) -> HelpMeta {
         ),
         OscLogShowIn => (
             "osc_log.show_in",
-            "Show inbound messages (console / iPad → daemon).",
+            "Show inbound GP OSC messages (console → daemon).",
         ),
         OscLogShowOut => (
             "osc_log.show_out",
-            "Show outbound messages (daemon → console / iPad).",
+            "Show outbound GP OSC messages (daemon → console).",
+        ),
+        OscLogShowIpadToConsole => (
+            "osc_log.show_ipad_to_console",
+            "Show iPad-protocol messages heading to the console (iPad → Console).",
+        ),
+        OscLogShowIpadFromConsole => (
+            "osc_log.show_ipad_from_console",
+            "Show iPad-protocol messages heading to the iPad (Console → iPad).",
         ),
         OscLogPause => (
             "osc_log.pause",
@@ -1112,6 +1122,8 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::OscLogFilter,
     HelpKey::OscLogShowIn,
     HelpKey::OscLogShowOut,
+    HelpKey::OscLogShowIpadToConsole,
+    HelpKey::OscLogShowIpadFromConsole,
     HelpKey::OscLogPause,
     HelpKey::OscLogClear,
     HelpKey::InspectorFilter,

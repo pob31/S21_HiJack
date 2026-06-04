@@ -8,10 +8,14 @@ use crate::model::osc_log::{OscDirection, OscLog, OscProtocol};
 pub struct OscLogTabState {
     /// Text filter applied to path column.
     pub filter: String,
-    /// Show incoming messages.
+    /// Show inbound GP OSC messages.
     pub show_in: bool,
-    /// Show outgoing messages.
+    /// Show outbound GP OSC messages.
     pub show_out: bool,
+    /// Show iPad-protocol messages heading to the console (iPad → Console).
+    pub show_ipad_to_console: bool,
+    /// Show iPad-protocol messages heading to the iPad (Console → iPad).
+    pub show_ipad_from_console: bool,
     /// Last-seen revision, used to detect new entries for auto-scroll.
     last_revision: u64,
 }
@@ -22,6 +26,8 @@ impl Default for OscLogTabState {
             filter: String::new(),
             show_in: true,
             show_out: true,
+            show_ipad_to_console: true,
+            show_ipad_from_console: true,
             last_revision: 0,
         }
     }
@@ -45,6 +51,10 @@ pub fn draw_osc_log_tab(ui: &mut egui::Ui, tab: &mut OscLogTabState, log: &OscLo
                 .on_hover_text(help(HelpKey::OscLogShowIn));
             ui.checkbox(&mut tab.show_out, "OUT")
                 .on_hover_text(help(HelpKey::OscLogShowOut));
+            ui.checkbox(&mut tab.show_ipad_to_console, "iP→Con")
+                .on_hover_text(help(HelpKey::OscLogShowIpadToConsole));
+            ui.checkbox(&mut tab.show_ipad_from_console, "Con→iP")
+                .on_hover_text(help(HelpKey::OscLogShowIpadFromConsole));
 
             ui.add_space(12.0);
 
@@ -98,9 +108,14 @@ pub fn draw_osc_log_tab(ui: &mut egui::Ui, tab: &mut OscLogTabState, log: &OscLo
     let filtered: Vec<_> = entries
         .iter()
         .filter(|e| {
-            let dir_ok = match e.direction {
-                OscDirection::In => tab.show_in,
-                OscDirection::Out => tab.show_out,
+            // GP OSC and iPad each have their own pair of direction toggles —
+            // IN/OUT only reflect the GP OSC link; the proxy/iPad directions
+            // are filtered independently.
+            let dir_ok = match (e.protocol, e.direction) {
+                (OscProtocol::GpOsc, OscDirection::In) => tab.show_in,
+                (OscProtocol::GpOsc, OscDirection::Out) => tab.show_out,
+                (OscProtocol::Ipad, OscDirection::Out) => tab.show_ipad_to_console,
+                (OscProtocol::Ipad, OscDirection::In) => tab.show_ipad_from_console,
             };
             if !dir_ok {
                 return false;
