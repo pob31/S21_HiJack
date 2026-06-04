@@ -173,6 +173,7 @@
   "snapshot.capture_now": "현재 콘솔 상태를 위 스코프로 필터링하여 새 스냅샷에 캡처합니다.",
   "snapshot.clear_scope": "스코프 선택을 해제합니다.",
   "snapshot.console_follow_req": "Mode 2 또는 Mode 3 (iPad 프로토콜)이 필요합니다 — 콘솔 스냅샷 목록은 해당 프로토콜로만 접근할 수 있습니다.",
+  "snapshot.edit_existing_scope": "선택한 스냅샷의 스코프와 카테고리별 프리웨이트／페이드를 즉석에서 편집합니다. 타이밍 변경은 호출 시 항상 적용됩니다. apply-on-save 스냅샷에서는 여기서 추가한 파라미터는 아무것도 호출하지 않고(값이 캡처되지 않았기 때문) 제거한 파라미터는 호출에서 빠집니다 — 새로 추가한 파라미터를 포함하려면 다시 캡처하세요.",
   "snapshot.edit_scope": "이 스냅샷이 캡처하거나 호출할 파라미터를 선택하는 스코프 편집기를 엽니다.",
   "snapshot.picker": "이 큐가 호출할 앱 스냅샷을 선택합니다 (입력하여 필터링).",
   "snapshot.qlab_create_trigger": "customString이 /snapshot/recall <name>을 실행하는 단일 네트워크 큐를 QLab에 생성합니다. {target}(으)로 전송됩니다.",

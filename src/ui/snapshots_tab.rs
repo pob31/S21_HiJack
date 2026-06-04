@@ -28,6 +28,18 @@ const LIST_BOTTOM_RESERVE: f32 = 40.0;
 /// takes over scrolling below this.
 const LIST_MIN_HEIGHT: f32 = 120.0;
 
+/// What the scope editor session is currently editing.
+///
+/// `NewCapture` (default) builds the working scope used by the next capture.
+/// `Snapshot(id)` edits an existing snapshot's scope in place — the editor is
+/// seeded from that snapshot's scope and OK writes the edited scope back to it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScopeEditTarget {
+    #[default]
+    NewCapture,
+    Snapshot(Uuid),
+}
+
 /// State for the Snapshots tab.
 pub struct SnapshotsTabState {
     // Cue management
@@ -59,6 +71,9 @@ pub struct SnapshotsTabState {
     // Scope
     pub scope_editor: ScopeEditorState,
     pub selected_scope_template_id: Option<Uuid>,
+    /// What the open scope editor targets: the next-capture working scope, or
+    /// an existing snapshot whose scope is being edited in place.
+    pub scope_edit_target: ScopeEditTarget,
 
     // Feedback
     pub status_message: Option<String>,
@@ -94,6 +109,7 @@ impl Default for SnapshotsTabState {
             pending_kind: SnapshotKind::default(),
             scope_editor: ScopeEditorState::default(),
             selected_scope_template_id: None,
+            scope_edit_target: ScopeEditTarget::default(),
             status_message: None,
             new_cue_console_row: String::new(),
             shift_modal_open: false,
@@ -175,20 +191,48 @@ pub fn draw_snapshots_tab(
                             theme::ACCENT_BLUE,
                             egui::Vec2::new(120.0, 30.0),
                         );
-                        if ui
-                            .add(edit_btn)
-                            .on_hover_text(help(HelpKey::SnapshotEditScope))
-                            .clicked()
-                        {
-                            let template = snap_state
-                                .scope_editor
-                                .to_scope_template("Editing".into());
-                            snap_state.scope_editor.open(
-                                &template,
-                                aux_count,
-                                group_count,
-                                matrix_count,
-                            );
+                        // When a snapshot is selected, "Edit Scope…" edits THAT
+                        // snapshot's scope in place (and the hover explains the
+                        // ApplyOnSave caveat); otherwise it edits the working
+                        // scope used by the next capture.
+                        let edit_hover = if snap_state.selected_snapshot_id.is_some() {
+                            help(HelpKey::SnapshotEditExistingScope)
+                        } else {
+                            help(HelpKey::SnapshotEditScope)
+                        };
+                        if ui.add(edit_btn).on_hover_text(edit_hover).clicked() {
+                            match snap_state.selected_snapshot_id {
+                                Some(id) => {
+                                    // Seed the editor from the selected snapshot's
+                                    // own scope (paths + per-category timings).
+                                    if let Some(scope) = cue_manager
+                                        .try_read()
+                                        .ok()
+                                        .and_then(|m| m.get_snapshot(&id).map(|s| s.scope.clone()))
+                                    {
+                                        snap_state.scope_editor.open(
+                                            &scope,
+                                            aux_count,
+                                            group_count,
+                                            matrix_count,
+                                        );
+                                        snap_state.scope_edit_target =
+                                            ScopeEditTarget::Snapshot(id);
+                                    }
+                                }
+                                None => {
+                                    let template = snap_state
+                                        .scope_editor
+                                        .to_scope_template("Editing".into());
+                                    snap_state.scope_editor.open(
+                                        &template,
+                                        aux_count,
+                                        group_count,
+                                        matrix_count,
+                                    );
+                                    snap_state.scope_edit_target = ScopeEditTarget::NewCapture;
+                                }
+                            }
                         }
                         ui.add_space(8.0);
                         let clear_btn = theme::action_button(

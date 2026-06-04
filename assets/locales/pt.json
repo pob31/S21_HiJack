@@ -173,6 +173,7 @@
   "snapshot.capture_now": "Capturar o estado atual da consola num novo snapshot, filtrado pelo scope acima.",
   "snapshot.clear_scope": "Limpar a seleção de scope.",
   "snapshot.console_follow_req": "Requer o Mode 2 ou o Mode 3 (protocolo iPad) — a lista de snapshots da consola só é acessível através desse protocolo.",
+  "snapshot.edit_existing_scope": "Editar no local o scope e os pré-atrasos / fades por categoria do snapshot selecionado. As alterações de timing aplicam-se sempre na evocação. Num snapshot apply-on-save, os parâmetros que adicionar aqui não evocam nada (os seus valores não foram capturados) e os que remover saem da evocação — recapture para incluir os parâmetros adicionados.",
   "snapshot.edit_scope": "Abrir o editor de scope para escolher que parâmetros este snapshot captura ou evoca.",
   "snapshot.picker": "Escolher que snapshot da aplicação este cue evoca (escreva para filtrar).",
   "snapshot.qlab_create_trigger": "Criar uma única cue de rede no QLab cujo customString dispara /snapshot/recall <name>. Enviado para {target}.",

@@ -173,6 +173,7 @@
   "snapshot.capture_now": "Capture the current console state into a new snapshot, filtered by the scope above.",
   "snapshot.clear_scope": "Clear the scope selection.",
   "snapshot.console_follow_req": "Requires Mode 2 or Mode 3 (iPad protocol) — the console snapshot list is only reachable via that protocol.",
+  "snapshot.edit_existing_scope": "Edit the selected snapshot's scope and per-category pre-wait / fade in place. Timing changes always apply on recall. On an apply-on-save snapshot, paths you add here recall nothing (their values weren't captured) and paths you remove drop from recall — re-capture to include newly added paths.",
   "snapshot.edit_scope": "Open the scope editor to choose which parameters this snapshot captures or recalls.",
   "snapshot.picker": "Choose which app snapshot this cue recalls (type to filter).",
   "snapshot.qlab_create_trigger": "Create a single network cue in QLab whose customString fires /snapshot/recall <name>. Sent to {target}.",

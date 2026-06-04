@@ -243,6 +243,22 @@ impl CueManager {
         }
     }
 
+    /// Replace a snapshot's scope (parameter paths + per-category pre-wait/fade
+    /// timings) in place, preserving the captured `data`, `kind`, palette refs,
+    /// and `id`. Bumps `modified_at`. Returns `false` when no snapshot with that
+    /// id exists (e.g. it was deleted while the scope editor was open).
+    pub fn update_snapshot_scope(&mut self, id: Uuid, scope: ScopeTemplate) -> bool {
+        if let Some(snapshot) = self.snapshots.get_mut(&id) {
+            snapshot.scope = scope;
+            snapshot.modified_at = chrono::Utc::now();
+            info!(name = %snapshot.name, %id, "Updated snapshot scope");
+            true
+        } else {
+            warn!(%id, "Snapshot not found for scope update");
+            false
+        }
+    }
+
     /// Add a scope template.
     pub fn add_scope_template(&mut self, template: ScopeTemplate) {
         info!(name = %template.name, id = %template.id, "Added scope template");
@@ -452,6 +468,60 @@ mod tests {
             SnapshotData::new(),
             SnapshotKind::ApplyOnSave,
         )
+    }
+
+    #[test]
+    fn update_snapshot_scope_replaces_scope_and_preserves_data() {
+        use crate::model::channel::ChannelId;
+        use crate::model::parameter::{ParameterPath, TimingCategory};
+        use crate::model::snapshot::{CategoryTiming, ChannelScope, ScopeTemplate};
+        use std::collections::{HashMap, HashSet};
+
+        let mut mgr = CueManager::new(CueList::default());
+        let snap = make_snapshot("Verse 1");
+        let id = snap.id;
+        let original_kind = snap.kind;
+        let created_at = snap.created_at;
+        mgr.add_snapshot(snap);
+
+        // Sanity: the seed scope carries no category timing → instant recall.
+        assert!(
+            !mgr.get_snapshot(&id)
+                .unwrap()
+                .scope
+                .has_any_category_timing()
+        );
+
+        // Build a replacement scope with a 3 s Fader fade on Input 1.
+        let mut cs = ChannelScope::new(ChannelId::Input(1), HashSet::from([ParameterPath::Fader]));
+        cs.category_timings = HashMap::from([(
+            TimingCategory::Fader,
+            CategoryTiming {
+                pre_wait_secs: 0.0,
+                fade_time_secs: 3.0,
+            },
+        )]);
+        let new_scope = ScopeTemplate::new("Edited".into(), vec![cs]);
+
+        assert!(mgr.update_snapshot_scope(id, new_scope));
+
+        let snap = mgr.get_snapshot(&id).unwrap();
+        // Scope (and its per-category timing) is now live for recall.
+        assert!(snap.scope.has_any_category_timing());
+        assert_eq!(
+            snap.scope
+                .timing_for(&ChannelId::Input(1), TimingCategory::Fader)
+                .fade_time_secs,
+            3.0
+        );
+        // Identity / kind / created_at preserved; modified_at bumped forward.
+        assert_eq!(snap.id, id);
+        assert_eq!(snap.kind, original_kind);
+        assert_eq!(snap.created_at, created_at);
+        assert!(snap.modified_at >= created_at);
+
+        // Unknown id is a no-op that reports failure.
+        assert!(!mgr.update_snapshot_scope(Uuid::new_v4(), ScopeTemplate::new("X".into(), vec![])));
     }
 
     #[test]

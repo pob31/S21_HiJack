@@ -90,6 +90,7 @@ pub fn draw_scope_window(
     dirty: Option<&DirtyTracker>,
     cue_manager: &Arc<RwLock<CueManager>>,
     runtime: &tokio::runtime::Handle,
+    window_title: &str,
 ) -> ScopeWindowOutcome {
     if !state.window_open {
         return ScopeWindowOutcome::default();
@@ -201,7 +202,10 @@ pub fn draw_scope_window(
     let mut still_open = state.window_open;
     let dirty_has_any = dirty.map(|d| d.has_any()).unwrap_or(false);
 
-    egui::Window::new("Snapshot Scope")
+    egui::Window::new(window_title)
+        // Pin a stable id so a changing title (e.g. "Editing scope: <name>")
+        // doesn't reset the window's size/position every frame.
+        .id(egui::Id::new("snapshot_scope_window"))
         .collapsible(false)
         .resizable(true)
         .default_size([1100.0, 700.0])

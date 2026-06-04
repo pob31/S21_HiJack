@@ -173,6 +173,7 @@
   "snapshot.capture_now": "将调音台的当前状态捕获到一个新快照中，按上方 scope 过滤。",
   "snapshot.clear_scope": "清除 scope 选择。",
   "snapshot.console_follow_req": "需要 Mode 2 或 Mode 3（iPad 协议）——调音台快照列表只能通过该协议访问。",
+  "snapshot.edit_existing_scope": "就地编辑所选快照的 scope 及各类别的 pre-wait／fade。timing 的更改在调用时始终生效。对于 apply-on-save 快照，此处新增的参数不会调用任何内容（其值未被捕获），移除的参数则从调用中去除——重新捕获以纳入新增的参数。",
   "snapshot.edit_scope": "打开 scope 编辑器，选择此快照捕获或调用哪些参数。",
   "snapshot.picker": "选择此 cue 调用哪个 app 快照（输入以过滤）。",
   "snapshot.qlab_create_trigger": "在 QLab 中创建一个网络 cue，其 customString 触发 /snapshot/recall <name>。发送到 {target}。",

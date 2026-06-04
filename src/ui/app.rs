@@ -31,8 +31,9 @@ use super::monitor_tab::MonitorTabState;
 use super::osc_log_tab::OscLogTabState;
 use super::palettes_ui::PalettesUiState;
 use super::pan_link_tab::PanLinkTabState;
+use super::scope_editor::ScopeWindowResult;
 use super::setup_tab::SetupTabState;
-use super::snapshots_tab::SnapshotsTabState;
+use super::snapshots_tab::{ScopeEditTarget, SnapshotsTabState};
 use super::{PendingEngines, Tab, UiEvent};
 
 // ─── Global physical-size (PPI) UI scaling ──────────────────────────────────
@@ -2416,6 +2417,20 @@ impl eframe::App for HiJackApp {
         // on both so we don't deadlock if a write is in flight; the next
         // frame will redraw.
         if self.snapshots.scope_editor.window_open {
+            // Title reflects what the editor targets: the next-capture working
+            // scope, or an existing snapshot being edited in place.
+            let window_title = match self.snapshots.scope_edit_target {
+                ScopeEditTarget::NewCapture => "Snapshot Scope".to_string(),
+                ScopeEditTarget::Snapshot(id) => self
+                    .cue_manager
+                    .try_read()
+                    .ok()
+                    .and_then(|m| {
+                        m.get_snapshot(&id)
+                            .map(|s| format!("Editing scope: {}", s.name))
+                    })
+                    .unwrap_or_else(|| "Editing scope".to_string()),
+            };
             if let Ok(state_guard) = self.state.try_read() {
                 let dirty_guard = self.dirty_tracker.try_read().ok();
                 let outcome = super::scope_editor::draw_scope_window(
@@ -2425,6 +2440,7 @@ impl eframe::App for HiJackApp {
                     dirty_guard.as_deref(),
                     &self.cue_manager,
                     &self.runtime,
+                    &window_title,
                 );
                 drop(dirty_guard);
                 drop(state_guard);
@@ -2437,6 +2453,30 @@ impl eframe::App for HiJackApp {
                     self.runtime.spawn(async move {
                         dirty_arc.write().await.clear();
                     });
+                }
+
+                // When editing an existing snapshot's scope, OK writes the
+                // edited scope (paths + per-category timings) back to it.
+                if outcome.status == ScopeWindowResult::Committed
+                    && let ScopeEditTarget::Snapshot(id) = self.snapshots.scope_edit_target
+                {
+                    let name = self
+                        .cue_manager
+                        .try_read()
+                        .ok()
+                        .and_then(|m| m.get_snapshot(&id).map(|s| s.name.clone()))
+                        .unwrap_or_default();
+                    let scope = self.snapshots.scope_editor.to_scope_template(name);
+                    let cue_mgr = self.cue_manager.clone();
+                    self.runtime.spawn(async move {
+                        cue_mgr.write().await.update_snapshot_scope(id, scope);
+                    });
+                }
+
+                // Any terminal outcome (OK / Cancel / X-close) resets the target
+                // so the next no-selection "Edit Scope…" edits the working scope.
+                if outcome.status != ScopeWindowResult::StillOpen {
+                    self.snapshots.scope_edit_target = ScopeEditTarget::NewCapture;
                 }
             }
         }

@@ -258,6 +258,7 @@ pub enum HelpKey {
 
     // ── Snapshots / cues (secondary) ──
     SnapshotEditScope,
+    SnapshotEditExistingScope,
     SnapshotClearScope,
     CueNumber,
     CueName,
@@ -1009,6 +1010,14 @@ fn meta(key: HelpKey) -> HelpMeta {
             "Open the scope editor to choose which parameters this snapshot \
              captures or recalls.",
         ),
+        SnapshotEditExistingScope => (
+            "snapshot.edit_existing_scope",
+            "Edit the selected snapshot's scope and per-category pre-wait / fade \
+             in place. Timing changes always apply on recall. On an apply-on-save \
+             snapshot, paths you add here recall nothing (their values weren't \
+             captured) and paths you remove drop from recall — re-capture to \
+             include newly added paths.",
+        ),
         SnapshotClearScope => ("snapshot.clear_scope", "Clear the scope selection."),
         CueNumber => (
             "cue.number",
@@ -1331,6 +1340,7 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::RecallScopePrevChannel,
     HelpKey::RecallScopeNextChannel,
     HelpKey::SnapshotEditScope,
+    HelpKey::SnapshotEditExistingScope,
     HelpKey::SnapshotClearScope,
     HelpKey::CueNumber,
     HelpKey::CueName,
