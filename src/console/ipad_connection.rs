@@ -145,10 +145,13 @@ pub async fn connect_mode3_proxy(
         "Mode 3: setting up two-socket iPad proxy..."
     );
 
-    // Socket 1: Console-side (daemon ↔ console) — raw UDP, interface-bound
-    let console_socket = crate::ui::net_interfaces::create_bound_udp_socket(
+    // Socket 1: Console-side (daemon ↔ console) — raw UDP, interface-bound.
+    // Enlarged buffers: this socket receives the console's initial flood, which
+    // can overflow the default OS receive buffer and silently drop datagrams.
+    let console_socket = crate::ui::net_interfaces::create_bound_udp_socket_buffered(
         local_console_addr,
         interface_name.as_deref(),
+        crate::ui::net_interfaces::PROXY_SOCKET_BUFFER_BYTES,
     )
     .await?;
     let actual_console = console_socket.local_addr()?;
@@ -162,10 +165,12 @@ pub async fn connect_mode3_proxy(
     let mut ipad_sender = IpadSender::from_socket(console_socket.clone(), console_ipad_addr);
     ipad_sender.set_log(osc_log.clone());
 
-    // Socket 2: iPad-side (daemon ↔ iPad) — raw UDP, interface-bound
-    let ipad_socket = crate::ui::net_interfaces::create_bound_udp_socket(
+    // Socket 2: iPad-side (daemon ↔ iPad) — raw UDP, interface-bound.
+    // Enlarged buffers to match the console side (see above).
+    let ipad_socket = crate::ui::net_interfaces::create_bound_udp_socket_buffered(
         ipad_listen_addr,
         interface_name.as_deref(),
+        crate::ui::net_interfaces::PROXY_SOCKET_BUFFER_BYTES,
     )
     .await?;
     let actual_listen = ipad_socket.local_addr()?;
@@ -199,18 +204,47 @@ pub async fn connect_mode3_proxy(
         .await;
     });
 
-    // Start the bidirectional proxy loop immediately (no handshake)
-    let offline_clone = offline_mode.clone();
+    // Start forwarding immediately (no handshake). Each direction is its own
+    // task so neither can starve the other's recv: forwarding the console's
+    // initial flood (C→I) no longer delays draining the iPad-side socket (and
+    // vice versa), which is what was overflowing the kernel recv buffer and
+    // dropping matrix/bus responses on the first connection.
+    let offline_c2i = offline_mode.clone();
+    let offline_i2c = offline_mode;
+    let cancel_c2i = cancel.clone();
+    let cancel_i2c = cancel;
+    let capture_tx_c2i = capture_tx.clone();
+    let capture_tx_i2c = capture_tx;
 
+    let cs_c2i = console_socket.clone(); // C→I recv side
+    let is_c2i = ipad_socket.clone(); // C→I send side
+    let is_i2c = ipad_socket; // I→C recv side
+    let cs_i2c = console_socket; // I→C send side
+
+    // Console → daemon → iPad
     tokio::spawn(async move {
-        raw_proxy_loop(
-            console_socket,
-            console_ipad_addr,
-            ipad_socket,
+        proxy_direction(
+            cs_c2i,
+            is_c2i,
             ipad_target,
-            capture_tx,
-            offline_clone,
-            cancel,
+            capture_tx_c2i,
+            offline_c2i,
+            cancel_c2i,
+            "C→I",
+        )
+        .await;
+    });
+
+    // iPad → daemon → console
+    tokio::spawn(async move {
+        proxy_direction(
+            is_i2c,
+            cs_i2c,
+            console_ipad_addr,
+            capture_tx_i2c,
+            offline_i2c,
+            cancel_i2c,
+            "I→C",
         )
         .await;
     });
@@ -219,7 +253,7 @@ pub async fn connect_mode3_proxy(
 }
 
 /// One captured packet: raw bytes plus the direction that produced them.
-/// Sent from `raw_proxy_loop` to `state_capture_loop` over a bounded channel.
+/// Sent from `proxy_direction` to `state_capture_loop` over a bounded channel.
 struct ProxyCapture {
     bytes: Vec<u8>,
     direction: &'static str,
@@ -228,7 +262,7 @@ struct ProxyCapture {
 /// Drain captures from the proxy and update the state mirror / dirty tracker /
 /// snapshot-follow channel. Runs as a separate task so that state contention
 /// (snapshot engine writes, UI reads, gang propagation) cannot delay the
-/// raw byte forwarding in `raw_proxy_loop`.
+/// raw byte forwarding in the `proxy_direction` tasks.
 async fn state_capture_loop(
     mut rx: mpsc::Receiver<ProxyCapture>,
     state: Arc<RwLock<ConsoleState>>,
@@ -348,56 +382,56 @@ async fn ipad_state_mirror_loop(
     info!("iPad state mirror loop ended");
 }
 
-/// Pure raw bidirectional proxy loop for Mode 3.
+/// One direction of the Mode 3 raw proxy: recv on `recv_socket`, forward to
+/// `dest` on `send_socket`, then best-effort enqueue a capture.
 ///
-/// Two raw UDP sockets, no parsing, no wrappers. Just forwards bytes.
-/// Parsing is offloaded to `state_capture_loop` via `capture_tx` so that
-/// state-mirror contention (snapshot engine writes, UI reads, gang
-/// propagation) cannot delay the byte forwarding here.
-async fn raw_proxy_loop(
-    console_socket: std::sync::Arc<tokio::net::UdpSocket>,
-    console_addr: SocketAddr,
-    ipad_socket: std::sync::Arc<tokio::net::UdpSocket>,
-    ipad_addr: SocketAddr,
+/// Runs as its own task (one per direction) so the two directions never compete
+/// for drain time — forwarding the console's initial flood no longer starves
+/// the iPad-side recv (and vice versa), which is what was overflowing the kernel
+/// recv buffer and dropping matrix/bus responses. Parsing is offloaded to
+/// `state_capture_loop` via `capture_tx` so state-mirror contention (snapshot
+/// engine writes, UI reads, gang propagation) cannot delay byte forwarding here.
+async fn proxy_direction(
+    recv_socket: std::sync::Arc<tokio::net::UdpSocket>,
+    send_socket: std::sync::Arc<tokio::net::UdpSocket>,
+    dest: SocketAddr,
     capture_tx: mpsc::Sender<ProxyCapture>,
     offline_mode: Arc<AtomicBool>,
     cancel: tokio_util::sync::CancellationToken,
+    direction: &'static str,
 ) {
-    info!(%ipad_addr, "Mode 3 raw proxy started");
+    info!(%dest, direction, "Mode 3 proxy direction started");
 
-    let mut console_buf = vec![0u8; 65536];
-    let mut ipad_buf = vec![0u8; 65536];
-    let mut c2i: u64 = 0;
-    let mut i2c: u64 = 0;
+    let mut buf = vec![0u8; 65536];
+    let mut forwarded: u64 = 0;
     let mut capture_drops: u64 = 0;
 
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                info!(c2i, i2c, capture_drops, "Mode 3 proxy cancelled");
+                info!(direction, forwarded, capture_drops, "Mode 3 proxy direction cancelled");
                 break;
             }
 
-            // Console → daemon → iPad
-            result = console_socket.recv_from(&mut console_buf) => {
+            result = recv_socket.recv_from(&mut buf) => {
                 match result {
                     Ok((size, _src)) => {
                         if offline_mode.load(Ordering::Relaxed) {
-                            debug!("Mode 3 C→I dropped (offline mode)");
+                            debug!(direction, "Mode 3 forward dropped (offline mode)");
                             continue;
                         }
 
                         // Forward FIRST so state-mirror contention can't delay
                         // the byte path — capture happens off the hot path.
-                        match ipad_socket.send_to(&console_buf[..size], ipad_addr).await {
+                        match send_socket.send_to(&buf[..size], dest).await {
                             Ok(sent) => {
-                                c2i += 1;
-                                if c2i <= 5 {
-                                    debug!(c2i, sent, %ipad_addr, "Proxy C→I: forwarded {sent} bytes to {ipad_addr}");
+                                forwarded += 1;
+                                if forwarded <= 5 {
+                                    debug!(direction, forwarded, sent, %dest, "Proxy forwarded {sent} bytes to {dest}");
                                 }
                             }
                             Err(e) => {
-                                warn!(%ipad_addr, "Proxy C→I: send failed: {e}");
+                                warn!(direction, %dest, "Proxy send failed: {e}");
                             }
                         }
 
@@ -406,70 +440,30 @@ async fn raw_proxy_loop(
                         // (mirror briefly stale) rather than block the proxy.
                         if capture_tx
                             .try_send(ProxyCapture {
-                                bytes: console_buf[..size].to_vec(),
-                                direction: "C→I",
+                                bytes: buf[..size].to_vec(),
+                                direction,
                             })
                             .is_err()
                         {
                             capture_drops = capture_drops.saturating_add(1);
                             if capture_drops.is_power_of_two() {
-                                warn!(capture_drops, "Mode 3 capture channel full — state mirror is lagging");
+                                warn!(direction, capture_drops, "Mode 3 capture channel full — state mirror is lagging");
                             }
                         }
                     }
                     Err(e) => {
-                        warn!("Proxy console recv error: {e}");
-                        break;
-                    }
-                }
-            }
-
-            // iPad → daemon → console
-            result = ipad_socket.recv_from(&mut ipad_buf) => {
-                match result {
-                    Ok((size, _src)) => {
-                        if offline_mode.load(Ordering::Relaxed) {
-                            debug!("Mode 3 I→C dropped (offline mode)");
-                            continue;
-                        }
-
-                        // Forward FIRST. See C→I branch comment.
-                        match console_socket.send_to(&ipad_buf[..size], console_addr).await {
-                            Ok(sent) => {
-                                i2c += 1;
-                                if i2c <= 5 {
-                                    debug!(i2c, sent, %console_addr, "Proxy I→C: forwarded {sent} bytes to {console_addr}");
-                                }
-                            }
-                            Err(e) => {
-                                warn!(%console_addr, "Proxy I→C: send failed: {e}");
-                            }
-                        }
-
-                        if capture_tx
-                            .try_send(ProxyCapture {
-                                bytes: ipad_buf[..size].to_vec(),
-                                direction: "I→C",
-                            })
-                            .is_err()
-                        {
-                            capture_drops = capture_drops.saturating_add(1);
-                            if capture_drops.is_power_of_two() {
-                                warn!(capture_drops, "Mode 3 capture channel full — state mirror is lagging");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Proxy iPad recv error: {e}");
+                        // A fatal recv error on one direction tears down the
+                        // whole proxy: cancel so the sibling direction and the
+                        // capture loop exit cleanly too.
+                        warn!(direction, "Proxy recv error: {e}");
+                        cancel.cancel();
                         break;
                     }
                 }
             }
         }
     }
-    drop(console_socket);
-    drop(ipad_socket);
-    info!("Mode 3 proxy ended");
+    info!(direction, "Mode 3 proxy direction ended");
 }
 
 /// Best-effort parse and log a raw packet. Captures parameter updates into state.

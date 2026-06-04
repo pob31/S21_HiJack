@@ -2,7 +2,12 @@ use std::net::{Ipv4Addr, SocketAddr};
 #[cfg(target_os = "macos")]
 use std::os::fd::AsRawFd;
 
-use tracing::info;
+use tracing::{info, warn};
+
+/// Target SO_RCVBUF/SO_SNDBUF for the high-volume Mode 3 proxy sockets.
+/// The OS may clamp this (Linux: net.core.rmem_max / wmem_max); the actual size
+/// achieved is logged so a clamp is visible.
+pub const PROXY_SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024; // 4 MB
 
 /// A discovered network interface with its name and IPv4 address.
 #[derive(Clone, Debug)]
@@ -104,6 +109,26 @@ pub async fn create_bound_udp_socket(
     bind_addr: SocketAddr,
     interface_name: Option<&str>,
 ) -> std::io::Result<tokio::net::UdpSocket> {
+    create_bound_udp_socket_inner(bind_addr, interface_name, None).await
+}
+
+/// Like `create_bound_udp_socket` but requests an enlarged SO_RCVBUF/SO_SNDBUF
+/// (`buffer_bytes`). Used by the Mode 3 proxy, where the console's initial flood
+/// can overflow the default OS receive buffer and silently drop datagrams
+/// (matrix/bus route responses going missing on the first connection).
+pub async fn create_bound_udp_socket_buffered(
+    bind_addr: SocketAddr,
+    interface_name: Option<&str>,
+    buffer_bytes: usize,
+) -> std::io::Result<tokio::net::UdpSocket> {
+    create_bound_udp_socket_inner(bind_addr, interface_name, Some(buffer_bytes)).await
+}
+
+async fn create_bound_udp_socket_inner(
+    bind_addr: SocketAddr,
+    interface_name: Option<&str>,
+    buffer_bytes: Option<usize>,
+) -> std::io::Result<tokio::net::UdpSocket> {
     use socket2::{Domain, Protocol, Socket, Type};
 
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
@@ -111,6 +136,36 @@ pub async fn create_bound_udp_socket(
     // Set interface binding BEFORE bind
     if let Some(iface) = interface_name {
         set_interface_binding(&socket, iface)?;
+    }
+
+    // Enlarge the kernel socket buffers BEFORE bind so they apply from the very
+    // first datagram. The OS may clamp the request (Linux caps at
+    // net.core.rmem_max / wmem_max and reports ~2x the request internally); we
+    // read back the actual sizes and log them so an operator can see when a
+    // clamp leaves them too small. set_* failures are non-fatal — the socket
+    // still works at the default size, just more prone to drops under a flood.
+    if let Some(target) = buffer_bytes {
+        if let Err(e) = socket.set_recv_buffer_size(target) {
+            warn!(target, "Failed to set SO_RCVBUF: {e}");
+        }
+        if let Err(e) = socket.set_send_buffer_size(target) {
+            warn!(target, "Failed to set SO_SNDBUF: {e}");
+        }
+        let actual_rcv = socket.recv_buffer_size().unwrap_or(0);
+        let actual_snd = socket.send_buffer_size().unwrap_or(0);
+        info!(
+            requested = target,
+            actual_rcvbuf = actual_rcv,
+            actual_sndbuf = actual_snd,
+            "Proxy socket buffer sizes (raise net.core.rmem_max/wmem_max if actual << requested)"
+        );
+        if actual_rcv < target {
+            warn!(
+                requested = target,
+                actual = actual_rcv,
+                "SO_RCVBUF clamped by OS — raise sysctl net.core.rmem_max to reduce UDP drops under flood"
+            );
+        }
     }
 
     socket.set_reuse_address(true)?;
