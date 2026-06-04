@@ -4,7 +4,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::model::channel::ChannelId;
-use crate::model::gang::GangGroup;
+use crate::model::gang::{GangGroup, GangPanMode};
 use crate::model::parameter::ParameterSection;
 
 /// Manages gang groups: CRUD operations and channel-to-gang lookups.
@@ -58,6 +58,21 @@ impl GangManager {
         self.groups
             .values()
             .filter(|g| g.enabled && g.contains_channel(channel) && g.links_section(section))
+            .collect()
+    }
+
+    /// Find all enabled gangs that contain this channel and link the main
+    /// channel pan (effective pan mode != Off). Pan is decoupled from the
+    /// `Fader/Mute/Pan` section, so it has its own lookup rather than going
+    /// through [`Self::find_gangs_for_channel_and_section`].
+    pub fn find_gangs_for_channel_pan(&self, channel: &ChannelId) -> Vec<&GangGroup> {
+        self.groups
+            .values()
+            .filter(|g| {
+                g.enabled
+                    && g.contains_channel(channel)
+                    && g.effective_pan_mode() != GangPanMode::Off
+            })
             .collect()
     }
 
@@ -214,6 +229,36 @@ mod tests {
         let found =
             mgr.find_gangs_for_channel_and_section(&ChannelId::Input(1), &ParameterSection::Sends);
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn find_gangs_for_channel_pan_respects_mode() {
+        use crate::model::gang::GangPanMode;
+        let mut mgr = GangManager::new();
+
+        // FaderMutePan gang → pan On by default → matches.
+        let on = make_gang("On", vec![ChannelId::Input(1), ChannelId::Input(2)]);
+        mgr.add_group(on);
+        assert_eq!(
+            mgr.find_gangs_for_channel_pan(&ChannelId::Input(1)).len(),
+            1
+        );
+
+        // Same gang flipped to pan Off → no longer matches.
+        let id = *mgr.groups.keys().next().unwrap();
+        mgr.groups.get_mut(&id).unwrap().pan_mode = Some(GangPanMode::Off);
+        assert!(
+            mgr.find_gangs_for_channel_pan(&ChannelId::Input(1))
+                .is_empty()
+        );
+
+        // Disabled gang excluded even when pan is On.
+        mgr.groups.get_mut(&id).unwrap().pan_mode = Some(GangPanMode::On);
+        mgr.groups.get_mut(&id).unwrap().enabled = false;
+        assert!(
+            mgr.find_gangs_for_channel_pan(&ChannelId::Input(1))
+                .is_empty()
+        );
     }
 
     #[test]

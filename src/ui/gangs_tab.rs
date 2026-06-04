@@ -8,9 +8,55 @@ use super::help::{HelpKey, help};
 use super::theme;
 use crate::console::gang_manager::GangManager;
 use crate::model::channel::ChannelId;
-use crate::model::gang::{GangGroup, GangMode};
+use crate::model::gang::{GangGroup, GangMode, GangPanMode};
 use crate::model::parameter::ParameterSection;
 use uuid::Uuid;
+
+/// Label for a parameter section *within the Gangs tab*. Pan is now a
+/// separate per-gang control, so the `FaderMutePan` section reads as
+/// "Fader/Mute" here (it links fader, mute and solo). Everywhere else the
+/// section keeps its full "Fader/Mute/Pan" name.
+fn gang_section_label(section: &ParameterSection) -> String {
+    match section {
+        ParameterSection::FaderMutePan => "Fader/Mute".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Draw an OFF / ON / REV segmented control for a gang's pan mode. Returns the
+/// newly-clicked mode, if any. `enabled` gates the whole control; `rev_enabled`
+/// additionally gates the REVERSED button (pairs only — it needs exactly two
+/// members). A currently-selected REV stays highlighted even when disabled.
+fn pan_mode_buttons(
+    ui: &mut egui::Ui,
+    current: GangPanMode,
+    enabled: bool,
+    rev_enabled: bool,
+) -> Option<GangPanMode> {
+    let mut clicked = None;
+    let opts = [
+        (GangPanMode::Off, "OFF", HelpKey::GangPanOff, true),
+        (GangPanMode::On, "ON", HelpKey::GangPanOn, true),
+        (
+            GangPanMode::Reversed,
+            "REV",
+            HelpKey::GangPanReversed,
+            rev_enabled,
+        ),
+    ];
+    for (mode, label, key, opt_enabled) in opts {
+        let btn = egui::Button::new(egui::RichText::new(label).small())
+            .selected(current == mode)
+            .corner_radius(4.0);
+        let resp = ui
+            .add_enabled(enabled && opt_enabled, btn)
+            .on_hover_text(help(key));
+        if resp.clicked() {
+            clicked = Some(mode);
+        }
+    }
+    clicked
+}
 
 /// Channel type selector for the Add Gang form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,7 +164,7 @@ fn wrap_section_tiles(ui: &egui::Ui, available_w: f32) -> Vec<Vec<&'static Param
     let mut current_w = 0.0_f32;
 
     for section in ParameterSection::all_variants() {
-        let label = section.to_string();
+        let label = gang_section_label(section);
         let galley = ui
             .painter()
             .layout_no_wrap(label, font_id.clone(), theme::TEXT_PRIMARY);
@@ -161,7 +207,7 @@ fn wrap_badges<'a>(
     let mut current_w = 0.0_f32;
 
     for section in sections {
-        let label = section.to_string();
+        let label = gang_section_label(section);
         let galley = ui
             .painter()
             .layout_no_wrap(label, font_id.clone(), theme::TEXT_PRIMARY);
@@ -194,6 +240,9 @@ pub struct GangsTabState {
     /// Range notation: "1-4,7,12" or for Mixed: "I1-4,A1-2,G5"
     pub new_gang_members: String,
     pub new_gang_sections: HashSet<ParameterSection>,
+    /// Pan link mode for the gang being created / edited (independent of the
+    /// linked sections above).
+    pub new_gang_pan_mode: GangPanMode,
     pub editing_gang_id: Option<uuid::Uuid>,
     pub status_message: Option<String>,
 }
@@ -205,6 +254,7 @@ impl Default for GangsTabState {
             new_gang_channel_type: ChannelTypeSelection::Input,
             new_gang_members: String::new(),
             new_gang_sections: HashSet::from([ParameterSection::FaderMutePan]),
+            new_gang_pan_mode: GangPanMode::On,
             editing_gang_id: None,
             status_message: None,
         }
@@ -344,6 +394,27 @@ pub fn draw_gangs_tab(
                                 )
                                 .on_hover_text(help(HelpKey::GangNewMembers));
                                 ui.end_row();
+
+                                // Pan link mode — its own control, separate
+                                // from the Fader/Mute section. REV is only
+                                // offered for an exact pair.
+                                theme::row_label(ui, "Pan:", theme::label_weak());
+                                ui.horizontal(|ui| {
+                                    let member_count = parse_channel_members(
+                                        tab.new_gang_channel_type,
+                                        &tab.new_gang_members,
+                                    )
+                                    .len();
+                                    if let Some(m) = pan_mode_buttons(
+                                        ui,
+                                        tab.new_gang_pan_mode,
+                                        true,
+                                        member_count == 2,
+                                    ) {
+                                        tab.new_gang_pan_mode = m;
+                                    }
+                                });
+                                ui.end_row();
                             });
                     },
                 );
@@ -400,8 +471,12 @@ pub fn draw_gangs_tab(
                                     };
                                     let resp = ui
                                         .scope_builder(builder, |ui| {
-                                            theme::toggle_block(ui, &section.to_string(), active)
-                                                .on_hover_text(section_tooltip(section))
+                                            theme::toggle_block(
+                                                ui,
+                                                &gang_section_label(section),
+                                                active,
+                                            )
+                                            .on_hover_text(section_tooltip(section))
                                         })
                                         .inner;
                                     if is_applicable && resp.clicked() {
@@ -443,9 +518,12 @@ pub fn draw_gangs_tab(
                         tab.status_message = Some("Select at least one section".into());
                     } else if members.len() < 2 {
                         tab.status_message = Some("A gang needs at least 2 members".into());
+                    } else if tab.new_gang_pan_mode == GangPanMode::Reversed && members.len() != 2 {
+                        tab.status_message = Some("Reversed pan needs exactly 2 members".into());
                     } else {
                         let name = tab.new_gang_name.trim().to_string();
                         let sections = tab.new_gang_sections.clone();
+                        let pan_mode = tab.new_gang_pan_mode;
                         let mgr_clone = gang_manager.clone();
 
                         if let Some(edit_id) = tab.editing_gang_id.take() {
@@ -455,11 +533,13 @@ pub fn draw_gangs_tab(
                                     group.name = name;
                                     group.members = members;
                                     group.linked_sections = sections;
+                                    group.pan_mode = Some(pan_mode);
                                 }
                             });
                             tab.status_message = Some("Gang updated".into());
                         } else {
-                            let group = GangGroup::new(name.clone(), members, sections);
+                            let mut group = GangGroup::new(name.clone(), members, sections);
+                            group.pan_mode = Some(pan_mode);
                             runtime.spawn(async move {
                                 mgr_clone.write().await.add_group(group);
                             });
@@ -469,6 +549,7 @@ pub fn draw_gangs_tab(
                         tab.new_gang_name.clear();
                         tab.new_gang_members.clear();
                         tab.new_gang_sections = HashSet::from([ParameterSection::FaderMutePan]);
+                        tab.new_gang_pan_mode = GangPanMode::On;
                     }
                 }
 
@@ -487,6 +568,7 @@ pub fn draw_gangs_tab(
                         tab.new_gang_name.clear();
                         tab.new_gang_members.clear();
                         tab.new_gang_sections = HashSet::from([ParameterSection::FaderMutePan]);
+                        tab.new_gang_pan_mode = GangPanMode::On;
                         tab.status_message = None;
                     }
                 }
@@ -541,6 +623,7 @@ pub fn draw_gangs_tab(
                         let mut to_toggle = None;
                         let mut to_pause: Option<(Uuid, bool)> = None;
                         let mut to_set_mode: Option<(Uuid, GangMode)> = None;
+                        let mut to_set_pan_mode: Option<(Uuid, GangPanMode)> = None;
 
                         for group in &groups {
                             let bg = if !group.enabled || group.paused {
@@ -642,6 +725,24 @@ pub fn draw_gangs_tab(
 
                                         ui.add_space(8.0);
 
+                                        // Pan link mode — OFF / ON / REV. REV
+                                        // only offered for an exact pair.
+                                        ui.label(
+                                            egui::RichText::new("Pan")
+                                                .small()
+                                                .color(theme::label_weak()),
+                                        );
+                                        if let Some(m) = pan_mode_buttons(
+                                            ui,
+                                            group.effective_pan_mode(),
+                                            group.enabled,
+                                            group.members.len() == 2,
+                                        ) {
+                                            to_set_pan_mode = Some((group.id, m));
+                                        }
+
+                                        ui.add_space(8.0);
+
                                         ui.label(
                                             egui::RichText::new(&group.name)
                                                 .strong()
@@ -673,7 +774,7 @@ pub fn draw_gangs_tab(
                                                 for section in badge_row {
                                                     theme::colored_badge(
                                                         ui,
-                                                        &section.to_string(),
+                                                        &gang_section_label(section),
                                                         theme::SCOPE_ACTIVE,
                                                     );
                                                 }
@@ -755,11 +856,22 @@ pub fn draw_gangs_tab(
                             });
                         }
 
+                        if let Some((id, new_pan_mode)) = to_set_pan_mode {
+                            let mgr_clone = gang_manager.clone();
+                            runtime.spawn(async move {
+                                let mut mgr = mgr_clone.write().await;
+                                if let Some(group) = mgr.groups.get_mut(&id) {
+                                    group.pan_mode = Some(new_pan_mode);
+                                }
+                            });
+                        }
+
                         if let Some(group) = to_edit {
                             tab.editing_gang_id = Some(group.id);
                             tab.new_gang_name = group.name.clone();
                             tab.new_gang_members = format_members(&group.members);
                             tab.new_gang_sections = group.linked_sections.clone();
+                            tab.new_gang_pan_mode = group.effective_pan_mode();
                             tab.status_message = None;
                         }
                     }

@@ -6,7 +6,7 @@ use std::time::Instant;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
-use crate::model::parameter::{ParameterAddress, ParameterSection, ParameterValue};
+use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterSection, ParameterValue};
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
 use crate::osc::encode;
@@ -14,7 +14,7 @@ use crate::osc::ipad_client::IpadSender;
 use crate::osc::ipad_encode;
 
 use super::gang_manager::GangManager;
-use crate::model::gang::GangMode;
+use crate::model::gang::{GangMode, GangPanMode};
 
 /// Duration (ms) to suppress echo-back from the console.
 const SUPPRESSION_WINDOW_MS: u64 = 300;
@@ -90,6 +90,16 @@ impl GangEngine {
             return;
         }
 
+        // Main channel pan is decoupled from the Fader/Mute/Pan section and
+        // driven by each gang's own pan mode (Off / On / Reversed). Handle it
+        // separately and return so it never double-propagates through the
+        // section loop below (Pan's section() is still FaderMutePan).
+        if addr.parameter == ParameterPath::Pan {
+            self.process_pan_gang_update(addr, new_value, old_value, manager)
+                .await;
+            return;
+        }
+
         // 2. Get the parameter's section
         let section = addr.parameter.section();
 
@@ -146,25 +156,100 @@ impl GangEngine {
                     new_value.clone()
                 };
 
-                // Clamp to the parameter's valid range. Critical for
-                // pan / send pan / balance / width: relative-mode
-                // delta application can otherwise drift past ±1.0
-                // (sibling pan = 0.8 + delta 0.3 → 1.1) and the
-                // console's behaviour outside that range is undefined,
-                // producing the "jumping" the operator sees on aux
-                // pans. Pass-through for parameters whose range we
-                // don't yet model (Fader, EQ band gain, etc.).
-                let target_value = target_addr.parameter.clamp_value(target_value);
+                self.dispatch_target(target_addr, target_value).await;
+            }
+        }
+    }
 
-                // Send to console and update local state
-                if self.send_to_console(&target_addr, &target_value).await {
-                    // Add to suppression set so the echo-back is suppressed
-                    self.suppression_set
-                        .insert(target_addr.clone(), (target_value.clone(), Instant::now()));
-                    // Update local state mirror
-                    self.state.write().await.update(target_addr, target_value);
+    /// Propagate the main channel pan across gang members, governed by each
+    /// gang's [`GangPanMode`] rather than the Fader/Mute/Pan section.
+    async fn process_pan_gang_update(
+        &mut self,
+        addr: &ParameterAddress,
+        new_value: &ParameterValue,
+        old_value: Option<&ParameterValue>,
+        manager: &GangManager,
+    ) {
+        for gang in manager.find_gangs_for_channel_pan(&addr.channel) {
+            if gang.paused {
+                debug!(gang = %gang.name, "Gang pan: skipped (paused)");
+                continue;
+            }
+
+            match gang.effective_pan_mode() {
+                GangPanMode::Off => continue, // filtered out by the lookup, but be explicit
+                GangPanMode::On => {
+                    // Same semantics as any continuous parameter: relative
+                    // delta when the gang is in Relative mode, else absolute.
+                    let delta = if gang.mode == GangMode::Relative {
+                        old_value.and_then(|old| compute_delta(old, new_value))
+                    } else {
+                        None
+                    };
+                    for target_channel in gang.other_members(&addr.channel) {
+                        let target_addr = ParameterAddress {
+                            channel: target_channel.clone(),
+                            parameter: ParameterPath::Pan,
+                        };
+                        let target_value = if let Some(d) = delta {
+                            let current = self.state.read().await.get(&target_addr).cloned();
+                            match current {
+                                Some(ref cv) => {
+                                    apply_delta(cv, d).unwrap_or_else(|| new_value.clone())
+                                }
+                                None => new_value.clone(),
+                            }
+                        } else {
+                            new_value.clone()
+                        };
+                        self.dispatch_target(target_addr, target_value).await;
+                    }
+                }
+                GangPanMode::Reversed => {
+                    // Pairs only: mirror the source pan around centre onto the
+                    // single partner. Guard defensively — the UI blocks
+                    // Reversed on non-pairs, but a hand-edited show file
+                    // could still reach here.
+                    if gang.members.len() != 2 {
+                        debug!(
+                            gang = %gang.name,
+                            members = gang.members.len(),
+                            "Gang pan: Reversed needs exactly 2 members — skipping"
+                        );
+                        continue;
+                    }
+                    let mirrored = match new_value {
+                        ParameterValue::Float(f) => ParameterValue::Float(-f),
+                        other => other.clone(),
+                    };
+                    for target_channel in gang.other_members(&addr.channel) {
+                        let target_addr = ParameterAddress {
+                            channel: target_channel.clone(),
+                            parameter: ParameterPath::Pan,
+                        };
+                        self.dispatch_target(target_addr, mirrored.clone()).await;
+                    }
                 }
             }
+        }
+    }
+
+    /// Clamp a computed target value to the parameter's valid range, send it
+    /// to the console, and on success record it for echo-back suppression and
+    /// update the local state mirror.
+    ///
+    /// Clamping is critical for pan / send pan / balance / width: relative
+    /// delta application can otherwise drift past ±1.0 (sibling pan = 0.8 +
+    /// delta 0.3 → 1.1) and the console's behaviour outside that range is
+    /// undefined, producing the "jumping" the operator sees on aux pans.
+    /// Pass-through for parameters whose range we don't yet model (Fader, EQ
+    /// band gain, etc.).
+    async fn dispatch_target(&mut self, target_addr: ParameterAddress, value: ParameterValue) {
+        let target_value = target_addr.parameter.clamp_value(value);
+        if self.send_to_console(&target_addr, &target_value).await {
+            self.suppression_set
+                .insert(target_addr.clone(), (target_value.clone(), Instant::now()));
+            self.state.write().await.update(target_addr, target_value);
         }
     }
 
@@ -634,5 +719,177 @@ mod tests {
             matches!(v, Some(ParameterValue::Float(f)) if (*f - 1.0).abs() < 1e-3),
             "Input(2) Pan should be clamped to 1.0 in Absolute mode too, got {v:?}",
         );
+    }
+
+    fn pan(channel: ChannelId) -> ParameterAddress {
+        ParameterAddress {
+            channel,
+            parameter: ParameterPath::Pan,
+        }
+    }
+
+    #[tokio::test]
+    async fn reversed_pan_mirrors_pair() {
+        // A 2-member gang with Reversed pan mirrors the source around centre
+        // onto its partner, in either direction.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        let mut group = GangGroup::new(
+            "Wide".into(),
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        );
+        group.pan_mode = Some(GangPanMode::Reversed);
+        manager.add_group(group);
+
+        // Move In1 right (+0.4) → In2 mirrors left (-0.4).
+        engine
+            .process_gang_update(
+                &pan(ChannelId::Input(1)),
+                &ParameterValue::Float(0.4),
+                Some(&ParameterValue::Float(0.0)),
+                &manager,
+            )
+            .await;
+        {
+            let state = engine.state.read().await;
+            let v = state.get(&pan(ChannelId::Input(2)));
+            assert!(
+                matches!(v, Some(ParameterValue::Float(f)) if (*f + 0.4).abs() < 1e-3),
+                "Input(2) Pan should mirror to -0.4, got {v:?}",
+            );
+        }
+
+        // And the reverse: move In2 to -0.6 → In1 mirrors to +0.6.
+        engine
+            .process_gang_update(
+                &pan(ChannelId::Input(2)),
+                &ParameterValue::Float(-0.6),
+                Some(&ParameterValue::Float(-0.4)),
+                &manager,
+            )
+            .await;
+        let state = engine.state.read().await;
+        let v = state.get(&pan(ChannelId::Input(1)));
+        assert!(
+            matches!(v, Some(ParameterValue::Float(f)) if (*f - 0.6).abs() < 1e-3),
+            "Input(1) Pan should mirror to +0.6, got {v:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn reversed_pan_clamps() {
+        // Mirroring an out-of-range source still clamps the partner to ±1.0.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        let mut group = GangGroup::new(
+            "Wide".into(),
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        );
+        group.pan_mode = Some(GangPanMode::Reversed);
+        manager.add_group(group);
+
+        engine
+            .process_gang_update(
+                &pan(ChannelId::Input(1)),
+                &ParameterValue::Float(1.7),
+                Some(&ParameterValue::Float(0.0)),
+                &manager,
+            )
+            .await;
+        let state = engine.state.read().await;
+        let v = state.get(&pan(ChannelId::Input(2)));
+        assert!(
+            matches!(v, Some(ParameterValue::Float(f)) if (*f + 1.0).abs() < 1e-3),
+            "Input(2) Pan should mirror-clamp to -1.0, got {v:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn pan_off_does_not_propagate_but_fader_still_does() {
+        // Pan Off on a FaderMutePan gang: a pan change is not propagated, but
+        // a fader change still gangs (fader/mute stay in the section).
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        let mut group = GangGroup::new(
+            "Drums".into(),
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        );
+        group.pan_mode = Some(GangPanMode::Off);
+        group.mode = GangMode::Absolute;
+        manager.add_group(group);
+
+        // Pan change → no propagation.
+        engine
+            .process_gang_update(
+                &pan(ChannelId::Input(1)),
+                &ParameterValue::Float(0.5),
+                Some(&ParameterValue::Float(0.0)),
+                &manager,
+            )
+            .await;
+        assert!(
+            engine
+                .state
+                .read()
+                .await
+                .get(&pan(ChannelId::Input(2)))
+                .is_none(),
+            "Input(2) Pan should be untouched when pan mode is Off",
+        );
+
+        // Fader change → still propagates (Absolute copy).
+        engine
+            .process_gang_update(
+                &ParameterAddress {
+                    channel: ChannelId::Input(1),
+                    parameter: ParameterPath::Fader,
+                },
+                &ParameterValue::Float(-5.0),
+                Some(&ParameterValue::Float(-10.0)),
+                &manager,
+            )
+            .await;
+        let state = engine.state.read().await;
+        let v = state.get(&ParameterAddress {
+            channel: ChannelId::Input(2),
+            parameter: ParameterPath::Fader,
+        });
+        assert!(
+            matches!(v, Some(ParameterValue::Float(f)) if (*f + 5.0).abs() < 1e-3),
+            "Input(2) Fader should still gang when pan mode is Off, got {v:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn reversed_pan_ignored_for_non_pair() {
+        // Reversed is pairs-only: a 3-member gang skips pan propagation.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        let mut group = GangGroup::new(
+            "Trio".into(),
+            vec![
+                ChannelId::Input(1),
+                ChannelId::Input(2),
+                ChannelId::Input(3),
+            ],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        );
+        group.pan_mode = Some(GangPanMode::Reversed);
+        manager.add_group(group);
+
+        engine
+            .process_gang_update(
+                &pan(ChannelId::Input(1)),
+                &ParameterValue::Float(0.4),
+                Some(&ParameterValue::Float(0.0)),
+                &manager,
+            )
+            .await;
+        let state = engine.state.read().await;
+        assert!(state.get(&pan(ChannelId::Input(2))).is_none());
+        assert!(state.get(&pan(ChannelId::Input(3))).is_none());
     }
 }

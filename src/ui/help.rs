@@ -178,6 +178,9 @@ pub enum HelpKey {
     GangNeedsEnable,
     GangRelative,
     GangAbsolute,
+    GangPanOff,
+    GangPanOn,
+    GangPanReversed,
     GangEdit,
 
     // ── Scope-editor modes / actions ──
@@ -580,7 +583,8 @@ fn meta(key: HelpKey) -> HelpMeta {
         // ── Gang parameter sections ──
         GangFaderMutePan => (
             "gang.fader_mute_pan",
-            "Channel fader level, mute and pan/balance.",
+            "Channel fader level, mute and solo. Pan has its own OFF/ON/REVERSED \
+             control on each gang and is no longer linked by this section.",
         ),
         GangName => ("gang.name", "Channel name string."),
         GangInputGain => (
@@ -733,6 +737,21 @@ fn meta(key: HelpKey) -> HelpMeta {
         GangAbsolute => (
             "gang.absolute",
             "Absolute mode: moving a member sets the others to the same value.",
+        ),
+        GangPanOff => (
+            "gang.pan_off",
+            "Pan OFF: channel pan is not linked across this gang — only the \
+             selected sections (fader/mute, EQ, etc.) propagate.",
+        ),
+        GangPanOn => (
+            "gang.pan_on",
+            "Pan ON: channel pan is linked and follows the gang's Relative / \
+             Absolute mode like any other parameter.",
+        ),
+        GangPanReversed => (
+            "gang.pan_reversed",
+            "Pan REVERSED: the pair pans away from centre symmetrically — move \
+             one channel right and its partner mirrors left. Needs exactly 2 members.",
         ),
         GangEdit => (
             "gang.edit",
@@ -1136,6 +1155,9 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::GangNeedsEnable,
     HelpKey::GangRelative,
     HelpKey::GangAbsolute,
+    HelpKey::GangPanOff,
+    HelpKey::GangPanOn,
+    HelpKey::GangPanReversed,
     HelpKey::GangEdit,
     HelpKey::ScopeModeScope,
     HelpKey::ScopeModePreWait,
