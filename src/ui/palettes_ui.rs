@@ -206,6 +206,35 @@ pub fn draw_palettes_section(
         ui_tx,
     );
 
+    // Master "make all rippled palette adjustments permanent" — global (lives
+    // outside the per-palette panel). Enabled when any palette has un-stored
+    // in-session changes; the end-of-show "save everything" affordance.
+    let working_total = palette_manager
+        .try_read()
+        .map(|m| m.palettes_with_working_changes())
+        .unwrap_or(0);
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        if theme::row_action_button(
+            ui,
+            "Store all palette changes",
+            theme::ACCENT_GREEN,
+            180.0,
+            working_total > 0,
+            help(HelpKey::PaletteStoreAll),
+        ) {
+            store_all_palette_changes(palette_manager, runtime);
+            state.status_message = Some(format!("Stored changes to {working_total} palette(s)"));
+        }
+        if working_total > 0 {
+            ui.label(
+                egui::RichText::new(format!("● {working_total} with unsaved changes"))
+                    .color(theme::TEXT_WARNING)
+                    .small(),
+            );
+        }
+    });
+
     ui.add_space(8.0);
 
     // Anchor for the temporary assign overlay: just right of column 1, at the
@@ -269,6 +298,22 @@ pub fn draw_palettes_section(
                                     )
                                     .sense(egui::Sense::click()),
                                 );
+                                // Un-stored in-session adjustments marker.
+                                let r_work = if palette.has_working_changes() {
+                                    Some(ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(format!(
+                                                "● {} unsaved",
+                                                palette.working_count()
+                                            ))
+                                            .color(theme::TEXT_WARNING)
+                                            .small(),
+                                        )
+                                        .sense(egui::Sense::click()),
+                                    ))
+                                } else {
+                                    None
+                                };
                                 // Fill the rest of the row with a click-sensing
                                 // strip so clicks to the right of the labels
                                 // also select the palette.
@@ -277,7 +322,11 @@ pub fn draw_palettes_section(
                                     egui::Vec2::new(fill_w, 1.0),
                                     egui::Sense::click(),
                                 );
-                                if r_name.clicked() || r_meta.clicked() || r_fill.clicked() {
+                                if r_name.clicked()
+                                    || r_meta.clicked()
+                                    || r_fill.clicked()
+                                    || r_work.is_some_and(|r| r.clicked())
+                                {
                                     clicked = true;
                                 }
                             });
@@ -361,6 +410,19 @@ fn draw_palette_actions(
                     help(HelpKey::PaletteDelete),
                 );
             });
+            // Placeholder "Store changes" row so the layout (and the palette
+            // list below) doesn't shift when a palette becomes selected.
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                let _ = theme::row_action_button(
+                    ui,
+                    "Store changes",
+                    theme::ACCENT_GREEN,
+                    110.0,
+                    false,
+                    help(HelpKey::PaletteStoreChanges),
+                );
+            });
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(
@@ -427,6 +489,34 @@ fn draw_palette_actions(
                 state.selected_palette_id = None;
                 state.rename_draft = None;
                 state.status_message = Some("Palette deleted".into());
+            }
+        });
+
+        // Second action row: commit this palette's in-session adjustments into
+        // its permanent values (so they save with the show). Enabled only while
+        // the live overlay has changes.
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            if theme::row_action_button(
+                ui,
+                "Store changes",
+                theme::ACCENT_GREEN,
+                110.0,
+                palette_info.has_working,
+                help(HelpKey::PaletteStoreChanges),
+            ) {
+                store_palette_changes(pid, palette_manager, runtime);
+                state.status_message = Some(format!(
+                    "Stored {} change(s) to '{}'",
+                    palette_info.working_count, palette_info.name
+                ));
+            }
+            if palette_info.has_working {
+                ui.label(
+                    egui::RichText::new(format!("● {} unsaved", palette_info.working_count))
+                        .color(theme::TEXT_WARNING)
+                        .small(),
+                );
             }
         });
     });
@@ -572,6 +662,10 @@ struct PaletteInfo {
     name: String,
     channel: ChannelId,
     kinds: Vec<PaletteKind>,
+    /// Un-stored in-session adjustments present on this palette.
+    has_working: bool,
+    /// Number of adjusted parameters in the working overlay.
+    working_count: usize,
 }
 
 fn read_palette_info(
@@ -584,6 +678,8 @@ fn read_palette_info(
         name: palette.name.clone(),
         channel: palette.channel.clone(),
         kinds: palette.kinds(),
+        has_working: palette.has_working_changes(),
+        working_count: palette.working_count(),
     })
 }
 
@@ -773,6 +869,31 @@ fn rename_palette(
                 p.touch();
             }
         }
+    });
+}
+
+/// Commit one palette's in-session overlay into its permanent values so it
+/// will be saved with the show.
+fn store_palette_changes(
+    palette_id: Uuid,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
+    runtime: &tokio::runtime::Handle,
+) {
+    let pmgr = palette_manager.clone();
+    runtime.spawn(async move {
+        pmgr.write().await.store_changes(&palette_id);
+    });
+}
+
+/// Commit every palette's in-session overlay (end-of-show "make it all
+/// permanent" affordance).
+fn store_all_palette_changes(
+    palette_manager: &Arc<RwLock<PaletteManager>>,
+    runtime: &tokio::runtime::Handle,
+) {
+    let pmgr = palette_manager.clone();
+    runtime.spawn(async move {
+        pmgr.write().await.store_all_changes();
     });
 }
 

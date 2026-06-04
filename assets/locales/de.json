@@ -118,6 +118,8 @@
   "palette.name": "Name für die neue Palette.",
   "palette.recapture": "Diese Palette mit dem aktuellen Zustand ihres Kanals überschreiben.",
   "palette.rename": "Diese Palette umbenennen — Enter zum Übernehmen, Escape zum Abbrechen.",
+  "palette.store_all": "Die während der Session vorgenommenen Anpassungen aller Paletten dauerhaft machen, damit sie mit der Show gespeichert werden.",
+  "palette.store_changes": "Die während der Session vorgenommenen Anpassungen dieser Palette dauerhaft machen, damit sie mit der Show gespeichert werden.",
   "panlink.apply": "Vorgemerkte Verknüpfungen übernehmen. Die Aux-Send-Pans bewegen sich erst, wenn der Main-Pan des Eingangs das nächste Mal geändert wird.",
   "panlink.clear_selection": "Die ausgewählten Eingangskanäle abwählen.",
   "panlink.revert": "Vorgemerkte Änderungen verwerfen und mit den aktiven Verknüpfungen neu synchronisieren.",

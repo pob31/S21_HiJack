@@ -118,6 +118,8 @@
   "palette.name": "새 팔레트의 이름.",
   "palette.recapture": "이 팔레트를 해당 채널의 현재 상태로 덮어씁니다.",
   "palette.rename": "이 팔레트의 이름을 변경합니다 — Enter로 적용, Escape로 취소.",
+  "palette.store_all": "모든 팔레트의 세션 중 조정을 영구 적용하여 쇼와 함께 저장되도록 합니다.",
+  "palette.store_changes": "이 팔레트의 세션 중 조정을 영구 적용하여 쇼와 함께 저장되도록 합니다.",
   "panlink.apply": "준비된 링크를 적용합니다. 입력 메인 팬이 다음에 변경될 때까지 aux 센드 팬은 움직이지 않습니다.",
   "panlink.clear_selection": "선택한 입력 채널을 해제합니다.",
   "panlink.revert": "준비된 변경 내용을 버리고 활성 바인딩과 다시 동기화합니다.",

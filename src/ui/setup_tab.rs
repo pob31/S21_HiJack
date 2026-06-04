@@ -1868,6 +1868,17 @@ pub(crate) fn start_connection(
         // dropped when offline mode is on.
         osc_sender.set_offline_flag(offline.clone());
 
+        // Live palette tracking: fold in-session operator EQ/Dyn tweaks into the
+        // active snapshot's linked palettes so they ripple to every linked
+        // snapshot without re-capture. Cancelled with the connection.
+        tokio::spawn(crate::console::palette_tracker::run_absorb_loop(
+            st.clone(),
+            cue_mgr.clone(),
+            pmgr_arc.clone(),
+            dirty.clone(),
+            token.clone(),
+        ));
+
         // Create GangEngine with the sender
         let gang_engine = Arc::new(RwLock::new(GangEngine::new(st.clone(), osc_sender.clone())));
 

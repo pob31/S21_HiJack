@@ -118,6 +118,8 @@
   "palette.name": "Name for the new palette.",
   "palette.recapture": "Overwrite this palette with the current state of its channel.",
   "palette.rename": "Rename this palette — press Enter to apply, Escape to cancel.",
+  "palette.store_all": "Make every palette's in-session adjustments permanent so they're saved with the show.",
+  "palette.store_changes": "Make this palette's in-session adjustments permanent so they're saved with the show.",
   "panlink.apply": "Commit staged links. Aux send pans don't move until the input main pan next changes.",
   "panlink.clear_selection": "Clear the selected input channels.",
   "panlink.revert": "Discard staged changes and resync with the live bindings.",

@@ -118,6 +118,8 @@
   "palette.name": "Nom de la nouvelle palette.",
   "palette.recapture": "Écraser cette palette avec l'état actuel de sa voie.",
   "palette.rename": "Renommer cette palette — appuyez sur Entrée pour valider, Échap pour annuler.",
+  "palette.store_all": "Rendre permanents les réglages de toutes les palettes effectués pendant la session, pour qu'ils soient enregistrés avec le spectacle.",
+  "palette.store_changes": "Rendre permanents les réglages de cette palette effectués pendant la session, pour qu'ils soient enregistrés avec le spectacle.",
   "panlink.apply": "Valider les liens en attente. Les pans des départs aux ne bougent pas tant que le pan principal de l'entrée n'a pas changé.",
   "panlink.clear_selection": "Effacer les voies d'entrée sélectionnées.",
   "panlink.revert": "Abandonner les modifications en attente et resynchroniser avec les liens actifs.",

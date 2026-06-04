@@ -12,6 +12,7 @@ pub mod monitor_engine;
 pub mod monitor_event;
 pub mod monitor_manager;
 pub mod palette_manager;
+pub mod palette_tracker;
 pub mod pan_link_engine;
 pub mod snapshot_engine;
 pub mod streamdeck_engine;

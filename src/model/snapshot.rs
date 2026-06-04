@@ -259,7 +259,10 @@ pub fn resolve_recall_values<'a>(
         let effective_value = if let Some(palette_id) = snapshot.palette_ref_for(addr) {
             if let Some(palette) = palettes.get(&palette_id) {
                 palette_params_seen.insert((palette_id, addr.clone()));
-                palette.values.get(&addr.parameter).unwrap_or(snap_value)
+                // `effective_value` returns the live in-session overlay value
+                // when present, else the permanent stored value — so adjustments
+                // ripple to every linked snapshot without re-capture.
+                palette.effective_value(&addr.parameter).unwrap_or(snap_value)
             } else {
                 snap_value
             }
@@ -281,7 +284,9 @@ pub fn resolve_recall_values<'a>(
             continue;
         };
         let section = kind.section();
-        for (param_path, value) in &palette.values {
+        // Iterate effective values (in-session overlay wins) so palette-only
+        // params also ripple their live adjustments.
+        for (param_path, value) in palette.iter_effective() {
             if param_path.section() != section {
                 continue;
             }
@@ -546,6 +551,63 @@ impl Cue {
 mod tests {
     use super::*;
     use crate::model::parameter::ParameterPath;
+
+    #[test]
+    fn resolve_recall_uses_working_overlay() {
+        use crate::model::palette::ChannelPalette;
+        use crate::model::parameter::{ParameterValue, PaletteKind};
+        use std::collections::HashMap;
+
+        let scope = ScopeTemplate::new(
+            "Eq".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::Eq]),
+            )],
+        );
+
+        // Snapshot stores band-1 gain = 2.0 for the linked channel.
+        let mut data_values = HashMap::new();
+        data_values.insert(
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::EqBandGain(1),
+            },
+            ParameterValue::Float(2.0),
+        );
+        let mut snapshot = Snapshot::new(
+            "Snap".into(),
+            scope.clone(),
+            SnapshotData {
+                values: data_values,
+            },
+            SnapshotKind::ApplyOnSave,
+        );
+
+        // Palette stores 5.0, with a live in-session overlay adjustment of 9.0.
+        let mut eq_vals = HashMap::new();
+        eq_vals.insert(ParameterPath::EqBandGain(1), ParameterValue::Float(5.0));
+        let mut palette =
+            ChannelPalette::new("Vocal EQ".into(), ChannelId::Input(1), &[PaletteKind::Eq], eq_vals);
+        palette.set_working(ParameterPath::EqBandGain(1), ParameterValue::Float(9.0));
+        let pid = palette.id;
+        snapshot
+            .palette_refs
+            .insert((ChannelId::Input(1), PaletteKind::Eq), pid);
+        let mut palettes = HashMap::new();
+        palettes.insert(pid, palette);
+
+        let resolved = resolve_recall_values(&snapshot, &scope, &palettes, false);
+        let gain = resolved
+            .iter()
+            .find(|(a, _)| a.parameter == ParameterPath::EqBandGain(1))
+            .map(|(_, v)| *v);
+        assert_eq!(
+            gain,
+            Some(&ParameterValue::Float(9.0)),
+            "recall must ripple the live overlay (9.0), not stored (5.0) or snapshot (2.0)"
+        );
+    }
 
     #[test]
     fn scope_contains_matching_parameter() {

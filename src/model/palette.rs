@@ -46,6 +46,15 @@ pub struct ChannelPalette {
     pub referencing_snapshots: Vec<Uuid>,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
+    /// Transient in-session adjustments that ripple to linked snapshots at
+    /// recall time but are NOT persisted to the show file (`#[serde(skip)]`).
+    /// Kept as a *diff overlay*: an entry exists only while the operator's live
+    /// value differs from the permanent `values`. `store_changes` folds these
+    /// into `values` and clears the overlay; an un-stored overlay is discarded
+    /// on reload. Populated by the live palette-absorb loop
+    /// (see [crate::console::palette_tracker]).
+    #[serde(skip)]
+    pub working_values: HashMap<ParameterPath, ParameterValue>,
 }
 
 impl ChannelPalette {
@@ -73,12 +82,78 @@ impl ChannelPalette {
             referencing_snapshots: Vec::new(),
             created_at: now,
             modified_at: now,
+            working_values: HashMap::new(),
         }
     }
 
     /// Update the modified timestamp. Call after editing values.
     pub fn touch(&mut self) {
         self.modified_at = Utc::now();
+    }
+
+    // ─── In-session working overlay (live ripple) ──────────────────
+
+    /// Record a live operator adjustment to `path`. The overlay is a *diff*:
+    /// if `value` equals the permanent stored value, the entry is removed
+    /// (the adjustment is back at baseline); otherwise it is stored. This keeps
+    /// `has_working_changes` honest after a [`store_changes`](Self::store_changes)
+    /// — the absorb loop re-sees the same live value, finds it equal to the now-
+    /// stored value, and leaves the overlay empty.
+    pub fn set_working(&mut self, path: ParameterPath, value: ParameterValue) {
+        if self.values.get(&path) == Some(&value) {
+            self.working_values.remove(&path);
+        } else {
+            self.working_values.insert(path, value);
+        }
+    }
+
+    /// True if there are un-stored in-session adjustments.
+    pub fn has_working_changes(&self) -> bool {
+        !self.working_values.is_empty()
+    }
+
+    /// Number of un-stored adjusted parameters.
+    pub fn working_count(&self) -> usize {
+        self.working_values.len()
+    }
+
+    /// The value recall should send for `path`: the live overlay value if the
+    /// operator has adjusted it this session, otherwise the permanent value.
+    pub fn effective_value(&self, path: &ParameterPath) -> Option<&ParameterValue> {
+        self.working_values.get(path).or_else(|| self.values.get(path))
+    }
+
+    /// Iterate every stored parameter with its *effective* value (overlay wins),
+    /// plus any overlay-only parameters not present in `values`. Used by recall
+    /// so all linked snapshots ripple the live adjustments.
+    pub fn iter_effective(&self) -> impl Iterator<Item = (&ParameterPath, &ParameterValue)> {
+        self.values
+            .iter()
+            .map(move |(k, v)| (k, self.working_values.get(k).unwrap_or(v)))
+            .chain(
+                self.working_values
+                    .iter()
+                    .filter(move |(k, _)| !self.values.contains_key(*k)),
+            )
+    }
+
+    /// Commit the in-session overlay into the permanent `values` (making the
+    /// rippled changes storable in the show file) and clear the overlay.
+    /// Returns the number of parameters committed. Touches `modified_at`.
+    pub fn store_changes(&mut self) -> usize {
+        let n = self.working_values.len();
+        if n > 0 {
+            for (path, value) in self.working_values.drain() {
+                self.values.insert(path, value);
+            }
+            self.touch();
+        }
+        n
+    }
+
+    /// Discard the in-session overlay without committing (revert to stored).
+    pub fn discard_working(&mut self) {
+        self.working_values.clear();
     }
 
     /// Total number of stored parameters across every kind.
@@ -298,6 +373,117 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(10));
         palette.touch();
         assert!(palette.modified_at > before);
+    }
+
+    #[test]
+    fn working_overlay_diff_and_store() {
+        let mut p = ChannelPalette::new(
+            "Vocal EQ".into(),
+            ChannelId::Input(1),
+            &[PaletteKind::Eq],
+            sample_eq_values(),
+        );
+        // sample has EqBandGain(1) = 3.0; clean to start.
+        assert!(!p.has_working_changes());
+        assert_eq!(
+            p.effective_value(&ParameterPath::EqBandGain(1)),
+            Some(&ParameterValue::Float(3.0))
+        );
+
+        // Adjust to a new value → overlay holds it and wins in effective_value.
+        p.set_working(ParameterPath::EqBandGain(1), ParameterValue::Float(-6.0));
+        assert!(p.has_working_changes());
+        assert_eq!(p.working_count(), 1);
+        assert_eq!(
+            p.effective_value(&ParameterPath::EqBandGain(1)),
+            Some(&ParameterValue::Float(-6.0))
+        );
+
+        // Setting it back to the stored value clears the diff entry.
+        p.set_working(ParameterPath::EqBandGain(1), ParameterValue::Float(3.0));
+        assert!(!p.has_working_changes());
+
+        // Re-adjust and store → folds into `values`, clears overlay, touches.
+        p.set_working(ParameterPath::EqBandGain(1), ParameterValue::Float(-6.0));
+        let before = p.modified_at;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert_eq!(p.store_changes(), 1);
+        assert!(!p.has_working_changes());
+        assert_eq!(
+            p.values.get(&ParameterPath::EqBandGain(1)),
+            Some(&ParameterValue::Float(-6.0))
+        );
+        assert!(p.modified_at > before);
+
+        // Re-absorbing the now-stored value is a no-op (stays clean) — this is
+        // what keeps "Store changes" from immediately re-flagging as modified.
+        p.set_working(ParameterPath::EqBandGain(1), ParameterValue::Float(-6.0));
+        assert!(!p.has_working_changes());
+    }
+
+    #[test]
+    fn iter_effective_overrides_and_includes_overlay_only() {
+        let mut p = ChannelPalette::new(
+            "EQ".into(),
+            ChannelId::Input(1),
+            &[PaletteKind::Eq],
+            sample_eq_values(),
+        );
+        // Override an existing stored param, and add an overlay-only param
+        // (EqBandGain(2) is not in sample_eq_values).
+        p.set_working(ParameterPath::EqBandGain(1), ParameterValue::Float(-6.0));
+        p.set_working(ParameterPath::EqBandGain(2), ParameterValue::Float(4.0));
+
+        let eff: HashMap<_, _> = p.iter_effective().collect();
+        assert_eq!(
+            eff.get(&ParameterPath::EqBandGain(1)),
+            Some(&&ParameterValue::Float(-6.0)),
+            "overlay value wins over stored"
+        );
+        assert_eq!(
+            eff.get(&ParameterPath::EqBandGain(2)),
+            Some(&&ParameterValue::Float(4.0)),
+            "overlay-only param is included"
+        );
+        assert_eq!(
+            eff.get(&ParameterPath::EqBandFrequency(1)),
+            Some(&&ParameterValue::Float(1000.0)),
+            "untouched stored param keeps its stored value"
+        );
+
+        // Discard reverts to stored values.
+        p.discard_working();
+        assert!(!p.has_working_changes());
+        assert_eq!(
+            p.effective_value(&ParameterPath::EqBandGain(1)),
+            Some(&ParameterValue::Float(3.0))
+        );
+    }
+
+    #[test]
+    fn working_overlay_is_not_serialized() {
+        let mut p = ChannelPalette::new(
+            "EQ".into(),
+            ChannelId::Input(1),
+            &[PaletteKind::Eq],
+            sample_eq_values(),
+        );
+        p.set_working(ParameterPath::EqBandGain(1), ParameterValue::Float(-6.0));
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(
+            !json.contains("working_values"),
+            "working overlay must not be persisted to the show file"
+        );
+        let loaded: ChannelPalette = serde_json::from_str(&json).unwrap();
+        assert!(
+            !loaded.has_working_changes(),
+            "reloaded palette starts with an empty overlay"
+        );
+        // The un-stored adjustment is gone; the stored baseline remains.
+        assert_eq!(
+            loaded.values.get(&ParameterPath::EqBandGain(1)),
+            Some(&ParameterValue::Float(3.0))
+        );
     }
 
     #[test]
