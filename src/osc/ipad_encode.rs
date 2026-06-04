@@ -202,4 +202,40 @@ mod tests {
             }
         }
     }
+
+    /// The iPad multiband compressor swaps Mid/High bands; encode → parse must
+    /// preserve the internal band index for every per-band Dyn1 parameter.
+    #[test]
+    fn dyn1_multiband_band_swap_round_trip() {
+        for b in 1u8..=3 {
+            let params = [
+                ParameterPath::Dyn1Threshold(b),
+                ParameterPath::Dyn1Knee(b),
+                ParameterPath::Dyn1Ratio(b),
+                ParameterPath::Dyn1Attack(b),
+                ParameterPath::Dyn1Release(b),
+                ParameterPath::Dyn1Gain(b),
+                ParameterPath::Dyn1Listen(b),
+            ];
+            for param in params {
+                let suffix = param
+                    .to_ipad_suffix()
+                    .unwrap_or_else(|| panic!("Dyn1 band param must encode: {param:?}"));
+                assert_eq!(
+                    ParameterPath::from_ipad_suffix(&suffix),
+                    Some(param.clone()),
+                    "suffix round-trip failed for {param:?} (suffix {suffix})"
+                );
+            }
+        }
+        // Explicit wire mapping: internal Mid (2) ↔ iPad band 3, High (3) ↔ band 2.
+        assert_eq!(
+            ParameterPath::Dyn1Threshold(2).to_ipad_suffix().unwrap(),
+            "Dynamics/comp_thresh_3"
+        );
+        assert_eq!(
+            ParameterPath::Dyn1Threshold(3).to_ipad_suffix().unwrap(),
+            "Dynamics/comp_thresh_2"
+        );
+    }
 }

@@ -300,17 +300,19 @@ pub fn draw_palettes_section(
                                 );
                                 // Un-stored in-session adjustments marker.
                                 let r_work = if palette.has_working_changes() {
-                                    Some(ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(format!(
-                                                "● {} unsaved",
-                                                palette.working_count()
-                                            ))
-                                            .color(theme::TEXT_WARNING)
-                                            .small(),
-                                        )
-                                        .sense(egui::Sense::click()),
-                                    ))
+                                    Some(
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(format!(
+                                                    "● {} unsaved",
+                                                    palette.working_count()
+                                                ))
+                                                .color(theme::TEXT_WARNING)
+                                                .small(),
+                                            )
+                                            .sense(egui::Sense::click()),
+                                        ),
+                                    )
                                 } else {
                                     None
                                 };

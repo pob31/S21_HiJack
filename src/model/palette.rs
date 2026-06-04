@@ -120,7 +120,9 @@ impl ChannelPalette {
     /// The value recall should send for `path`: the live overlay value if the
     /// operator has adjusted it this session, otherwise the permanent value.
     pub fn effective_value(&self, path: &ParameterPath) -> Option<&ParameterValue> {
-        self.working_values.get(path).or_else(|| self.values.get(path))
+        self.working_values
+            .get(path)
+            .or_else(|| self.values.get(path))
     }
 
     /// Iterate every stored parameter with its *effective* value (overlay wins),

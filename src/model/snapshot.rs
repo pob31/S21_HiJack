@@ -262,7 +262,9 @@ pub fn resolve_recall_values<'a>(
                 // `effective_value` returns the live in-session overlay value
                 // when present, else the permanent stored value — so adjustments
                 // ripple to every linked snapshot without re-capture.
-                palette.effective_value(&addr.parameter).unwrap_or(snap_value)
+                palette
+                    .effective_value(&addr.parameter)
+                    .unwrap_or(snap_value)
             } else {
                 snap_value
             }
@@ -555,7 +557,7 @@ mod tests {
     #[test]
     fn resolve_recall_uses_working_overlay() {
         use crate::model::palette::ChannelPalette;
-        use crate::model::parameter::{ParameterValue, PaletteKind};
+        use crate::model::parameter::{PaletteKind, ParameterValue};
         use std::collections::HashMap;
 
         let scope = ScopeTemplate::new(
@@ -587,8 +589,12 @@ mod tests {
         // Palette stores 5.0, with a live in-session overlay adjustment of 9.0.
         let mut eq_vals = HashMap::new();
         eq_vals.insert(ParameterPath::EqBandGain(1), ParameterValue::Float(5.0));
-        let mut palette =
-            ChannelPalette::new("Vocal EQ".into(), ChannelId::Input(1), &[PaletteKind::Eq], eq_vals);
+        let mut palette = ChannelPalette::new(
+            "Vocal EQ".into(),
+            ChannelId::Input(1),
+            &[PaletteKind::Eq],
+            eq_vals,
+        );
         palette.set_working(ParameterPath::EqBandGain(1), ParameterValue::Float(9.0));
         let pid = palette.id;
         snapshot

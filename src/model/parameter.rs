@@ -231,7 +231,9 @@ impl ParameterPath {
             ParameterPath::EqBandFrequency(b) => {
                 Some(format!("EQ/eq_freq_{}", ipad_eq_band_reverse(*b)?))
             }
-            ParameterPath::EqBandGain(b) => Some(format!("EQ/eq_gain_{}", ipad_eq_band_reverse(*b)?)),
+            ParameterPath::EqBandGain(b) => {
+                Some(format!("EQ/eq_gain_{}", ipad_eq_band_reverse(*b)?))
+            }
             ParameterPath::EqBandQ(b) => Some(format!("EQ/eq_Q_{}", ipad_eq_band_reverse(*b)?)),
             ParameterPath::EqBandCurve(b) => {
                 Some(format!("EQ/eq_curve_{}", ipad_eq_band_reverse(*b)?))
@@ -259,19 +261,39 @@ impl ParameterPath {
             ParameterPath::Dyn1Enabled => Some("Dynamics/comp_in".into()),
             ParameterPath::Dyn1Mode => None, // GP OSC-only; iPad uses comp_knee per band
             ParameterPath::Dyn1MultibandDeesser => Some("Dynamics/comp-multiband-desser".into()),
+            // The iPad multiband numbers its bands Low=1, High=2, Mid=3 — i.e.
+            // it swaps the Mid/High bands relative to the internal/GP-OSC order
+            // (internal 1=Low, 2=Mid, 3=High). Encode the swapped wire band for
+            // bands 2/3; band 1 (Low) is unchanged. See `ipad_dyn1_band_swap`.
             ParameterPath::Dyn1Threshold(1) => Some("Dynamics/comp_thresh".into()),
-            ParameterPath::Dyn1Threshold(b) => Some(format!("Dynamics/comp_thresh_{b}")),
+            ParameterPath::Dyn1Threshold(b) => {
+                Some(format!("Dynamics/comp_thresh_{}", ipad_dyn1_band_swap(*b)?))
+            }
             ParameterPath::Dyn1Knee(1) => Some("Dynamics/comp_knee".into()),
-            ParameterPath::Dyn1Knee(b) => Some(format!("Dynamics/comp_knee_{b}")),
+            ParameterPath::Dyn1Knee(b) => {
+                Some(format!("Dynamics/comp_knee_{}", ipad_dyn1_band_swap(*b)?))
+            }
             ParameterPath::Dyn1Ratio(1) => Some("Dynamics/comp_ratio".into()),
-            ParameterPath::Dyn1Ratio(b) => Some(format!("Dynamics/comp_ratio_{b}")),
+            ParameterPath::Dyn1Ratio(b) => {
+                Some(format!("Dynamics/comp_ratio_{}", ipad_dyn1_band_swap(*b)?))
+            }
             ParameterPath::Dyn1Attack(1) => Some("Dynamics/comp_attack".into()),
-            ParameterPath::Dyn1Attack(b) => Some(format!("Dynamics/comp_attack_{b}")),
+            ParameterPath::Dyn1Attack(b) => {
+                Some(format!("Dynamics/comp_attack_{}", ipad_dyn1_band_swap(*b)?))
+            }
             ParameterPath::Dyn1Release(1) => Some("Dynamics/comp_release".into()),
-            ParameterPath::Dyn1Release(b) => Some(format!("Dynamics/comp_release_{b}")),
+            ParameterPath::Dyn1Release(b) => Some(format!(
+                "Dynamics/comp_release_{}",
+                ipad_dyn1_band_swap(*b)?
+            )),
             ParameterPath::Dyn1Gain(1) => Some("Dynamics/comp_gain".into()),
-            ParameterPath::Dyn1Gain(b) => Some(format!("Dynamics/comp_auto-gain_{b}")),
-            ParameterPath::Dyn1Listen(b) => Some(format!("Dynamics/comp_listen_{b}")),
+            ParameterPath::Dyn1Gain(b) => Some(format!(
+                "Dynamics/comp_auto-gain_{}",
+                ipad_dyn1_band_swap(*b)?
+            )),
+            ParameterPath::Dyn1Listen(b) => {
+                Some(format!("Dynamics/comp_listen_{}", ipad_dyn1_band_swap(*b)?))
+            }
             ParameterPath::Dyn1CrossoverHigh => Some("Dynamics/comp_HP_crossover_1".into()),
             ParameterPath::Dyn1CrossoverLow => Some("Dynamics/comp_LP_crossover_1".into()),
 
@@ -1647,11 +1669,15 @@ fn parse_ipad_eq_suffix(rest: &str) -> Option<ParameterPath> {
     }
     if let Some(b_str) = rest.strip_prefix("eq_thresh_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandDynThreshold(ipad_eq_band_reverse(wire)?));
+        return Some(ParameterPath::EqBandDynThreshold(ipad_eq_band_reverse(
+            wire,
+        )?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_over-under_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandDynOverUnder(ipad_eq_band_reverse(wire)?));
+        return Some(ParameterPath::EqBandDynOverUnder(ipad_eq_band_reverse(
+            wire,
+        )?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_ratio_") {
         let wire: u8 = b_str.parse().ok()?;
@@ -1668,36 +1694,58 @@ fn parse_ipad_eq_suffix(rest: &str) -> Option<ParameterPath> {
     None
 }
 
+/// The S21 iPad multiband compressor numbers its three bands Low=1, High=2,
+/// Mid=3 — it swaps the Mid and High bands relative to the internal/GP-OSC order
+/// (internal 1=Low, 2=Mid, 3=High). Map an iPad multiband band index to the
+/// internal index; the swap is its own inverse, so the same function converts in
+/// both directions. Returns `None` outside the 1..=3 band range.
+///
+/// Verified against the live desk: iPad `comp_thresh_3` and GP `dyn1/1`
+/// (internal band 2, Mid) carry the same value, as do iPad `comp_thresh_2` and
+/// GP `dyn1/2` (internal band 3, High). Without this, iPad-sourced multiband
+/// updates land on the swapped band and collide with the (correct) GP-OSC mirror
+/// writes, collapsing bands 2↔3.
+fn ipad_dyn1_band_swap(band: u8) -> Option<u8> {
+    match band {
+        1 => Some(1),
+        2 => Some(3),
+        3 => Some(2),
+        _ => None,
+    }
+}
+
 /// Parse iPad Dyn1 multiband suffix (after "Dynamics/comp_").
 fn parse_ipad_dyn1_suffix(rest: &str) -> Option<ParameterPath> {
-    // Multiband bands: comp_thresh_{b}, comp_knee_{b}, comp_ratio_{b}, etc.
+    // Multiband bands: comp_thresh_{b}, comp_knee_{b}, comp_ratio_{b}, etc. The
+    // wire band has Mid/High swapped relative to the internal model — see
+    // `ipad_dyn1_band_swap`.
     if let Some(b_str) = rest.strip_prefix("thresh_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::Dyn1Threshold(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1Threshold(ipad_dyn1_band_swap(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("knee_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::Dyn1Knee(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1Knee(ipad_dyn1_band_swap(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("ratio_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::Dyn1Ratio(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1Ratio(ipad_dyn1_band_swap(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("attack_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::Dyn1Attack(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1Attack(ipad_dyn1_band_swap(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("release_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::Dyn1Release(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1Release(ipad_dyn1_band_swap(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("auto-gain_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::Dyn1Gain(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1Gain(ipad_dyn1_band_swap(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("listen_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::Dyn1Listen(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::Dyn1Listen(ipad_dyn1_band_swap(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("HP_crossover_") {
         let _b: u8 = b_str.parse().ok()?;

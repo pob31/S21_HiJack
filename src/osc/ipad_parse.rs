@@ -532,6 +532,41 @@ mod tests {
         ));
     }
 
+    /// The iPad multiband compressor swaps Mid/High: iPad band 2 → internal 3,
+    /// band 3 → internal 2, band 1 → internal 1 (verified against the live desk).
+    #[test]
+    fn parse_multiband_bands_are_swapped() {
+        for (wire, internal) in [(1u8, 1u8), (2, 3), (3, 2)] {
+            let path = format!("/Input_Channels/21/Dynamics/comp_thresh_{wire}");
+            match parse_ipad_message(&path, &[OscType::Float(-30.0)]) {
+                ParsedIpadMessage::ParameterUpdate(addr, _) => assert_eq!(
+                    addr.parameter,
+                    ParameterPath::Dyn1Threshold(internal),
+                    "iPad comp band {wire} should map to internal band {internal}"
+                ),
+                _ => panic!("expected ParameterUpdate for {path}"),
+            }
+        }
+        // Band 1 (Low) also arrives via the bare path.
+        match parse_ipad_message(
+            "/Input_Channels/21/Dynamics/comp_thresh",
+            &[OscType::Float(-30.0)],
+        ) {
+            ParsedIpadMessage::ParameterUpdate(addr, _) => {
+                assert_eq!(addr.parameter, ParameterPath::Dyn1Threshold(1))
+            }
+            _ => panic!("expected ParameterUpdate for bare comp_thresh"),
+        }
+        // Out-of-range band has no internal equivalent → Unknown.
+        assert!(matches!(
+            parse_ipad_message(
+                "/Input_Channels/21/Dynamics/comp_thresh_4",
+                &[OscType::Float(0.0)]
+            ),
+            ParsedIpadMessage::Unknown(_)
+        ));
+    }
+
     #[test]
     fn parse_aux_send() {
         let result = parse_ipad_message(
