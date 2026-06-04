@@ -173,6 +173,7 @@ pub enum HelpKey {
     PaletteRecapture,
     PaletteStoreChanges,
     PaletteStoreAll,
+    PaletteRevert,
     PaletteDelete,
     PaletteLinkedOther,
 
@@ -746,6 +747,10 @@ fn meta(key: HelpKey) -> HelpMeta {
             "palette.store_all",
             "Make every palette's in-session adjustments permanent so they're saved with the show.",
         ),
+        PaletteRevert => (
+            "palette.revert",
+            "Discard this palette's in-session changes and reload its last-captured values onto the channel.",
+        ),
         PaletteDelete => (
             "palette.delete",
             "Delete this palette and unlink it from any snapshots.",
@@ -1251,6 +1256,7 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::PaletteRecapture,
     HelpKey::PaletteStoreChanges,
     HelpKey::PaletteStoreAll,
+    HelpKey::PaletteRevert,
     HelpKey::PaletteDelete,
     HelpKey::PaletteLinkedOther,
     HelpKey::SnapshotCaptureNow,

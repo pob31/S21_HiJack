@@ -118,6 +118,7 @@
   "palette.name": "Nome da nova palette.",
   "palette.recapture": "Substituir esta palette pelo estado atual do seu canal.",
   "palette.rename": "Renomear esta palette — prima Enter para aplicar, Escape para cancelar.",
+  "palette.revert": "Descartar as alterações desta palette feitas durante a sessão e recarregar os últimos valores capturados no canal.",
   "palette.store_all": "Tornar permanentes os ajustes de todas as palettes feitos durante a sessão para que sejam guardados com o espetáculo.",
   "palette.store_changes": "Tornar permanentes os ajustes desta palette feitos durante a sessão para que sejam guardados com o espetáculo.",
   "panlink.apply": "Confirmar as ligações pendentes. Os pans dos envios aux não se movem enquanto o pan principal da entrada não mudar.",

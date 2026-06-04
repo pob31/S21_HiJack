@@ -478,6 +478,26 @@ impl SnapshotEngine {
         }
     }
 
+    /// Reload a palette's last-captured (stored) values onto its channel — the
+    /// "Revert changes" action. Force-sends every stored parameter (ignoring the
+    /// in-session working overlay, which the caller clears separately) so the
+    /// desk returns to the captured state. Returns the number of params sent.
+    pub async fn reload_palette(&self, palette: &ChannelPalette) -> usize {
+        let state = self.state.read().await;
+        let mut sent = 0usize;
+        let mut skipped = 0usize;
+        for (path, value) in &palette.values {
+            let addr = ParameterAddress {
+                channel: palette.channel.clone(),
+                parameter: path.clone(),
+            };
+            self.send_if_changed(&state, &addr, value, &mut sent, &mut skipped, None, true)
+                .await;
+        }
+        info!(palette = %palette.name, sent, "Palette revert: reloaded stored values");
+        sent
+    }
+
     /// Recall a cue — resolves effective scope and delegates to recall().
     ///
     /// When the effective scope carries per-category timing, continuous

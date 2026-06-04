@@ -412,8 +412,9 @@ fn draw_palette_actions(
                     help(HelpKey::PaletteDelete),
                 );
             });
-            // Placeholder "Store changes" row so the layout (and the palette
-            // list below) doesn't shift when a palette becomes selected.
+            // Placeholder "Store changes" / "Revert changes" row so the layout
+            // (and the palette list below) doesn't shift when a palette becomes
+            // selected.
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 let _ = theme::row_action_button(
@@ -423,6 +424,14 @@ fn draw_palette_actions(
                     110.0,
                     false,
                     help(HelpKey::PaletteStoreChanges),
+                );
+                let _ = theme::row_action_button(
+                    ui,
+                    "Revert changes",
+                    theme::ACCENT_AMBER,
+                    110.0,
+                    false,
+                    help(HelpKey::PaletteRevert),
                 );
             });
             ui.add_space(6.0);
@@ -495,8 +504,9 @@ fn draw_palette_actions(
         });
 
         // Second action row: commit this palette's in-session adjustments into
-        // its permanent values (so they save with the show). Enabled only while
-        // the live overlay has changes.
+        // its permanent values (so they save with the show), or revert them by
+        // reloading the last-captured values onto the channel. Enabled only
+        // while the live overlay has changes.
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             if theme::row_action_button(
@@ -511,6 +521,20 @@ fn draw_palette_actions(
                 state.status_message = Some(format!(
                     "Stored {} change(s) to '{}'",
                     palette_info.working_count, palette_info.name
+                ));
+            }
+            if theme::row_action_button(
+                ui,
+                "Revert changes",
+                theme::ACCENT_AMBER,
+                110.0,
+                palette_info.has_working,
+                help(HelpKey::PaletteRevert),
+            ) {
+                let _ = ui_tx.send(UiEvent::PaletteRevert { palette_id: pid });
+                state.status_message = Some(format!(
+                    "Reverted '{}' to last captured values",
+                    palette_info.name
                 ));
             }
             if palette_info.has_working {

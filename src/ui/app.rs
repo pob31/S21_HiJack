@@ -878,6 +878,33 @@ impl HiJackApp {
                         "Updated '{name}' — {affected_count} snapshots affected"
                     ));
                 }
+                UiEvent::PaletteRevert { palette_id } => {
+                    // Drop the palette's in-session overlay, stop the absorb loop
+                    // re-capturing those params, and reload the last-captured
+                    // values onto the desk.
+                    let pmgr = self.palette_manager.clone();
+                    let dirty = self.dirty_tracker.clone();
+                    let engine = self.snapshot_engine.clone();
+                    self.runtime.spawn(async move {
+                        let palette = {
+                            let mut mgr = pmgr.write().await;
+                            let Some(p) = mgr.get_palette_mut(&palette_id) else {
+                                return;
+                            };
+                            p.discard_working();
+                            p.clone()
+                        };
+                        {
+                            let mut t = dirty.write().await;
+                            for kind in palette.kinds() {
+                                t.clear_channel_section(&palette.channel, kind.section());
+                            }
+                        }
+                        if let Some(engine) = engine {
+                            engine.reload_palette(&palette).await;
+                        }
+                    });
+                }
                 UiEvent::ShowFileLoaded(path, conn, recall) => {
                     self.setup.status_message = Some(format!("Loaded: {path}"));
                     // If this load resolved a recovery, flag it so the dialog

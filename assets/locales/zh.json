@@ -118,6 +118,7 @@
   "palette.name": "新 palette 的名称。",
   "palette.recapture": "用其通道的当前状态覆盖此 palette。",
   "palette.rename": "重命名此 palette——按 Enter 应用，按 Escape 取消。",
+  "palette.revert": "放弃该 palette 在本次会话中的更改，并将其最后捕获的值重新载入通道。",
   "palette.store_all": "将所有 palette 在本次会话中的调整永久保存，使其随演出文件一起保存。",
   "palette.store_changes": "将该 palette 在本次会话中的调整永久保存，使其随演出文件一起保存。",
   "panlink.apply": "提交暂存的链接。直到输入主声像下一次改变，aux 发送声像才会移动。",

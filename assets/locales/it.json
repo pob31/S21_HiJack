@@ -118,6 +118,7 @@
   "palette.name": "Nome della nuova palette.",
   "palette.recapture": "Sovrascrivi questa palette con lo stato attuale del suo canale.",
   "palette.rename": "Rinomina questa palette — premi Enter per applicare, Escape per annullare.",
+  "palette.revert": "Annulla le modifiche di questa palette fatte durante la sessione e ricarica gli ultimi valori catturati sul canale.",
   "palette.store_all": "Rendi permanenti le regolazioni di tutte le palette fatte durante la sessione, così da salvarle con lo spettacolo.",
   "palette.store_changes": "Rendi permanenti le regolazioni di questa palette fatte durante la sessione, così da salvarle con lo spettacolo.",
   "panlink.apply": "Conferma i collegamenti in sospeso. I pan delle mandate aux non si muovono finché il pan principale dell'ingresso non cambia di nuovo.",

@@ -102,6 +102,11 @@ pub enum UiEvent {
         name: String,
         affected_count: usize,
     },
+    /// Operator hit "Revert changes" on a palette: drop its in-session working
+    /// overlay and reload the last-captured (stored) values onto the channel.
+    PaletteRevert {
+        palette_id: uuid::Uuid,
+    },
     /// `ConnectionSettings` is boxed to keep the enum's largest variant
     /// small enough not to trip `clippy::large_enum_variant` — the struct
     /// has many `String`/`Vec<String>` fields and grows over time.

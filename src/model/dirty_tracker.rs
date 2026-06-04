@@ -25,7 +25,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::channel::ChannelId;
-use super::parameter::{ParameterAddress, ParameterPath};
+use super::parameter::{ParameterAddress, ParameterPath, ParameterSection};
 
 /// Per-channel dirty parameter set, with suppression and a monotonic
 /// generation counter the UI uses to decide when to refresh.
@@ -71,6 +71,25 @@ impl DirtyTracker {
         }
         self.dirty.clear();
         self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Clear dirty cells for one channel whose parameter belongs to `section`.
+    /// Used by the palette "Revert changes" action so the reloaded params stop
+    /// showing as changed and the live palette-absorb loop doesn't re-capture
+    /// them. Bumps the generation if anything was removed.
+    pub fn clear_channel_section(&mut self, channel: &ChannelId, section: ParameterSection) {
+        let mut changed = false;
+        if let Some(paths) = self.dirty.get_mut(channel) {
+            let before = paths.len();
+            paths.retain(|p| p.section() != section);
+            changed = paths.len() != before;
+            if paths.is_empty() {
+                self.dirty.remove(channel);
+            }
+        }
+        if changed {
+            self.generation = self.generation.wrapping_add(1);
+        }
     }
 
     /// True if the (channel, path) cell is currently dirty.
@@ -143,6 +162,28 @@ mod tests {
         assert!(t.is_dirty(&ChannelId::Input(1), &ParameterPath::Fader));
         assert!(t.has_any());
         assert_eq!(t.generation(), 1);
+    }
+
+    #[test]
+    fn clear_channel_section_removes_only_that_section() {
+        let mut t = DirtyTracker::new();
+        t.mark(&addr(1, ParameterPath::EqBandGain(2))); // Eq
+        t.mark(&addr(1, ParameterPath::Fader)); // FaderMutePan
+        t.mark(&addr(2, ParameterPath::EqBandGain(1))); // other channel, Eq
+        let gen_before = t.generation();
+
+        t.clear_channel_section(&ChannelId::Input(1), ParameterSection::Eq);
+
+        // The Eq cell on channel 1 is gone; its Fader stays; channel 2 untouched.
+        assert!(!t.is_dirty(&ChannelId::Input(1), &ParameterPath::EqBandGain(2)));
+        assert!(t.is_dirty(&ChannelId::Input(1), &ParameterPath::Fader));
+        assert!(t.is_dirty(&ChannelId::Input(2), &ParameterPath::EqBandGain(1)));
+        assert!(t.generation() > gen_before);
+
+        // No-op clear (nothing in that section now) doesn't bump generation.
+        let gen2 = t.generation();
+        t.clear_channel_section(&ChannelId::Input(1), ParameterSection::Eq);
+        assert_eq!(t.generation(), gen2);
     }
 
     #[test]
