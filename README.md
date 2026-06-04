@@ -40,11 +40,15 @@ Communicates with the console over **GP OSC** (the documented open protocol) and
 - Capture the EQ, Dynamics 1 (compressor), or Dynamics 2 (gate) section of a channel as a reusable palette
 - Link palettes to snapshots — when a palette is updated, all linked snapshots inherit the new values on recall
 - Useful for maintaining consistent processing across multiple scenes without re-saving every snapshot
+- **Live in-session ripple** — while mixing, the tweaks you make to a linked channel are absorbed into the palette in real time (tracking a continuous knob sweep, not just the first touch), so every snapshot sharing that palette picks them up on its next recall without re-capturing
+- These live edits stay in a working overlay until you commit them: **Store changes** (this palette) / **Store all palette changes** (every palette) write them into the saved values, or **Revert changes** reloads the last-stored values to the desk and discards the overlay
 
 ### Smart Ganging
 - Link channels together with selective parameter sections (e.g. gang faders but not EQ)
 - Two propagation modes: **Relative** (apply the delta to each member) and **Absolute** (snap members to the source value)
 - Mixed channel types supported (e.g. inputs + auxes in the same gang); routing sections automatically restrict to same-type members
+- **Independent pan toggle** — pan ganging is set separately from fader/mute, with three states: **Off**, **On** (follows the gang's relative/absolute mode), and **Reversed** (mirror — moving one member pushes the other the opposite way, for symmetric pairs)
+- **Inaudible-floor aware faders** — gang fader moves collapse the dead bottom of the fader track: nudging a parked (−∞) fader doesn't drag its siblings, and pulling a member below audibility snaps it fully off rather than spreading a meaningless delta
 - Anti-feedback suppression prevents infinite loops from console echo-back
 - Enable/disable gangs on the fly, or pause individual gangs without breaking them for mid-show edits
 
@@ -68,7 +72,7 @@ Communicates with the console over **GP OSC** (the documented open protocol) and
 
 ### QLab / External Trigger Integration
 - **Inbound (trigger listener)**: OSC trigger listener accepts `/cue/go`, `/cue/previous`, `/cue/fire`, `/cue/current`, `/macro/fire`, `/snapshot/recall`, and `/snapshot/recall_full`. Drive cue recall from QLab, companion apps, Stream Deck, or any OSC sender — see the [OSC Trigger Commands](#osc-trigger-commands) table for argument types.
-- **Outbound (QLab cue export)**: build QLab cue lists from app snapshots — emits `/new` + `/cue/selected/*` sequences that QLab consumes to create network cues (one per snapshot or per parameter), grouped under a parent cue. Each network cue fires `/snapshot/recall` back at the daemon. Useful for building a QLab show that drives the console mix without re-keying snapshot names.
+- **Outbound (QLab cue export)**: build QLab cue lists from app snapshots — emits `/new` + `/cue/selected/*` sequences that QLab consumes to create network cues (one per snapshot or per parameter), deterministically nested under a parent group cue. The exporter is **reply-driven**: it queries each created cue's `uniqueID`, waits for QLab's reply, then issues `/move` to place children in the group — so nesting no longer depends on QLab's insertion cursor. Each child cue can target either the app or the console via a configurable **QLab network patch** (one patch for the `/snapshot/recall` trigger cues pointed back at the daemon, another for the per-parameter GP OSC cues pointed at the console). Useful for building a QLab show that drives the console mix without re-keying snapshot names.
 
 ### iPad Protocol Support (Modes 2 & 3)
 - **Mode 1**: GP OSC only (default)
@@ -76,7 +80,7 @@ Communicates with the console over **GP OSC** (the documented open protocol) and
 - **Mode 3**: iPad proxy — sits between a real iPad and the console, forwarding traffic while maintaining the state mirror
 
 ### Diagnostics
-- **OSC Log tab**: live tail of every inbound and outbound OSC message with filtering, useful for protocol debugging and reverse-engineering
+- **OSC Log tab**: live tail of every inbound and outbound OSC message, useful for protocol debugging and reverse-engineering — GP OSC and the DiGiCo iPad protocol are colour-coded separately, with independent per-direction filter toggles for each (incl. iPad → Console and Console → iPad)
 - **Inspector tab**: searchable view of the full state mirror — every (channel, parameter) → value the daemon currently knows about
 
 ### Help-Bubble Localization
@@ -226,7 +230,7 @@ Documentation/
 cargo test
 ```
 
-513 tests covering the data model, OSC protocol parsing/encoding, engine logic, persistence backward compatibility, the web monitor protocol + UDP fan-out (cross-transport echo), and UI parsing utilities. Continuous integration runs `cargo check`, `cargo test`, `cargo fmt --check`, `cargo clippy`, and `cargo audit` on a Linux/macOS/Windows matrix on every push and PR — see [.github/workflows/ci.yml](.github/workflows/ci.yml).
+560+ tests covering the data model, OSC protocol parsing/encoding, engine logic (incl. gang fader-floor and pan-mode propagation, palette ripple, QLab reply handling), persistence backward compatibility, the web monitor protocol + UDP fan-out (cross-transport echo), and UI parsing utilities. Continuous integration runs `cargo check`, `cargo test`, `cargo fmt --check`, `cargo clippy`, and `cargo audit` on a Linux/macOS/Windows matrix on every push and PR — see [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 ## Stream Deck integration (Linux setup)
 
