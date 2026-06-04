@@ -448,8 +448,6 @@ fn draw_assign_overlay(
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    /// Width of one kind checkbox column (header label + checkbox align here).
-    const CB_W: f32 = 30.0;
     /// Overlay content width.
     const CONTENT_W: f32 = 300.0;
 
@@ -485,89 +483,84 @@ fn draw_assign_overlay(
                     return;
                 }
 
-                // Header: one kind label per checkbox column, then "Snapshot".
-                ui.horizontal(|ui| {
-                    for k in &info.kinds {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(CB_W, 16.0),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                ui.label(
-                                    egui::RichText::new(k.label())
-                                        .small()
-                                        .strong()
-                                        .color(theme::label_weak()),
-                                );
-                            },
-                        );
-                    }
-                    ui.label(
-                        egui::RichText::new("Snapshot")
-                            .small()
-                            .color(theme::label_weak()),
-                    );
-                });
-
+                // Header and rows share one Grid so the kind checkbox columns
+                // and the snapshot-name column line up. (The name column used to
+                // be drawn with `add_sized`, which centres the label in the
+                // remaining width and floated names far right of the header.)
                 egui::ScrollArea::vertical()
                     .max_height(360.0)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for row in &rows {
-                            ui.horizontal(|ui| {
-                                for cell in &row.cells {
-                                    ui.allocate_ui_with_layout(
-                                        egui::vec2(CB_W, 18.0),
-                                        egui::Layout::left_to_right(egui::Align::Center),
-                                        |ui| {
-                                            let mut on =
-                                                matches!(cell.state, CellState::LinkedToThis);
-                                            let resp = ui.checkbox(&mut on, "");
-                                            if let CellState::LinkedToOther { other_name } =
-                                                &cell.state
-                                            {
-                                                resp.clone().on_hover_text(
-                                                    help(HelpKey::PaletteLinkedOther)
-                                                        .replace("{name}", other_name),
-                                                );
-                                            }
-                                            if resp.changed() {
-                                                if on {
-                                                    link_palette(
-                                                        pid,
-                                                        row.snapshot_id,
-                                                        info.channel.clone(),
-                                                        cell.kind,
-                                                        cue_manager,
-                                                        palette_manager,
-                                                        runtime,
-                                                        ui_tx,
-                                                    );
-                                                } else {
-                                                    unlink_palette(
-                                                        pid,
-                                                        row.snapshot_id,
-                                                        info.channel.clone(),
-                                                        cell.kind,
-                                                        cue_manager,
-                                                        palette_manager,
-                                                        runtime,
-                                                    );
-                                                }
-                                            }
-                                        },
+                        egui::Grid::new("palette_assign_grid")
+                            .num_columns(info.kinds.len() + 1)
+                            .spacing([8.0, 4.0])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                // Header row: one kind label per checkbox column,
+                                // then the "Snapshot" name column.
+                                for k in &info.kinds {
+                                    ui.label(
+                                        egui::RichText::new(k.label())
+                                            .small()
+                                            .strong()
+                                            .color(theme::label_weak()),
                                     );
                                 }
-                                let name_w = ui.available_width().max(1.0);
-                                ui.add_sized(
-                                    [name_w, 18.0],
-                                    egui::Label::new(
-                                        egui::RichText::new(&row.snapshot_name)
-                                            .color(theme::label_color()),
-                                    )
-                                    .truncate(),
+                                ui.label(
+                                    egui::RichText::new("Snapshot")
+                                        .small()
+                                        .color(theme::label_weak()),
                                 );
+                                ui.end_row();
+
+                                // One row per snapshot; `cells` is built 1:1 from
+                                // `info.kinds` (see read_membership_rows).
+                                for row in &rows {
+                                    for cell in &row.cells {
+                                        let mut on = matches!(cell.state, CellState::LinkedToThis);
+                                        let resp = ui.checkbox(&mut on, "");
+                                        if let CellState::LinkedToOther { other_name } = &cell.state
+                                        {
+                                            resp.clone().on_hover_text(
+                                                help(HelpKey::PaletteLinkedOther)
+                                                    .replace("{name}", other_name),
+                                            );
+                                        }
+                                        if resp.changed() {
+                                            if on {
+                                                link_palette(
+                                                    pid,
+                                                    row.snapshot_id,
+                                                    info.channel.clone(),
+                                                    cell.kind,
+                                                    cue_manager,
+                                                    palette_manager,
+                                                    runtime,
+                                                    ui_tx,
+                                                );
+                                            } else {
+                                                unlink_palette(
+                                                    pid,
+                                                    row.snapshot_id,
+                                                    info.channel.clone(),
+                                                    cell.kind,
+                                                    cue_manager,
+                                                    palette_manager,
+                                                    runtime,
+                                                );
+                                            }
+                                        }
+                                    }
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&row.snapshot_name)
+                                                .color(theme::label_color()),
+                                        )
+                                        .truncate(),
+                                    );
+                                    ui.end_row();
+                                }
                             });
-                        }
                     });
             });
         });
