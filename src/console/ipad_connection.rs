@@ -183,7 +183,10 @@ pub async fn connect_mode3_proxy(
     // `dirty_tracker` independently. Bounded buffer drops captures under
     // backpressure rather than slowing forwarding (mirror staleness >
     // forwarding latency for a high-volume Mode 3 stream).
-    let (capture_tx, capture_rx) = mpsc::channel::<ProxyCapture>(256);
+    // Headroom for the one-time connect flood (faders/levels). Meters are
+    // excluded from capture in `proxy_direction`, so this only has to absorb the
+    // transient state dump, not the continuous meter stream.
+    let (capture_tx, capture_rx) = mpsc::channel::<ProxyCapture>(2048);
 
     let capture_state = state.clone();
     let capture_dt = dirty_tracker.clone();
@@ -215,6 +218,8 @@ pub async fn connect_mode3_proxy(
     let cancel_i2c = cancel;
     let capture_tx_c2i = capture_tx.clone();
     let capture_tx_i2c = capture_tx;
+    let log_c2i = osc_log.clone();
+    let log_i2c = osc_log;
 
     let cs_c2i = console_socket.clone(); // C→I recv side
     let is_c2i = ipad_socket.clone(); // C→I send side
@@ -231,6 +236,7 @@ pub async fn connect_mode3_proxy(
             offline_c2i,
             cancel_c2i,
             "C→I",
+            log_c2i,
         )
         .await;
     });
@@ -245,6 +251,7 @@ pub async fn connect_mode3_proxy(
             offline_i2c,
             cancel_i2c,
             "I→C",
+            log_i2c,
         )
         .await;
     });
@@ -399,6 +406,7 @@ async fn proxy_direction(
     offline_mode: Arc<AtomicBool>,
     cancel: tokio_util::sync::CancellationToken,
     direction: &'static str,
+    osc_log: Option<OscLog>,
 ) {
     info!(%dest, direction, "Mode 3 proxy direction started");
 
@@ -435,6 +443,17 @@ async fn proxy_direction(
                             }
                         }
 
+                        // The console's continuous `/Meters/values` stream is the
+                        // dominant load and is never mirrored (state ignores it),
+                        // so don't even allocate + enqueue it for capture — that
+                        // keeps the capture channel free for keepalive / control
+                        // traffic and keeps this recv loop lean during the flood.
+                        // Meters are still forwarded above; only parse/log/state
+                        // is skipped. (Faders/levels are NOT skipped.)
+                        if buf[..size].starts_with(b"/Meters/values") {
+                            continue;
+                        }
+
                         // Best-effort enqueue for state capture. Channel-full
                         // means the capture task is lagging — drop the capture
                         // (mirror briefly stale) rather than block the proxy.
@@ -448,6 +467,16 @@ async fn proxy_direction(
                             capture_drops = capture_drops.saturating_add(1);
                             if capture_drops.is_power_of_two() {
                                 warn!(direction, capture_drops, "Mode 3 capture channel full — state mirror is lagging");
+                                // Surface the drop in the OSC log so the operator
+                                // can see exactly when the proxy fell behind.
+                                if let Some(ref log) = osc_log {
+                                    let note = format!("{capture_drops} packets dropped from log/mirror");
+                                    if direction == "I→C" {
+                                        log.log_ipad_out("⚠ proxy log overflow", &note);
+                                    } else {
+                                        log.log_ipad_in("⚠ proxy log overflow", &note);
+                                    }
+                                }
                             }
                         }
                     }
@@ -552,8 +581,16 @@ async fn log_and_capture_packet(
             }
         }
     } else if let Some(msg) = parse_bare_path(data) {
-        // DiGiCo bare-path query
+        // DiGiCo bare-path query (path + null, no type tag). Log it too so the
+        // OSC log isn't blind to the non-standard packets the proxy moves.
         debug!(path = msg.path, "Proxy {direction}: bare query");
+        if let Some(log) = osc_log {
+            if direction == "I→C" {
+                log.log_ipad_out(&msg.path, "");
+            } else {
+                log.log_ipad_in(&msg.path, "");
+            }
+        }
     } else {
         let hex: String = data[..data.len().min(32)]
             .iter()
@@ -561,6 +598,16 @@ async fn log_and_capture_packet(
             .collect::<Vec<_>>()
             .join(" ");
         debug!(size = data.len(), %hex, "Proxy {direction}: raw ({} bytes)", data.len());
+        // Surface undecodable packets in the OSC log as well, with a byte count
+        // and a short hex preview, so nothing the proxy forwards is invisible.
+        if let Some(log) = osc_log {
+            let note = format!("{hex} ({} bytes)", data.len());
+            if direction == "I→C" {
+                log.log_ipad_out("‹raw›", &note);
+            } else {
+                log.log_ipad_in("‹raw›", &note);
+            }
+        }
     }
 }
 
