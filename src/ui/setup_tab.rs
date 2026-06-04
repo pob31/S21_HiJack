@@ -83,6 +83,13 @@ pub struct SetupTabState {
     /// Mirrors `AppPreferences::help_language`; persisted via
     /// `save_app_preferences` and published to `help::set_active_language`.
     pub help_language: String,
+    /// Last window inner size / outer position (logical points). Mirror
+    /// `AppPreferences::window_size` / `window_pos`; updated each frame by
+    /// `HiJackApp::update` from the live viewport and persisted (debounced)
+    /// so the window reopens where the operator left it. `None` until the
+    /// first frame reports a size.
+    pub window_size: Option<[f32; 2]>,
+    pub window_pos: Option<[f32; 2]>,
     /// Source-IP CIDR allowlist for the monitor server (audit C2). Round-trips
     /// through the show file. UI editor is a follow-up; for now operators
     /// edit the JSON directly or use the `--monitor-allow-cidr` CLI flag.
@@ -176,6 +183,8 @@ impl SetupTabState {
             ui_scale: prefs.ui_scale,
             color_theme: prefs.color_theme,
             help_language: prefs.help_language.clone(),
+            window_size: prefs.window_size,
+            window_pos: prefs.window_pos,
             monitor_allow_cidrs: Vec::new(),
             trigger_allow_cidrs: Vec::new(),
             // Default the web monitor on (matches the headless `--web-port`
@@ -768,12 +777,12 @@ pub fn draw_setup_tab(
                                 "",
                                 help(HelpKey::SetupConsolePort),
                             );
-                            ui.label(egui::RichText::new("←").color(theme::label_weak()));
+                            ui.label(egui::RichText::new("◀").color(theme::label_weak()));
                             ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
                             ui.end_row();
 
                             ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
-                            ui.label(egui::RichText::new("→").color(theme::label_weak()));
+                            ui.label(egui::RichText::new("▶").color(theme::label_weak()));
                             port_edit_enabled(
                                 ui,
                                 &mut setup.local_port,
@@ -813,7 +822,7 @@ pub fn draw_setup_tab(
                             );
                             ui.add_visible(
                                 uses_ipad,
-                                egui::Label::new(egui::RichText::new("←").color(theme::label_weak())),
+                                egui::Label::new(egui::RichText::new("◀").color(theme::label_weak())),
                             );
                             ui.add_visible(
                                 uses_ipad,
@@ -827,7 +836,7 @@ pub fn draw_setup_tab(
                             );
                             ui.add_visible(
                                 uses_ipad,
-                                egui::Label::new(egui::RichText::new("→").color(theme::label_weak())),
+                                egui::Label::new(egui::RichText::new("▶").color(theme::label_weak())),
                             );
                             port_edit_visible(
                                 ui,
@@ -1349,7 +1358,7 @@ pub fn draw_setup_tab(
                                     w_sat - 120.0,
                                     theme::ROW_H,
                                     !is_connected,
-                                    "auto-detect",
+                                    "e.g. 192.168.1.50",
                                 )
                                 .on_hover_text(help(HelpKey::SetupIpadIp));
                             });
@@ -1365,7 +1374,7 @@ pub fn draw_setup_tab(
                                     ui.end_row();
 
                                     ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
-                                    ui.label(egui::RichText::new("→").color(theme::label_weak()));
+                                    ui.label(egui::RichText::new("▶").color(theme::label_weak()));
                                     port_edit_enabled(
                                         ui,
                                         &mut setup.ipad_reply_port,
@@ -1382,7 +1391,7 @@ pub fn draw_setup_tab(
                                         "",
                                         help(HelpKey::SetupIpadListenPort),
                                     );
-                                    ui.label(egui::RichText::new("←").color(theme::label_weak()));
+                                    ui.label(egui::RichText::new("◀").color(theme::label_weak()));
                                     ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
                                     ui.end_row();
                                 });
@@ -1469,13 +1478,13 @@ pub fn draw_setup_tab(
                                 "53000",
                                 help(HelpKey::SetupQlabPort),
                             );
-                            ui.label(egui::RichText::new("←").color(theme::label_weak()));
+                            ui.label(egui::RichText::new("◀").color(theme::label_weak()));
                             ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
                             ui.end_row();
 
                             // QLab Tx → Server listen (trigger_port)
                             ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
-                            ui.label(egui::RichText::new("→").color(theme::label_weak()));
+                            ui.label(egui::RichText::new("▶").color(theme::label_weak()));
                             port_edit_enabled(
                                 ui,
                                 &mut setup.trigger_port,
@@ -1764,6 +1773,14 @@ pub(crate) fn start_connection(
     } else {
         0
     };
+    // Mode 3 proxies console traffic to a specific iPad — its IP is required
+    // (read it off the DiGiCo iPad app). No autodiscovery.
+    if operating_mode == OperatingMode::Mode3 && setup.ipad_ip.trim().is_empty() {
+        setup.status_message = Some(
+            "Enter the iPad IP (shown in the DiGiCo app) to connect in iPad Proxy mode".into(),
+        );
+        return;
+    }
     let ipad_ip_str = setup.ipad_ip.clone();
     let bind_ip_str = if setup.local_ip.is_empty() {
         "0.0.0.0".to_string()
@@ -1956,21 +1973,16 @@ pub(crate) fn start_connection(
                         format!("{bind_ip_str}:{ipad_listen_port}")
                             .parse()
                             .expect("Invalid iPad listen address");
-                    let ipad_target = if !ipad_ip_str.is_empty() {
-                        let addr: SocketAddr = format!("{}:{}", ipad_ip_str, ipad_reply_port)
-                            .parse()
-                            .expect("Invalid iPad target address");
-                        Some(addr)
-                    } else {
-                        None // Will auto-detect from first iPad packet
-                    };
+                    // IP is guaranteed non-empty (validated in start_connection).
+                    let ipad_target: SocketAddr = format!("{}:{}", ipad_ip_str, ipad_reply_port)
+                        .parse()
+                        .expect("Invalid iPad target address");
 
                     match ipad_connection::connect_mode3_proxy(
                         console_ipad_addr,
                         local_ipad_addr,
                         ipad_listener_addr,
                         ipad_target,
-                        ipad_reply_port,
                         st.clone(),
                         dirty.clone(),
                         macro_mgr.clone(),
@@ -2023,6 +2035,11 @@ pub(crate) fn start_connection(
             send_pace_us.clone(),
         );
         macro_eng.set_dirty_tracker(dirty.clone());
+        // Wire the iPad sender so recorded iPad-only parameter steps (analog
+        // gain, phantom, GEQ bands, …) fall back to the iPad protocol on
+        // playback instead of being skipped — matching the gang/snapshot
+        // engines below.
+        macro_eng.set_ipad_sender(app_ipad_sender.clone());
         let macro_eng = Arc::new(macro_eng);
 
         // Hand the freshly-built engines back to the App so UI buttons can
@@ -2592,6 +2609,8 @@ pub(crate) fn save_app_preferences(setup: &SetupTabState) {
         ui_scale: setup.ui_scale,
         color_theme: setup.color_theme,
         help_language: setup.help_language.clone(),
+        window_size: setup.window_size,
+        window_pos: setup.window_pos,
     };
     if let Err(e) = prefs.save() {
         tracing::warn!(error = %e, "Failed to save app preferences");

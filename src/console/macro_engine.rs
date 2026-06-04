@@ -9,10 +9,12 @@ use tracing::{debug, info, warn};
 use super::macro_manager::MacroManager;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::macro_def::{MacroDef, MacroStepKind, MacroStepMode};
-use crate::model::parameter::ParameterValue;
+use crate::model::parameter::{ParameterAddress, ParameterValue};
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
 use crate::osc::encode;
+use crate::osc::ipad_client::IpadSender;
+use crate::osc::ipad_encode;
 use crate::ui::UiEvent;
 
 /// Maximum recursion depth for `FireMacro` steps. A macro that calls
@@ -35,6 +37,11 @@ pub struct MacroExecutionResult {
 pub struct MacroEngine {
     state: Arc<RwLock<ConsoleState>>,
     sender: OscSender,
+    /// iPad-protocol sender for parameters that have no GP OSC encoding
+    /// (analog gain, phantom, GEQ bands, …). Mirrors the gang/snapshot
+    /// engines so recorded iPad-only steps actually play back. `None` until
+    /// an iPad-protocol session (Mode 2/3) wires it in.
+    ipad_sender: Option<IpadSender>,
     dirty_tracker: Option<Arc<RwLock<DirtyTracker>>>,
     /// Used to look up macros by ID for the `FireMacro` step kind.
     macro_manager: Arc<RwLock<MacroManager>>,
@@ -63,6 +70,7 @@ impl MacroEngine {
         Self {
             state,
             sender,
+            ipad_sender: None,
             dirty_tracker: None,
             macro_manager,
             ui_tx,
@@ -73,6 +81,48 @@ impl MacroEngine {
     /// Attach a dirty tracker so macros can optionally suppress it.
     pub fn set_dirty_tracker(&mut self, tracker: Arc<RwLock<DirtyTracker>>) {
         self.dirty_tracker = Some(tracker);
+    }
+
+    /// Wire in the iPad-protocol sender so macro steps for iPad-only
+    /// parameters fall back to it instead of being skipped.
+    pub fn set_ipad_sender(&mut self, sender: Option<IpadSender>) {
+        self.ipad_sender = sender;
+    }
+
+    /// Send one resolved parameter to the console: GP OSC first, then the
+    /// iPad protocol as a fallback for iPad-only parameters (mirrors
+    /// `GangEngine::send_to_console`). Returns true on a successful send.
+    async fn send_parameter(&self, addr: &ParameterAddress, value: &ParameterValue) -> bool {
+        match encode::encode_parameter(addr, value) {
+            Some((path, args)) => {
+                if let Err(e) = self.sender.send(&path, args).await {
+                    warn!(%addr, "Macro: GP OSC send failed: {e}");
+                    return false;
+                }
+                true
+            }
+            None => {
+                // GP OSC can't encode it — try the iPad protocol.
+                if let Some(ref ipad) = self.ipad_sender {
+                    match ipad_encode::encode_ipad_parameter(addr, value) {
+                        Some((path, args)) => {
+                            if let Err(e) = ipad.send(&path, args).await {
+                                warn!(%addr, "Macro: iPad send failed: {e}");
+                                return false;
+                            }
+                            true
+                        }
+                        None => {
+                            warn!(%addr, "Macro: cannot encode parameter for either protocol");
+                            false
+                        }
+                    }
+                } else {
+                    debug!(%addr, "Macro step skipped: iPad-only parameter, no iPad sender");
+                    false
+                }
+            }
+        }
     }
 
     /// Execute all steps of a macro in sequence, respecting per-step delays.
@@ -143,44 +193,29 @@ impl MacroEngine {
                 MacroStepKind::Parameter { address, mode } => {
                     let resolved = self.resolve_parameter_value(address, mode).await;
                     match resolved {
-                        Some(value) => match encode::encode_parameter(address, &value) {
-                            Some((path, args)) => {
-                                if let Err(e) = self.sender.send(&path, args).await {
-                                    warn!(
-                                        step_index = i,
-                                        addr = %address,
-                                        "Macro step send failed: {e}"
-                                    );
-                                    skipped += 1;
-                                } else {
-                                    debug!(
-                                        step_index = i,
-                                        addr = %address,
-                                        value = %value,
-                                        "Macro step sent"
-                                    );
-                                    executed += 1;
-                                    // Inter-message pacing: protects
-                                    // the console's ARM chip during a
-                                    // long-step macro the same way
-                                    // snapshot recall does. Independent
-                                    // of `delay_ms`, which is the
-                                    // user-controlled pre-step gap.
-                                    let pace = self.pace_us.load(Ordering::Relaxed);
-                                    if pace > 0 {
-                                        time::sleep(time::Duration::from_micros(pace)).await;
-                                    }
-                                }
-                            }
-                            None => {
+                        Some(value) => {
+                            // GP OSC first, iPad fallback for iPad-only params.
+                            if self.send_parameter(address, &value).await {
                                 debug!(
                                     step_index = i,
                                     addr = %address,
-                                    "Macro step skipped: iPad-only parameter"
+                                    value = %value,
+                                    "Macro step sent"
                                 );
+                                executed += 1;
+                                // Inter-message pacing: protects the
+                                // console's ARM chip during a long-step
+                                // macro the same way snapshot recall does.
+                                // Independent of `delay_ms`, which is the
+                                // user-controlled pre-step gap.
+                                let pace = self.pace_us.load(Ordering::Relaxed);
+                                if pace > 0 {
+                                    time::sleep(time::Duration::from_micros(pace)).await;
+                                }
+                            } else {
                                 skipped += 1;
                             }
-                        },
+                        }
                         None => {
                             warn!(
                                 step_index = i,
@@ -634,6 +669,37 @@ mod tests {
         let result = engine.execute(&macro_def).await;
         assert_eq!(result.steps_executed, 0);
         assert_eq!(result.steps_skipped, 1);
+    }
+
+    #[tokio::test]
+    async fn execute_ipad_only_sends_when_ipad_sender_present() {
+        // With an iPad sender wired in, an iPad-only parameter (no GP OSC
+        // encoding) falls back to the iPad protocol and is executed, not
+        // skipped. A UDP send to a dead local port still returns Ok, so the
+        // step counts as sent.
+        let (mut engine, _state, _mgr, _rx) = setup_test().await;
+
+        let std_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        std_socket.set_nonblocking(true).unwrap();
+        let socket = std::sync::Arc::new(tokio::net::UdpSocket::from_std(std_socket).unwrap());
+        let ipad = IpadSender::from_socket(socket, "127.0.0.1:1".parse().unwrap());
+        engine.set_ipad_sender(Some(ipad));
+
+        let macro_def = MacroDef::new(
+            "iPad Only".into(),
+            vec![MacroStep::parameter(
+                ParameterAddress {
+                    channel: ChannelId::GraphicEq(1),
+                    parameter: ParameterPath::GeqBandGain(1),
+                },
+                MacroStepMode::Fixed(ParameterValue::Float(3.0)),
+                0,
+            )],
+        );
+
+        let result = engine.execute(&macro_def).await;
+        assert_eq!(result.steps_executed, 1);
+        assert_eq!(result.steps_skipped, 0);
     }
 
     #[tokio::test]

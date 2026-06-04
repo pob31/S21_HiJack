@@ -109,7 +109,10 @@ pub async fn connect_mode2(
 /// Mode 3: Two-socket iPad proxy.
 ///
 /// Console-side socket: bound to `local_console_addr`, sends to `console_ipad_addr`
-/// iPad-side socket: bound to `ipad_listen_addr`, sends to `ipad_target` (or auto-detected)
+/// iPad-side socket: bound to `ipad_listen_addr`, sends to `ipad_target`
+///
+/// `ipad_target` is the pinned iPad address — there is no autodiscovery; the
+/// caller must supply the IP (the DiGiCo iPad app shows it).
 ///
 /// Starts forwarding immediately without blocking on a handshake.
 /// All traffic is logged and captured into the state mirror.
@@ -118,8 +121,7 @@ pub async fn connect_mode3_proxy(
     console_ipad_addr: SocketAddr,
     local_console_addr: SocketAddr,
     ipad_listen_addr: SocketAddr,
-    ipad_target: Option<SocketAddr>,
-    ipad_reply_port: u16,
+    ipad_target: SocketAddr,
     state: Arc<RwLock<ConsoleState>>,
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
     macro_manager: Arc<RwLock<MacroManager>>,
@@ -132,16 +134,9 @@ pub async fn connect_mode3_proxy(
         %console_ipad_addr,
         %local_console_addr,
         %ipad_listen_addr,
-        ?ipad_target,
+        %ipad_target,
         "Mode 3: setting up two-socket iPad proxy..."
     );
-
-    if ipad_target.is_none() {
-        warn!(
-            "Mode 3: iPad IP not pinned — will auto-detect from first inbound packet. \
-             Set --ipad-ip (or the iPad IP field in setup) for production deployments."
-        );
-    }
 
     // Socket 1: Console-side (daemon ↔ console) — raw UDP, interface-bound
     let console_socket = crate::ui::net_interfaces::create_bound_udp_socket(
@@ -200,7 +195,6 @@ pub async fn connect_mode3_proxy(
             console_ipad_addr,
             ipad_socket,
             ipad_target,
-            ipad_reply_port,
             capture_tx,
             offline_clone,
             cancel,
@@ -341,15 +335,13 @@ async fn raw_proxy_loop(
     console_socket: std::sync::Arc<tokio::net::UdpSocket>,
     console_addr: SocketAddr,
     ipad_socket: std::sync::Arc<tokio::net::UdpSocket>,
-    ipad_target: Option<SocketAddr>,
-    ipad_reply_port: u16,
+    ipad_addr: SocketAddr,
     capture_tx: mpsc::Sender<ProxyCapture>,
     offline_mode: Arc<AtomicBool>,
     cancel: tokio_util::sync::CancellationToken,
 ) {
-    info!("Mode 3 raw proxy started");
+    info!(%ipad_addr, "Mode 3 raw proxy started");
 
-    let mut ipad_addr: Option<SocketAddr> = ipad_target;
     let mut console_buf = vec![0u8; 65536];
     let mut ipad_buf = vec![0u8; 65536];
     let mut c2i: u64 = 0;
@@ -374,17 +366,15 @@ async fn raw_proxy_loop(
 
                         // Forward FIRST so state-mirror contention can't delay
                         // the byte path — capture happens off the hot path.
-                        if let Some(dest) = ipad_addr {
-                            match ipad_socket.send_to(&console_buf[..size], dest).await {
-                                Ok(sent) => {
-                                    c2i += 1;
-                                    if c2i <= 5 {
-                                        debug!(c2i, sent, %dest, "Proxy C→I: forwarded {sent} bytes to {dest}");
-                                    }
+                        match ipad_socket.send_to(&console_buf[..size], ipad_addr).await {
+                            Ok(sent) => {
+                                c2i += 1;
+                                if c2i <= 5 {
+                                    debug!(c2i, sent, %ipad_addr, "Proxy C→I: forwarded {sent} bytes to {ipad_addr}");
                                 }
-                                Err(e) => {
-                                    warn!(%dest, "Proxy C→I: send failed: {e}");
-                                }
+                            }
+                            Err(e) => {
+                                warn!(%ipad_addr, "Proxy C→I: send failed: {e}");
                             }
                         }
 
@@ -414,18 +404,10 @@ async fn raw_proxy_loop(
             // iPad → daemon → console
             result = ipad_socket.recv_from(&mut ipad_buf) => {
                 match result {
-                    Ok((size, src)) => {
+                    Ok((size, _src)) => {
                         if offline_mode.load(Ordering::Relaxed) {
                             debug!("Mode 3 I→C dropped (offline mode)");
                             continue;
-                        }
-                        // Use the iPad's IP from the first packet, but reply to the
-                        // configured receive port (not the ephemeral send port).
-                        // The iPad listens on its configured "Receive Port" for responses.
-                        if ipad_addr.is_none() {
-                            let detected = SocketAddr::new(src.ip(), ipad_reply_port);
-                            info!(%src, %detected, "Proxy: iPad detected (src={src}), replies → {detected}");
-                            ipad_addr = Some(detected);
                         }
 
                         // Forward FIRST. See C→I branch comment.

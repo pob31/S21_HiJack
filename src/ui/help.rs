@@ -475,7 +475,7 @@ fn meta(key: HelpKey) -> HelpMeta {
         ),
         SetupIpadIp => (
             "setup.ipad_ip",
-            "iPad device IP — leave blank to auto-detect from first inbound packet.",
+            "iPad device IP (required for iPad Proxy mode) — read it off the DiGiCo iPad app.",
         ),
         SetupQlabHost => (
             "setup.qlab_host",

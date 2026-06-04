@@ -44,6 +44,14 @@ pub struct AppPreferences {
     /// preference files saved before this field existed.
     #[serde(default)]
     pub help_language: String,
+    /// Last window inner (content) size in logical points, restored on the
+    /// next launch. `None` on first run → the app picks an on-screen fit.
+    #[serde(default)]
+    pub window_size: Option<[f32; 2]>,
+    /// Last window outer (decorated) top-left position in logical points,
+    /// restored on the next launch. `None` on first run.
+    #[serde(default)]
+    pub window_pos: Option<[f32; 2]>,
 }
 
 /// Default UI scale multiplier — `1.0` means "use the automatic scaling
@@ -63,6 +71,8 @@ impl Default for AppPreferences {
             ui_scale: default_ui_scale(),
             color_theme: ColorTheme::default(),
             help_language: String::new(),
+            window_size: None,
+            window_pos: None,
         }
     }
 }
@@ -151,6 +161,9 @@ mod tests {
         assert_eq!(prefs.color_theme, ColorTheme::Dark);
         // Missing help_language defaults to empty = the English reference.
         assert!(prefs.help_language.is_empty());
+        // Missing window geometry defaults to None — first-run on-screen fit.
+        assert!(prefs.window_size.is_none());
+        assert!(prefs.window_pos.is_none());
     }
 
     #[test]
@@ -162,6 +175,8 @@ mod tests {
         assert_eq!(prefs.ui_scale, 1.0);
         assert_eq!(prefs.color_theme, ColorTheme::Dark);
         assert!(prefs.help_language.is_empty());
+        assert!(prefs.window_size.is_none());
+        assert!(prefs.window_pos.is_none());
     }
 
     #[test]
@@ -173,6 +188,8 @@ mod tests {
             ui_scale: 1.25,
             color_theme: ColorTheme::Light,
             help_language: "fr".to_string(),
+            window_size: Some([1600.0, 900.0]),
+            window_pos: Some([40.0, 30.0]),
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: AppPreferences = serde_json::from_str(&json).unwrap();
@@ -181,5 +198,7 @@ mod tests {
         assert_eq!(prefs.ui_scale, back.ui_scale);
         assert_eq!(prefs.color_theme, back.color_theme);
         assert_eq!(prefs.help_language, back.help_language);
+        assert_eq!(prefs.window_size, back.window_size);
+        assert_eq!(prefs.window_pos, back.window_pos);
     }
 }

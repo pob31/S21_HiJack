@@ -139,7 +139,7 @@
   "setup.console_port": "Console port — daemon sends GP OSC here.",
   "setup.coverage": "Show which console parameters the daemon currently mirrors.",
   "setup.ipad_console_port": "Console iPad-protocol port — daemon sends here.",
-  "setup.ipad_ip": "iPad device IP — leave blank to auto-detect from first inbound packet.",
+  "setup.ipad_ip": "iPad device IP (required for iPad Proxy mode) — read it off the DiGiCo iPad app.",
   "setup.ipad_listen_port": "Local port the daemon listens on for iPad→daemon traffic.",
   "setup.ipad_local_port": "Local port the daemon listens on for iPad-protocol traffic.",
   "setup.ipad_reply_port": "Port on the iPad — daemon sends to it here.",

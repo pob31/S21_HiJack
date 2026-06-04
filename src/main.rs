@@ -275,7 +275,9 @@ async fn run_headless(args: Args) {
         send_pace_us.clone(),
     );
     macro_engine.set_dirty_tracker(dirty_tracker.clone());
-    let macro_engine = Arc::new(macro_engine);
+    // Wrapped in `Arc` after the iPad sender is wired in below (see the
+    // `ipad_sender_for_monitor` block), so iPad-only macro steps can fall
+    // back to the iPad protocol on playback like the gang/snapshot engines.
 
     // iPad protocol connection (Mode 2 or 3)
     let send_port = args.effective_ipad_send_port();
@@ -329,38 +331,43 @@ async fn run_headless(args: Args) {
                 let ipad_listen_addr: SocketAddr = format!("0.0.0.0:{}", ipad_listen_port)
                     .parse()
                     .expect("Invalid iPad listen address");
-                let ipad_target = args.ipad_ip.as_ref().map(|ip| {
-                    let addr: SocketAddr = format!("{ip}:{ipad_reply_port}")
-                        .parse()
-                        .expect("Invalid iPad IP");
-                    addr
-                });
-                match ipad_connection::connect_mode3_proxy(
-                    console_ipad_addr,
-                    local_console_addr,
-                    ipad_listen_addr,
-                    ipad_target,
-                    ipad_reply_port,
-                    manager.state(),
-                    dirty_tracker.clone(),
-                    macro_manager.clone(),
-                    offline_mode.clone(),
-                    None,
-                    cancel_token.clone(),
-                    None,
-                )
-                .await
-                {
-                    Ok(ipad_sender) => {
-                        info!(
-                            ipad_ip = ?args.ipad_ip,
-                            "Mode 3: iPad proxy started"
+                // Mode 3 proxies to a specific iPad — its IP is required
+                // (no autodiscovery). Skip the proxy if --ipad-ip is absent.
+                match args.ipad_ip.as_ref() {
+                    None => {
+                        error!(
+                            "Mode 3: --ipad-ip is required (the DiGiCo iPad app shows it) — \
+                             iPad proxy not started"
                         );
-                        ipad_sender_for_monitor = Some(ipad_sender.clone());
-                        snapshot_engine.set_ipad_sender(Some(ipad_sender));
                     }
-                    Err(e) => {
-                        error!("Mode 3: iPad proxy setup failed: {e}");
+                    Some(ip) => {
+                        let ipad_target: SocketAddr = format!("{ip}:{ipad_reply_port}")
+                            .parse()
+                            .expect("Invalid iPad IP");
+                        match ipad_connection::connect_mode3_proxy(
+                            console_ipad_addr,
+                            local_console_addr,
+                            ipad_listen_addr,
+                            ipad_target,
+                            manager.state(),
+                            dirty_tracker.clone(),
+                            macro_manager.clone(),
+                            offline_mode.clone(),
+                            None,
+                            cancel_token.clone(),
+                            None,
+                        )
+                        .await
+                        {
+                            Ok(ipad_sender) => {
+                                info!(ipad_ip = %ip, "Mode 3: iPad proxy started");
+                                ipad_sender_for_monitor = Some(ipad_sender.clone());
+                                snapshot_engine.set_ipad_sender(Some(ipad_sender));
+                            }
+                            Err(e) => {
+                                error!("Mode 3: iPad proxy setup failed: {e}");
+                            }
+                        }
                     }
                 }
             }
@@ -368,7 +375,7 @@ async fn run_headless(args: Args) {
         }
     }
 
-    // Wire iPad sender into gang & pan link engines (for iPad-only parameters)
+    // Wire iPad sender into gang, pan link & macro engines (for iPad-only parameters)
     if let Some(ref ipad) = ipad_sender_for_monitor {
         gang_engine
             .write()
@@ -378,7 +385,9 @@ async fn run_headless(args: Args) {
             .write()
             .await
             .set_ipad_sender(Some(ipad.clone()));
+        macro_engine.set_ipad_sender(Some(ipad.clone()));
     }
+    let macro_engine = Arc::new(macro_engine);
 
     // Shared monitor plumbing: one command channel (the UDP server and every
     // WebSocket both feed it) and one state-event broadcast (the UDP fan-out

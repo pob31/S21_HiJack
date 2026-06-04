@@ -92,6 +92,11 @@ const MAX_PHYS_PX: f32 = 20_000.0; // reject egui's 10000×10000 first-frame pla
 /// `monitor_size` consistent with the settled ppp.
 const SETTLE_HOLD_FRAMES: u8 = 3;
 
+/// Seconds the window geometry must hold steady after a resize/move before it
+/// is persisted to preferences (see `HiJackApp::track_window_geometry`). Keeps
+/// the prefs file from being rewritten on every drag frame.
+const GEOMETRY_SAVE_DEBOUNCE: f64 = 1.0;
+
 /// Pure core of the UI auto-scaler (unit-tested). Produces the *absolute
 /// effective pixels-per-point* egui should render at.
 ///
@@ -290,6 +295,15 @@ pub struct HiJackApp {
     /// waits for this to reach [`SETTLE_HOLD_FRAMES`] so `monitor_size` has
     /// caught up to the settled ppp before the one-shot resize.
     settled_frames: u8,
+    /// Window-geometry persistence (issue: "remember last size/position").
+    /// `last_seen_geometry` is the (inner_size, outer_pos) reported last frame;
+    /// `last_saved_geometry` is what's currently on disk; `geometry_dirty_at`
+    /// is the `ctx.input().time` of the most recent change. We persist once the
+    /// geometry has been stable for `GEOMETRY_SAVE_DEBOUNCE` — see
+    /// `track_window_geometry`.
+    last_seen_geometry: Option<([f32; 2], [f32; 2])>,
+    last_saved_geometry: Option<([f32; 2], [f32; 2])>,
+    geometry_dirty_at: Option<f64>,
 }
 
 impl HiJackApp {
@@ -390,6 +404,9 @@ impl HiJackApp {
             startup_frames: 0,
             scale_settled: false,
             settled_frames: 0,
+            last_seen_geometry: None,
+            last_saved_geometry: None,
+            geometry_dirty_at: None,
         }
     }
 
@@ -452,11 +469,13 @@ impl HiJackApp {
         }
     }
 
-    /// One-shot startup sizing: resize to 95% of the monitor and center, then
-    /// reveal the (initially hidden) window. Windowed, not maximized — the user
-    /// avoids macOS full-screen-space behavior and desktop battles with QLab
-    /// video out. Falls back to revealing at the builder's fallback size if the
-    /// monitor size never arrives.
+    /// One-shot startup sizing: restore the operator's last saved window
+    /// geometry (clamped to the current monitor), or — on first run — fit to
+    /// ~90% of the monitor centred with headroom for the title bar and desktop
+    /// panels, then reveal the (initially hidden) window. Windowed, not
+    /// maximized — the user avoids macOS full-screen-space behavior and desktop
+    /// battles with QLab video out. Falls back to revealing at the builder's
+    /// fallback size if the monitor size never arrives.
     fn size_window_to_monitor(&mut self, ctx: &egui::Context) {
         if self.window_sized {
             return;
@@ -478,11 +497,32 @@ impl HiJackApp {
 
         match ctx.input(|i| i.viewport().monitor_size) {
             Some(mon) => {
-                let inner = (mon * 0.95).max(egui::vec2(900.0, 520.0));
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(inner));
-                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
-                    ((mon - inner) * 0.5).to_pos2(),
-                ));
+                let min = egui::vec2(900.0, 520.0);
+                match (self.setup.window_size, self.setup.window_pos) {
+                    // Restore the operator's last geometry, clamped to the
+                    // current monitor so a changed display can't reopen the
+                    // window off-screen.
+                    (Some(size), Some(pos)) => {
+                        let size = egui::vec2(size[0], size[1]).max(min).min(mon);
+                        let pos = egui::pos2(
+                            pos[0].clamp(0.0, (mon.x - size.x).max(0.0)),
+                            pos[1].clamp(0.0, (mon.y - size.y).max(0.0)),
+                        );
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+                    }
+                    // First run: fit on-screen with headroom for the title bar
+                    // and desktop panels. Centring by content size alone
+                    // overflows the bottom-right; 0.90 leaves an even margin.
+                    // Later runs restore the saved geometry above.
+                    _ => {
+                        let inner = (mon * 0.90).max(min);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(inner));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
+                            ((mon - inner) * 0.5).to_pos2(),
+                        ));
+                    }
+                }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 self.window_sized = true;
             }
@@ -493,6 +533,63 @@ impl HiJackApp {
                 self.window_sized = true;
             }
             None => {}
+        }
+    }
+
+    /// Capture the live window geometry each frame and persist it (debounced)
+    /// so the window reopens where the operator left it. Writes ~1 s after the
+    /// last resize/move, only when the geometry actually differs from what's on
+    /// disk — minimal file churn, no dependence on an eframe save/exit hook.
+    fn track_window_geometry(&mut self, ctx: &egui::Context) {
+        // Don't capture until the one-shot startup sizing has applied — the
+        // first frames report the hidden fallback geometry.
+        if !self.window_sized {
+            return;
+        }
+        let (inner, outer) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().outer_rect));
+        let (Some(inner), Some(outer)) = (inner, outer) else {
+            return;
+        };
+        let size = inner.size();
+        let pos = outer.min;
+        // Skip degenerate / minimised frames.
+        if !(size.x.is_finite() && size.y.is_finite() && pos.x.is_finite() && pos.y.is_finite())
+            || size.x < 200.0
+            || size.y < 200.0
+        {
+            return;
+        }
+        let geom = ([size.x, size.y], [pos.x, pos.y]);
+
+        // Mirror into setup so `save_app_preferences` serializes it.
+        self.setup.window_size = Some(geom.0);
+        self.setup.window_pos = Some(geom.1);
+
+        let now = ctx.input(|i| i.time);
+        let geom_eq = |a: &([f32; 2], [f32; 2]), b: &([f32; 2], [f32; 2])| {
+            let near = |x: f32, y: f32| (x - y).abs() < 0.5;
+            near(a.0[0], b.0[0])
+                && near(a.0[1], b.0[1])
+                && near(a.1[0], b.1[0])
+                && near(a.1[1], b.1[1])
+        };
+
+        // Still moving/resizing this frame → reset the debounce timer.
+        if self.last_seen_geometry.is_none_or(|g| !geom_eq(&g, &geom)) {
+            self.last_seen_geometry = Some(geom);
+            self.geometry_dirty_at = Some(now);
+            return;
+        }
+        // Stable this frame: persist once it has held for the debounce window
+        // and differs from what's on disk.
+        if let Some(t) = self.geometry_dirty_at {
+            if now - t >= GEOMETRY_SAVE_DEBOUNCE {
+                if self.last_saved_geometry.is_none_or(|g| !geom_eq(&g, &geom)) {
+                    super::setup_tab::save_app_preferences(&self.setup);
+                    self.last_saved_geometry = Some(geom);
+                }
+                self.geometry_dirty_at = None;
+            }
         }
     }
 
@@ -869,6 +966,8 @@ impl HiJackApp {
                             ui_scale: self.setup.ui_scale,
                             color_theme: self.setup.color_theme,
                             help_language: self.setup.help_language.clone(),
+                            window_size: self.setup.window_size,
+                            window_pos: self.setup.window_pos,
                         };
                         if let Err(e) = prefs.save() {
                             tracing::warn!(error = %e, "Failed to save app preferences after show load");
@@ -1535,9 +1634,13 @@ impl eframe::App for HiJackApp {
         // panel is built; the new zoom applies on the next pass.
         self.apply_auto_scale(ctx);
 
-        // First-run window sizing: open at 95% of the monitor, centered, then
-        // reveal the initially-hidden window (no fallback-size flash).
+        // First-run window sizing: restore the last saved geometry (or fit
+        // on-screen on first run), then reveal the initially-hidden window.
         self.size_window_to_monitor(ctx);
+
+        // Persist size/position (debounced) so the window reopens where the
+        // operator left it.
+        self.track_window_geometry(ctx);
 
         // Store context on first frame for async repaint
         let _ = self.egui_ctx.set(ctx.clone());
