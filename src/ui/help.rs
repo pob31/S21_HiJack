@@ -106,6 +106,8 @@ pub enum HelpKey {
     SetupIpadIp,
     SetupQlabHost,
     SetupQlabPort,
+    SetupQlabPatchApp,
+    SetupQlabPatchConsole,
     SetupTriggerPort,
     SetupMonitorPort,
     SetupOpenShow,
@@ -519,6 +521,18 @@ fn meta(key: HelpKey) -> HelpMeta {
         SetupTriggerPort => (
             "setup.trigger_port",
             "Local port the daemon listens on for cue triggers from QLab.",
+        ),
+        SetupQlabPatchApp => (
+            "setup.qlab_patch_app",
+            "QLab network patch for cues that recall via this app \
+             (/snapshot/recall). Point that patch at this computer's \
+             trigger port in QLab.",
+        ),
+        SetupQlabPatchConsole => (
+            "setup.qlab_patch_console",
+            "QLab network patch for per-parameter cues that fire straight \
+             at the console. Point that patch at the console's OSC port in \
+             QLab.",
         ),
         SetupMonitorPort => (
             "setup.monitor_port",
@@ -1205,6 +1219,8 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::SetupIpadIp,
     HelpKey::SetupQlabHost,
     HelpKey::SetupQlabPort,
+    HelpKey::SetupQlabPatchApp,
+    HelpKey::SetupQlabPatchConsole,
     HelpKey::SetupTriggerPort,
     HelpKey::SetupMonitorPort,
     HelpKey::SetupOpenShow,

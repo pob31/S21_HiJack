@@ -157,6 +157,8 @@
   "setup.new_show": "Démarrer un nouveau spectacle vide — efface les snapshots, macros, gangs et palettes actuels.",
   "setup.open_show": "Choisir un fichier de spectacle et le charger. Save As… pour enregistrer vers un nouveau chemin.",
   "setup.qlab_host": "Hôte QLab — généralement 127.0.0.1 si QLab tourne sur cette machine.",
+  "setup.qlab_patch_app": "Patch QLab pour les cues qui rappellent via cette application (/snapshot/recall). Pointez ce patch vers le port de trigger de cet ordinateur dans QLab.",
+  "setup.qlab_patch_console": "Patch QLab pour les cues par paramètre envoyées directement à la console. Pointez ce patch vers le port OSC de la console dans QLab.",
   "setup.qlab_port": "Port d'écoute OSC de QLab — le daemon y envoie les commandes de création de cue.",
   "setup.save_show": "Enregistrer vers le chemin indiqué ci-dessus. Si vide, demande un emplacement.",
   "setup.save_show_as": "Choisir un nouvel emplacement et y enregistrer. Utile lorsque le champ de chemin pointe déjà vers un autre fichier.",

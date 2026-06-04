@@ -8,6 +8,7 @@ pub mod monitor_server;
 pub mod parse;
 pub mod qlab_client;
 pub mod qlab_cue_builder;
+pub mod qlab_reply;
 pub mod trigger_listener;
 
 // ─── Shared OSC address constants ───────────────────────────────────

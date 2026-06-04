@@ -128,6 +128,23 @@ async fn process_trigger_packet(
 ) {
     match packet {
         OscPacket::Message(msg) => {
+            // QLab cue-creation replies land here (this is the app's
+            // QLab-facing port). They carry a `/reply/.../uniqueID` address
+            // and a single JSON string arg; route the uid to the in-flight
+            // export via the bus instead of treating them as triggers. See
+            // `crate::osc::qlab_reply`.
+            if msg.addr.contains("uniqueID") {
+                if let Some(OscType::String(json)) = msg.args.first() {
+                    match crate::osc::qlab_reply::parse_unique_id_reply(json) {
+                        Some(uid) => {
+                            debug!(path = msg.addr, uid, "QLab uniqueID reply");
+                            crate::osc::qlab_reply::global().deliver(uid).await;
+                        }
+                        None => debug!(path = msg.addr, %src, "QLab reply parse failed"),
+                    }
+                }
+                return;
+            }
             if let Some(event) = parse_trigger_message(&msg.addr, &msg.args, src) {
                 debug!(path = msg.addr, ?event, "Trigger received");
                 if tx.send(event).await.is_err() {

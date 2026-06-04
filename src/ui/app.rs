@@ -960,6 +960,12 @@ impl HiJackApp {
                         if conn.qlab_port > 0 {
                             self.setup.qlab_port = conn.qlab_port.to_string();
                         }
+                        if conn.qlab_patch_app > 0 {
+                            self.setup.qlab_patch_app = conn.qlab_patch_app.to_string();
+                        }
+                        if conn.qlab_patch_console > 0 {
+                            self.setup.qlab_patch_console = conn.qlab_patch_console.to_string();
+                        }
                         // One-time migration: pacing used to live on
                         // the show file. If the user opens an old show
                         // and prefs has no pacing yet, adopt the show's
@@ -2317,6 +2323,9 @@ impl eframe::App for HiJackApp {
                 }
                 Tab::Snapshots => {
                     let qlab_port: u16 = self.setup.qlab_port.parse().unwrap_or(53000);
+                    let qlab_patch_app: i32 = self.setup.qlab_patch_app.parse().unwrap_or(1);
+                    let qlab_patch_console: i32 =
+                        self.setup.qlab_patch_console.parse().unwrap_or(2);
                     let qlab_ip = if self.setup.qlab_ip.is_empty() {
                         "127.0.0.1"
                     } else {
@@ -2336,6 +2345,8 @@ impl eframe::App for HiJackApp {
                         self.setup.operating_mode,
                         qlab_ip,
                         qlab_port,
+                        qlab_patch_app,
+                        qlab_patch_console,
                         &self.connected,
                         &self.runtime,
                         &self.ui_tx,

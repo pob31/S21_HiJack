@@ -120,6 +120,10 @@ pub fn draw_snapshots_tab(
     operating_mode: crate::model::operating_mode::OperatingMode,
     qlab_ip: &str,
     qlab_port: u16,
+    // QLab patch for app-targeted (trigger) cues; console patch for the
+    // per-parameter GP OSC export. See `ConnectionSettings::qlab_patch_*`.
+    qlab_patch_app: i32,
+    qlab_patch_console: i32,
     connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -523,6 +527,7 @@ pub fn draw_snapshots_tab(
                                     cue_manager,
                                     qlab_ip_owned.clone(),
                                     qlab_port_local,
+                                    qlab_patch_app,
                                     runtime,
                                     ui_tx,
                                 );
@@ -552,6 +557,7 @@ pub fn draw_snapshots_tab(
                                     palette_manager,
                                     qlab_ip_owned,
                                     qlab_port_local,
+                                    qlab_patch_console,
                                     runtime,
                                     ui_tx,
                                 );
@@ -1631,6 +1637,7 @@ fn qlab_export_full_snapshot(
     palette_manager: &Arc<RwLock<PaletteManager>>,
     qlab_ip: String,
     qlab_port: u16,
+    qlab_patch: i32,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
@@ -1653,7 +1660,7 @@ fn qlab_export_full_snapshot(
         let palettes = pmgr.palettes.clone();
         drop(pmgr);
 
-        let sequence = build_snapshot_cues(&snapshot, &palettes, /* qlab_patch */ 1);
+        let sequence = build_snapshot_cues(&snapshot, &palettes, qlab_patch);
         let child_count = sequence.network_cues.len();
 
         match QLabClient::new(&qlab_ip, qlab_port).await {
@@ -1695,6 +1702,7 @@ fn qlab_create_trigger_cue(
     cue_manager: &Arc<RwLock<CueManager>>,
     qlab_ip: String,
     qlab_port: u16,
+    qlab_patch: i32,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
@@ -1711,7 +1719,7 @@ fn qlab_create_trigger_cue(
         };
         drop(mgr);
 
-        let sequence = build_snapshot_load_cue(&snapshot.name, /* qlab_patch */ 1);
+        let sequence = build_snapshot_load_cue(&snapshot.name, qlab_patch);
 
         match QLabClient::new(&qlab_ip, qlab_port).await {
             Ok(client) => match client.send_sequence(&sequence).await {

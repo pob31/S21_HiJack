@@ -157,6 +157,8 @@
   "setup.new_show": "비어 있는 새 쇼를 시작합니다 — 현재 스냅샷, 매크로, gang, 팔레트를 지웁니다.",
   "setup.open_show": "쇼 파일을 선택하여 불러옵니다. 새 경로에 저장하려면 Save As….",
   "setup.qlab_host": "QLab 호스트 — QLab이 이 컴퓨터에서 실행 중이면 보통 127.0.0.1입니다.",
+  "setup.qlab_patch_app": "이 앱을 통해 리콜하는 큐(/snapshot/recall)용 QLab 패치. QLab에서 해당 패치를 이 컴퓨터의 트리거 포트로 지정하세요.",
+  "setup.qlab_patch_console": "콘솔로 바로 보내는 파라미터별 큐용 QLab 패치. QLab에서 해당 패치를 콘솔의 OSC 포트로 지정하세요.",
   "setup.qlab_port": "QLab의 OSC 수신 포트 — 데몬이 큐 생성 명령을 여기로 보냅니다.",
   "setup.save_show": "위에 표시된 경로에 저장합니다. 비어 있으면 위치를 묻습니다.",
   "setup.save_show_as": "새 위치를 선택하여 저장합니다. 경로 필드가 이미 다른 파일을 가리킬 때 유용합니다.",

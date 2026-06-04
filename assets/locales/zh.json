@@ -157,6 +157,8 @@
   "setup.new_show": "新建一个空演出——清除当前的快照、宏、联动组和 palette。",
   "setup.open_show": "选择一个演出文件并载入。用 Save As… 保存到新路径。",
   "setup.qlab_host": "QLab 主机——如果 QLab 运行在本机上，通常为 127.0.0.1。",
+  "setup.qlab_patch_app": "通过本应用回调的 cue（/snapshot/recall）所用的 QLab patch。在 QLab 中将该 patch 指向本机的触发端口。",
+  "setup.qlab_patch_console": "逐参数直接发送到调音台的 cue 所用的 QLab patch。在 QLab 中将该 patch 指向调音台的 OSC 端口。",
   "setup.qlab_port": "QLab 的 OSC 监听端口——守护进程在此发送 cue 构建命令。",
   "setup.save_show": "保存到上方显示的路径。若为空，则提示选择位置。",
   "setup.save_show_as": "选择一个新位置并保存到那里。当路径字段已指向另一个文件时很有用。",

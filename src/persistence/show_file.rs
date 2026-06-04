@@ -48,6 +48,16 @@ pub struct ConnectionSettings {
     /// QLab destination port. Default 53000 (QLab's standard OSC listen port).
     #[serde(default = "default_qlab_port")]
     pub qlab_port: u16,
+    /// QLab network patch for cues that target **this app** — the trigger
+    /// cues whose customString is `/snapshot/recall`. Should point at the
+    /// app's trigger listener (`local_ip:trigger_port`). Default 1.
+    #[serde(default = "default_qlab_patch_app")]
+    pub qlab_patch_app: i32,
+    /// QLab network patch for cues that target the **S21 console** — the
+    /// per-parameter GP OSC cues. Should point at the console
+    /// (`console_ip:console_gp_port`). Default 2.
+    #[serde(default = "default_qlab_patch_console")]
+    pub qlab_patch_console: i32,
     /// Inter-message pacing delay in microseconds during snapshot recall.
     /// Prevents flooding the console's ARM chip. 0 = no pacing.
     #[serde(default)]
@@ -115,6 +125,12 @@ fn default_trigger_port() -> u16 {
 fn default_qlab_port() -> u16 {
     53000
 }
+fn default_qlab_patch_app() -> i32 {
+    1
+}
+fn default_qlab_patch_console() -> i32 {
+    2
+}
 fn default_monitor_port() -> u16 {
     8025
 }
@@ -139,6 +155,8 @@ impl Default for ConnectionSettings {
             monitor_port: 8025,
             qlab_ip: String::new(),
             qlab_port: default_qlab_port(),
+            qlab_patch_app: default_qlab_patch_app(),
+            qlab_patch_console: default_qlab_patch_console(),
             send_pace_us: 0,
             auto_update_on_recall: false,
             console_snapshot_follow: false,

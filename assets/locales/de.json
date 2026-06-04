@@ -157,6 +157,8 @@
   "setup.new_show": "Eine neue, leere Show starten — löscht die aktuellen Snapshots, Macros, Gangs und Palettes.",
   "setup.open_show": "Eine Show-Datei wählen und laden. Save As… zum Speichern unter einem neuen Pfad.",
   "setup.qlab_host": "QLab-Host — meist 127.0.0.1, wenn QLab auf dieser Maschine läuft.",
+  "setup.qlab_patch_app": "QLab-Patch für Cues, die über diese App zurückspielen (/snapshot/recall). Richte diesen Patch in QLab auf den Trigger-Port dieses Computers.",
+  "setup.qlab_patch_console": "QLab-Patch für Einzelparameter-Cues, die direkt ans Pult gehen. Richte diesen Patch in QLab auf den OSC-Port des Pults.",
   "setup.qlab_port": "QLabs OSC-Empfangsport — der Daemon sendet hierhin die Cue-Build-Befehle.",
   "setup.save_show": "Unter dem oben angezeigten Pfad speichern. Wenn leer, wird nach einem Speicherort gefragt.",
   "setup.save_show_as": "Einen neuen Speicherort wählen und dort speichern. Nützlich, wenn das Pfadfeld bereits auf eine andere Datei zeigt.",

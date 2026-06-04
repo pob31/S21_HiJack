@@ -69,6 +69,12 @@ pub struct SetupTabState {
     pub qlab_ip: String,
     /// QLab destination port (default 53000 — QLab's standard OSC listen port).
     pub qlab_port: String,
+    /// QLab network patch (1-based) for cues that target **this app** — the
+    /// `/snapshot/recall` trigger cues. Editable string; default "1".
+    pub qlab_patch_app: String,
+    /// QLab network patch (1-based) for cues that target the **S21 console** —
+    /// the per-parameter GP OSC cues. Editable string; default "2".
+    pub qlab_patch_console: String,
     /// Inter-message pacing delay in microseconds during snapshot recall.
     pub send_pace_us: u64,
     /// Global UI scale multiplier (Advanced Settings → Display scale). Folded
@@ -179,6 +185,8 @@ impl SetupTabState {
             },
             qlab_ip: "127.0.0.1".to_string(),
             qlab_port: "53000".to_string(),
+            qlab_patch_app: "1".to_string(),
+            qlab_patch_console: "2".to_string(),
             send_pace_us: prefs.send_pace_us,
             ui_scale: prefs.ui_scale,
             color_theme: prefs.color_theme,
@@ -1494,6 +1502,69 @@ pub fn draw_setup_tab(
                             );
                             ui.end_row();
                         });
+
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new("Cue target patches")
+                            .small()
+                            .color(theme::label_weak()),
+                    );
+                    ui.add_space(2.0);
+
+                    // Which QLab network patch each export targets, and the
+                    // destination the operator should point that patch at in
+                    // QLab. App cues recall via the trigger listener; console
+                    // cues fire GP OSC straight at the desk.
+                    let app_dest = format!(
+                        "{}:{}",
+                        if setup.local_ip.is_empty() {
+                            "<this computer>"
+                        } else {
+                            setup.local_ip.as_str()
+                        },
+                        setup.trigger_port,
+                    );
+                    let console_dest = format!(
+                        "{}:{}",
+                        if setup.console_ip.is_empty() {
+                            "<console>"
+                        } else {
+                            setup.console_ip.as_str()
+                        },
+                        setup.console_port,
+                    );
+                    egui::Grid::new("qlab_patch_grid")
+                        .num_columns(3)
+                        .spacing([6.0, 6.0])
+                        .show(ui, |ui| {
+                            theme::row_label(ui, "App", theme::label_color());
+                            port_edit_enabled(
+                                ui,
+                                &mut setup.qlab_patch_app,
+                                !is_connected,
+                                "1",
+                                help(HelpKey::SetupQlabPatchApp),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("▶ {app_dest}"))
+                                    .color(theme::label_weak()),
+                            );
+                            ui.end_row();
+
+                            theme::row_label(ui, "Console", theme::label_color());
+                            port_edit_enabled(
+                                ui,
+                                &mut setup.qlab_patch_console,
+                                !is_connected,
+                                "2",
+                                help(HelpKey::SetupQlabPatchConsole),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("▶ {console_dest}"))
+                                    .color(theme::label_weak()),
+                            );
+                            ui.end_row();
+                        });
                 });
                 } else {
                     peer_section(ui, "QLab", theme::label_disabled(), w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
@@ -2339,6 +2410,8 @@ pub(crate) fn connection_settings_from_setup(
         monitor_port: setup.monitor_port.parse().unwrap_or(0),
         qlab_ip: setup.qlab_ip.clone(),
         qlab_port: setup.qlab_port.parse().unwrap_or(53000),
+        qlab_patch_app: setup.qlab_patch_app.parse().unwrap_or(1),
+        qlab_patch_console: setup.qlab_patch_console.parse().unwrap_or(2),
         send_pace_us: setup.send_pace_us,
         auto_update_on_recall,
         console_snapshot_follow,

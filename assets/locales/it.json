@@ -157,6 +157,8 @@
   "setup.new_show": "Avvia un nuovo spettacolo vuoto — cancella gli snapshot, le macro, i gang e le palette attuali.",
   "setup.open_show": "Scegli un file di spettacolo e caricalo. Save As… per salvare in un nuovo percorso.",
   "setup.qlab_host": "Host QLab — di solito 127.0.0.1 se QLab gira su questa macchina.",
+  "setup.qlab_patch_app": "Patch QLab per i cue che richiamano tramite questa app (/snapshot/recall). Punta quel patch alla porta dei trigger di questo computer in QLab.",
+  "setup.qlab_patch_console": "Patch QLab per i cue per-parametro inviati direttamente al mixer. Punta quel patch alla porta OSC del mixer in QLab.",
   "setup.qlab_port": "Porta di ascolto OSC di QLab — il daemon vi invia i comandi di costruzione dei cue.",
   "setup.save_show": "Salva nel percorso mostrato qui sopra. Se vuoto, chiede una posizione.",
   "setup.save_show_as": "Scegli una nuova posizione e salva lì. Utile quando il campo del percorso punta già a un altro file.",
