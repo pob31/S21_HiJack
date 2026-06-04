@@ -6,7 +6,8 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
 
-use super::client::ReceivedOscMessage;
+use super::client::{ReceivedOscMessage, format_osc_args};
+use crate::model::osc_log::OscLog;
 
 /// Async iPad protocol UDP client (connects to console's iPad remote port).
 pub struct IpadClient {
@@ -45,6 +46,7 @@ impl IpadClient {
             socket: socket.clone(),
             console_addr: self.console_addr,
             offline_mode: None,
+            log: None,
         };
 
         tokio::spawn(receive_loop(socket, tx));
@@ -60,6 +62,8 @@ pub struct IpadSender {
     console_addr: SocketAddr,
     /// When set and `true`, all sends become no-ops (offline mode).
     offline_mode: Option<Arc<AtomicBool>>,
+    /// OSC Log handle — outbound iPad sends are logged as iPad → Console.
+    log: Option<OscLog>,
 }
 
 impl IpadSender {
@@ -69,7 +73,14 @@ impl IpadSender {
             socket,
             console_addr,
             offline_mode: None,
+            log: None,
         }
+    }
+
+    /// Attach the OSC Log so outbound iPad sends appear in the log table
+    /// (iPad → Console direction).
+    pub fn set_log(&mut self, log: Option<OscLog>) {
+        self.log = log;
     }
 
     /// Attach the shared offline-mode flag. When `true`, both `send` and
@@ -106,6 +117,9 @@ impl IpadSender {
         if self.is_offline() {
             trace!(path, "iPad send dropped (offline mode)");
             return Ok(());
+        }
+        if let Some(ref log) = self.log {
+            log.log_ipad_out(path, &format_osc_args(&args));
         }
         let msg = OscMessage {
             addr: path.to_string(),

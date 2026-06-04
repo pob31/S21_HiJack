@@ -8,8 +8,9 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use crate::model::dirty_tracker::DirtyTracker;
+use crate::model::osc_log::OscLog;
 use crate::model::state::ConsoleState;
-use crate::osc::client::ReceivedOscMessage;
+use crate::osc::client::{ReceivedOscMessage, format_osc_args};
 use crate::osc::ipad_client::{IpadClient, IpadSender};
 use crate::osc::ipad_parse::{self, ParsedIpadMessage};
 
@@ -64,11 +65,14 @@ pub async fn connect_mode2(
     offline_mode: Arc<AtomicBool>,
     snapshot_event_tx: Option<mpsc::Sender<i32>>,
     interface_name: Option<&str>,
+    osc_log: Option<OscLog>,
 ) -> Result<(IpadSender, HandshakeResult, JoinHandle<()>), IpadConnectionError> {
     info!(%console_ipad_addr, "Mode 2: connecting to console iPad port...");
 
     let client = IpadClient::new(local_addr, console_ipad_addr, interface_name).await?;
-    let (sender, mut rx) = client.into_parts();
+    let (mut sender, mut rx) = client.into_parts();
+    // Outbound iPad sends (handshake + engine writes) appear in the OSC Log.
+    sender.set_log(osc_log.clone());
 
     // Perform handshake
     let handshake_result =
@@ -91,6 +95,7 @@ pub async fn connect_mode2(
     let macro_clone = macro_manager.clone();
     let offline_clone = offline_mode.clone();
     let snap_tx = snapshot_event_tx.clone();
+    let log_clone = osc_log.clone();
     let handle = tokio::spawn(async move {
         ipad_state_mirror_loop(
             rx,
@@ -99,6 +104,7 @@ pub async fn connect_mode2(
             macro_clone,
             offline_clone,
             snap_tx,
+            log_clone,
         )
         .await;
     });
@@ -129,6 +135,7 @@ pub async fn connect_mode3_proxy(
     snapshot_event_tx: Option<mpsc::Sender<i32>>,
     cancel: tokio_util::sync::CancellationToken,
     interface_name: Option<String>,
+    osc_log: Option<OscLog>,
 ) -> Result<IpadSender, IpadConnectionError> {
     info!(
         %console_ipad_addr,
@@ -148,8 +155,12 @@ pub async fn connect_mode3_proxy(
     info!(%actual_console, %console_ipad_addr, "Mode 3: console-side socket bound");
     let console_socket = std::sync::Arc::new(console_socket);
 
-    // Also create an IpadSender for snapshot engine use (sends via same socket)
-    let ipad_sender = IpadSender::from_socket(console_socket.clone(), console_ipad_addr);
+    // Also create an IpadSender for snapshot engine use (sends via same socket).
+    // Engine-originated sends (snapshot/gang/macro writes to the console) are
+    // logged as iPad → Console; the proxy's own forwards are logged in
+    // `log_and_capture_packet`.
+    let mut ipad_sender = IpadSender::from_socket(console_socket.clone(), console_ipad_addr);
+    ipad_sender.set_log(osc_log.clone());
 
     // Socket 2: iPad-side (daemon ↔ iPad) — raw UDP, interface-bound
     let ipad_socket = crate::ui::net_interfaces::create_bound_udp_socket(
@@ -174,6 +185,7 @@ pub async fn connect_mode3_proxy(
     let capture_mgr = macro_manager.clone();
     let capture_snap_tx = snapshot_event_tx.clone();
     let capture_cancel = cancel.clone();
+    let capture_log = osc_log.clone();
     tokio::spawn(async move {
         state_capture_loop(
             capture_rx,
@@ -182,6 +194,7 @@ pub async fn connect_mode3_proxy(
             capture_mgr,
             capture_snap_tx,
             capture_cancel,
+            capture_log,
         )
         .await;
     });
@@ -223,6 +236,7 @@ async fn state_capture_loop(
     macro_manager: Arc<RwLock<MacroManager>>,
     snapshot_event_tx: Option<mpsc::Sender<i32>>,
     cancel: tokio_util::sync::CancellationToken,
+    osc_log: Option<OscLog>,
 ) {
     info!("Mode 3 state-capture loop started");
     loop {
@@ -237,6 +251,7 @@ async fn state_capture_loop(
                         &dirty_tracker,
                         &macro_manager,
                         &snapshot_event_tx,
+                        &osc_log,
                     )
                     .await;
                 }
@@ -255,6 +270,7 @@ async fn ipad_state_mirror_loop(
     macro_manager: Arc<RwLock<MacroManager>>,
     offline_mode: Arc<AtomicBool>,
     snapshot_event_tx: Option<mpsc::Sender<i32>>,
+    osc_log: Option<OscLog>,
 ) {
     info!("iPad state mirror loop started");
     while let Some(msg) = rx.recv().await {
@@ -270,6 +286,13 @@ async fn ipad_state_mirror_loop(
             &msg.args,
             Some(&config_snapshot),
         );
+        // Log inbound iPad traffic (Console → iPad). Skip high-frequency
+        // meters so the log isn't flooded.
+        if let Some(ref log) = osc_log {
+            if !matches!(parsed, ParsedIpadMessage::MeterValues(_)) {
+                log.log_ipad_in(&msg.path, &format_osc_args(&msg.args));
+            }
+        }
         match parsed {
             ParsedIpadMessage::ParameterUpdate(addr, value) => {
                 debug!(%addr, %value, "iPad mirror: parameter update");
@@ -457,6 +480,7 @@ async fn log_and_capture_packet(
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
     snapshot_event_tx: &Option<mpsc::Sender<i32>>,
+    osc_log: &Option<OscLog>,
 ) {
     // Try standard OSC first
     if let Ok((_, packet)) = rosc::decoder::decode_udp(data) {
@@ -469,6 +493,18 @@ async fn log_and_capture_packet(
                 &msg.args,
                 Some(&config_snapshot),
             );
+            // Log proxied iPad traffic, mapping the wire direction:
+            // I→C = iPad → Console, C→I = Console → iPad. Skip meters.
+            if let Some(log) = osc_log {
+                if !matches!(parsed, ParsedIpadMessage::MeterValues(_)) {
+                    let args = format_osc_args(&msg.args);
+                    if direction == "I→C" {
+                        log.log_ipad_out(&msg.path, &args);
+                    } else {
+                        log.log_ipad_in(&msg.path, &args);
+                    }
+                }
+            }
             match &parsed {
                 ParsedIpadMessage::ParameterUpdate(addr, value) => {
                     debug!(%addr, %value, "Proxy {direction}: param");

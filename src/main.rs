@@ -305,6 +305,7 @@ async fn run_headless(args: Args) {
                     offline_mode.clone(),
                     None,
                     None,
+                    None, // headless: no OSC Log
                 )
                 .await
                 {
@@ -356,6 +357,7 @@ async fn run_headless(args: Args) {
                             None,
                             cancel_token.clone(),
                             None,
+                            None, // headless: no OSC Log
                         )
                         .await
                         {

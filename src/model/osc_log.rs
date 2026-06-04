@@ -25,19 +25,43 @@ impl fmt::Display for OscDirection {
     }
 }
 
+/// Which protocol a logged message belongs to. The GP-OSC and DiGiCo iPad
+/// links are colour-coded differently in the OSC Log so the operator can tell
+/// the two exchanges apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OscProtocol {
+    /// Generic-parameter OSC (the green IN / blue OUT link).
+    #[default]
+    GpOsc,
+    /// DiGiCo iPad remote protocol (Modes 2/3).
+    Ipad,
+}
+
 /// A single logged OSC message.
 #[derive(Clone, Debug)]
 pub struct OscLogEntry {
     pub timestamp: DateTime<Local>,
+    pub protocol: OscProtocol,
     pub direction: OscDirection,
     pub path: String,
     pub args: String,
 }
 
 impl OscLogEntry {
+    /// GP-OSC entry (the default protocol).
     pub fn new(direction: OscDirection, path: String, args: String) -> Self {
+        Self::with_protocol(OscProtocol::GpOsc, direction, path, args)
+    }
+
+    pub fn with_protocol(
+        protocol: OscProtocol,
+        direction: OscDirection,
+        path: String,
+        args: String,
+    ) -> Self {
         Self {
             timestamp: Local::now(),
+            protocol,
             direction,
             path,
             args,
@@ -99,6 +123,28 @@ impl OscLog {
     /// Convenience: log a received message.
     pub fn log_in(&self, path: &str, args: &str) {
         self.push(OscLogEntry::new(
+            OscDirection::In,
+            path.to_string(),
+            args.to_string(),
+        ));
+    }
+
+    /// Convenience: log an iPad-protocol message heading to the console
+    /// (iPad → Console).
+    pub fn log_ipad_out(&self, path: &str, args: &str) {
+        self.push(OscLogEntry::with_protocol(
+            OscProtocol::Ipad,
+            OscDirection::Out,
+            path.to_string(),
+            args.to_string(),
+        ));
+    }
+
+    /// Convenience: log an iPad-protocol message heading to the iPad
+    /// (Console → iPad).
+    pub fn log_ipad_in(&self, path: &str, args: &str) {
+        self.push(OscLogEntry::with_protocol(
+            OscProtocol::Ipad,
             OscDirection::In,
             path.to_string(),
             args.to_string(),

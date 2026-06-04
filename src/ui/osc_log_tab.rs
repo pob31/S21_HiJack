@@ -2,7 +2,7 @@ use eframe::egui;
 
 use super::help::{HelpKey, help};
 use super::theme;
-use crate::model::osc_log::{OscDirection, OscLog};
+use crate::model::osc_log::{OscDirection, OscLog, OscProtocol};
 
 /// State for the OSC Log tab.
 pub struct OscLogTabState {
@@ -129,7 +129,7 @@ pub fn draw_osc_log_tab(ui: &mut egui::Ui, tab: &mut OscLogTabState, log: &OscLo
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .column(Column::exact(70.0)) // Time
-                .column(Column::exact(40.0)) // Dir
+                .column(Column::exact(64.0)) // Dir
                 .column(Column::initial(300.0).at_least(150.0)) // Path
                 .column(Column::remainder()) // Args
                 .header(row_height, |mut header| {
@@ -157,9 +157,21 @@ pub fn draw_osc_log_tab(ui: &mut egui::Ui, tab: &mut OscLogTabState, log: &OscLo
                             );
                         });
                         row.col(|ui| {
-                            let (color, label) = match entry.direction {
-                                OscDirection::In => (theme::ACCENT_GREEN, "IN"),
-                                OscDirection::Out => (theme::ACCENT_BLUE, "OUT"),
+                            // GP OSC: green IN / blue OUT. iPad protocol gets
+                            // its own colours so the two exchanges are easy to
+                            // tell apart — orange for iPad→Console, purple for
+                            // Console→iPad.
+                            let (color, label) = match (entry.protocol, entry.direction) {
+                                (OscProtocol::GpOsc, OscDirection::In) => {
+                                    (theme::ACCENT_GREEN, "IN")
+                                }
+                                (OscProtocol::GpOsc, OscDirection::Out) => {
+                                    (theme::ACCENT_BLUE, "OUT")
+                                }
+                                (OscProtocol::Ipad, OscDirection::Out) => {
+                                    (theme::ACCENT_ORANGE, "iP→Con")
+                                }
+                                (OscProtocol::Ipad, OscDirection::In) => (theme::CH_AUX, "Con→iP"),
                             };
                             ui.colored_label(color, label);
                         });

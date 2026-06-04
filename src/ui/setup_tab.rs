@@ -1846,6 +1846,9 @@ pub(crate) fn start_connection(
     let trigger_allow_cidrs = setup.trigger_allow_cidrs.clone();
     let web_allow_cidrs = setup.web_allow_cidrs.clone();
     let log = osc_log.clone();
+    // Separate clone for the iPad connection (the GP OSC `log` above is moved
+    // into `into_parts_with_log`). Lets iPad traffic appear in the OSC Log.
+    let ipad_log = osc_log.clone();
     let pending = pending_engines.clone();
     runtime.spawn(async move {
         // Create OscClient manually so we can build GangEngine with the sender
@@ -1937,6 +1940,7 @@ pub(crate) fn start_connection(
                         offline.clone(),
                         Some(snap_event_tx.clone()),
                         iface_name.as_deref(),
+                        Some(ipad_log.clone()),
                     )
                     .await
                     {
@@ -1990,6 +1994,7 @@ pub(crate) fn start_connection(
                         Some(snap_event_tx.clone()),
                         token.clone(),
                         iface_name.clone(),
+                        Some(ipad_log.clone()),
                     )
                     .await
                     {

@@ -160,7 +160,7 @@ impl OscSender {
 }
 
 /// Format OSC arguments as a compact string for logging.
-fn format_osc_args(args: &[OscType]) -> String {
+pub(crate) fn format_osc_args(args: &[OscType]) -> String {
     if args.is_empty() {
         return String::new();
     }
