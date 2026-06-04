@@ -915,11 +915,7 @@ fn darken(color: egui::Color32, amount: u8) -> egui::Color32 {
 /// Linearly blend `a` toward `b` by `t` (0.0 = `a`, 1.0 = `b`), per channel.
 fn mix(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
-    egui::Color32::from_rgb(
-        lerp(a.r(), b.r()),
-        lerp(a.g(), b.g()),
-        lerp(a.b(), b.b()),
-    )
+    egui::Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
 }
 
 // ─── Long-press button ─────────────────────────────────────────────────
