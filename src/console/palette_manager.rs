@@ -139,16 +139,6 @@ impl PaletteManager {
 
     // ─── In-session working overlay ────────────────────────────────
 
-    /// Commit one palette's in-session overlay into its permanent values.
-    /// Returns the number of parameters committed (0 if the palette is unknown
-    /// or had no changes).
-    pub fn store_changes(&mut self, palette_id: &Uuid) -> usize {
-        self.palettes
-            .get_mut(palette_id)
-            .map(|p| p.store_changes())
-            .unwrap_or(0)
-    }
-
     /// Commit every palette's in-session overlay. Returns the number of
     /// palettes that had changes committed (for a status message).
     pub fn store_all_changes(&mut self) -> usize {

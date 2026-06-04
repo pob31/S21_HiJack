@@ -517,11 +517,13 @@ fn draw_palette_actions(
                 palette_info.has_working,
                 help(HelpKey::PaletteStoreChanges),
             ) {
-                store_palette_changes(pid, palette_manager, runtime);
-                state.status_message = Some(format!(
-                    "Stored {} change(s) to '{}'",
-                    palette_info.working_count, palette_info.name
-                ));
+                // Same effect as Re-capture: read the channel's current console
+                // state into the palette (and clear the overlay). Reading the
+                // live mirror — rather than draining the ~150 ms-lagging overlay
+                // — guarantees Store captures exactly what's on the desk now, so
+                // the stored state can't lag behind the operator's last tweak.
+                recapture_palette(pid, console_state, palette_manager, runtime, ui_tx);
+                state.status_message = Some(format!("Stored changes to '{}'", palette_info.name));
             }
             if theme::row_action_button(
                 ui,
@@ -875,6 +877,10 @@ fn recapture_palette(
         let mut mgr = pmgr.write().await;
         if let Some(palette) = mgr.get_palette_mut(&palette_id) {
             palette.values = filtered;
+            // The freshly-captured values ARE the new baseline, so any
+            // in-session overlay is now stale — drop it. (The live-absorb loop
+            // keeps it empty afterwards since live == the captured values.)
+            palette.discard_working();
             palette.touch();
         }
 
@@ -901,19 +907,6 @@ fn rename_palette(
                 p.touch();
             }
         }
-    });
-}
-
-/// Commit one palette's in-session overlay into its permanent values so it
-/// will be saved with the show.
-fn store_palette_changes(
-    palette_id: Uuid,
-    palette_manager: &Arc<RwLock<PaletteManager>>,
-    runtime: &tokio::runtime::Handle,
-) {
-    let pmgr = palette_manager.clone();
-    runtime.spawn(async move {
-        pmgr.write().await.store_changes(&palette_id);
     });
 }
 
