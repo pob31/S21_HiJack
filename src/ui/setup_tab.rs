@@ -30,7 +30,7 @@ use crate::model::pan_link::PanLinkBindings;
 use crate::model::parameter::PROTOCOL_COVERAGE;
 use crate::model::recall_scope::ConsoleRecallConfig;
 use crate::model::snapshot::CueList;
-use crate::model::state::ConsoleState;
+use crate::model::state::{ConnectionHealth, ConsoleState};
 use crate::model::ui_mode::{ColorTheme, UiMode};
 use crate::osc::client::OscClient;
 use crate::osc::ipad_client::IpadSender;
@@ -572,8 +572,10 @@ pub fn draw_setup_tab(
     // Reserve a fixed strip at the bottom of the tab for the "Advanced…"
     // footer button so it stays anchored regardless of scroll position.
     // The body is the existing ScrollArea, sized to (avail - footer_h).
+    // The strip is taller than the 28 px button (+4 px lead) on purpose so the
+    // button floats clear of the window's bottom edge rather than sitting flush.
     let avail_h = ui.available_height();
-    let footer_h: f32 = 36.0;
+    let footer_h: f32 = 48.0;
     let body_h = (avail_h - footer_h - 6.0).max(120.0);
 
     // Minimum width at which the connection diagram still renders without
@@ -1871,6 +1873,11 @@ pub(crate) fn start_connection(
         let manager = ConnectionManager::connect_from_parts(osc_sender, rx, daemon, token.clone());
 
         info!("Connected to console via UI");
+        // Present the link as "Connecting…" (yellow) the instant we go
+        // connected — the socket is bound but the desk hasn't answered yet.
+        // Set it here (not only in run_loop) so a reconnect can't flash the
+        // previous session's green for a frame before run_loop resets it.
+        st.write().await.health = ConnectionHealth::Connecting;
         conn_flag.store(true, Ordering::Relaxed);
 
         // Create SnapshotEngine (mut so we can set iPad sender before wrapping in Arc).

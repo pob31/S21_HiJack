@@ -9,8 +9,12 @@ use super::snapshot::{ScopeTemplate, SnapshotData, SnapshotKind};
 /// GP OSC link health, derived from inbound traffic and ping/pong activity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ConnectionHealth {
-    /// Recent inbound traffic — link is healthy.
+    /// Socket is up but the console has not replied yet — a bound UDP socket
+    /// proves nothing about reachability, so we stay here (yellow) until the
+    /// first real inbound message confirms the desk is actually there.
     #[default]
+    Connecting,
+    /// Recent inbound traffic — link is healthy.
     Connected,
     /// No traffic for a while; ping(s) sent but not yet missed.
     Idle,
@@ -45,7 +49,7 @@ impl ConsoleState {
             config,
             parameters: HashMap::new(),
             last_updated: HashMap::new(),
-            health: ConnectionHealth::Connected,
+            health: ConnectionHealth::Connecting,
             generation: 0,
             current_console_snapshot: None,
         }

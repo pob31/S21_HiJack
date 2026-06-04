@@ -135,6 +135,14 @@ async fn run_loop(
 ) {
     info!("GP OSC state mirror started — querying channel counts before full dump");
 
+    // A bound UDP socket doesn't prove the desk is reachable, so present the
+    // link as "Connecting…" (yellow) until the console actually replies. Reset
+    // here so a reconnect on a reused state doesn't inherit a stale health.
+    set_health(&daemon.state, ConnectionHealth::Connecting).await;
+    // Becomes true the first time any inbound message arrives. Until then we
+    // never show the optimistic green "Idle" state from the heartbeat below.
+    let mut ever_confirmed = false;
+
     // Step 1: Query channel counts and wait for the reply before requesting
     // the full state dump. This ensures the config is populated so the UI
     // can display the correct channel counts and send counts.
@@ -156,6 +164,9 @@ async fn run_loop(
                 }
                 let parsed = parse::parse_gp_osc(&msg.path, &msg.args);
                 process_message(&parsed, &daemon, &sender).await;
+                // The console answered — the link is real.
+                ever_confirmed = true;
+                set_health(&daemon.state, ConnectionHealth::Connected).await;
                 match &parsed {
                     ParsedOscMessage::ChannelCounts { .. } | ParsedOscMessage::DiscoveryCount { .. } => {
                         counts_received = true;
@@ -208,6 +219,7 @@ async fn run_loop(
                 last_ping_at = None;
                 unanswered_pings = 0;
                 recovery_attempted = false;
+                ever_confirmed = true;
                 set_health(&daemon.state, ConnectionHealth::Connected).await;
             }
 
@@ -243,9 +255,14 @@ async fn run_loop(
                                 warn!("GP OSC still unresponsive after recovery resend — marking link Lost");
                                 set_health(&daemon.state, ConnectionHealth::Lost).await;
                             }
-                        } else {
-                            // Pinging but threshold not yet hit.
+                        } else if ever_confirmed {
+                            // Pinging but threshold not yet hit. Only an
+                            // established link earns the optimistic green
+                            // "Idle"; a link that has never replied stays
+                            // yellow "Connecting…".
                             set_health(&daemon.state, ConnectionHealth::Idle).await;
+                        } else {
+                            set_health(&daemon.state, ConnectionHealth::Connecting).await;
                         }
                     }
                 }
