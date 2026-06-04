@@ -493,15 +493,43 @@ mod tests {
 
     #[test]
     fn parse_eq_band_param() {
+        // The iPad numbers EQ bands in reverse of the internal model:
+        // iPad wire band 2 (Hi Mid) maps to internal band 5-2 = 3.
         let result = parse_ipad_message("/Input_Channels/3/EQ/eq_gain_2", &[OscType::Float(3.5)]);
         match result {
             ParsedIpadMessage::ParameterUpdate(addr, val) => {
                 assert_eq!(addr.channel, ChannelId::Input(3));
-                assert_eq!(addr.parameter, ParameterPath::EqBandGain(2));
+                assert_eq!(addr.parameter, ParameterPath::EqBandGain(3));
                 assert_eq!(val, ParameterValue::Float(3.5));
             }
             _ => panic!("Expected ParameterUpdate"),
         }
+    }
+
+    /// The iPad reverses EQ band numbering (internal b ↔ iPad wire 5-b). Verify
+    /// every EQ band parameter parses to the reversed internal band, and that
+    /// an out-of-range wire band is rejected.
+    #[test]
+    fn parse_eq_bands_are_reversed() {
+        // iPad wire 1 → internal 4, wire 4 → internal 1, wire 2 → 3, wire 3 → 2.
+        for (wire, internal) in [(1u8, 4u8), (2, 3), (3, 2), (4, 1)] {
+            let path = format!("/Input_Channels/7/EQ/eq_gain_{wire}");
+            match parse_ipad_message(&path, &[OscType::Float(0.0)]) {
+                ParsedIpadMessage::ParameterUpdate(addr, _) => {
+                    assert_eq!(
+                        addr.parameter,
+                        ParameterPath::EqBandGain(internal),
+                        "iPad wire band {wire} should map to internal band {internal}"
+                    );
+                }
+                _ => panic!("Expected ParameterUpdate for {path}"),
+            }
+        }
+        // Out-of-range wire band (5) has no internal equivalent → Unknown.
+        assert!(matches!(
+            parse_ipad_message("/Input_Channels/7/EQ/eq_gain_5", &[OscType::Float(0.0)]),
+            ParsedIpadMessage::Unknown(_)
+        ));
     }
 
     #[test]

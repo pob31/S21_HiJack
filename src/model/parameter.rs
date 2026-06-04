@@ -226,16 +226,34 @@ impl ParameterPath {
             ParameterPath::HighpassFrequency => Some("Filters/lo_filter_freq".into()),
             ParameterPath::LowpassEnabled => Some("Filters/hi_filter_in".into()),
             ParameterPath::LowpassFrequency => Some("Filters/hi_filter_freq".into()),
-            ParameterPath::EqBandFrequency(b) => Some(format!("EQ/eq_freq_{b}")),
-            ParameterPath::EqBandGain(b) => Some(format!("EQ/eq_gain_{b}")),
-            ParameterPath::EqBandQ(b) => Some(format!("EQ/eq_Q_{b}")),
-            ParameterPath::EqBandCurve(b) => Some(format!("EQ/eq_curve_{b}")),
-            ParameterPath::EqBandDynEnabled(b) => Some(format!("EQ/dynamic_eq_on_{b}")),
-            ParameterPath::EqBandDynThreshold(b) => Some(format!("EQ/eq_thresh_{b}")),
-            ParameterPath::EqBandDynRatio(b) => Some(format!("EQ/eq_ratio_{b}")),
-            ParameterPath::EqBandDynAttack(b) => Some(format!("EQ/eq_attack_{b}")),
-            ParameterPath::EqBandDynRelease(b) => Some(format!("EQ/eq_release_{b}")),
-            ParameterPath::EqBandDynOverUnder(b) => Some(format!("EQ/eq_over-under_{b}")),
+            // iPad numbers the EQ bands in reverse (internal b ↔ iPad 5-b) —
+            // see `ipad_eq_band_reverse`. Encode the reversed wire index.
+            ParameterPath::EqBandFrequency(b) => {
+                Some(format!("EQ/eq_freq_{}", ipad_eq_band_reverse(*b)?))
+            }
+            ParameterPath::EqBandGain(b) => Some(format!("EQ/eq_gain_{}", ipad_eq_band_reverse(*b)?)),
+            ParameterPath::EqBandQ(b) => Some(format!("EQ/eq_Q_{}", ipad_eq_band_reverse(*b)?)),
+            ParameterPath::EqBandCurve(b) => {
+                Some(format!("EQ/eq_curve_{}", ipad_eq_band_reverse(*b)?))
+            }
+            ParameterPath::EqBandDynEnabled(b) => {
+                Some(format!("EQ/dynamic_eq_on_{}", ipad_eq_band_reverse(*b)?))
+            }
+            ParameterPath::EqBandDynThreshold(b) => {
+                Some(format!("EQ/eq_thresh_{}", ipad_eq_band_reverse(*b)?))
+            }
+            ParameterPath::EqBandDynRatio(b) => {
+                Some(format!("EQ/eq_ratio_{}", ipad_eq_band_reverse(*b)?))
+            }
+            ParameterPath::EqBandDynAttack(b) => {
+                Some(format!("EQ/eq_attack_{}", ipad_eq_band_reverse(*b)?))
+            }
+            ParameterPath::EqBandDynRelease(b) => {
+                Some(format!("EQ/eq_release_{}", ipad_eq_band_reverse(*b)?))
+            }
+            ParameterPath::EqBandDynOverUnder(b) => {
+                Some(format!("EQ/eq_over-under_{}", ipad_eq_band_reverse(*b)?))
+            }
 
             // Dynamics 1 (compressor)
             ParameterPath::Dyn1Enabled => Some("Dynamics/comp_in".into()),
@@ -1584,49 +1602,68 @@ pub fn dyn1_band_name(b: u8) -> String {
 // ── iPad suffix parsing helpers ──────────────────────────────────────
 
 /// Parse iPad EQ suffix (after "EQ/").
+/// Map an EQ band index between the internal/GP-OSC numbering and the iPad
+/// protocol's numbering.
+///
+/// The S21 iPad/native protocol numbers the four parametric EQ bands in the
+/// reverse order of the internal 1-based model (and the GP-OSC wire): internal
+/// band `b` is iPad wire band `5 - b` (so 1↔4, 2↔3). The mapping is its own
+/// inverse, so the same function converts in either direction. Returns `None`
+/// for indices outside the valid 1..=4 band range.
+///
+/// Without this, iPad-sourced EQ updates land on the mirror-image band and
+/// (in Mode 3) collide with the correctly-decoded GP-OSC mirror writes, so a
+/// single edit corrupts two bands at once.
+fn ipad_eq_band_reverse(band: u8) -> Option<u8> {
+    ParameterPath::EQ_BAND_RANGE
+        .contains(&band)
+        .then(|| 5 - band)
+}
+
 fn parse_ipad_eq_suffix(rest: &str) -> Option<ParameterPath> {
     // Try patterns: eq_freq_{b}, eq_gain_{b}, eq_Q_{b}, eq_curve_{b},
     // dynamic_eq_on_{b}, eq_thresh_{b}, eq_over-under_{b}, eq_ratio_{b},
-    // eq_attack_{b}, eq_release_{b}
+    // eq_attack_{b}, eq_release_{b}. The wire band is reversed relative to the
+    // internal model — see `ipad_eq_band_reverse`.
     if let Some(b_str) = rest.strip_prefix("eq_freq_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandFrequency(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandFrequency(ipad_eq_band_reverse(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_gain_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandGain(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandGain(ipad_eq_band_reverse(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_Q_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandQ(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandQ(ipad_eq_band_reverse(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_curve_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandCurve(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandCurve(ipad_eq_band_reverse(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("dynamic_eq_on_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandDynEnabled(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandDynEnabled(ipad_eq_band_reverse(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_thresh_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandDynThreshold(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandDynThreshold(ipad_eq_band_reverse(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_over-under_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandDynOverUnder(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandDynOverUnder(ipad_eq_band_reverse(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_ratio_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandDynRatio(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandDynRatio(ipad_eq_band_reverse(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_attack_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandDynAttack(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandDynAttack(ipad_eq_band_reverse(wire)?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_release_") {
-        let b: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandDynRelease(b));
+        let wire: u8 = b_str.parse().ok()?;
+        return Some(ParameterPath::EqBandDynRelease(ipad_eq_band_reverse(wire)?));
     }
     None
 }

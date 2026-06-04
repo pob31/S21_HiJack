@@ -154,4 +154,52 @@ mod tests {
         let (path, _) = encode_ipad_parameter(&addr, &ParameterValue::Float(0.0)).unwrap();
         assert_eq!(path, "/Control_Groups/0/fader");
     }
+
+    /// The iPad numbers EQ bands in reverse of the internal model: internal
+    /// band b encodes to iPad wire band (5 - b).
+    #[test]
+    fn encode_eq_band_reversed() {
+        for (internal, wire) in [(1u8, 4u8), (2, 3), (3, 2), (4, 1)] {
+            let addr = ParameterAddress {
+                channel: ChannelId::Input(2),
+                parameter: ParameterPath::EqBandGain(internal),
+            };
+            let (path, _) = encode_ipad_parameter(&addr, &ParameterValue::Float(0.0)).unwrap();
+            assert_eq!(
+                path,
+                format!("/Input_Channels/2/EQ/eq_gain_{wire}"),
+                "internal band {internal} should encode to iPad wire band {wire}"
+            );
+        }
+    }
+
+    /// Every EQ band parameter must survive an iPad suffix encode → parse
+    /// round-trip with its band index intact (the reversal is its own inverse).
+    #[test]
+    fn eq_band_suffix_round_trip_all_params() {
+        for b in 1u8..=4 {
+            let params = [
+                ParameterPath::EqBandFrequency(b),
+                ParameterPath::EqBandGain(b),
+                ParameterPath::EqBandQ(b),
+                ParameterPath::EqBandCurve(b),
+                ParameterPath::EqBandDynEnabled(b),
+                ParameterPath::EqBandDynThreshold(b),
+                ParameterPath::EqBandDynRatio(b),
+                ParameterPath::EqBandDynAttack(b),
+                ParameterPath::EqBandDynRelease(b),
+                ParameterPath::EqBandDynOverUnder(b),
+            ];
+            for param in params {
+                let suffix = param
+                    .to_ipad_suffix()
+                    .unwrap_or_else(|| panic!("EQ band param must encode: {param:?}"));
+                assert_eq!(
+                    ParameterPath::from_ipad_suffix(&suffix),
+                    Some(param.clone()),
+                    "suffix round-trip failed for {param:?} (suffix {suffix})"
+                );
+            }
+        }
+    }
 }
