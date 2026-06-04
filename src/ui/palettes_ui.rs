@@ -581,6 +581,12 @@ fn draw_assign_overlay(
                     .max_height(360.0)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        // The default stripe colour (`faint_bg_color`) is
+                        // `bg_elevated`, the same grey as an unchecked checkbox's
+                        // fill — so toggles vanish on striped rows. Use the panel
+                        // grey instead: still a clear stripe over the popup's
+                        // darker base, but distinct from the toggle grey.
+                        ui.visuals_mut().faint_bg_color = theme::bg_panel();
                         egui::Grid::new("palette_assign_grid")
                             .num_columns(info.kinds.len() + 1)
                             .spacing([8.0, 4.0])
