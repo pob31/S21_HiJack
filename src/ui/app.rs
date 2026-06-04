@@ -1724,7 +1724,17 @@ impl eframe::App for HiJackApp {
                         )
                         .fill(fill)
                         .corner_radius(4.0);
-                        if ui.add(btn).clicked() {
+                        let tab_help = match tab {
+                            Tab::Setup => HelpKey::TabSetup,
+                            Tab::Macros => HelpKey::TabMacros,
+                            Tab::Gangs => HelpKey::TabGangs,
+                            Tab::PanLink => HelpKey::TabPanLink,
+                            Tab::Snapshots => HelpKey::TabSnapshots,
+                            Tab::Monitor => HelpKey::TabMonitor,
+                            Tab::OscLog => HelpKey::TabOscLog,
+                            Tab::Inspector => HelpKey::TabInspector,
+                        };
+                        if ui.add(btn).on_hover_text(help(tab_help)).clicked() {
                             self.active_tab = tab;
                         }
                     }

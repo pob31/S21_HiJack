@@ -53,6 +53,21 @@ pub enum HelpKey {
 
     // ── Advanced settings ──
     AdvancedDiagnostics,
+    AdvancedPacing,
+    AdvancedScale,
+
+    // ── Main tab bar ──
+    TabSetup,
+    TabMacros,
+    TabGangs,
+    TabPanLink,
+    TabSnapshots,
+    TabMonitor,
+    TabOscLog,
+    TabInspector,
+
+    // ── Shared widgets ──
+    LongPressConfirm,
 
     // ── Macros ──
     MacroLearnReady,
@@ -157,12 +172,16 @@ pub enum HelpKey {
     PaletteCapture,
     PaletteRecapture,
     PaletteDelete,
+    PaletteLinkedOther,
 
     // ── Snapshot / cue actions ──
     SnapshotCaptureNow,
     SnapshotRecall,
     SnapshotRecapture,
     SnapshotUndo,
+    SnapshotApplyScope,
+    SnapshotQlabCreateTrigger,
+    SnapshotQlabExportFull,
     CueAdd,
     CueSaveChanges,
 
@@ -334,6 +353,48 @@ fn meta(key: HelpKey) -> HelpMeta {
             "advanced.diagnostics",
             "Adds OSC Log and Inspector tabs to the main tab bar.",
         ),
+        AdvancedPacing => (
+            "advanced.pacing",
+            "Delay inserted between consecutive OSC messages so a long sequence \
+             doesn't flood the console. Applies to snapshot recall and macros. \
+             0 = no pacing.",
+        ),
+        AdvancedScale => (
+            "advanced.scale",
+            "Manual UI size multiplier, applied on top of the automatic display \
+             scaling. 100% = automatic scaling only.",
+        ),
+
+        // ── Main tab bar ──
+        TabSetup => (
+            "tab.setup",
+            "Connection, display mode, and show-file load/save.",
+        ),
+        TabMacros => ("tab.macros", "Record, edit and fire macros."),
+        TabGangs => (
+            "tab.gangs",
+            "Link channels so a parameter change on one propagates to the others.",
+        ),
+        TabPanLink => (
+            "tab.pan_link",
+            "Link an input channel's pan to its aux send pans.",
+        ),
+        TabSnapshots => (
+            "tab.snapshots",
+            "Capture and recall console state as snapshots and cues.",
+        ),
+        TabMonitor => (
+            "tab.monitor",
+            "Live channel meters and remote monitoring clients.",
+        ),
+        TabOscLog => (
+            "tab.osc_log",
+            "Live log of OSC traffic to and from the console.",
+        ),
+        TabInspector => ("tab.inspector", "Inspect the live parameter state mirror."),
+
+        // ── Shared widgets ──
+        LongPressConfirm => ("widget.long_press_confirm", "Hold {ms} ms to confirm."),
 
         // ── Macros ──
         MacroLearnReady => (
@@ -679,6 +740,7 @@ fn meta(key: HelpKey) -> HelpMeta {
             "palette.delete",
             "Delete this palette and unlink it from any snapshots.",
         ),
+        PaletteLinkedOther => ("palette.linked_other", "Currently linked to: \"{name}\"."),
 
         // ── Snapshot / cue actions ──
         SnapshotCaptureNow => (
@@ -697,6 +759,21 @@ fn meta(key: HelpKey) -> HelpMeta {
         SnapshotUndo => (
             "snapshot.undo",
             "Undo the last snapshot recall, restoring the previous values.",
+        ),
+        SnapshotApplyScope => (
+            "snapshot.apply_scope",
+            "When the scope is applied: 'On save' stores only in-scope parameters; \
+             'On recall' captures the whole console state and filters it on recall \
+             (allowing 'Recall without scope').",
+        ),
+        SnapshotQlabCreateTrigger => (
+            "snapshot.qlab_create_trigger",
+            "Create a single network cue in QLab whose customString fires \
+             /snapshot/recall <name>. Sent to {target}.",
+        ),
+        SnapshotQlabExportFull => (
+            "snapshot.qlab_export_full",
+            "Export one network cue per parameter to QLab (grouped). Sent to {target}.",
         ),
         CueAdd => (
             "cue.add",
@@ -1072,6 +1149,17 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::OfflineToggle,
     HelpKey::SnapshotReRecall,
     HelpKey::AdvancedDiagnostics,
+    HelpKey::AdvancedPacing,
+    HelpKey::AdvancedScale,
+    HelpKey::TabSetup,
+    HelpKey::TabMacros,
+    HelpKey::TabGangs,
+    HelpKey::TabPanLink,
+    HelpKey::TabSnapshots,
+    HelpKey::TabMonitor,
+    HelpKey::TabOscLog,
+    HelpKey::TabInspector,
+    HelpKey::LongPressConfirm,
     HelpKey::MacroLearnReady,
     HelpKey::MacroLearnNeedsConn,
     HelpKey::MacroClearSelection,
@@ -1152,10 +1240,14 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::PaletteCapture,
     HelpKey::PaletteRecapture,
     HelpKey::PaletteDelete,
+    HelpKey::PaletteLinkedOther,
     HelpKey::SnapshotCaptureNow,
     HelpKey::SnapshotRecall,
     HelpKey::SnapshotRecapture,
     HelpKey::SnapshotUndo,
+    HelpKey::SnapshotApplyScope,
+    HelpKey::SnapshotQlabCreateTrigger,
+    HelpKey::SnapshotQlabExportFull,
     HelpKey::CueAdd,
     HelpKey::CueSaveChanges,
     HelpKey::ScopeTemplateLoad,

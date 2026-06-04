@@ -525,9 +525,10 @@ fn draw_assign_overlay(
                                             if let CellState::LinkedToOther { other_name } =
                                                 &cell.state
                                             {
-                                                resp.clone().on_hover_text(format!(
-                                                    "Currently: \"{other_name}\""
-                                                ));
+                                                resp.clone().on_hover_text(
+                                                    help(HelpKey::PaletteLinkedOther)
+                                                        .replace("{name}", other_name),
+                                                );
                                             }
                                             if resp.changed() {
                                                 if on {

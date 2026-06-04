@@ -268,12 +268,14 @@ pub fn draw_snapshots_tab(
                                 &mut snap_state.pending_kind,
                                 SnapshotKind::ApplyOnSave,
                                 "On save",
-                            );
+                            )
+                            .on_hover_text(help(HelpKey::SnapshotApplyScope));
                             ui.radio_value(
                                 &mut snap_state.pending_kind,
                                 SnapshotKind::ApplyOnRecall,
                                 "On recall",
-                            );
+                            )
+                            .on_hover_text(help(HelpKey::SnapshotApplyScope));
                         });
 
                         // Capture controls. ApplyOnRecall doesn't need a
@@ -511,10 +513,10 @@ pub fn draw_snapshots_tab(
                                     )
                                 })
                                 .inner
-                                .on_hover_text(format!(
-                                    "Create a single network cue in QLab whose customString \
-                                     fires `/snapshot/recall <name>`. Sent to {qlab_ip}:{qlab_port}."
-                                ));
+                                .on_hover_text(
+                                    help(HelpKey::SnapshotQlabCreateTrigger)
+                                        .replace("{target}", &format!("{qlab_ip}:{qlab_port}")),
+                                );
                             if trigger_resp.clicked() {
                                 qlab_create_trigger_cue(
                                     snap_state,
@@ -539,10 +541,10 @@ pub fn draw_snapshots_tab(
                                     )
                                 })
                                 .inner
-                                .on_hover_text(format!(
-                                    "Export one network cue per parameter to QLab (grouped). \
-                                     Sent to {qlab_ip}:{qlab_port}."
-                                ));
+                                .on_hover_text(
+                                    help(HelpKey::SnapshotQlabExportFull)
+                                        .replace("{target}", &format!("{qlab_ip}:{qlab_port}")),
+                                );
                             if export_resp.clicked() {
                                 qlab_export_full_snapshot(
                                     snap_state,

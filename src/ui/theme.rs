@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use eframe::egui;
 
+use super::help::{HelpKey, help};
 use crate::model::channel::ChannelId;
 use crate::model::state::ConnectionHealth;
 use crate::model::ui_mode::ColorTheme;
@@ -999,7 +1000,9 @@ pub fn long_press_button(
     }
 
     if enabled {
-        response.on_hover_text(format!("Hold {duration_ms} ms to confirm"));
+        response.on_hover_text(
+            help(HelpKey::LongPressConfirm).replace("{ms}", &duration_ms.to_string()),
+        );
     }
 
     triggered

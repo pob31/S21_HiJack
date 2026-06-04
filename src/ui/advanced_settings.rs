@@ -94,7 +94,8 @@ pub fn draw_advanced_settings_window(
                     );
                     slider.union(value)
                 })
-                .inner;
+                .inner
+                .on_hover_text(help(HelpKey::AdvancedPacing));
             if resp.changed() {
                 let new = pace as u64;
                 setup.send_pace_us = new;
@@ -172,7 +173,8 @@ pub fn draw_advanced_settings_window(
                     );
                     slider.union(value)
                 })
-                .inner;
+                .inner
+                .on_hover_text(help(HelpKey::AdvancedScale));
             if scale_resp.changed() {
                 setup.ui_scale = pct / 100.0;
                 save_app_preferences(setup);
