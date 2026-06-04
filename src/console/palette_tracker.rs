@@ -38,7 +38,6 @@ pub async fn run_absorb_loop(
 ) {
     let mut ticker = tokio::time::interval(ABSORB_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut last_gen = u64::MAX; // force a first pass
 
     loop {
         tokio::select! {
@@ -47,12 +46,17 @@ pub async fn run_absorb_loop(
                 break;
             }
             _ = ticker.tick() => {
-                let current_gen = dirty_tracker.read().await.generation();
-                if current_gen == last_gen {
-                    continue;
+                // Re-absorb every tick while any operator change is pending —
+                // do NOT gate on the dirty-tracker *generation*. A continuous
+                // knob sweep of one parameter bumps the generation only on the
+                // first sample (marking an already-dirty cell is a no-op for the
+                // generation), so generation-gating would freeze the overlay at
+                // the sweep's first value. Re-reading the live value each tick
+                // lets the overlay track the latest position. `has_any()` keeps
+                // idle ticks cheap.
+                if dirty_tracker.read().await.has_any() {
+                    absorb_once(&state, &cue_manager, &palette_manager, &dirty_tracker).await;
                 }
-                last_gen = current_gen;
-                absorb_once(&state, &cue_manager, &palette_manager, &dirty_tracker).await;
             }
         }
     }
