@@ -17,6 +17,7 @@ pub mod recall_scope_popup;
 pub mod scope_editor;
 pub mod setup_tab;
 pub mod snapshots_tab;
+pub mod status;
 pub mod theme;
 
 /// Active UI tab. The previous `Live` variant was retired when the GO /

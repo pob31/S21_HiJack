@@ -264,7 +264,8 @@ pub fn draw_pan_link_tab(
                     )
                     .color(theme::label_weak())
                     .small(),
-                );
+                )
+                .on_hover_text(help(HelpKey::PanLinkInfoInstructions));
             });
 
             ui.add_space(8.0);
@@ -355,7 +356,8 @@ fn draw_inputs_grid(
             ui.colored_label(
                 theme::label_weak(),
                 "No inputs configured — connect to console or load a show file.",
-            );
+            )
+            .on_hover_text(help(HelpKey::PanLinkWarnNoInputs));
             return;
         }
 
@@ -457,7 +459,8 @@ fn draw_auxes_grid(
         ui.spacing_mut().item_spacing.x = theme::TILE_GAP; // reset (grid row forces 0)
 
         if aux_buses.is_empty() {
-            ui.colored_label(theme::label_weak(), "No auxes configured.");
+            ui.colored_label(theme::label_weak(), "No auxes configured.")
+                .on_hover_text(help(HelpKey::PanLinkInfoNoAuxes));
             return;
         }
 

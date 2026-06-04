@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use super::UiEvent;
 use super::help::{HelpKey, help};
+use super::status::StatusMessage;
 use super::theme;
 use crate::console::cue_manager::CueManager;
 use crate::console::macro_engine::MacroEngine;
@@ -66,7 +67,7 @@ pub struct MacrosTabState {
     pub step_delay_edits: Vec<String>,
 
     // Feedback
-    pub status_message: Option<String>,
+    pub status_message: Option<StatusMessage>,
     pub last_execution_info: Option<String>,
 
     // Cached snapshots of the macro list and the selected macro's steps.
@@ -489,7 +490,10 @@ pub fn draw_macros_tab(
                     }
                     if let Some(msg) = &macros_state.status_message {
                         ui.add_space(2.0);
-                        ui.colored_label(theme::TEXT_WARNING, msg);
+                        let resp = ui.colored_label(theme::TEXT_WARNING, &msg.text);
+                        if let Some(key) = msg.help {
+                            resp.on_hover_text(help(key));
+                        }
                     }
                 });
         });
@@ -714,7 +718,8 @@ fn draw_macro_list(
     }
 
     if macros_state.cached_list.is_empty() {
-        ui.label(egui::RichText::new("No macros defined").color(theme::label_weak()));
+        ui.label(egui::RichText::new("No macros defined").color(theme::label_weak()))
+            .on_hover_text(help(HelpKey::MacroInfoEmpty));
         return;
     }
 
@@ -868,7 +873,8 @@ fn draw_step_editor(
         theme::section_heading(ui, "Step Editor");
         ui.label(
             egui::RichText::new("Select a macro to edit its steps").color(theme::label_weak()),
-        );
+        )
+        .on_hover_text(help(HelpKey::MacroInfoSelectToEdit));
         return;
     };
 
@@ -1107,7 +1113,8 @@ fn draw_step_editor(
             ui.label(
                 egui::RichText::new("No steps — add one below or use Learn mode")
                     .color(theme::label_weak()),
-            );
+            )
+            .on_hover_text(help(HelpKey::MacroInfoNoSteps));
             macros_state.step_keep_hover_idx = None;
         } else {
             // Address of the step whose "Keep" button was hovered last
@@ -1752,8 +1759,10 @@ fn draw_add_step(
         let delay_ms: u32 = macros_state.add_step_delay.parse().unwrap_or(0);
 
         let Some(kind) = build_step_kind(macros_state, macro_id) else {
-            macros_state.status_message =
-                Some("Add Step: required field missing for this kind".into());
+            macros_state.status_message = Some(StatusMessage::with_help(
+                "Add Step: required field missing for this kind",
+                HelpKey::MacroWarnAddStepMissing,
+            ));
             return;
         };
 
@@ -3160,7 +3169,8 @@ fn draw_streamdeck_step_list(
         ui.label(
             egui::RichText::new("No steps yet — pick a macro and click Add step on the right.")
                 .color(theme::label_weak()),
-        );
+        )
+        .on_hover_text(help(HelpKey::MacroInfoSdNoSteps));
         return;
     }
 

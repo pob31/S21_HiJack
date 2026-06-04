@@ -53,7 +53,8 @@ pub fn draw_advanced_settings_window(
                 )
                 .small()
                 .color(theme::label_weak()),
-            );
+            )
+            .on_hover_text(help(HelpKey::AdvancedPacing));
             ui.add_space(2.0);
             let mut pace = setup.send_pace_us as f32;
             // Widen the slider track to fill the panel, and show the value in a
@@ -138,7 +139,8 @@ pub fn draw_advanced_settings_window(
                 )
                 .small()
                 .color(theme::label_weak()),
-            );
+            )
+            .on_hover_text(help(HelpKey::AdvancedScale));
             ui.add_space(2.0);
             // Slider/value work in percent; the model stores a 0.5–2.5 multiplier.
             let mut pct = (setup.ui_scale * 100.0).round();
@@ -251,7 +253,8 @@ pub fn draw_advanced_settings_window(
                 )
                 .small()
                 .color(theme::label_weak()),
-            );
+            )
+            .on_hover_text(help(HelpKey::AdvancedLanguage));
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 theme::row_label(ui, "Help-bubble language:", theme::label_color());

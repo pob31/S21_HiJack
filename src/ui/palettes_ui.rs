@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use super::UiEvent;
 use super::help::{HelpKey, help};
+use super::status::StatusMessage;
 use super::theme;
 use crate::console::cue_manager::CueManager;
 use crate::console::palette_manager::PaletteManager;
@@ -77,7 +78,7 @@ pub struct PalettesUiState {
     /// palette's name. Cleared on commit (Enter / focus loss), cancel
     /// (Escape), or selection change.
     pub rename_draft: Option<(Uuid, String)>,
-    pub status_message: Option<String>,
+    pub status_message: Option<StatusMessage>,
 }
 
 impl Default for PalettesUiState {
@@ -224,7 +225,8 @@ pub fn draw_palettes_section(
             help(HelpKey::PaletteStoreAll),
         ) {
             store_all_palette_changes(palette_manager, runtime);
-            state.status_message = Some(format!("Stored changes to {working_total} palette(s)"));
+            state.status_message =
+                Some(format!("Stored changes to {working_total} palette(s)").into());
         }
         if working_total > 0 {
             ui.label(
@@ -254,7 +256,8 @@ pub fn draw_palettes_section(
                     ui.label(
                         egui::RichText::new("No palettes yet. Capture one above.")
                             .color(theme::label_weak()),
-                    );
+                    )
+                    .on_hover_text(help(HelpKey::PaletteInfoEmpty));
                 }
                 for palette in palettes {
                     let selected = state.selected_palette_id == Some(palette.id);
@@ -366,7 +369,10 @@ pub fn draw_palettes_section(
     // Status
     if let Some(msg) = &state.status_message {
         ui.add_space(2.0);
-        ui.colored_label(theme::TEXT_WARNING, msg);
+        let resp = ui.colored_label(theme::TEXT_WARNING, &msg.text);
+        if let Some(key) = msg.help {
+            resp.on_hover_text(help(key));
+        }
     }
 }
 
@@ -440,7 +446,8 @@ fn draw_palette_actions(
                     "Select a palette below to edit it and assign it to snapshots.",
                 )
                 .color(theme::label_weak()),
-            );
+            )
+            .on_hover_text(help(HelpKey::PaletteInfoSelectHint));
             return;
         };
         let pid = *pid;
@@ -523,7 +530,8 @@ fn draw_palette_actions(
                 // — guarantees Store captures exactly what's on the desk now, so
                 // the stored state can't lag behind the operator's last tweak.
                 recapture_palette(pid, console_state, palette_manager, runtime, ui_tx);
-                state.status_message = Some(format!("Stored changes to '{}'", palette_info.name));
+                state.status_message =
+                    Some(format!("Stored changes to '{}'", palette_info.name).into());
             }
             if theme::row_action_button(
                 ui,
@@ -534,10 +542,9 @@ fn draw_palette_actions(
                 help(HelpKey::PaletteRevert),
             ) {
                 let _ = ui_tx.send(UiEvent::PaletteRevert { palette_id: pid });
-                state.status_message = Some(format!(
-                    "Reverted '{}' to last captured values",
-                    palette_info.name
-                ));
+                state.status_message = Some(
+                    format!("Reverted '{}' to last captured values", palette_info.name).into(),
+                );
             }
             if palette_info.has_working {
                 ui.label(
@@ -597,7 +604,8 @@ fn draw_assign_overlay(
                 ui.separator();
 
                 if rows.is_empty() {
-                    ui.label(egui::RichText::new("No snapshots yet.").color(theme::label_weak()));
+                    ui.label(egui::RichText::new("No snapshots yet.").color(theme::label_weak()))
+                        .on_hover_text(help(HelpKey::PaletteInfoNoSnapshots));
                     return;
                 }
 
@@ -789,7 +797,10 @@ fn capture_palette(
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
     let Ok(ch_num) = state.capture_channel_number.parse::<u8>() else {
-        state.status_message = Some("Invalid channel number".into());
+        state.status_message = Some(StatusMessage::with_help(
+            "Invalid channel number",
+            HelpKey::PaletteWarnInvalidChannel,
+        ));
         return;
     };
     let channel = state.capture_channel_type.to_channel_id(ch_num);
@@ -806,7 +817,10 @@ fn capture_palette(
         })
         .collect();
     if kinds.is_empty() {
-        state.status_message = Some("Select at least one kind to capture".into());
+        state.status_message = Some(StatusMessage::with_help(
+            "Select at least one kind to capture",
+            HelpKey::PaletteWarnNoKind,
+        ));
         return;
     }
     let name = state.new_palette_name.clone();
@@ -830,7 +844,7 @@ fn capture_palette(
         let _ = tx.send(UiEvent::PaletteCaptured { name, param_count });
     });
 
-    state.status_message = Some(format!("Capturing '{}'...", state.new_palette_name));
+    state.status_message = Some(format!("Capturing '{}'...", state.new_palette_name).into());
     state.new_palette_name.clear();
 }
 

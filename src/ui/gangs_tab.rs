@@ -5,6 +5,7 @@ use eframe::egui;
 use tokio::sync::RwLock;
 
 use super::help::{HelpKey, help};
+use super::status::StatusMessage;
 use super::theme;
 use crate::console::gang_manager::GangManager;
 use crate::model::channel::ChannelId;
@@ -279,7 +280,7 @@ pub struct GangsTabState {
     /// linked sections above).
     pub new_gang_pan_mode: GangPanMode,
     pub editing_gang_id: Option<uuid::Uuid>,
-    pub status_message: Option<String>,
+    pub status_message: Option<StatusMessage>,
 }
 
 impl Default for GangsTabState {
@@ -564,13 +565,25 @@ pub fn draw_gangs_tab(
                         parse_channel_members(tab.new_gang_channel_type, &tab.new_gang_members);
 
                     if members.is_empty() {
-                        tab.status_message = Some("No valid members parsed".into());
+                        tab.status_message = Some(StatusMessage::with_help(
+                            "No valid members parsed",
+                            HelpKey::GangsWarnNoMembers,
+                        ));
                     } else if tab.new_gang_sections.is_empty() {
-                        tab.status_message = Some("Select at least one section".into());
+                        tab.status_message = Some(StatusMessage::with_help(
+                            "Select at least one section",
+                            HelpKey::GangsWarnNoSection,
+                        ));
                     } else if members.len() < 2 {
-                        tab.status_message = Some("A gang needs at least 2 members".into());
+                        tab.status_message = Some(StatusMessage::with_help(
+                            "A gang needs at least 2 members",
+                            HelpKey::GangsWarnMinMembers,
+                        ));
                     } else if tab.new_gang_pan_mode == GangPanMode::Reversed && members.len() != 2 {
-                        tab.status_message = Some("Reversed pan needs exactly 2 members".into());
+                        tab.status_message = Some(StatusMessage::with_help(
+                            "Reversed pan needs exactly 2 members",
+                            HelpKey::GangsWarnReversedPan,
+                        ));
                     } else {
                         let name = tab.new_gang_name.trim().to_string();
                         let sections = tab.new_gang_sections.clone();
@@ -591,10 +604,13 @@ pub fn draw_gangs_tab(
                             None
                         };
                         let spread_note = |base: String| match spread {
-                            Some(s) => format!(
-                                "{base} — faders span {s:.0} dB; in Relative mode they keep that offset"
+                            Some(s) => StatusMessage::with_help(
+                                format!(
+                                    "{base} — faders span {s:.0} dB; in Relative mode they keep that offset"
+                                ),
+                                HelpKey::GangsWarnFaderSpread,
                             ),
-                            None => base,
+                            None => base.into(),
                         };
 
                         if let Some(edit_id) = tab.editing_gang_id.take() {
@@ -648,7 +664,10 @@ pub fn draw_gangs_tab(
             // Status message
             if let Some(ref msg) = tab.status_message {
                 ui.add_space(4.0);
-                ui.colored_label(theme::TEXT_WARNING, msg.as_str());
+                let resp = ui.colored_label(theme::TEXT_WARNING, &msg.text);
+                if let Some(key) = msg.help {
+                    resp.on_hover_text(help(key));
+                }
             }
         });
 
@@ -687,7 +706,8 @@ pub fn draw_gangs_tab(
                         ui.label(
                             egui::RichText::new("No gang groups configured.")
                                 .color(theme::label_weak()),
-                        );
+                        )
+                        .on_hover_text(help(HelpKey::GangsInfoEmpty));
                     } else {
                         let mut to_remove = None;
                         let mut to_edit = None;

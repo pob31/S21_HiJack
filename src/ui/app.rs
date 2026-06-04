@@ -34,6 +34,7 @@ use super::pan_link_tab::PanLinkTabState;
 use super::scope_editor::ScopeWindowResult;
 use super::setup_tab::SetupTabState;
 use super::snapshots_tab::{ScopeEditTarget, SnapshotsTabState};
+use super::status::StatusMessage;
 use super::{PendingEngines, Tab, UiEvent};
 
 // ─── Global physical-size (PPI) UI scaling ──────────────────────────────────
@@ -791,7 +792,10 @@ impl HiJackApp {
                 }
                 UiEvent::ConnectionFailed(msg) => {
                     self.connected.store(false, Ordering::Relaxed);
-                    self.setup.status_message = Some(format!("Connection failed: {msg}"));
+                    self.setup.status_message = Some(StatusMessage::with_help(
+                        format!("Connection failed: {msg}"),
+                        HelpKey::SetupWarnConnectionFailed,
+                    ));
                 }
                 UiEvent::Disconnected => {
                     self.connected.store(false, Ordering::Relaxed);
@@ -810,7 +814,7 @@ impl HiJackApp {
                 }
                 UiEvent::SnapshotCaptured { name, param_count } => {
                     self.snapshots.status_message =
-                        Some(format!("Captured '{name}' ({param_count} params)"));
+                        Some(format!("Captured '{name}' ({param_count} params)").into());
                 }
                 UiEvent::SnapshotCaptureConfirm {
                     snapshot_id,
@@ -818,7 +822,7 @@ impl HiJackApp {
                     params,
                 } => {
                     self.snapshots.status_message =
-                        Some(format!("Captured '{name}' ({} params)", params.len()));
+                        Some(format!("Captured '{name}' ({} params)", params.len()).into());
                     self.capture_confirm = Some(CaptureConfirm {
                         snapshot_id,
                         name,
@@ -830,7 +834,7 @@ impl HiJackApp {
                 }
                 UiEvent::SnapshotRecalled { name, params_sent } => {
                     self.snapshots.status_message =
-                        Some(format!("Recalled '{name}' ({params_sent} params sent)"));
+                        Some(format!("Recalled '{name}' ({params_sent} params sent)").into());
                 }
                 UiEvent::CueRecalled { .. } => {
                     // The Live tab used to surface a "Cue X.Y recalled
@@ -853,31 +857,30 @@ impl HiJackApp {
                         Some(format!("Executed '{name}' ({steps_executed} sent{suffix})"));
                 }
                 UiEvent::MacroExecutionFailed(msg) => {
-                    self.macros.status_message = Some(format!("Run failed: {msg}"));
+                    self.macros.status_message = Some(format!("Run failed: {msg}").into());
                 }
                 UiEvent::MacroRecordingStopped { step_count } => {
                     self.macros.status_message =
-                        Some(format!("Recording stopped: {step_count} steps captured"));
+                        Some(format!("Recording stopped: {step_count} steps captured").into());
                 }
                 UiEvent::PaletteCaptured { name, param_count } => {
-                    self.palettes_ui.status_message = Some(format!(
-                        "Captured palette '{name}' ({param_count} EQ params)"
-                    ));
+                    self.palettes_ui.status_message =
+                        Some(format!("Captured palette '{name}' ({param_count} EQ params)").into());
                 }
                 UiEvent::PaletteLinked {
                     palette_name,
                     snapshot_name,
                 } => {
                     self.palettes_ui.status_message =
-                        Some(format!("Linked '{palette_name}' to '{snapshot_name}'"));
+                        Some(format!("Linked '{palette_name}' to '{snapshot_name}'").into());
                 }
                 UiEvent::PaletteUpdated {
                     name,
                     affected_count,
                 } => {
-                    self.palettes_ui.status_message = Some(format!(
-                        "Updated '{name}' — {affected_count} snapshots affected"
-                    ));
+                    self.palettes_ui.status_message = Some(
+                        format!("Updated '{name}' — {affected_count} snapshots affected").into(),
+                    );
                 }
                 UiEvent::PaletteRevert { palette_id } => {
                     // Drop the palette's in-session overlay, stop the absorb loop
@@ -907,7 +910,7 @@ impl HiJackApp {
                     });
                 }
                 UiEvent::ShowFileLoaded(path, conn, recall) => {
-                    self.setup.status_message = Some(format!("Loaded: {path}"));
+                    self.setup.status_message = Some(format!("Loaded: {path}").into());
                     // If this load resolved a recovery, flag it so the dialog
                     // can offer to repair the original path.
                     if let Some(rd) = &mut self.recovery_dialog {
@@ -1009,10 +1012,13 @@ impl HiJackApp {
                     }
                 }
                 UiEvent::ShowFileSaved(path) => {
-                    self.setup.status_message = Some(format!("Saved: {path}"));
+                    self.setup.status_message = Some(format!("Saved: {path}").into());
                 }
                 UiEvent::ShowFileError(msg) => {
-                    self.setup.status_message = Some(msg);
+                    self.setup.status_message = Some(StatusMessage::with_help(
+                        msg,
+                        HelpKey::SetupWarnShowFileError,
+                    ));
                 }
                 UiEvent::AutosaveCompleted { fingerprint, wrote } => {
                     self.last_autosaved_fingerprint = fingerprint;
@@ -1022,8 +1028,10 @@ impl HiJackApp {
                     }
                 }
                 UiEvent::ShowFileCorrupt { path, candidates } => {
-                    self.setup.status_message =
-                        Some("Show file appears corrupt — choose a recovery candidate".into());
+                    self.setup.status_message = Some(StatusMessage::with_help(
+                        "Show file appears corrupt — choose a recovery candidate",
+                        HelpKey::SetupWarnShowCorrupt,
+                    ));
                     self.recovery_dialog = Some(RecoveryDialog {
                         original_path: path,
                         candidates,
@@ -1036,7 +1044,10 @@ impl HiJackApp {
                 }
                 UiEvent::IpadConnectionFailed(msg) => {
                     self.setup.ipad_connected = false;
-                    self.setup.status_message = Some(format!("iPad connection failed: {msg}"));
+                    self.setup.status_message = Some(StatusMessage::with_help(
+                        format!("iPad connection failed: {msg}"),
+                        HelpKey::SetupWarnIpadConnFailed,
+                    ));
                 }
                 UiEvent::FadeProgress { .. } => {
                     // Fade-progress display lived on the old Live tab.
@@ -1045,10 +1056,11 @@ impl HiJackApp {
                     // operators want it back.
                 }
                 UiEvent::MonitorClientConnected { name } => {
-                    self.monitor.status_message = Some(format!("Client '{name}' connected"));
+                    self.monitor.status_message = Some(format!("Client '{name}' connected").into());
                 }
                 UiEvent::MonitorClientDisconnected { name } => {
-                    self.monitor.status_message = Some(format!("Client '{name}' disconnected"));
+                    self.monitor.status_message =
+                        Some(format!("Client '{name}' disconnected").into());
                 }
                 UiEvent::MonitorServerStarted => {
                     self.monitor.monitor_server_running = true;
@@ -1056,7 +1068,10 @@ impl HiJackApp {
                 }
                 UiEvent::MonitorServerFailed(msg) => {
                     self.monitor.monitor_server_running = false;
-                    self.setup.status_message = Some(format!("Monitor server failed: {msg}"));
+                    self.setup.status_message = Some(StatusMessage::with_help(
+                        format!("Monitor server failed: {msg}"),
+                        HelpKey::SetupWarnMonitorServerFailed,
+                    ));
                 }
                 UiEvent::WebServerStarted => {
                     self.monitor.web_server_running = true;
@@ -1064,7 +1079,10 @@ impl HiJackApp {
                 }
                 UiEvent::WebServerFailed(msg) => {
                     self.monitor.web_server_running = false;
-                    self.setup.status_message = Some(format!("Web server failed: {msg}"));
+                    self.setup.status_message = Some(StatusMessage::with_help(
+                        format!("Web server failed: {msg}"),
+                        HelpKey::SetupWarnWebServerFailed,
+                    ));
                 }
                 // ── Macro-emitted app-internal commands ─────────────
                 UiEvent::MacroFireGo => {
@@ -1233,7 +1251,7 @@ impl HiJackApp {
                 }
                 UiEvent::StreamDeckError { message } => {
                     tracing::warn!("Stream Deck error: {message}");
-                    self.macros.status_message = Some(format!("Stream Deck: {message}"));
+                    self.macros.status_message = Some(format!("Stream Deck: {message}").into());
                 }
             }
         }
@@ -1539,7 +1557,8 @@ impl HiJackApp {
                             rd.original_path
                         ))
                         .strong(),
-                    );
+                    )
+                    .on_hover_text(help(HelpKey::RecoveryInfoCorrupt));
                     if rd.recovered {
                         ui.colored_label(
                             super::theme::ACCENT_GREEN,
@@ -1549,9 +1568,11 @@ impl HiJackApp {
                     ui.separator();
 
                     if rd.candidates.is_empty() {
-                        ui.label("No backups or autosaves were found for this show.");
+                        ui.label("No backups or autosaves were found for this show.")
+                            .on_hover_text(help(HelpKey::RecoveryInfoNoBackups));
                     } else {
-                        ui.label("Choose a copy to restore (newest first):");
+                        ui.label("Choose a copy to restore (newest first):")
+                            .on_hover_text(help(HelpKey::RecoveryInfoChoose));
                         egui::ScrollArea::vertical()
                             .max_height(260.0)
                             .show(ui, |ui| {
@@ -2102,7 +2123,8 @@ impl eframe::App for HiJackApp {
                                  Edits will not affect the console.",
                             )
                             .color(super::theme::TEXT_ON_BRIGHT),
-                        );
+                        )
+                        .on_hover_text(help(HelpKey::BannerOffline));
                     });
                 });
         }
@@ -2135,7 +2157,8 @@ impl eframe::App for HiJackApp {
                                  to take effect.",
                             )
                             .color(super::theme::TEXT_ON_BRIGHT),
-                        );
+                        )
+                        .on_hover_text(help(HelpKey::BannerGangsDisconnected));
                     });
                 });
         }
@@ -2164,7 +2187,8 @@ impl eframe::App for HiJackApp {
                         ui.label(
                             egui::RichText::new("— connect to console to capture snapshots.")
                                 .color(super::theme::TEXT_ON_BRIGHT),
-                        );
+                        )
+                        .on_hover_text(help(HelpKey::BannerSnapshotsDisconnected));
                     });
                 });
         }
@@ -2200,7 +2224,8 @@ impl eframe::App for HiJackApp {
                                  Click here to dismiss.",
                             )
                             .color(super::theme::TEXT_ON_BRIGHT),
-                        );
+                        )
+                        .on_hover_text(help(HelpKey::BannerNetworkMismatch));
                     });
                     // Make the whole strip clickable so the operator
                     // can dismiss without aiming at the small ⚠ icon.
@@ -2246,7 +2271,8 @@ impl eframe::App for HiJackApp {
                                  overlap in the Gangs tab.",
                             ))
                             .color(super::theme::TEXT_ON_BRIGHT),
-                        );
+                        )
+                        .on_hover_text(help(HelpKey::BannerGangOverlap));
                     });
                 });
         }
@@ -2278,7 +2304,8 @@ impl eframe::App for HiJackApp {
                                  be reachable until then.",
                             )
                             .color(super::theme::TEXT_ON_BRIGHT),
-                        );
+                        )
+                        .on_hover_text(help(HelpKey::BannerWebMonitorOff));
                     });
                 });
         }

@@ -10,6 +10,7 @@ use tracing::{debug, error, info};
 use super::UiEvent;
 use super::help::{HelpKey, help};
 use super::net_interfaces;
+use super::status::StatusMessage;
 use super::theme;
 use crate::console::connection::ConnectionManager;
 use crate::console::cue_manager::CueManager;
@@ -50,7 +51,7 @@ pub struct SetupTabState {
     pub local_port: String,
     pub trigger_port: String,
     pub show_file_path: String,
-    pub status_message: Option<String>,
+    pub status_message: Option<StatusMessage>,
     pub operating_mode: OperatingMode,
     /// iPad IP (for Mode 3: real iPad's IP for forwarding responses)
     pub ipad_ip: String,
@@ -1348,7 +1349,8 @@ pub fn draw_setup_tab(
                                 )
                                 .color(theme::label_disabled())
                                 .small(),
-                            );
+                            )
+                            .on_hover_text(help(HelpKey::SetupInfoMode1));
                         });
                     }
                     OperatingMode::Mode2 => {
@@ -1362,7 +1364,8 @@ pub fn draw_setup_tab(
                                 )
                                 .color(theme::label_weak())
                                 .small(),
-                            );
+                            )
+                            .on_hover_text(help(HelpKey::SetupInfoMode2));
                         });
                     }
                     OperatingMode::Mode3 => {
@@ -1585,7 +1588,8 @@ pub fn draw_setup_tab(
                             )
                             .color(theme::label_disabled())
                             .small(),
-                        );
+                        )
+                        .on_hover_text(help(HelpKey::SetupInfoLiveMusic));
                     });
                 }
 
@@ -1644,7 +1648,8 @@ pub fn draw_setup_tab(
                             )
                             .color(theme::label_disabled())
                             .small(),
-                        );
+                        )
+                        .on_hover_text(help(HelpKey::SetupInfoTheatre));
                     });
                 }
             });
@@ -1653,7 +1658,10 @@ pub fn draw_setup_tab(
             // a port up, etc. The Connect button itself moved to the top-strip.
             if let Some(msg) = &setup.status_message {
                 ui.add_space(8.0);
-                ui.colored_label(theme::TEXT_WARNING, msg);
+                let resp = ui.colored_label(theme::TEXT_WARNING, &msg.text);
+                if let Some(key) = msg.help {
+                    resp.on_hover_text(help(key));
+                }
             }
         });
 
@@ -1677,7 +1685,8 @@ pub fn draw_setup_tab(
                             "Mode 1 is GP OSC only — several parameters require switching to Mode 2 or 3."
                         })
                         .color(theme::label_weak()),
-                    );
+                    )
+                    .on_hover_text(help(HelpKey::SetupInfoCoverage));
                     ui.add_space(6.0);
                     egui::Grid::new("protocol_coverage_grid_popup")
                         .num_columns(2)
@@ -1801,21 +1810,30 @@ pub(crate) fn start_connection(
     let console_port: u16 = match setup.console_port.parse() {
         Ok(p) => p,
         Err(_) => {
-            setup.status_message = Some("Invalid console port".into());
+            setup.status_message = Some(StatusMessage::with_help(
+                "Invalid console port",
+                HelpKey::SetupWarnInvalidConsolePort,
+            ));
             return;
         }
     };
     let local_port: u16 = match setup.local_port.parse() {
         Ok(p) => p,
         Err(_) => {
-            setup.status_message = Some("Invalid local port".into());
+            setup.status_message = Some(StatusMessage::with_help(
+                "Invalid local port",
+                HelpKey::SetupWarnInvalidLocalPort,
+            ));
             return;
         }
     };
     let trigger_port: u16 = match setup.trigger_port.parse() {
         Ok(p) => p,
         Err(_) => {
-            setup.status_message = Some("Invalid trigger port".into());
+            setup.status_message = Some(StatusMessage::with_help(
+                "Invalid trigger port",
+                HelpKey::SetupWarnInvalidTriggerPort,
+            ));
             return;
         }
     };
@@ -1826,7 +1844,10 @@ pub(crate) fn start_connection(
         match setup.ipad_console_port.parse() {
             Ok(p) if p > 0 => p,
             _ => {
-                setup.status_message = Some("Invalid console iPad port".into());
+                setup.status_message = Some(StatusMessage::with_help(
+                    "Invalid console iPad port",
+                    HelpKey::SetupWarnInvalidIpadConsolePort,
+                ));
                 return;
             }
         }
@@ -1837,7 +1858,10 @@ pub(crate) fn start_connection(
         match setup.ipad_local_port.parse() {
             Ok(p) => p,
             Err(_) => {
-                setup.status_message = Some("Invalid local iPad port".into());
+                setup.status_message = Some(StatusMessage::with_help(
+                    "Invalid local iPad port",
+                    HelpKey::SetupWarnInvalidIpadLocalPort,
+                ));
                 return;
             }
         }
@@ -1857,9 +1881,10 @@ pub(crate) fn start_connection(
     // Mode 3 proxies console traffic to a specific iPad — its IP is required
     // (read it off the DiGiCo iPad app). No autodiscovery.
     if operating_mode == OperatingMode::Mode3 && setup.ipad_ip.trim().is_empty() {
-        setup.status_message = Some(
-            "Enter the iPad IP (shown in the DiGiCo app) to connect in iPad Proxy mode".into(),
-        );
+        setup.status_message = Some(StatusMessage::with_help(
+            "Enter the iPad IP (shown in the DiGiCo app) to connect in iPad Proxy mode",
+            HelpKey::SetupWarnIpadIpRequired,
+        ));
         return;
     }
     let ipad_ip_str = setup.ipad_ip.clone();
@@ -1888,7 +1913,10 @@ pub(crate) fn start_connection(
     let console_addr: SocketAddr = match console_addr_str.parse() {
         Ok(a) => a,
         Err(_) => {
-            setup.status_message = Some("Invalid console address".into());
+            setup.status_message = Some(StatusMessage::with_help(
+                "Invalid console address",
+                HelpKey::SetupWarnInvalidConsoleAddr,
+            ));
             return;
         }
     };
@@ -2649,7 +2677,10 @@ pub(crate) fn save_show_file(
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
     if setup.show_file_path.is_empty() {
-        setup.status_message = Some("Enter a file path first".into());
+        setup.status_message = Some(StatusMessage::with_help(
+            "Enter a file path first",
+            HelpKey::SetupWarnFilePathRequired,
+        ));
         return;
     }
 
@@ -2731,7 +2762,8 @@ fn draw_first_run_popup(ui: &mut egui::Ui, setup: &mut SetupTabState) {
                 egui::RichText::new("Choose a display mode to get started.")
                     .strong()
                     .size(theme::FONT_SIZE_BODY),
-            );
+            )
+            .on_hover_text(help(HelpKey::SetupInfoChooseMode));
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new("You can change this any time on the Setup tab.")

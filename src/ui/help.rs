@@ -308,6 +308,98 @@ pub enum HelpKey {
     StreamDeckDevice,
     StreamDeckButtonMacro,
     StreamDeckAddStep,
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Inline warnings & explanatory text (localization pass 2)
+    //
+    // These are NOT widget tooltips in the usual sense — they back inline
+    // warning strings, validation errors, empty-state hints, mode/feature
+    // explanations, and dialog paragraphs that the UI shows as plain text.
+    // The English text stays visible on screen; hovering it surfaces this
+    // (translatable) bubble so limited-English operators get a translation.
+    // ─────────────────────────────────────────────────────────────────────
+
+    // ── Bottom banners (app.rs) ──
+    BannerOffline,
+    BannerGangsDisconnected,
+    BannerSnapshotsDisconnected,
+    BannerNetworkMismatch,
+    BannerGangOverlap,
+    BannerWebMonitorOff,
+
+    // ── Show recovery dialog (text) ──
+    RecoveryInfoCorrupt,
+    RecoveryInfoNoBackups,
+    RecoveryInfoChoose,
+
+    // ── Setup: mode / coverage explanations ──
+    SetupInfoMode1,
+    SetupInfoMode2,
+    SetupInfoLiveMusic,
+    SetupInfoTheatre,
+    SetupInfoCoverage,
+    SetupInfoChooseMode,
+
+    // ── Setup: validation & connection warnings ──
+    SetupWarnInvalidConsolePort,
+    SetupWarnInvalidLocalPort,
+    SetupWarnInvalidTriggerPort,
+    SetupWarnInvalidIpadConsolePort,
+    SetupWarnInvalidIpadLocalPort,
+    SetupWarnIpadIpRequired,
+    SetupWarnInvalidConsoleAddr,
+    SetupWarnFilePathRequired,
+    SetupWarnConnectionFailed,
+    SetupWarnShowFileError,
+    SetupWarnShowCorrupt,
+    SetupWarnIpadConnFailed,
+    SetupWarnMonitorServerFailed,
+    SetupWarnWebServerFailed,
+
+    // ── Snapshots / cues (inline text) ──
+    SnapshotInfoScopeHint,
+    SnapshotInfoEmpty,
+    CueInfoEmpty,
+    CueInfoConnectToFire,
+    ShiftInfoExplain,
+    CueWarnNeedsSnapshot,
+
+    // ── Palettes (inline text) ──
+    PaletteInfoEmpty,
+    PaletteInfoSelectHint,
+    PaletteInfoNoSnapshots,
+    PaletteWarnInvalidChannel,
+    PaletteWarnNoKind,
+
+    // ── Monitor (inline text) ──
+    MonitorInfoWebPrepare,
+    MonitorWarnNoLan,
+    MonitorInfoBrowserHint,
+    MonitorInfoNoAux,
+    MonitorInfoEmpty,
+
+    // ── Pan Link (inline text) ──
+    PanLinkWarnNoInputs,
+    PanLinkInfoNoAuxes,
+    PanLinkInfoInstructions,
+
+    // ── Macros (inline text) ──
+    MacroInfoEmpty,
+    MacroInfoSelectToEdit,
+    MacroInfoNoSteps,
+    MacroInfoSdNoSteps,
+    MacroWarnAddStepMissing,
+
+    // ── Gangs (inline text) ──
+    GangsInfoEmpty,
+    GangsWarnNoMembers,
+    GangsWarnNoSection,
+    GangsWarnMinMembers,
+    GangsWarnReversedPan,
+    GangsWarnFaderSpread,
+
+    // ── Advanced settings (inline text) ──
+    AdvancedLanguage,
 }
 
 /// One catalog entry: the stable JSON key id plus the canonical English text.
@@ -1169,6 +1261,307 @@ fn meta(key: HelpKey) -> HelpMeta {
             "streamdeck.add_step",
             "Add the chosen macro as a step on the selected button.",
         ),
+
+        // ── Bottom banners (app.rs) ──
+        BannerOffline => (
+            "app.banner_offline",
+            "Offline mode is on: no OSC is sent or received and the state mirror \
+             is frozen. Your edits won't reach the console until you go back online.",
+        ),
+        BannerGangsDisconnected => (
+            "app.banner_gangs_disconnected",
+            "Not connected to the console — gang changes are staged but won't \
+             propagate to the desk until you connect.",
+        ),
+        BannerSnapshotsDisconnected => (
+            "app.banner_snapshots_disconnected",
+            "Not connected to the console — you can't capture snapshots until \
+             you connect.",
+        ),
+        BannerNetworkMismatch => (
+            "app.banner_network_mismatch",
+            "The console IP isn't on the selected network interface's network. \
+             Pick a different NIC or change the console IP so they match. Click \
+             the banner to dismiss.",
+        ),
+        BannerGangOverlap => (
+            "app.banner_gang_overlap",
+            "One or more channels belong to several active gangs that share \
+             parameters. Their propagation will conflict — remove the overlap \
+             in the Gangs tab.",
+        ),
+        BannerWebMonitorOff => (
+            "app.banner_web_monitor_off",
+            "The web monitor is configured but not running. Connect to start it; \
+             its URLs and QR codes won't work until then.",
+        ),
+
+        // ── Show recovery dialog (text) ──
+        RecoveryInfoCorrupt => (
+            "recovery.info_corrupt",
+            "This show file couldn't be loaded — it looks truncated or has a bad \
+             header. Pick a backup or autosave below to recover.",
+        ),
+        RecoveryInfoNoBackups => (
+            "recovery.info_no_backups",
+            "No backups or autosaves were found for this show file.",
+        ),
+        RecoveryInfoChoose => (
+            "recovery.info_choose",
+            "Choose a backup or autosave to restore — the newest copies are \
+             listed first.",
+        ),
+
+        // ── Setup: mode / coverage explanations ──
+        SetupInfoMode1 => (
+            "setup.info_mode1",
+            "Mode 1 uses GP OSC only; the iPad protocol isn't used. Switch to \
+             Mode 2 or Mode 3 to expose iPad-protocol features.",
+        ),
+        SetupInfoMode2 => (
+            "setup.info_mode2",
+            "In Mode 2 the daemon takes the iPad's place on the iPad-protocol \
+             socket, so no separate iPad can connect. Use Mode 3 (iPad Proxy) to \
+             run the DiGiCo iPad app at the same time.",
+        ),
+        SetupInfoLiveMusic => (
+            "setup.info_live_music",
+            "Live Music mode hides Snapshots, so QLab cue triggering is disabled. \
+             Switch to Full or Theatre mode to enable QLab.",
+        ),
+        SetupInfoTheatre => (
+            "setup.info_theatre",
+            "Theatre mode targets a single operator on this machine, so the \
+             mobile / web monitor is disabled. Switch to Full or Live Music mode \
+             to enable it.",
+        ),
+        SetupInfoCoverage => (
+            "setup.info_coverage",
+            "Shows which parameters this operating mode can reach. Mode 1 \
+             (GP OSC only) can't reach some parameters; Mode 2 / 3 add the iPad \
+             protocol for near-complete coverage.",
+        ),
+        SetupInfoChooseMode => (
+            "setup.info_choose_mode",
+            "Choose a display mode to get started. You can change it any time on \
+             the Setup tab.",
+        ),
+
+        // ── Setup: validation & connection warnings ──
+        SetupWarnInvalidConsolePort => (
+            "setup.warn_invalid_console_port",
+            "The console port must be a whole number between 1 and 65535.",
+        ),
+        SetupWarnInvalidLocalPort => (
+            "setup.warn_invalid_local_port",
+            "The local port must be a whole number between 1 and 65535.",
+        ),
+        SetupWarnInvalidTriggerPort => (
+            "setup.warn_invalid_trigger_port",
+            "The trigger port must be a whole number between 1 and 65535.",
+        ),
+        SetupWarnInvalidIpadConsolePort => (
+            "setup.warn_invalid_ipad_console_port",
+            "The console iPad-protocol port must be a whole number between 1 and 65535.",
+        ),
+        SetupWarnInvalidIpadLocalPort => (
+            "setup.warn_invalid_ipad_local_port",
+            "The local iPad-protocol port must be a whole number between 1 and 65535.",
+        ),
+        SetupWarnIpadIpRequired => (
+            "setup.warn_ipad_ip_required",
+            "iPad Proxy mode needs the iPad's IP address — read it off the DiGiCo \
+             iPad app and enter it before connecting.",
+        ),
+        SetupWarnInvalidConsoleAddr => (
+            "setup.warn_invalid_console_addr",
+            "The console IP address is not valid. Enter a numeric address such as \
+             192.168.1.10.",
+        ),
+        SetupWarnFilePathRequired => (
+            "setup.warn_file_path_required",
+            "Enter or pick a show-file path first.",
+        ),
+        SetupWarnConnectionFailed => (
+            "setup.warn_connection_failed",
+            "The daemon couldn't connect to the console. Check the IP, ports, and \
+             that the console is reachable on the selected network.",
+        ),
+        SetupWarnShowFileError => (
+            "setup.warn_show_file_error",
+            "The show file could not be loaded or saved. See the message for details.",
+        ),
+        SetupWarnShowCorrupt => (
+            "setup.warn_show_corrupt",
+            "The show file appears corrupt. Choose a backup or autosave from the \
+             recovery dialog.",
+        ),
+        SetupWarnIpadConnFailed => (
+            "setup.warn_ipad_conn_failed",
+            "The iPad-protocol connection failed. Check the iPad IP and ports.",
+        ),
+        SetupWarnMonitorServerFailed => (
+            "setup.warn_monitor_server_failed",
+            "The monitor server couldn't start — most often the port is already \
+             in use.",
+        ),
+        SetupWarnWebServerFailed => (
+            "setup.warn_web_server_failed",
+            "The web monitor server couldn't start — most often the port is \
+             already in use.",
+        ),
+
+        // ── Snapshots / cues (inline text) ──
+        SnapshotInfoScopeHint => (
+            "snapshot.info_scope_hint",
+            "Select the scope parameters to capture, or switch to 'On recall' to \
+             filter when the snapshot is recalled instead.",
+        ),
+        SnapshotInfoEmpty => (
+            "snapshot.info_empty",
+            "No snapshots yet. Capture the console state to create one.",
+        ),
+        CueInfoEmpty => (
+            "cue.info_empty",
+            "No cues yet. Add one using the fields below.",
+        ),
+        CueInfoConnectToFire => (
+            "cue.info_connect_to_fire",
+            "Connect to the console to fire cues.",
+        ),
+        ShiftInfoExplain => (
+            "shift.info_explain",
+            "Bulk-shift the console-memory row reference on every snapshot. Use \
+             this after inserting or deleting a snapshot on the console so all \
+             linked rows still point to the right place.",
+        ),
+        CueWarnNeedsSnapshot => (
+            "cue.warn_needs_snapshot",
+            "A cue needs a local snapshot, a console snapshot, or both before it \
+             can be saved.",
+        ),
+
+        // ── Palettes (inline text) ──
+        PaletteInfoEmpty => (
+            "palette.info_empty",
+            "No palettes yet. Capture one using the controls above.",
+        ),
+        PaletteInfoSelectHint => (
+            "palette.info_select_hint",
+            "Select a palette below to edit it and assign it to snapshots.",
+        ),
+        PaletteInfoNoSnapshots => (
+            "palette.info_no_snapshots",
+            "No snapshots yet — capture some on the Snapshots tab to link this \
+             palette to them.",
+        ),
+        PaletteWarnInvalidChannel => (
+            "palette.warn_invalid_channel",
+            "Enter a valid channel number before capturing the palette.",
+        ),
+        PaletteWarnNoKind => (
+            "palette.warn_no_kind",
+            "Select at least one of EQ / Dyn1 / Dyn2 to capture into the palette.",
+        ),
+
+        // ── Monitor (inline text) ──
+        MonitorInfoWebPrepare => (
+            "monitor.info_web_prepare",
+            "The web monitor starts when you Connect. You can prepare and share \
+             QR codes now.",
+        ),
+        MonitorWarnNoLan => (
+            "monitor.warn_no_lan",
+            "No LAN network interface was detected. Join a network to get a \
+             reachable URL.",
+        ),
+        MonitorInfoBrowserHint => (
+            "monitor.info_browser_hint",
+            "Open these addresses in a phone or tablet browser on the same LAN.",
+        ),
+        MonitorInfoNoAux => (
+            "monitor.info_no_aux",
+            "Connect to the console to see its aux channels here.",
+        ),
+        MonitorInfoEmpty => (
+            "monitor.info_empty",
+            "No monitoring clients (profiles) configured yet. Add one to let a \
+             musician control their monitor mix.",
+        ),
+
+        // ── Pan Link (inline text) ──
+        PanLinkWarnNoInputs => (
+            "pan_link.warn_no_inputs",
+            "No input channels configured. Connect to the console or load a show \
+             file.",
+        ),
+        PanLinkInfoNoAuxes => ("pan_link.info_no_auxes", "No aux buses configured."),
+        PanLinkInfoInstructions => (
+            "pan_link.info_instructions",
+            "Click inputs to select; Shift+Click for a range. Click stereo aux \
+             tiles to stage links across all selected inputs. Diagonal stripes \
+             mean a partial link — clicking promotes it to all-linked first.",
+        ),
+
+        // ── Macros (inline text) ──
+        MacroInfoEmpty => (
+            "macro.info_empty",
+            "No macros defined yet. Create one to record or build a sequence of \
+             steps.",
+        ),
+        MacroInfoSelectToEdit => (
+            "macro.info_select_to_edit",
+            "Select a macro on the left to edit its steps.",
+        ),
+        MacroInfoNoSteps => (
+            "macro.info_no_steps",
+            "This macro has no steps yet. Add one below, or use Learn mode to \
+             record from the console.",
+        ),
+        MacroInfoSdNoSteps => (
+            "macro.info_sd_no_steps",
+            "This button has no steps yet. Pick a macro and click Add step on the \
+             right.",
+        ),
+        MacroWarnAddStepMissing => (
+            "macro.warn_add_step_missing",
+            "A required field for this step kind is missing. Fill it in before \
+             adding the step.",
+        ),
+
+        // ── Gangs (inline text) ──
+        GangsInfoEmpty => (
+            "gangs.info_empty",
+            "No gang groups configured yet. Create one to link channels together.",
+        ),
+        GangsWarnNoMembers => (
+            "gangs.warn_no_members",
+            "No valid channel members were parsed. Use notation like 1-4,7 or \
+             I1-4,A1-2.",
+        ),
+        GangsWarnNoSection => (
+            "gangs.warn_no_section",
+            "Select at least one parameter section to link.",
+        ),
+        GangsWarnMinMembers => ("gangs.warn_min_members", "A gang needs at least 2 members."),
+        GangsWarnReversedPan => (
+            "gangs.warn_reversed_pan",
+            "Reversed pan only works with exactly 2 members.",
+        ),
+        GangsWarnFaderSpread => (
+            "gangs.warn_fader_spread",
+            "These faders sit at very different levels. In Relative mode the gang \
+             preserves each member's offset, so they won't be matched to a single \
+             level.",
+        ),
+
+        // ── Advanced settings (inline text) ──
+        AdvancedLanguage => (
+            "advanced.language",
+            "Tooltips localise into the chosen language; the rest of the UI stays \
+             English. Languages are JSON files in the app's locales folder — drop \
+             one in to add a language.",
+        ),
     };
     HelpMeta { id, english }
 }
@@ -1382,6 +1775,67 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::StreamDeckDevice,
     HelpKey::StreamDeckButtonMacro,
     HelpKey::StreamDeckAddStep,
+    // Inline warnings & explanatory text (localization pass 2)
+    HelpKey::BannerOffline,
+    HelpKey::BannerGangsDisconnected,
+    HelpKey::BannerSnapshotsDisconnected,
+    HelpKey::BannerNetworkMismatch,
+    HelpKey::BannerGangOverlap,
+    HelpKey::BannerWebMonitorOff,
+    HelpKey::RecoveryInfoCorrupt,
+    HelpKey::RecoveryInfoNoBackups,
+    HelpKey::RecoveryInfoChoose,
+    HelpKey::SetupInfoMode1,
+    HelpKey::SetupInfoMode2,
+    HelpKey::SetupInfoLiveMusic,
+    HelpKey::SetupInfoTheatre,
+    HelpKey::SetupInfoCoverage,
+    HelpKey::SetupInfoChooseMode,
+    HelpKey::SetupWarnInvalidConsolePort,
+    HelpKey::SetupWarnInvalidLocalPort,
+    HelpKey::SetupWarnInvalidTriggerPort,
+    HelpKey::SetupWarnInvalidIpadConsolePort,
+    HelpKey::SetupWarnInvalidIpadLocalPort,
+    HelpKey::SetupWarnIpadIpRequired,
+    HelpKey::SetupWarnInvalidConsoleAddr,
+    HelpKey::SetupWarnFilePathRequired,
+    HelpKey::SetupWarnConnectionFailed,
+    HelpKey::SetupWarnShowFileError,
+    HelpKey::SetupWarnShowCorrupt,
+    HelpKey::SetupWarnIpadConnFailed,
+    HelpKey::SetupWarnMonitorServerFailed,
+    HelpKey::SetupWarnWebServerFailed,
+    HelpKey::SnapshotInfoScopeHint,
+    HelpKey::SnapshotInfoEmpty,
+    HelpKey::CueInfoEmpty,
+    HelpKey::CueInfoConnectToFire,
+    HelpKey::ShiftInfoExplain,
+    HelpKey::CueWarnNeedsSnapshot,
+    HelpKey::PaletteInfoEmpty,
+    HelpKey::PaletteInfoSelectHint,
+    HelpKey::PaletteInfoNoSnapshots,
+    HelpKey::PaletteWarnInvalidChannel,
+    HelpKey::PaletteWarnNoKind,
+    HelpKey::MonitorInfoWebPrepare,
+    HelpKey::MonitorWarnNoLan,
+    HelpKey::MonitorInfoBrowserHint,
+    HelpKey::MonitorInfoNoAux,
+    HelpKey::MonitorInfoEmpty,
+    HelpKey::PanLinkWarnNoInputs,
+    HelpKey::PanLinkInfoNoAuxes,
+    HelpKey::PanLinkInfoInstructions,
+    HelpKey::MacroInfoEmpty,
+    HelpKey::MacroInfoSelectToEdit,
+    HelpKey::MacroInfoNoSteps,
+    HelpKey::MacroInfoSdNoSteps,
+    HelpKey::MacroWarnAddStepMissing,
+    HelpKey::GangsInfoEmpty,
+    HelpKey::GangsWarnNoMembers,
+    HelpKey::GangsWarnNoSection,
+    HelpKey::GangsWarnMinMembers,
+    HelpKey::GangsWarnReversedPan,
+    HelpKey::GangsWarnFaderSpread,
+    HelpKey::AdvancedLanguage,
 ];
 
 /// The stable JSON key id for a help bubble (the translator-facing key).

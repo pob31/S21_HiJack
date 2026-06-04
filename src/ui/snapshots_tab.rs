@@ -10,6 +10,7 @@ use super::UiEvent;
 use super::help::{HelpKey, help};
 use super::palettes_ui::{PalettesUiState, draw_palettes_section};
 use super::scope_editor::ScopeEditorState;
+use super::status::StatusMessage;
 use super::theme;
 use crate::console::cue_manager::CueManager;
 use crate::console::palette_manager::PaletteManager;
@@ -76,7 +77,7 @@ pub struct SnapshotsTabState {
     pub scope_edit_target: ScopeEditTarget,
 
     // Feedback
-    pub status_message: Option<String>,
+    pub status_message: Option<StatusMessage>,
 
     // Console row for the Add Cue form (empty = no row link).
     pub new_cue_console_row: String,
@@ -615,7 +616,8 @@ pub fn draw_snapshots_tab(
                             && snap_state.scope_editor.selection_count() == 0
                         {
                             ui.add_space(4.0);
-                            ui.label(egui::RichText::new("Select scope parameters to capture (or switch to 'On recall').").color(theme::label_weak()));
+                            ui.label(egui::RichText::new("Select scope parameters to capture (or switch to 'On recall').").color(theme::label_weak()))
+                                .on_hover_text(help(HelpKey::SnapshotInfoScopeHint));
                         }
 
                         ui.add_space(8.0);
@@ -716,7 +718,8 @@ pub fn draw_snapshots_tab(
                                     }
 
                                     if mgr.snapshots.is_empty() {
-                                        ui.label(egui::RichText::new("No snapshots yet.").color(theme::label_weak()));
+                                        ui.label(egui::RichText::new("No snapshots yet.").color(theme::label_weak()))
+                                            .on_hover_text(help(HelpKey::SnapshotInfoEmpty));
                                     }
                                 }
                             });
@@ -725,7 +728,10 @@ pub fn draw_snapshots_tab(
                     // Status message
                     if let Some(msg) = &snap_state.status_message {
                         ui.add_space(4.0);
-                        ui.colored_label(theme::TEXT_WARNING, msg);
+                        let resp = ui.colored_label(theme::TEXT_WARNING, &msg.text);
+                        if let Some(key) = msg.help {
+                            resp.on_hover_text(help(key));
+                        }
                     }
             });
 
@@ -837,7 +843,7 @@ pub fn draw_snapshots_tab(
                         snap_state.new_cue_number.clear();
                         snap_state.new_cue_name.clear();
                         snap_state.new_cue_console_row.clear();
-                        snap_state.status_message = Some(format!("Added cue {num}"));
+                        snap_state.status_message = Some(format!("Added cue {num}").into());
                     }
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
@@ -1066,7 +1072,10 @@ pub fn draw_snapshots_tab(
                                 };
                                 let notes = snap_state.editing_cue_notes.clone();
                                 if local.is_none() && parsed_row.is_none() {
-                                    snap_state.status_message = Some("Cue needs a Local snapshot, a Console snapshot, or both".into());
+                                    snap_state.status_message = Some(StatusMessage::with_help(
+                                        "Cue needs a Local snapshot, a Console snapshot, or both",
+                                        HelpKey::CueWarnNeedsSnapshot,
+                                    ));
                                 } else {
                                     let cue_mgr = cue_manager.clone();
                                     runtime.spawn(async move {
@@ -1246,7 +1255,8 @@ pub fn draw_snapshots_tab(
                                     ui.add_space(2.0);
                                 }
                                 if mgr.cue_list.cues.is_empty() {
-                                    ui.label(egui::RichText::new("No cues yet. Add one below.").color(theme::label_weak()));
+                                    ui.label(egui::RichText::new("No cues yet. Add one below.").color(theme::label_weak()))
+                                        .on_hover_text(help(HelpKey::CueInfoEmpty));
                                 }
                             }
                         });
@@ -1271,7 +1281,8 @@ pub fn draw_snapshots_tab(
                     )
                     .color(theme::label_weak())
                     .small(),
-                );
+                )
+                .on_hover_text(help(HelpKey::ShiftInfoExplain));
                 ui.add_space(8.0);
                 egui::Grid::new("shift_grid")
                     .num_columns(2)
@@ -1519,7 +1530,8 @@ fn capture_snapshot(
         });
     });
 
-    snap_state.status_message = Some(format!("Capturing '{}'...", snap_state.new_snapshot_name));
+    snap_state.status_message =
+        Some(format!("Capturing '{}'...", snap_state.new_snapshot_name).into());
     snap_state.new_snapshot_name.clear();
 }
 

@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use super::help::{HelpKey, help};
 use super::monitor_channel_picker::{self, ChannelPickerState, PickerOutcome};
+use super::status::StatusMessage;
 use super::theme;
 use crate::console::monitor_manager::MonitorManager;
 use crate::model::channel::ChannelId;
@@ -17,7 +18,7 @@ use crate::model::state::ConsoleState;
 /// Per-tab UI state for the Monitor tab.
 #[derive(Default)]
 pub struct MonitorTabState {
-    pub status_message: Option<String>,
+    pub status_message: Option<StatusMessage>,
     pub monitor_server_running: bool,
     /// Whether the web (HTTP/WebSocket) monitor server is currently running.
     pub web_server_running: bool,
@@ -163,7 +164,8 @@ pub fn draw_monitor_tab(
                                         )
                                         .color(theme::label_weak())
                                         .small(),
-                                    );
+                                    )
+                                    .on_hover_text(help(HelpKey::MonitorInfoWebPrepare));
                                 }
                                 if ifaces.is_empty() {
                                     ui.label(
@@ -172,13 +174,15 @@ pub fn draw_monitor_tab(
                                         )
                                         .color(theme::label_weak())
                                         .small(),
-                                    );
+                                    )
+                                    .on_hover_text(help(HelpKey::MonitorWarnNoLan));
                                 } else {
                                     ui.label(
                                         egui::RichText::new("Open in a phone browser (LAN only):")
                                             .color(theme::label_weak())
                                             .small(),
-                                    );
+                                    )
+                                    .on_hover_text(help(HelpKey::MonitorInfoBrowserHint));
                                     for iface in &ifaces {
                                         ui.label(
                                             egui::RichText::new(format!(
@@ -210,7 +214,8 @@ pub fn draw_monitor_tab(
                                 ui.label(
                                     egui::RichText::new("Connect to console to see aux channels.")
                                         .color(theme::label_weak()),
-                                );
+                                )
+                                .on_hover_text(help(HelpKey::MonitorInfoNoAux));
                             } else {
                                 // Force the Ch # and Send # columns to
                                 // fixed widths so the Name column can
@@ -328,7 +333,10 @@ pub fn draw_monitor_tab(
 
                                 if let Some(ref msg) = tab.status_message {
                                     ui.add_space(8.0);
-                                    ui.colored_label(theme::TEXT_WARNING, msg.as_str());
+                                    let resp = ui.colored_label(theme::TEXT_WARNING, &msg.text);
+                                    if let Some(key) = msg.help {
+                                        resp.on_hover_text(help(key));
+                                    }
                                 }
                             });
                         });
@@ -357,7 +365,8 @@ pub fn draw_monitor_tab(
                                 ui.label(
                                     egui::RichText::new("No monitoring clients configured.")
                                         .color(theme::label_weak()),
-                                );
+                                )
+                                .on_hover_text(help(HelpKey::MonitorInfoEmpty));
                             } else {
                                 let mut to_remove = None;
                                 let mut to_edit: Option<MonitorClient> = None;
@@ -643,11 +652,14 @@ pub fn draw_monitor_tab(
                         }
                     }
                 });
-                tab.status_message = Some(if editing.is_some() {
-                    format!("Updated profile '{name_for_status}'")
-                } else {
-                    format!("Added profile '{name_for_status}'")
-                });
+                tab.status_message = Some(
+                    if editing.is_some() {
+                        format!("Updated profile '{name_for_status}'")
+                    } else {
+                        format!("Added profile '{name_for_status}'")
+                    }
+                    .into(),
+                );
                 tab.qr_tex = None; // a name/PIN edit changes the QR
                 tab.picker = None;
             }

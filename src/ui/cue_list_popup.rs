@@ -77,7 +77,8 @@ pub fn draw_cue_list_popup(
         .default_size([460.0, 420.0])
         .show(ctx, |ui| {
             if rows.is_empty() {
-                ui.label(egui::RichText::new("No cues yet.").color(theme::label_weak()));
+                ui.label(egui::RichText::new("No cues yet.").color(theme::label_weak()))
+                    .on_hover_text(help(HelpKey::CueInfoEmpty));
                 return;
             }
             if !is_connected {
@@ -85,7 +86,8 @@ pub fn draw_cue_list_popup(
                     egui::RichText::new("Connect to the console to fire cues.")
                         .color(theme::label_weak())
                         .small(),
-                );
+                )
+                .on_hover_text(help(HelpKey::CueInfoConnectToFire));
                 ui.add_space(4.0);
             }
             egui::ScrollArea::vertical()
