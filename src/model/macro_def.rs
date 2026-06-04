@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -203,10 +205,10 @@ impl std::fmt::Display for MacroStepMode {
 
 // ─── Recording types (not persisted, runtime only) ─────────────────
 
-/// Window within which an exact-duplicate parameter echo is treated as the
-/// same console action (see [`MacroRecording::record`]). Covers the GP-OSC /
-/// iPad-protocol double-echo in Operating Modes 2/3.
-const RECORD_DEDUP_WINDOW_MS: u128 = 60;
+/// Float tolerance for treating an echoed value as identical to the last
+/// recorded value for the same address (console echoes can round-trip with a
+/// tiny difference, e.g. across the GP-OSC vs iPad encodings).
+const RECORD_VALUE_TOLERANCE: f32 = 0.001;
 
 /// An in-progress recording session (learn mode).
 /// Not serialized — only exists while recording is active.
@@ -215,6 +217,21 @@ pub struct MacroRecording {
     pub steps: Vec<RecordedStep>,
     started_at: std::time::Instant,
     last_step_at: std::time::Instant,
+    /// Last value recorded per address, used to drop echoes — a value
+    /// re-reported for an address that already holds it (see
+    /// [`MacroRecording::record`]).
+    last_value_per_address: HashMap<ParameterAddress, ParameterValue>,
+}
+
+/// Equality used for echo-dedup: floats within [`RECORD_VALUE_TOLERANCE`],
+/// everything else exact.
+fn values_equivalent(a: &ParameterValue, b: &ParameterValue) -> bool {
+    match (a, b) {
+        (ParameterValue::Float(x), ParameterValue::Float(y)) => {
+            (x - y).abs() < RECORD_VALUE_TOLERANCE
+        }
+        _ => a == b,
+    }
 }
 
 /// A single parameter change captured during learn mode.
@@ -234,6 +251,7 @@ impl MacroRecording {
             steps: Vec::new(),
             started_at: now,
             last_step_at: now,
+            last_value_per_address: HashMap::new(),
         }
     }
 
@@ -241,22 +259,25 @@ impl MacroRecording {
     ///
     /// In Operating Modes 2/3 the daemon mirrors the console over both the
     /// GP-OSC and iPad-protocol links at once, so a single console action can
-    /// echo on both within a few ms — which would record the identical step
-    /// twice. Drop an exact-duplicate `(address, value)` that lands within
-    /// `RECORD_DEDUP_WINDOW_MS` of the previous step. A human can't produce two
-    /// identical values that fast, and even if they could, replaying the value
-    /// once yields the same result.
+    /// echo on both — sometimes much later, and with other parameters recorded
+    /// in between — which would record the identical step twice. Drop a change
+    /// whose value equals the **last value already recorded for that address**
+    /// (within [`RECORD_VALUE_TOLERANCE`]): re-writing a value the channel is
+    /// already at is a no-op on playback, so collapsing consecutive identical
+    /// values per address is safe and — unlike a fixed time window — catches
+    /// late echoes too. A genuine A→B→A sequence still records every step,
+    /// because the intervening B changes the address's last recorded value.
     pub fn record(&mut self, address: ParameterAddress, value: ParameterValue) {
-        let now = std::time::Instant::now();
-        if let Some(last) = self.steps.last()
-            && last.address == address
-            && last.value == value
-            && now.duration_since(self.last_step_at).as_millis() < RECORD_DEDUP_WINDOW_MS
-        {
-            return;
+        if let Some(last) = self.last_value_per_address.get(&address) {
+            if values_equivalent(last, &value) {
+                return;
+            }
         }
+        let now = std::time::Instant::now();
         let elapsed = now.duration_since(self.last_step_at).as_millis() as u32;
         self.last_step_at = now;
+        self.last_value_per_address
+            .insert(address.clone(), value.clone());
         self.steps.push(RecordedStep {
             address,
             value,
@@ -386,6 +407,57 @@ mod tests {
             ParameterValue::Float(-2.0),
         );
         assert_eq!(rec.step_count(), 3);
+    }
+
+    #[test]
+    fn recording_drops_late_echo_after_other_steps() {
+        // A late echo of an earlier value — arriving after other parameters
+        // were recorded, so it is NOT the immediately-preceding step — is
+        // still dropped (the value already matches the address's last record).
+        let mut rec = MacroRecording::new();
+        rec.record(
+            make_addr(1, ParameterPath::Fader),
+            ParameterValue::Float(-3.0),
+        );
+        rec.record(
+            make_addr(2, ParameterPath::Fader),
+            ParameterValue::Float(-5.0),
+        );
+        assert_eq!(rec.step_count(), 2);
+
+        // Late echo of channel 1's -3.0 — must NOT add a third step.
+        rec.record(
+            make_addr(1, ParameterPath::Fader),
+            ParameterValue::Float(-3.0),
+        );
+        assert_eq!(rec.step_count(), 2, "late echo should be dropped");
+
+        // But a genuine A→B→A on channel 1 records every step.
+        rec.record(
+            make_addr(1, ParameterPath::Fader),
+            ParameterValue::Float(0.0),
+        );
+        rec.record(
+            make_addr(1, ParameterPath::Fader),
+            ParameterValue::Float(-3.0),
+        );
+        assert_eq!(rec.step_count(), 4);
+    }
+
+    #[test]
+    fn recording_drops_echo_within_float_tolerance() {
+        // An echo that round-trips with a sub-tolerance float difference is
+        // still treated as the same value.
+        let mut rec = MacroRecording::new();
+        rec.record(
+            make_addr(1, ParameterPath::Pan),
+            ParameterValue::Float(0.25),
+        );
+        rec.record(
+            make_addr(1, ParameterPath::Pan),
+            ParameterValue::Float(0.2505),
+        );
+        assert_eq!(rec.step_count(), 1, "near-equal echo should be dropped");
     }
 
     #[test]
