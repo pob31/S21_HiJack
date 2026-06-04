@@ -409,27 +409,24 @@ pub fn draw_snapshots_tab(
                             }
 
                             let can_recall_no_scope = matches!(selected_kind, Some(SnapshotKind::ApplyOnRecall));
-                            // Kept as an explicit scoped button (not row_action_button)
-                            // because we need the Response for the tooltip below.
-                            let recall_no_scope_resp = ui
-                                .scope(|ui| {
-                                    ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
-                                    ui.add_enabled(
-                                        has_selection && engine_ready && can_recall_no_scope,
-                                        theme::action_button(
-                                            "Recall full",
-                                            theme::ACCENT_AMBER,
-                                            egui::Vec2::new(90.0, theme::ROW_H),
-                                        ),
-                                    )
-                                })
-                                .inner;
-                            if !can_recall_no_scope && has_selection {
-                                let _ = recall_no_scope_resp
-                                    .clone()
-                                    .on_hover_text(help(HelpKey::SnapshotRecallNoScopeReq));
-                            }
-                            if recall_no_scope_resp.clicked() {
+                            // Long-press (hold to confirm) — recalling the full
+                            // state overrides the snapshot's scope, so it's
+                            // guarded. When it's unavailable for the current
+                            // selection, hovering explains why.
+                            let recall_full_hover = if !can_recall_no_scope && has_selection {
+                                help(HelpKey::SnapshotRecallNoScopeReq).to_string()
+                            } else {
+                                help(HelpKey::LongPressConfirm)
+                                    .replace("{ms}", &theme::LONG_PRESS_DURATION_MS.to_string())
+                            };
+                            if theme::row_long_press_button_hover(
+                                ui,
+                                "Recall full",
+                                theme::ACCENT_AMBER,
+                                90.0,
+                                has_selection && engine_ready && can_recall_no_scope,
+                                recall_full_hover,
+                            ) {
                                 recall_selected_snapshot(
                                     snap_state,
                                     cue_manager,
@@ -441,13 +438,13 @@ pub fn draw_snapshots_tab(
                                 );
                             }
 
-                            if theme::row_action_button(
+                            if theme::row_long_press_button_hover(
                                 ui,
                                 "Re-capture",
                                 theme::ACCENT_BLUE,
                                 85.0,
                                 has_selection && is_connected,
-                                help(HelpKey::SnapshotRecapture),
+                                theme::long_press_hover(help(HelpKey::SnapshotRecapture)),
                             ) {
                                 recapture_snapshot(snap_state, console_state, cue_manager, dirty_tracker, runtime, ui_tx);
                             }
@@ -486,13 +483,13 @@ pub fn draw_snapshots_tab(
                                 .and_then(|e| e.undo_label())
                                 .unwrap_or_else(|| "Undo".to_string());
 
-                            if theme::row_action_button(
+                            if theme::row_long_press_button_hover(
                                 ui,
                                 &undo_label,
                                 theme::ACCENT_AMBER,
                                 160.0,
                                 has_undo && engine_ready,
-                                help(HelpKey::SnapshotUndo),
+                                theme::long_press_hover(help(HelpKey::SnapshotUndo)),
                             ) {
                                 if let Some(engine) = snapshot_engine.clone() {
                                     let tx = ui_tx.clone();

@@ -395,21 +395,21 @@ fn draw_palette_actions(
                 let mut empty = String::new();
                 let _ =
                     theme::padded_text_edit_sized(ui, &mut empty, 160.0, theme::ROW_H, false, "");
-                let _ = theme::row_action_button(
+                let _ = theme::row_long_press_button_hover(
                     ui,
                     "Re-capture",
                     theme::ACCENT_BLUE,
                     90.0,
                     false,
-                    help(HelpKey::PaletteRecapture),
+                    theme::long_press_hover(help(HelpKey::PaletteRecapture)),
                 );
-                let _ = theme::row_action_button(
+                let _ = theme::row_long_press_button_hover(
                     ui,
-                    "Delete Palette",
+                    "Delete",
                     theme::ACCENT_RED,
-                    100.0,
+                    70.0,
                     false,
-                    help(HelpKey::PaletteDelete),
+                    theme::long_press_hover(help(HelpKey::PaletteDelete)),
                 );
             });
             // Placeholder "Store changes" / "Revert changes" row so the layout
@@ -478,23 +478,23 @@ fn draw_palette_actions(
                 egui::RichText::new(format!("{}", palette_info.channel)).color(theme::label_weak()),
             );
 
-            if theme::row_action_button(
+            if theme::row_long_press_button_hover(
                 ui,
                 "Re-capture",
                 theme::ACCENT_BLUE,
                 90.0,
                 is_connected,
-                help(HelpKey::PaletteRecapture),
+                theme::long_press_hover(help(HelpKey::PaletteRecapture)),
             ) {
                 recapture_palette(pid, console_state, palette_manager, runtime, ui_tx);
             }
-            if theme::row_action_button(
+            if theme::row_long_press_button_hover(
                 ui,
-                "Delete Palette",
+                "Delete",
                 theme::ACCENT_RED,
-                100.0,
+                70.0,
                 true,
-                help(HelpKey::PaletteDelete),
+                theme::long_press_hover(help(HelpKey::PaletteDelete)),
             ) {
                 delete_palette(pid, cue_manager, palette_manager, runtime);
                 state.selected_palette_id = None;

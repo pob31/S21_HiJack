@@ -706,6 +706,41 @@ pub fn row_long_press_button(
     .inner
 }
 
+/// `ROW_H`-tall long-press button with a caller-supplied hover tooltip (e.g. a
+/// descriptive help string). See [`long_press_button_hover`].
+pub fn row_long_press_button_hover(
+    ui: &mut egui::Ui,
+    text: &str,
+    color: egui::Color32,
+    width: f32,
+    enabled: bool,
+    hover: impl Into<egui::WidgetText>,
+) -> bool {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
+        long_press_button_hover(
+            ui,
+            text,
+            color,
+            egui::Vec2::new(width, ROW_H),
+            enabled,
+            LONG_PRESS_DURATION_MS,
+            hover,
+        )
+    })
+    .inner
+}
+
+/// Build a long-press tooltip: a description followed by the standard
+/// "hold to confirm" hint, so a converted button still explains itself.
+pub fn long_press_hover(desc: impl std::fmt::Display) -> String {
+    format!(
+        "{}\n\n{}",
+        desc,
+        help(HelpKey::LongPressConfirm).replace("{ms}", &LONG_PRESS_DURATION_MS.to_string())
+    )
+}
+
 /// Run `add_combo` inside a scope tuned so an `egui::ComboBox`'s closed box is
 /// `ROW_H` tall — matching the sibling text edits / buttons — and centres on
 /// the row's centreline. The caller builds the ComboBox itself (it owns the
@@ -868,11 +903,44 @@ pub fn lighten(color: egui::Color32, amount: u8) -> egui::Color32 {
     )
 }
 
+/// Darken a color by subtracting a fixed amount from each channel.
+fn darken(color: egui::Color32, amount: u8) -> egui::Color32 {
+    egui::Color32::from_rgb(
+        color.r().saturating_sub(amount),
+        color.g().saturating_sub(amount),
+        color.b().saturating_sub(amount),
+    )
+}
+
+/// Linearly blend `a` toward `b` by `t` (0.0 = `a`, 1.0 = `b`), per channel.
+fn mix(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    egui::Color32::from_rgb(
+        lerp(a.r(), b.r()),
+        lerp(a.g(), b.g()),
+        lerp(a.b(), b.b()),
+    )
+}
+
 // ─── Long-press button ─────────────────────────────────────────────────
 
 /// Standard long-press duration for "are you sure?" actions: hold for half
 /// a second to confirm, release early or move off the button to cancel.
 pub const LONG_PRESS_DURATION_MS: u64 = 500;
+
+/// Peak alpha (/255) of the 45° sheen at rest. Drawn in a tone that
+/// *contrasts with the label* (dark sheen under white text, light sheen
+/// under black text) so it deepens the separation without hurting
+/// readability.
+const SEAM_GLINT_ALPHA: u8 = 85;
+/// Alpha (/255) of the crisp 45° "cut" line at rest.
+const SEAM_LINE_ALPHA: u8 = 120;
+/// Peak alpha the sheen ramps **up to** while the button is held, so the
+/// oblique separation visibly deepens as the press nears triggering — the
+/// progress cue, with no separate progress bar.
+const SEAM_HELD_GLINT_ALPHA: u8 = 200;
+/// Alpha the crisp cut line ramps up to while held.
+const SEAM_HELD_LINE_ALPHA: u8 = 235;
 
 /// Per-button press tracking saved in egui's temporary data store. Keyed by
 /// the button's auto-generated `Response::id` so each long-press button on
@@ -896,11 +964,12 @@ struct LongPressData {
 /// Returns `true` on the single frame the long-press completes — the
 /// caller should treat it the same way they treat `Button::clicked()`.
 ///
-/// While held with the pointer over the button, a thin progress bar fills
-/// across the bottom edge of the button to show how close the press is to
-/// triggering. The bar disappears (and the timer is marked cancelled) the
-/// moment the pointer escapes the rect — the operator can still see the
-/// dimmed armed state but releasing now is a no-op.
+/// At rest the button carries a persistent long-press identity so operators
+/// can tell it apart from a normal tap button: a 45° oblique separation
+/// across the face, drawn so it contrasts with the label for readability.
+/// While held with the pointer over the button, that separation deepens as
+/// the press nears triggering; it relaxes back the moment the pointer
+/// escapes the rect (the press is cancelled) or the button is released.
 pub fn long_press_button(
     ui: &mut egui::Ui,
     text: &str,
@@ -909,42 +978,170 @@ pub fn long_press_button(
     enabled: bool,
     duration_ms: u64,
 ) -> bool {
-    // Render through `egui::Button` so the size, frame, padding, and
-    // press/hover tinting match `action_button` exactly. We just supply
-    // the base fill and let egui's WidgetVisuals handle the rest.
-    let now = ui.input(|i| i.time);
-    let fill = if enabled {
-        color
-    } else {
-        egui::Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), 80)
-    };
+    let hint = help(HelpKey::LongPressConfirm).replace("{ms}", &duration_ms.to_string());
+    long_press_button_hover(ui, text, color, size, enabled, duration_ms, hint)
+}
 
-    let button = egui::Button::new(
-        egui::RichText::new(text)
-            .color(if enabled {
-                on_fill_text(color)
-            } else {
-                TEXT_DISABLED
-            })
-            .strong(),
-    )
-    .fill(fill)
-    .min_size(size)
-    .corner_radius(6.0)
-    .sense(if enabled {
+/// Like [`long_press_button`] but with a caller-supplied hover tooltip (e.g. a
+/// descriptive help string) in place of the default "hold to confirm" hint —
+/// the caller folds the hold hint into `hover` if they still want it shown.
+#[allow(clippy::too_many_arguments)]
+pub fn long_press_button_hover(
+    ui: &mut egui::Ui,
+    text: &str,
+    color: egui::Color32,
+    size: egui::Vec2,
+    enabled: bool,
+    duration_ms: u64,
+    hover: impl Into<egui::WidgetText>,
+) -> bool {
+    // Custom-painted (rather than via `egui::Button`) so we control the draw
+    // order precisely: fill → 45° seam → label. Drawing the seam *under* the
+    // label keeps the text crisp. The long-press state machine further down is
+    // unchanged from the old `Button` path — it only needs
+    // `is_pointer_button_down_on()` / `contains_pointer()`, which the manually
+    // allocated response provides identically.
+    let now = ui.input(|i| i.time);
+    let sense = if enabled {
         egui::Sense::click()
     } else {
         egui::Sense::hover()
-    });
-    let response = ui.add(button);
-    let rect = response.rect;
+    };
+    // Treat `size` as a *minimum*, growing to fit the label + padding in
+    // **both** dimensions like `egui::Button::min_size` did — otherwise a
+    // label wider than the requested width (e.g. "Re-capture") gets clipped,
+    // and a short requested height clips below its neighbours.
+    let font_id = egui::TextStyle::Button.resolve(ui.style());
+    let pad = ui.spacing().button_padding;
+    let galley =
+        ui.painter()
+            .layout_no_wrap(text.to_string(), font_id.clone(), egui::Color32::WHITE);
+    let desired = egui::vec2(
+        size.x.max(galley.size().x + pad.x * 2.0),
+        size.y.max(galley.size().y + pad.y * 2.0),
+    );
+    let (rect, response) = ui.allocate_exact_size(desired, sense);
     let id = response.id;
     let pointer_down = enabled && response.is_pointer_button_down_on();
     let on_button = response.contains_pointer();
+    // `any_down` (a pointer button is physically held anywhere) is robust
+    // where `is_pointer_button_down_on()` can flicker false mid-hold for a
+    // manually-allocated widget; `released` is the genuine release event we
+    // trigger on. Both drive the state machine below so it never fires early.
+    let any_down = ui.input(|i| i.pointer.any_down());
+    let released = ui.input(|i| i.pointer.primary_released());
 
+    // Hold progress in [0,1], peeked from the press timer (the state machine
+    // below owns the canonical update). Non-zero only while actively held on
+    // the button — it deepens the 45° cut as a bar-free progress cue. `armed`
+    // means held past the threshold *and still on the button*: the action is
+    // ready but only fires on **release**, so the fill lights up to say
+    // "release to confirm" (slide off to cancel even now).
+    let hold = match ui.data(|d| d.get_temp::<LongPressData>(id)) {
+        Some(s) if any_down && !s.cancelled && on_button => {
+            (((now - s.start) as f32 * 1000.0) / duration_ms as f32).clamp(0.0, 1.0)
+        }
+        _ => 0.0,
+    };
+    let armed = hold >= 1.0;
+
+    // ── Base fill with hover/press feedback (replaces egui's WidgetVisuals) ──
+    let base_fill = if !enabled {
+        // Muted: desaturate the accent toward the surface so a disabled Delete
+        // recedes as clearly inactive rather than reading as a strong red.
+        mix(color, bg_elevated(), 0.72)
+    } else if armed {
+        // Held long enough — light up to invite release (the trigger).
+        lighten(color, 28)
+    } else if pointer_down {
+        darken(color, 15)
+    } else if response.hovered() {
+        lighten(color, 20)
+    } else {
+        color
+    };
+    // `mark` is the label colour. The gradient sheen uses the *opposite* tone
+    // (dark sheen under white text, light under black) so it never hurts
+    // readability; the cut line is bevelled with both a light and a dark
+    // stroke so the separation keeps contrast on dark *and* bright fills.
+    // `dim` fades the affordance when disabled; `chan` builds a translucent
+    // colour of a given channel tone at a given alpha.
+    let mark = on_fill_text(color);
+    let seam_rgb = if mark == egui::Color32::BLACK {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::BLACK
+    };
+    let dim = |a: u8| if enabled { a } else { (a as f32 * 0.3) as u8 };
+    let chan = |rgb: egui::Color32, a: u8| {
+        egui::Color32::from_rgba_unmultiplied(rgb.r(), rgb.g(), rgb.b(), dim(a))
+    };
+
+    let ramp = |rest: u8, held: u8| rest + ((held - rest) as f32 * hold) as u8;
+    let seam_alpha = ramp(SEAM_GLINT_ALPHA, SEAM_HELD_GLINT_ALPHA);
+    let line_alpha = ramp(SEAM_LINE_ALPHA, SEAM_HELD_LINE_ALPHA);
+
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 6.0, base_fill);
+
+    // ── 45° oblique separation through the middle: the at-rest identity ──
+    // A true 45° "/" cut across the centre. The contrast-coloured sheen is
+    // brightest along the cut and fades out to the left and right edges (the
+    // two gradients running opposite ways), with a crisp line on the cut
+    // itself. The sheen fades to nothing at the left/right edges, so the
+    // square mesh clip never shows where the fill's rounded corners are.
+    {
+        let cx = rect.center().x;
+        // 45° ⇒ the cut's horizontal half-span equals half the height.
+        let half = (rect.height() * 0.5).min(rect.width() * 0.5);
+        let seam_top = egui::pos2(cx + half, rect.top());
+        let seam_bot = egui::pos2(cx - half, rect.bottom());
+        let vert = |x: f32, y: f32, a: u8| egui::epaint::Vertex {
+            pos: egui::pos2(x, y),
+            uv: egui::epaint::WHITE_UV,
+            color: chan(seam_rgb, a),
+        };
+        let mut mesh = egui::epaint::Mesh::default();
+        mesh.vertices.push(vert(rect.left(), rect.top(), 0)); // 0 top-left
+        mesh.vertices.push(vert(rect.right(), rect.top(), 0)); // 1 top-right
+        mesh.vertices.push(vert(rect.left(), rect.bottom(), 0)); // 2 bottom-left
+        mesh.vertices.push(vert(rect.right(), rect.bottom(), 0)); // 3 bottom-right
+        mesh.vertices.push(vert(seam_top.x, seam_top.y, seam_alpha)); // 4 cut-top
+        mesh.vertices.push(vert(seam_bot.x, seam_bot.y, seam_alpha)); // 5 cut-bottom
+        // Left region (cut→left edge) then right region (cut→right edge).
+        mesh.indices
+            .extend_from_slice(&[0, 4, 5, 0, 5, 2, 4, 1, 3, 4, 3, 5]);
+        painter.add(egui::Shape::mesh(mesh));
+        // Bevel the cut: a dark shadow line and a light highlight line offset
+        // across it, so the separation reads on dark fills (highlight shows)
+        // and bright fills (shadow shows) alike.
+        let off = egui::vec2(0.8, 0.0);
+        painter.line_segment(
+            [seam_top + off, seam_bot + off],
+            egui::Stroke::new(1.0, chan(egui::Color32::BLACK, line_alpha)),
+        );
+        painter.line_segment(
+            [seam_top - off, seam_bot - off],
+            egui::Stroke::new(1.0, chan(egui::Color32::WHITE, line_alpha)),
+        );
+    }
+
+    // ── Label, painted above the seam so the text stays crisp ──
+    let text_color = if enabled { mark } else { TEXT_DISABLED };
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        font_id,
+        text_color,
+    );
+
+    // ── Long-press state machine ──
     let mut state: Option<LongPressData> = ui.data(|d| d.get_temp(id));
 
-    // Press-down event: pointer was just put down on the button.
+    // Press-down: start the timer when the pointer goes down on the button.
+    // (`is_pointer_button_down_on()` is reliable on the press frame; once the
+    // state exists we keep it across any later flicker — see cleanup below.)
     if pointer_down && state.is_none() {
         state = Some(LongPressData {
             start: now,
@@ -952,24 +1149,33 @@ pub fn long_press_button(
         });
     }
 
-    // Escape: pointer left the rect while held → cancel for the rest of
-    // this press. The state stays around so we don't fire on release; the
-    // operator must let go and re-press to try again.
-    if pointer_down && !on_button {
+    // Escape: while a press is active, the pointer being off the button
+    // latches a cancel (the operator must lift and re-press). Keyed off
+    // `on_button` only, so it's immune to the down-flag flicker.
+    if state.is_some() && !on_button {
         if let Some(s) = state.as_mut() {
             s.cancelled = true;
         }
     }
 
-    // Release: pointer button just came up.
+    // Fire ONLY on a genuine release over the button, after a long enough,
+    // uncancelled hold. A release event cannot occur mid-hold, so this never
+    // fires while held — not even the instant the timer expires. The operator
+    // must lift the click/finger while still over the button.
     let mut triggered = false;
-    if !pointer_down {
+    if released {
         if let Some(s) = state.take() {
             let elapsed_ms = ((now - s.start) * 1000.0) as u64;
             if !s.cancelled && on_button && elapsed_ms >= duration_ms {
                 triggered = true;
             }
         }
+    }
+    // Drop a stale press once no pointer button is held (e.g. released
+    // off-window). Using `any_down` — not the flicker-prone down-on flag —
+    // keeps the timer alive throughout a real hold.
+    if !any_down {
+        state = None;
     }
 
     // Persist (or clear) per-button state.
@@ -978,32 +1184,16 @@ pub fn long_press_button(
         None => ui.data_mut(|d| d.remove::<LongPressData>(id)),
     }
 
-    // While the press is active, request a repaint each frame so the
-    // progress bar animates smoothly.
+    // While the press is active, repaint each frame so the 45° cut animates
+    // (deepening toward triggering).
     if state.is_some() {
         ui.ctx().request_repaint();
     }
 
-    // Progress bar overlay along the bottom edge — only while a press
-    // is in progress AND the pointer is still on the button.
-    if let Some(s) = state {
-        if !s.cancelled && on_button {
-            let elapsed = (now - s.start) as f32 * 1000.0;
-            let progress = (elapsed / duration_ms as f32).clamp(0.0, 1.0);
-            let bar_height = 4.0;
-            let bar_rect = egui::Rect::from_min_max(
-                egui::pos2(rect.min.x, rect.max.y - bar_height),
-                egui::pos2(rect.min.x + rect.width() * progress, rect.max.y),
-            );
-            ui.painter_at(rect).rect_filled(bar_rect, 0.0, TEXT_PRIMARY);
-        }
-    }
-
-    if enabled {
-        response.on_hover_text(
-            help(HelpKey::LongPressConfirm).replace("{ms}", &duration_ms.to_string()),
-        );
-    }
+    // Show the tooltip in both states (an enabled button gets the hold hint /
+    // description; a disabled one still explains why — matching the app's
+    // `on_disabled_hover_text` convention elsewhere).
+    response.on_hover_text(hover);
 
     triggered
 }

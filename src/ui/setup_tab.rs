@@ -1216,16 +1216,21 @@ pub fn draw_setup_tab(
                     // dropped — Open… picks AND loads in one step.
                     ui.horizontal(|ui| {
                         ui.add_space(subrow_indent);
-                        let save_btn = theme::action_button(
+                        let save_hover = format!(
+                            "{}\n\n{}",
+                            help(HelpKey::SetupSaveShow),
+                            help(HelpKey::LongPressConfirm)
+                                .replace("{ms}", &theme::LONG_PRESS_DURATION_MS.to_string()),
+                        );
+                        if theme::long_press_button_hover(
+                            ui,
                             "Save",
                             theme::ACCENT_RED,
                             egui::Vec2::new(action_btn_w, 28.0),
-                        );
-                        if ui
-                            .add(save_btn)
-                            .on_hover_text(help(HelpKey::SetupSaveShow))
-                            .clicked()
-                        {
+                            true,
+                            theme::LONG_PRESS_DURATION_MS,
+                            save_hover,
+                        ) {
                             if setup.show_file_path.is_empty()
                                 && let Some(path) = rfd::FileDialog::new()
                                     .add_filter("Show files", &["s21show", "json"])
@@ -1289,16 +1294,21 @@ pub fn draw_setup_tab(
                             }
                         }
 
-                        let new_btn = theme::action_button(
+                        let new_hover = format!(
+                            "{}\n\n{}",
+                            help(HelpKey::SetupNewShow),
+                            help(HelpKey::LongPressConfirm)
+                                .replace("{ms}", &theme::LONG_PRESS_DURATION_MS.to_string()),
+                        );
+                        if theme::long_press_button_hover(
+                            ui,
                             "New",
                             theme::ACCENT_ORANGE,
                             egui::Vec2::new(action_btn_w, 28.0),
-                        );
-                        if ui
-                            .add(new_btn)
-                            .on_hover_text(help(HelpKey::SetupNewShow))
-                            .clicked()
-                        {
+                            true,
+                            theme::LONG_PRESS_DURATION_MS,
+                            new_hover,
+                        ) {
                             let cue_mgr = cue_manager.clone();
                             let macro_mgr = macro_manager.clone();
                             let pmgr_arc = palette_manager.clone();

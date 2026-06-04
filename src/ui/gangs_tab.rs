@@ -74,12 +74,18 @@ fn pan_mode_buttons(
         ),
     ];
     for (mode, label, key, opt_enabled) in opts {
-        let btn = egui::Button::new(egui::RichText::new(label).small())
-            .selected(current == mode)
+        let is_selected = current == mode;
+        let btn_enabled = enabled && opt_enabled;
+        let mut btn = egui::Button::new(egui::RichText::new(label).small())
+            .selected(is_selected)
             .corner_radius(4.0);
-        let resp = ui
-            .add_enabled(enabled && opt_enabled, btn)
-            .on_hover_text(help(key));
+        // Unselected-but-available toggles take the input-field background so
+        // they stand out from the grey form row instead of reading grey-on-
+        // grey. A disabled REV (not an exact pair) keeps the dimmed default.
+        if !is_selected && btn_enabled {
+            btn = btn.fill(theme::bg_input());
+        }
+        let resp = ui.add_enabled(btn_enabled, btn).on_hover_text(help(key));
         if resp.clicked() {
             clicked = Some(mode);
         }
@@ -429,21 +435,36 @@ pub fn draw_gangs_tab(
                                 // from the Fader/Mute section. REV is only
                                 // offered for an exact pair.
                                 theme::row_label(ui, "Pan:", theme::label_weak());
-                                ui.horizontal(|ui| {
-                                    let member_count = parse_channel_members(
-                                        tab.new_gang_channel_type,
-                                        &tab.new_gang_members,
-                                    )
-                                    .len();
-                                    if let Some(m) = pan_mode_buttons(
-                                        ui,
-                                        tab.new_gang_pan_mode,
-                                        true,
-                                        member_count == 2,
-                                    ) {
-                                        tab.new_gang_pan_mode = m;
-                                    }
-                                });
+                                // Centre the OFF/ON/REV buttons in a ROW_H cell
+                                // so they sit on the "Pan:" centreline and fill
+                                // the striped row evenly — Grid cells top-align
+                                // by default, which left the short buttons high
+                                // with empty grey below them.
+                                ui.allocate_ui_with_layout(
+                                    egui::Vec2::new(240.0, theme::ROW_H),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        // Compress button padding so OFF/ON/REV stay
+                                        // within ROW_H — the default (12, 8) made them
+                                        // overflow it, pushing the row taller and the
+                                        // buttons off the "Pan:" centreline.
+                                        ui.spacing_mut().button_padding =
+                                            egui::Vec2::new(12.0, 4.0);
+                                        let member_count = parse_channel_members(
+                                            tab.new_gang_channel_type,
+                                            &tab.new_gang_members,
+                                        )
+                                        .len();
+                                        if let Some(m) = pan_mode_buttons(
+                                            ui,
+                                            tab.new_gang_pan_mode,
+                                            true,
+                                            member_count == 2,
+                                        ) {
+                                            tab.new_gang_pan_mode = m;
+                                        }
+                                    },
+                                );
                                 ui.end_row();
                             });
                     },
