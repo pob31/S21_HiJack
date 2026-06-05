@@ -924,12 +924,15 @@ fn mix(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
 /// a second to confirm, release early or move off the button to cancel.
 pub const LONG_PRESS_DURATION_MS: u64 = 500;
 
-/// Peak alpha (/255) of the 45° sheen at rest. Drawn in a tone that
-/// *contrasts with the label* (dark sheen under white text, light sheen
-/// under black text) so it deepens the separation without hurting
-/// readability.
-const SEAM_GLINT_ALPHA: u8 = 85;
-/// Alpha (/255) of the crisp 45° "cut" line at rest.
+/// Sheen alpha (/255) at rest: 0, so an unpressed long-press button is flat —
+/// just the crisp 45° cut line below — and sits in line with the rest of the
+/// UI. The sheen fades in only while held, ramping toward
+/// [`SEAM_HELD_GLINT_ALPHA`] as the press nears triggering. When shown it is
+/// drawn in a tone that *contrasts with the label* (dark sheen under white
+/// text, light under black) so it never hurts readability.
+const SEAM_GLINT_ALPHA: u8 = 0;
+/// Alpha (/255) of the crisp 45° "cut" line — the at-rest "slash" that marks
+/// the button as long-press even while it's flat.
 const SEAM_LINE_ALPHA: u8 = 120;
 /// Peak alpha the sheen ramps **up to** while the button is held, so the
 /// oblique separation visibly deepens as the press nears triggering — the
@@ -960,12 +963,12 @@ struct LongPressData {
 /// Returns `true` on the single frame the long-press completes — the
 /// caller should treat it the same way they treat `Button::clicked()`.
 ///
-/// At rest the button carries a persistent long-press identity so operators
-/// can tell it apart from a normal tap button: a 45° oblique separation
-/// across the face, drawn so it contrasts with the label for readability.
-/// While held with the pointer over the button, that separation deepens as
-/// the press nears triggering; it relaxes back the moment the pointer
-/// escapes the rect (the press is cancelled) or the button is released.
+/// At rest the button is flat like every other button, save for a crisp 45°
+/// cut line ("slash") across the face that marks its long-press identity.
+/// Holding the pointer over it fades in a contrast-toned sheen along that cut
+/// and deepens it as the press nears triggering — a bar-free progress cue. The
+/// sheen relaxes away the moment the pointer escapes the rect (the press is
+/// cancelled) or the button is released, leaving just the flat slash again.
 pub fn long_press_button(
     ui: &mut egui::Ui,
     text: &str,
@@ -1080,37 +1083,45 @@ pub fn long_press_button_hover(
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 6.0, base_fill);
 
-    // ── 45° oblique separation through the middle: the at-rest identity ──
-    // A true 45° "/" cut across the centre. The contrast-coloured sheen is
-    // brightest along the cut and fades out to the left and right edges (the
-    // two gradients running opposite ways), with a crisp line on the cut
-    // itself. The sheen fades to nothing at the left/right edges, so the
-    // square mesh clip never shows where the fill's rounded corners are.
+    // ── 45° oblique separation through the middle: the long-press identity ──
+    // A true 45° "/" cut across the centre. At rest only the crisp bevelled cut
+    // line shows, so the button reads flat like the rest of the UI. While held,
+    // a contrast-coloured sheen fades in — brightest along the cut, fading out
+    // to the left and right edges (two gradients running opposite ways) and
+    // deepening as the press nears triggering. The sheen fades to nothing at
+    // the left/right edges, so the square mesh clip never shows where the
+    // fill's rounded corners are.
     {
         let cx = rect.center().x;
         // 45° ⇒ the cut's horizontal half-span equals half the height.
         let half = (rect.height() * 0.5).min(rect.width() * 0.5);
         let seam_top = egui::pos2(cx + half, rect.top());
         let seam_bot = egui::pos2(cx - half, rect.bottom());
-        let vert = |x: f32, y: f32, a: u8| egui::epaint::Vertex {
-            pos: egui::pos2(x, y),
-            uv: egui::epaint::WHITE_UV,
-            color: chan(seam_rgb, a),
-        };
-        let mut mesh = egui::epaint::Mesh::default();
-        mesh.vertices.push(vert(rect.left(), rect.top(), 0)); // 0 top-left
-        mesh.vertices.push(vert(rect.right(), rect.top(), 0)); // 1 top-right
-        mesh.vertices.push(vert(rect.left(), rect.bottom(), 0)); // 2 bottom-left
-        mesh.vertices.push(vert(rect.right(), rect.bottom(), 0)); // 3 bottom-right
-        mesh.vertices.push(vert(seam_top.x, seam_top.y, seam_alpha)); // 4 cut-top
-        mesh.vertices.push(vert(seam_bot.x, seam_bot.y, seam_alpha)); // 5 cut-bottom
-        // Left region (cut→left edge) then right region (cut→right edge).
-        mesh.indices
-            .extend_from_slice(&[0, 4, 5, 0, 5, 2, 4, 1, 3, 4, 3, 5]);
-        painter.add(egui::Shape::mesh(mesh));
+        // Sheen mesh — absent at rest (seam_alpha == 0), fading in only as the
+        // hold deepens. Skipped entirely while transparent so the unpressed
+        // button is genuinely flat.
+        if seam_alpha > 0 {
+            let vert = |x: f32, y: f32, a: u8| egui::epaint::Vertex {
+                pos: egui::pos2(x, y),
+                uv: egui::epaint::WHITE_UV,
+                color: chan(seam_rgb, a),
+            };
+            let mut mesh = egui::epaint::Mesh::default();
+            mesh.vertices.push(vert(rect.left(), rect.top(), 0)); // 0 top-left
+            mesh.vertices.push(vert(rect.right(), rect.top(), 0)); // 1 top-right
+            mesh.vertices.push(vert(rect.left(), rect.bottom(), 0)); // 2 bottom-left
+            mesh.vertices.push(vert(rect.right(), rect.bottom(), 0)); // 3 bottom-right
+            mesh.vertices.push(vert(seam_top.x, seam_top.y, seam_alpha)); // 4 cut-top
+            mesh.vertices.push(vert(seam_bot.x, seam_bot.y, seam_alpha)); // 5 cut-bottom
+            // Left region (cut→left edge) then right region (cut→right edge).
+            mesh.indices
+                .extend_from_slice(&[0, 4, 5, 0, 5, 2, 4, 1, 3, 4, 3, 5]);
+            painter.add(egui::Shape::mesh(mesh));
+        }
         // Bevel the cut: a dark shadow line and a light highlight line offset
         // across it, so the separation reads on dark fills (highlight shows)
-        // and bright fills (shadow shows) alike.
+        // and bright fills (shadow shows) alike. Always drawn — this is the
+        // at-rest "slash" that identifies the button.
         let off = egui::vec2(0.8, 0.0);
         painter.line_segment(
             [seam_top + off, seam_bot + off],

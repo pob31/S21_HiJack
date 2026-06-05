@@ -705,7 +705,17 @@ pub fn draw_setup_tab(
             // (see helper above) so the diagram fits any window width: shrink
             // section widths down to MIN when squeezed, grow gaps when there's
             // extra space.
-            let (w_sat, w_hub, gap) = compute_diagram_widths(ui.available_width());
+            //
+            // Trim one Connection-card inner padding off the width fed to the
+            // gap solver. The laid-out row (panels + gaps) was edging the
+            // surrounding card_frame wider than its slot — egui grows a frame to
+            // fit content that exceeds its content rect — which raised a
+            // horizontal scrollbar. `HUB_FRAME_PAD` is exactly the Connection
+            // card's own inner_margin (12 px per side), so reserving it here
+            // keeps the row inside the card. Tune this term if a right-edge gap
+            // appears (too much) or the scrollbar persists (too little).
+            let diagram_w = (ui.available_width() - HUB_FRAME_PAD).max(0.0);
+            let (w_sat, w_hub, gap) = compute_diagram_widths(diagram_w);
 
             ui.horizontal(|ui| {
                 // Zero the inter-item spacing so the row's total horizontal
