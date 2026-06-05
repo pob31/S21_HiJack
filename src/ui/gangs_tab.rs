@@ -597,9 +597,15 @@ pub fn draw_gangs_tab(
                         // track (gang_engine floor), so this flags only real,
                         // above-floor spreads. Non-blocking — the gang is created.
                         let spread = if sections.contains(&ParameterSection::FaderMutePan) {
-                            let st = runtime.block_on(state.read());
-                            floored_fader_spread(&st, &members)
-                                .filter(|s| *s > GANG_SPREAD_WARN_DB)
+                            // Non-blocking: skip the spread heads-up this frame
+                            // if the state lock is busy rather than block the UI.
+                            state
+                                .try_read()
+                                .ok()
+                                .and_then(|st| {
+                                    floored_fader_spread(&st, &members)
+                                        .filter(|s| *s > GANG_SPREAD_WARN_DB)
+                                })
                         } else {
                             None
                         };

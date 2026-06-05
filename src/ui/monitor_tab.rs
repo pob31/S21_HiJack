@@ -13,7 +13,7 @@ use crate::console::monitor_manager::MonitorManager;
 use crate::model::channel::ChannelId;
 use crate::model::monitor::MonitorClient;
 use crate::model::parameter::{ParameterAddress, ParameterPath};
-use crate::model::state::ConsoleState;
+use crate::model::state::{ConnectionHealth, ConsoleState};
 
 /// Per-tab UI state for the Monitor tab.
 #[derive(Default)]
@@ -35,6 +35,13 @@ pub struct MonitorTabState {
     /// Cached QR texture for `qr_for`; regenerated when the shown profile
     /// changes or a profile is edited (the picker-save handler clears it).
     pub qr_tex: Option<(Uuid, egui::TextureHandle)>,
+    /// Last-good console health, shown on a frame where the heavily-written
+    /// `state` lock is momentarily busy — so the Monitor tab's per-frame read
+    /// never blocks the UI thread (which would freeze during a recall flood).
+    pub last_health: ConnectionHealth,
+    /// Last-good aux reference rows `(aux_number, name)`. Same rationale: the
+    /// table renders from this snapshot, refreshed only when the lock is free.
+    pub aux_ref_cache: Vec<(u8, String)>,
 }
 
 /// Draw the Monitor tab.
@@ -79,7 +86,16 @@ pub fn draw_monitor_tab(
                             // was started, so a failed heartbeat (Stale/Lost)
                             // no longer reads as connected.
                             ui.horizontal(|ui| {
-                                let health = runtime.block_on(console_state.read()).health;
+                                // Non-blocking: never freeze the UI on the
+                                // (heavily-written) state lock during a recall
+                                // flood; reuse the last-good health on a miss.
+                                let health = match console_state.try_read() {
+                                    Ok(s) => {
+                                        tab.last_health = s.health;
+                                        s.health
+                                    }
+                                    Err(_) => tab.last_health,
+                                };
                                 let (console_color, base) =
                                     theme::console_status(is_connected, health);
                                 theme::status_dot(ui, console_color);
@@ -207,10 +223,32 @@ pub fn draw_monitor_tab(
                         theme::card_frame().show(ui, |ui| {
                             theme::section_heading(ui, "Aux Channels");
 
-                            let st = runtime.block_on(console_state.read());
-                            let aux_count = st.config.aux_output_count;
+                            // Refresh the aux reference snapshot when the state
+                            // lock is free; otherwise render from the cached
+                            // snapshot so this table never blocks the UI thread
+                            // on the heavily-written state lock.
+                            if let Ok(st) = console_state.try_read() {
+                                let aux_count = st.config.aux_output_count;
+                                tab.aux_ref_cache = (1..=aux_count)
+                                    .map(|aux| {
+                                        let name = st
+                                            .get(&ParameterAddress {
+                                                channel: ChannelId::Aux(aux),
+                                                parameter: ParameterPath::Name,
+                                            })
+                                            .and_then(|v| match v {
+                                                crate::model::parameter::ParameterValue::String(
+                                                    s,
+                                                ) => Some(s.clone()),
+                                                _ => None,
+                                            })
+                                            .unwrap_or_default();
+                                        (aux, name)
+                                    })
+                                    .collect();
+                            }
 
-                            if aux_count == 0 {
+                            if tab.aux_ref_cache.is_empty() {
                                 ui.label(
                                     egui::RichText::new("Connect to console to see aux channels.")
                                         .color(theme::label_weak()),
@@ -261,22 +299,8 @@ pub fn draw_monitor_tab(
                                         );
                                         ui.end_row();
 
-                                        for aux in 1..=aux_count {
-                                            let name = st
-                                                .get(&ParameterAddress {
-                                                    channel: ChannelId::Aux(aux),
-                                                    parameter: ParameterPath::Name,
-                                                })
-                                                .and_then(|v| {
-                                                    match v {
-                                                crate::model::parameter::ParameterValue::String(
-                                                    s,
-                                                ) => Some(s.clone()),
-                                                _ => None,
-                                            }
-                                                })
-                                                .unwrap_or_default();
-
+                                        for (aux, name) in &tab.aux_ref_cache {
+                                            let aux = *aux;
                                             ui.add_sized(
                                                 [CH_W, row_h],
                                                 egui::Label::new(
@@ -290,7 +314,7 @@ pub fn draw_monitor_tab(
                                                     egui::RichText::new(if name.is_empty() {
                                                         "—"
                                                     } else {
-                                                        &name
+                                                        name
                                                     })
                                                     .color(theme::label_color()),
                                                 ),
@@ -306,7 +330,6 @@ pub fn draw_monitor_tab(
                                         }
                                     });
                             }
-                            drop(st);
                         });
 
                         ui.add_space(8.0);
@@ -327,8 +350,12 @@ pub fn draw_monitor_tab(
                                     .clicked()
                                     && tab.picker.is_none()
                                 {
-                                    let st = runtime.block_on(console_state.read());
-                                    tab.picker = Some(ChannelPickerState::for_new_client(&st));
+                                    // Non-blocking: if the state lock is busy
+                                    // this frame, skip opening rather than block
+                                    // the UI; the operator can click again.
+                                    if let Ok(st) = console_state.try_read() {
+                                        tab.picker = Some(ChannelPickerState::for_new_client(&st));
+                                    }
                                 }
 
                                 if let Some(ref msg) = tab.status_message {
@@ -594,9 +621,11 @@ pub fn draw_monitor_tab(
                                 }
                                 if let Some(client) = to_edit {
                                     if tab.picker.is_none() {
-                                        let st = runtime.block_on(console_state.read());
-                                        tab.picker =
-                                            Some(ChannelPickerState::for_edit(&client, &st));
+                                        // Non-blocking (see Add-profile above).
+                                        if let Ok(st) = console_state.try_read() {
+                                            tab.picker =
+                                                Some(ChannelPickerState::for_edit(&client, &st));
+                                        }
                                     }
                                 }
                                 if let Some((id, auxes, inputs)) = to_update_order {

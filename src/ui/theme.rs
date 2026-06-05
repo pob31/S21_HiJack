@@ -465,6 +465,38 @@ pub fn section_heading(ui: &mut egui::Ui, text: &str) {
     ui.add_space(6.0);
 }
 
+/// Like [`section_heading`] but renders `right` (e.g. a small control) flush to
+/// the right edge of the heading row, above the underline rule. Used to place
+/// a per-section toggle/combobox next to its title.
+pub fn section_heading_with(ui: &mut egui::Ui, text: &str, right: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(text)
+                .size(FONT_SIZE_SECTION)
+                .strong()
+                .color(label_color()),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Compact the right-side control (combobox/checkbox) so it doesn't
+            // make the heading row taller than a plain section heading. Zero the
+            // vertical button padding to drop the height, but keep a real
+            // minimum interact height equal to the body text — egui needs that
+            // to vertically CENTER the combobox's text; zeroing it instead
+            // dropped the text below the adjacent label's baseline. Net: short
+            // row, text centered on the title/label baseline.
+            let body_h = ui.text_style_height(&egui::TextStyle::Body);
+            ui.spacing_mut().button_padding.y = 0.0;
+            ui.spacing_mut().interact_size.y = body_h;
+            right(ui);
+        });
+    });
+    ui.add_space(2.0);
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(width, 1.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, border_subtle());
+    ui.add_space(6.0);
+}
+
 /// Small colored circle status indicator. Returns the (hover-sensing) response
 /// so callers can attach a tooltip when the dot stands alone without a label.
 pub fn status_dot(ui: &mut egui::Ui, color: egui::Color32) -> egui::Response {

@@ -25,6 +25,11 @@ pub enum ParsedOscMessage {
         matrices: u8,
         master: u8,
     },
+    /// The console's current snapshot row, for Console→App follow. Parsed from
+    /// an inbound `/digico/snapshots/fire <n>` — the desk echoing its own
+    /// snapshot-fire command (exact inbound path pending real-desk
+    /// verification; see `process_message`).
+    CurrentSnapshot(i32),
     /// Unrecognized message.
     Unknown(String),
 }
@@ -45,6 +50,15 @@ pub fn parse_gp_osc_with_config(
         "/console/ping" => return ParsedOscMessage::Ping,
         "/console/pong" => return ParsedOscMessage::Pong,
         _ => {}
+    }
+
+    // Current-snapshot report (Console→App follow). The desk echoes its
+    // snapshot-fire command; an inbound `/digico/snapshots/fire <n>` carries
+    // the row the desk just loaded.
+    if path == "/digico/snapshots/fire"
+        && let Some(n) = args.first().and_then(extract_i32)
+    {
+        return ParsedOscMessage::CurrentSnapshot(n);
     }
 
     // Positional channel counts (canonical GP OSC reply form):
@@ -94,6 +108,15 @@ fn extract_u8(arg: &OscType) -> Option<u8> {
     match arg {
         OscType::Int(i) => u8::try_from(*i).ok(),
         OscType::Float(f) => u8::try_from(*f as i32).ok(),
+        _ => None,
+    }
+}
+
+fn extract_i32(arg: &OscType) -> Option<i32> {
+    match arg {
+        OscType::Int(i) => Some(*i),
+        OscType::Long(l) => Some(*l as i32),
+        OscType::Float(f) => Some(*f as i32),
         _ => None,
     }
 }
@@ -332,6 +355,25 @@ mod tests {
     fn parse_unknown() {
         assert!(matches!(
             parse_gp_osc("/some/unknown/path", &[]),
+            ParsedOscMessage::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn parse_current_snapshot() {
+        // An inbound `/digico/snapshots/fire <n>` is the desk's current-snapshot
+        // report (Console→App follow). Accept Int and Float-encoded rows.
+        assert!(matches!(
+            parse_gp_osc("/digico/snapshots/fire", &[OscType::Int(7)]),
+            ParsedOscMessage::CurrentSnapshot(7)
+        ));
+        assert!(matches!(
+            parse_gp_osc("/digico/snapshots/fire", &[OscType::Float(7.0)]),
+            ParsedOscMessage::CurrentSnapshot(7)
+        ));
+        // No argument → not a current-snapshot report.
+        assert!(matches!(
+            parse_gp_osc("/digico/snapshots/fire", &[]),
             ParsedOscMessage::Unknown(_)
         ));
     }

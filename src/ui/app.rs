@@ -17,9 +17,10 @@ use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::operating_mode::OperatingMode;
 use crate::model::osc_log::OscLog;
 use crate::model::pan_link::PanLinkBindings;
-use crate::model::recall_progress::RecallProgress;
+use crate::model::recall_progress::ProgressBars;
 use crate::model::snapshot::CueList;
 use crate::model::state::ConsoleState;
+use crate::model::sync_direction::SharedSyncDirection;
 use crate::osc::client::OscSender;
 use crate::osc::ipad_client::IpadSender;
 use crate::persistence::preferences::AppPreferences;
@@ -173,8 +174,8 @@ pub struct RecoveryDialog {
     pub recovered: bool,
 }
 
-/// UI-side easing state for the recall progress line. The shared
-/// [`RecallProgress`] holds the raw `done`/`total`; this smooths the drawn
+/// UI-side easing state for one recall progress line. The shared
+/// `RecallProgress` handle holds the raw `done`/`total`; this smooths the drawn
 /// fraction toward the target and fades the bar out when an op completes.
 #[derive(Default)]
 struct RecallProgressUi {
@@ -207,19 +208,30 @@ pub struct HiJackApp {
     /// Auto-save dirty parameters into the previously-recalled snapshot
     /// when firing a new one. Mirrored from `ConnectionSettings`.
     pub auto_update_on_recall: Arc<AtomicBool>,
-    /// Follow console snapshot recalls. Mirrored from `ConnectionSettings`.
-    pub console_snapshot_follow: Arc<AtomicBool>,
+    /// Direction snapshot recalls flow between app and console (Off /
+    /// App→Console / Console→App). Mirrored from `ConnectionSettings`.
+    pub snapshot_sync_direction: SharedSyncDirection,
     /// Inter-message pacing (μs) shared between snapshot recall and
     /// macro OSC sends. 0 = no pacing. Owned at the app level so the
     /// Advanced Settings panel and both engines see one consistent
     /// value; persisted in `AppPreferences`.
     pub send_pace_us: Arc<std::sync::atomic::AtomicU64>,
-    /// Shared progress handle for long parameter transfers (console dump,
-    /// snapshot/cue/macro recalls). Cloned into the daemon/engines on connect;
-    /// the UI polls it each frame to render the progress line under the tabs.
-    pub recall_progress: Arc<RecallProgress>,
-    /// UI-only easing/fade state for the progress line. Not shared.
-    recall_progress_ui: RecallProgressUi,
+    /// Two shared progress handles for long parameter transfers: inbound
+    /// (console dump flood, green) and outbound (snapshot/cue/macro recall
+    /// sends, blue). Cloned into the daemon (inbound) and recall engines
+    /// (outbound) on connect; the UI polls both each frame to render the two
+    /// stacked progress lines under the tabs.
+    pub progress: ProgressBars,
+    /// UI-only easing/fade state for the inbound (green) progress line.
+    progress_ui_in: RecallProgressUi,
+    /// UI-only easing/fade state for the outbound (blue) progress line.
+    progress_ui_out: RecallProgressUi,
+    /// Last-rendered transport cue label `(text, has_cues)`. The top-bar strip
+    /// reads `cue_manager` with a non-blocking `try_read` every frame; when a
+    /// background writer briefly holds the lock, the cached value is shown for
+    /// that frame instead of blocking the UI thread. `RefCell` because the
+    /// strip renders behind shared `&self` borrows.
+    transport_cue_cache: std::cell::RefCell<(Option<String>, bool)>,
     pub snapshot_engine: Option<Arc<SnapshotEngine>>,
     pub macro_engine: Option<Arc<MacroEngine>>,
     /// Hand-off slot the connect-console async task uses to deliver the OSC
@@ -378,10 +390,12 @@ impl HiJackApp {
             pan_link_bindings: Arc::new(RwLock::new(PanLinkBindings::default())),
             offline_mode: Arc::new(AtomicBool::new(false)),
             auto_update_on_recall: Arc::new(AtomicBool::new(false)),
-            console_snapshot_follow: Arc::new(AtomicBool::new(false)),
+            snapshot_sync_direction: SharedSyncDirection::default(),
             send_pace_us: Arc::new(std::sync::atomic::AtomicU64::new(prefs.send_pace_us)),
-            recall_progress: Arc::new(RecallProgress::new()),
-            recall_progress_ui: RecallProgressUi::default(),
+            progress: ProgressBars::new(),
+            progress_ui_in: RecallProgressUi::default(),
+            progress_ui_out: RecallProgressUi::default(),
+            transport_cue_cache: std::cell::RefCell::new((None, false)),
             snapshot_engine: None,
             macro_engine: None,
             pending_engines: Arc::new(std::sync::Mutex::new(None)),
@@ -806,15 +820,62 @@ impl HiJackApp {
         }
     }
 
-    /// Advance the recall-progress easing and, while a transfer is active or
-    /// fading out, draw the thin progress line. The shared [`RecallProgress`]
-    /// holds the raw `done`/`total`; this eases the drawn fraction and fades the
-    /// bar out on completion so it reads smoothly rather than snapping.
+    /// Draw the two thin progress lines under the tab bar — inbound (the
+    /// console dump flood) in green on top, outbound (snapshot/cue/macro recall
+    /// sends) in blue below — matching the OSC log's In/Out color convention.
+    /// Each bar eases its drawn fraction and fades out on completion so it reads
+    /// smoothly rather than snapping; either can animate independently.
     fn draw_recall_progress(&mut self, ctx: &egui::Context) {
-        let view = self.recall_progress.snapshot();
         let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.1);
-        let st = &mut self.recall_progress_ui;
+        let in_view = self.progress.inbound.snapshot();
+        let out_view = self.progress.outbound.snapshot();
 
+        // Inbound (green) sits at the very top edge, outbound (blue) 3px below.
+        let in_anim = Self::draw_one_progress_bar(
+            ctx,
+            in_view,
+            &mut self.progress_ui_in,
+            dt,
+            super::theme::ACCENT_GREEN,
+            "recall_progress_in",
+            0.0,
+        );
+        let out_anim = Self::draw_one_progress_bar(
+            ctx,
+            out_view,
+            &mut self.progress_ui_out,
+            dt,
+            super::theme::ACCENT_BLUE,
+            "recall_progress_out",
+            3.0,
+        );
+
+        // Keep repainting while either bar is animating so the ease/fade runs
+        // even when nothing else requests frames.
+        if in_anim || out_anim {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Advance one progress bar's easing/fade and draw it (in `color`) if it is
+    /// active or still fading. Returns whether the bar needs further animation
+    /// frames. Associated fn (no `&self`) so the two bars can borrow their own
+    /// easing state mutably without aliasing.
+    ///
+    /// Painted on a **foreground layer** rather than a `TopBottomPanel`, so it
+    /// consumes no layout space: whether 0, 1, or 2 bars are visible, the
+    /// CentralPanel never reflows (which previously caused the content to jump
+    /// and flicker as the bars appeared/disappeared during the dump). `y_offset`
+    /// stacks the bars (0 for the top one, 3 for the one below).
+    fn draw_one_progress_bar(
+        ctx: &egui::Context,
+        view: crate::model::recall_progress::RecallProgressView,
+        st: &mut RecallProgressUi,
+        dt: f32,
+        color: egui::Color32,
+        layer_id: &'static str,
+        y_offset: f32,
+    ) -> bool {
         // A new op (generation bumped) resets the easing/fade.
         if view.generation != st.last_generation {
             st.last_generation = view.generation;
@@ -853,31 +914,39 @@ impl HiJackApp {
         // before the console starts flooding on connect — nor when fully idle.
         let pre_stream = view.active && view.total > 0 && view.done == 0;
         if pre_stream || (!view.active && st.fade <= 0.0) {
-            return;
+            return false;
         }
 
         let frac = st.smoothed.clamp(0.0, 1.0);
         let alpha = st.fade.clamp(0.0, 1.0);
 
-        egui::TopBottomPanel::top("recall_progress")
-            .show_separator_line(false)
-            .exact_height(3.0)
-            .frame(egui::Frame::new().fill(super::theme::bg_dark()))
-            .show(ctx, |ui| {
-                let r = ui.max_rect();
-                // Subtle track, then the accent fill — both alpha-modulated so
-                // the whole bar fades out together on completion.
-                ui.painter()
-                    .rect_filled(r, 0.0, super::theme::bg_panel().gamma_multiply(alpha * 0.5));
-                let mut fill = r;
-                fill.set_width(r.width() * frac);
-                ui.painter()
-                    .rect_filled(fill, 0.0, super::theme::ACCENT_BLUE.gamma_multiply(alpha));
-            });
+        // Paint into a foreground layer at the top of the content area. This
+        // does NOT participate in layout, so no panel appears/disappears and the
+        // CentralPanel never reflows. `available_rect` here is below the tab bar
+        // (this runs after it, before the CentralPanel) and is stable frame to
+        // frame because the overlay reserves no space.
+        let avail = ctx.available_rect();
+        let top = avail.top() + y_offset;
+        let track = egui::Rect::from_min_max(
+            egui::pos2(avail.left(), top),
+            egui::pos2(avail.right(), top + 3.0),
+        );
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new(layer_id),
+        ));
+        // Subtle track, then the accent fill — both alpha-modulated so the whole
+        // bar fades out together on completion.
+        painter.rect_filled(
+            track,
+            0.0,
+            super::theme::bg_panel().gamma_multiply(alpha * 0.5),
+        );
+        let mut fill = track;
+        fill.set_width(track.width() * frac);
+        painter.rect_filled(fill, 0.0, color.gamma_multiply(alpha));
 
-        // Keep repainting so the ease/fade animates even when nothing else
-        // requests frames.
-        ctx.request_repaint();
+        true
     }
 
     /// Process UI events from async tasks.
@@ -1019,8 +1088,8 @@ impl HiJackApp {
                     if let Some(c) = &conn {
                         self.auto_update_on_recall
                             .store(c.auto_update_on_recall, Ordering::Relaxed);
-                        self.console_snapshot_follow
-                            .store(c.console_snapshot_follow, Ordering::Relaxed);
+                        self.snapshot_sync_direction
+                            .set(c.effective_sync_direction());
                     }
                     if let Some(conn) = conn {
                         if !conn.local_ip.is_empty() {
@@ -1202,6 +1271,12 @@ impl HiJackApp {
                         &self.ui_tx,
                     );
                 }
+                UiEvent::MacroConnect if self.connected.load(Ordering::Relaxed) => {
+                    // Already connected — ignore the macro-driven Connect so
+                    // automation can't churn a live session (the on-screen
+                    // button is likewise hidden while connected).
+                    tracing::warn!("MacroConnect ignored — already connected");
+                }
                 UiEvent::MacroConnect => {
                     // Macro-driven Connect routes to the same
                     // start_connection helper the operator's Connect
@@ -1217,7 +1292,7 @@ impl HiJackApp {
                         &self.pan_link_bindings,
                         &self.offline_mode,
                         &self.auto_update_on_recall,
-                        &self.console_snapshot_follow,
+                        &self.snapshot_sync_direction,
                         &self.dirty_tracker,
                         &self.last_received,
                         &self.pending_engines,
@@ -1225,7 +1300,7 @@ impl HiJackApp {
                         &mut self.cancel_token,
                         &self.osc_log,
                         &self.send_pace_us,
-                        &self.recall_progress,
+                        &self.progress,
                         &self.runtime,
                         &self.ui_tx,
                         &self.egui_ctx,
@@ -1546,7 +1621,7 @@ impl HiJackApp {
         let conn = super::setup_tab::connection_settings_from_setup(
             &self.setup,
             self.auto_update_on_recall.load(Ordering::Relaxed),
-            self.console_snapshot_follow.load(Ordering::Relaxed),
+            self.snapshot_sync_direction.get(),
         );
         let console_recall = self.snapshots.scope_editor.console_recall.clone();
         let path = std::path::PathBuf::from(&self.setup.show_file_path);
@@ -1755,7 +1830,7 @@ impl HiJackApp {
                     &self.pan_link_bindings,
                     &self.stream_deck_config,
                     self.auto_update_on_recall.load(Ordering::Relaxed),
-                    self.console_snapshot_follow.load(Ordering::Relaxed),
+                    self.snapshot_sync_direction.get(),
                     self.snapshots.scope_editor.console_recall.clone(),
                     &self.runtime,
                     &self.ui_tx,
@@ -1910,7 +1985,14 @@ impl eframe::App for HiJackApp {
                         // Reflect link *health*: green healthy, yellow
                         // "Connecting…" when a session is up but the console
                         // isn't currently reachable, red when no session.
-                        let health = self.runtime.block_on(self.state.read()).health;
+                        // Non-blocking: never freeze the UI on the state lock
+                        // (heavily written during the inbound dump). A rare
+                        // miss falls back to "Connecting" for that frame.
+                        let health = self
+                            .state
+                            .try_read()
+                            .map(|s| s.health)
+                            .unwrap_or(crate::model::state::ConnectionHealth::Connecting);
                         let (color, text) = super::theme::console_status(is_connected, health);
                         // Dot only (no text label) to reclaim top-bar width; the
                         // status wording is available on hover.
@@ -2029,22 +2111,33 @@ impl eframe::App for HiJackApp {
                                     ui.spacing_mut().item_spacing.x = 0.0;
                                     ui.add_space(pad);
 
-                                    let (current_cue_text, has_cues) = {
-                                        let mgr = self.runtime.block_on(self.cue_manager.read());
-                                        let count = mgr.cue_list.cues.len();
-                                        let label = mgr.current_cue().map(|c| {
-                                            let name = if c.name.is_empty() {
-                                                String::new()
-                                            } else {
-                                                format!(" — {}", c.name)
-                                            };
-                                            let row = c
-                                                .console_snapshot
-                                                .map(|n| format!(" · row {n}"))
-                                                .unwrap_or_default();
-                                            format!("Cue {:.1}{}{}", c.cue_number, name, row)
-                                        });
-                                        (label, count > 0)
+                                    // Non-blocking read: never block the UI
+                                    // thread on the async lock (a background
+                                    // recall/follow writer can hold it). On a
+                                    // miss, reuse last frame's cached label.
+                                    let (current_cue_text, has_cues) = match self
+                                        .cue_manager
+                                        .try_read()
+                                    {
+                                        Ok(mgr) => {
+                                            let count = mgr.cue_list.cues.len();
+                                            let label = mgr.current_cue().map(|c| {
+                                                let name = if c.name.is_empty() {
+                                                    String::new()
+                                                } else {
+                                                    format!(" — {}", c.name)
+                                                };
+                                                let row = c
+                                                    .console_snapshot
+                                                    .map(|n| format!(" · row {n}"))
+                                                    .unwrap_or_default();
+                                                format!("Cue {:.1}{}{}", c.cue_number, name, row)
+                                            });
+                                            let v = (label, count > 0);
+                                            *self.transport_cue_cache.borrow_mut() = v.clone();
+                                            v
+                                        }
+                                        Err(_) => self.transport_cue_cache.borrow().clone(),
                                     };
                                     let transport_enabled = is_connected && has_cues;
 
@@ -2350,10 +2443,13 @@ impl eframe::App for HiJackApp {
         // difference between the two paths becomes a race. Always
         // visible until the operator untangles the gangs in the
         // Gangs tab.
+        // Non-blocking: a rare lock miss simply hides the warning for one
+        // frame rather than stalling the UI thread.
         let overlap_count = self
-            .runtime
-            .block_on(self.gang_manager.read())
-            .count_overlap_conflict_channels();
+            .gang_manager
+            .try_read()
+            .map(|m| m.count_overlap_conflict_channels())
+            .unwrap_or(0);
         if overlap_count > 0 {
             egui::TopBottomPanel::bottom("gangs_overlap_warning")
                 .show_separator_line(false)
@@ -2441,7 +2537,7 @@ impl eframe::App for HiJackApp {
                         &self.stream_deck_config,
                         &self.offline_mode,
                         &self.auto_update_on_recall,
-                        &self.console_snapshot_follow,
+                        &self.snapshot_sync_direction,
                         &self.snapshots.scope_editor.console_recall,
                         &self.dirty_tracker,
                         &self.last_received,
@@ -2450,7 +2546,7 @@ impl eframe::App for HiJackApp {
                         &mut self.cancel_token,
                         &self.osc_log,
                         &self.send_pace_us,
-                        &self.recall_progress,
+                        &self.progress,
                         &self.runtime,
                         &self.ui_tx,
                         &self.egui_ctx,
@@ -2476,7 +2572,7 @@ impl eframe::App for HiJackApp {
                         &self.snapshot_engine,
                         &self.dirty_tracker,
                         &self.auto_update_on_recall,
-                        &self.console_snapshot_follow,
+                        &self.snapshot_sync_direction,
                         self.setup.operating_mode,
                         qlab_ip,
                         qlab_port,

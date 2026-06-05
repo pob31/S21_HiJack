@@ -19,6 +19,7 @@ use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::parameter::{ParameterAddress, ParameterValue};
 use crate::model::snapshot::{Cue, Snapshot, SnapshotKind};
 use crate::model::state::ConsoleState;
+use crate::model::sync_direction::{SharedSyncDirection, SnapshotSyncDirection};
 use crate::osc::qlab_client::QLabClient;
 use crate::osc::qlab_cue_builder::{build_snapshot_cues, build_snapshot_load_cue};
 
@@ -87,6 +88,10 @@ pub struct SnapshotsTabState {
     pub shift_from_row: String,
     pub shift_delta: String,
     pub shift_status: Option<String>,
+    /// Pending result of a console-ref shift. The Apply handler spawns the
+    /// shift onto the runtime and stashes this receiver; the modal polls it
+    /// non-blockingly each frame instead of blocking the UI thread.
+    pub shift_result_rx: Option<std::sync::mpsc::Receiver<(usize, usize)>>,
 }
 
 impl Default for SnapshotsTabState {
@@ -117,6 +122,7 @@ impl Default for SnapshotsTabState {
             shift_from_row: "1".into(),
             shift_delta: "1".into(),
             shift_status: None,
+            shift_result_rx: None,
         }
     }
 }
@@ -133,8 +139,10 @@ pub fn draw_snapshots_tab(
     snapshot_engine: &Option<Arc<SnapshotEngine>>,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     auto_update_on_recall: &Arc<AtomicBool>,
-    console_snapshot_follow: &Arc<AtomicBool>,
-    operating_mode: crate::model::operating_mode::OperatingMode,
+    sync_direction: &SharedSyncDirection,
+    // Retained for call-site compatibility; snapshot sync is now unified on GP
+    // OSC and works in every mode, so the mode no longer gates the control.
+    _operating_mode: crate::model::operating_mode::OperatingMode,
     qlab_ip: &str,
     qlab_port: u16,
     // QLab patch for app-targeted (trigger) cues; console patch for the
@@ -275,35 +283,17 @@ pub fn draw_snapshots_tab(
             .show(&mut cols[1], |ui| {
                     // ── Snapshots card ──
                     theme::card_frame().show(ui, |ui| {
-                        theme::section_heading(ui, "Snapshots");
-
-                        // Workflow toggles + console-snapshot tools.
-                        let uses_ipad = operating_mode.uses_ipad_protocol();
-                        ui.horizontal(|ui| {
-                            theme::row_spacer(ui);
+                        // Auto-save toggle sits next to the section title.
+                        theme::section_heading_with(ui, "Snapshots", |ui| {
                             let mut auto = auto_update_on_recall.load(Ordering::Relaxed);
-                            if ui.checkbox(&mut auto, "Auto-save previous on recall")
+                            if ui
+                                .checkbox(&mut auto, "Auto-save previous on recall")
                                 .on_hover_text(help(HelpKey::SnapshotAutoUpdate))
                                 .changed()
                             {
                                 auto_update_on_recall.store(auto, Ordering::Relaxed);
                             }
                         });
-                        ui.horizontal(|ui| {
-                            theme::row_spacer(ui);
-                            let mut follow = console_snapshot_follow.load(Ordering::Relaxed);
-                            let resp = ui.add_enabled(
-                                uses_ipad,
-                                egui::Checkbox::new(&mut follow, "Follow desk recalls"),
-                            );
-                            if resp.clicked() && uses_ipad {
-                                console_snapshot_follow.store(follow, Ordering::Relaxed);
-                            }
-                            if !uses_ipad {
-                                let _ = resp.on_hover_text(help(HelpKey::SnapshotConsoleFollowReq));
-                            }
-                        });
-                        ui.add_space(4.0);
 
                         // Snapshot kind picker — controls whether the scope is
                         // applied at SAVE time (only in-scope params stored,
@@ -1114,7 +1104,89 @@ pub fn draw_snapshots_tab(
                 // the column so adding or removing cues never shifts the Add
                 // Cue or Cue Editor controls above it.
                 theme::card_frame().show(ui, |ui| {
-                    theme::section_heading(ui, "Cue List");
+                    // Console-sync direction lives next to the Cue List title —
+                    // it governs how this list links to the desk's snapshots.
+                    theme::section_heading_with(ui, "Cue List", |ui| {
+                        let mut dir = sync_direction.get();
+                        let before = dir;
+                        egui::ComboBox::from_id_salt("snapshot_sync_direction")
+                            .selected_text(dir.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut dir,
+                                    SnapshotSyncDirection::Off,
+                                    SnapshotSyncDirection::Off.label(),
+                                )
+                                .on_hover_text("No console/app snapshot linkage.");
+                                ui.selectable_value(
+                                    &mut dir,
+                                    SnapshotSyncDirection::AppToConsole,
+                                    SnapshotSyncDirection::AppToConsole.label(),
+                                )
+                                .on_hover_text(
+                                    "Firing a cue with a console row fires the desk memory \
+                                     over GP OSC (/digico/snapshots/fire).",
+                                );
+                                ui.selectable_value(
+                                    &mut dir,
+                                    SnapshotSyncDirection::ConsoleToApp,
+                                    SnapshotSyncDirection::ConsoleToApp.label(),
+                                )
+                                .on_hover_text(
+                                    "When the desk reports a snapshot load, recall the first \
+                                     matching cue and move the playhead to it.",
+                                );
+                            });
+                        ui.label(
+                            egui::RichText::new("Console sync:").color(theme::label_weak()),
+                        );
+                        if dir != before {
+                            sync_direction.set(dir);
+                        }
+                    });
+
+                    // Ambiguous-follow guard: in Console→App, two cues sharing
+                    // one console row can't both be followed (the dispatcher
+                    // fires the first match only), so warn. In App→Console,
+                    // re-firing a row is fine, so no warning there.
+                    if sync_direction.get() == SnapshotSyncDirection::ConsoleToApp {
+                        let dup_rows: Vec<i32> = cue_manager
+                            .try_read()
+                            .ok()
+                            .map(|mgr| {
+                                let mut counts: std::collections::HashMap<i32, u32> =
+                                    std::collections::HashMap::new();
+                                for cue in &mgr.cue_list.cues {
+                                    if let Some(r) = cue.console_snapshot {
+                                        *counts.entry(r).or_insert(0) += 1;
+                                    }
+                                }
+                                let mut d: Vec<i32> = counts
+                                    .into_iter()
+                                    .filter(|(_, n)| *n > 1)
+                                    .map(|(r, _)| r)
+                                    .collect();
+                                d.sort_unstable();
+                                d
+                            })
+                            .unwrap_or_default();
+                        if !dup_rows.is_empty() {
+                            let list = dup_rows
+                                .iter()
+                                .map(|r| r.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "⚠ Console→App: multiple cues share console row(s) {list}; \
+                                     only the first will follow the desk."
+                                ))
+                                .color(theme::TEXT_WARNING)
+                                .small(),
+                            );
+                            ui.add_space(4.0);
+                        }
+                    }
 
                     // Fixed column widths so the cue number, name, CS row and
                     // snapshot line up down the list. `LEAD` matches the row
@@ -1266,6 +1338,21 @@ pub fn draw_snapshots_tab(
 
     // ── Shift console refs modal ──
     if snap_state.shift_modal_open {
+        // Non-blocking poll of a pending shift's result (the Apply handler
+        // runs the shift on the runtime; we never block the UI thread on it).
+        if let Some(rx) = &snap_state.shift_result_rx {
+            match rx.try_recv() {
+                Ok((shifted, cleared)) => {
+                    snap_state.shift_status =
+                        Some(format!("Shifted {shifted} refs ({cleared} cleared)"));
+                    snap_state.shift_result_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    snap_state.shift_result_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         let mut open = true;
         egui::Window::new("Shift console memory refs")
             .open(&mut open)
@@ -1309,8 +1396,11 @@ pub fn draw_snapshots_tab(
                         match (from, delta) {
                             (Ok(from), Ok(delta)) => {
                                 let cue_mgr = cue_manager.clone();
+                                // Fire-and-forget: run the shift on the runtime
+                                // and report the result back through a channel
+                                // polled each frame above — never block the UI.
                                 let (tx_status, rx_status) =
-                                    std::sync::mpsc::sync_channel::<(usize, usize)>(1);
+                                    std::sync::mpsc::channel::<(usize, usize)>();
                                 runtime.spawn(async move {
                                     let mut mgr = cue_mgr.write().await;
                                     let mut shifted = 0usize;
@@ -1331,14 +1421,8 @@ pub fn draw_snapshots_tab(
                                     }
                                     let _ = tx_status.send((shifted, cleared));
                                 });
-                                if let Ok((shifted, cleared)) =
-                                    rx_status.recv_timeout(std::time::Duration::from_millis(500))
-                                {
-                                    snap_state.shift_status =
-                                        Some(format!("Shifted {shifted} refs ({cleared} cleared)"));
-                                } else {
-                                    snap_state.shift_status = Some("Shift in progress…".into());
-                                }
+                                snap_state.shift_result_rx = Some(rx_status);
+                                snap_state.shift_status = Some("Shift in progress…".into());
                             }
                             _ => {
                                 snap_state.shift_status =

@@ -401,10 +401,8 @@ fn draw_label_column(
                     ui.painter().galley(text_pos, galley, theme::label_weak());
                 }
                 MatrixRow::Path { path } => {
-                    let row_all =
-                        state.is_row_all_selected(path, &data.channels, &data.available);
-                    let row_any =
-                        state.is_row_any_selected(path, &data.channels, &data.available);
+                    let row_all = state.is_row_all_selected(path, &data.channels, &data.available);
+                    let row_any = state.is_row_any_selected(path, &data.channels, &data.available);
                     let row_resp =
                         path_row_label(ui, &path.label_with_config(&data.config), row_all, row_any);
                     if row_resp.clicked() {
@@ -579,8 +577,7 @@ fn draw_body_grid(
                         } else {
                             // In timing modes, path cells are dimmed/read-only.
                             matrix_cell(
-                                ui, CELL_SIZE, sel, sel,
-                                false, // not available = greyed
+                                ui, CELL_SIZE, sel, sel, false, // not available = greyed
                                 false, "",
                             );
                         }
@@ -883,7 +880,9 @@ mod tests {
     fn scope_mode_emits_path_rows_only_for_expanded_sections() {
         let mut state = ScopeEditorState::default(); // edit_mode = Scope → no timing rows
         let group = ChannelGroup::Inputs;
-        state.expanded_sections.insert((group, ParameterSection::Eq));
+        state
+            .expanded_sections
+            .insert((group, ParameterSection::Eq));
 
         let pbs = vec![
             (
@@ -932,7 +931,11 @@ mod tests {
 
         assert_eq!(rows.len(), 3); // header + 2 timing rows
         assert!(matches!(rows[0], MatrixRow::SectionHeader { .. }));
-        assert!(rows[1..].iter().all(|r| matches!(r, MatrixRow::Timing { .. })));
+        assert!(
+            rows[1..]
+                .iter()
+                .all(|r| matches!(r, MatrixRow::Timing { .. }))
+        );
     }
 
     #[test]

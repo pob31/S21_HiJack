@@ -58,6 +58,15 @@ pub struct DaemonState {
     /// Step form. Updated unconditionally on every inbound parameter
     /// (one address clone per message — negligible).
     pub last_received: Arc<RwLock<Option<crate::model::parameter::ParameterAddress>>>,
+    /// Forwards the desk's current snapshot row (from inbound GP OSC) to the
+    /// follow-mode dispatcher so Console→App follow works in every mode.
+    /// `None` when there is no dispatcher to feed (e.g. headless).
+    pub console_snapshot_tx: Option<tokio::sync::mpsc::Sender<i32>>,
+    /// Lock-free console-load suppression window. While active (just after a
+    /// memory fire or a desk-reported load), `process_message` skips gang/pan
+    /// propagation so the app doesn't re-propagate the desk's coherent
+    /// snapshot-load flood back at the console.
+    pub console_load_suppression: crate::console::snapshot_engine::ConsoleLoadSuppression,
 }
 
 /// Connection manager handles the lifecycle of the console connection.
@@ -211,6 +220,11 @@ async fn run_loop(
 
     loop {
         tokio::select! {
+            // Biased: always check cancellation FIRST so a continuous inbound
+            // flood (e.g. a snapshot-load echo storm) can never starve the
+            // cancel branch and block Disconnect.
+            biased;
+
             _ = cancel.cancelled() => {
                 info!("Connection cancelled — shutting down state mirror");
                 daemon.recall_progress.finish();
@@ -463,9 +477,17 @@ async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender
                 daemon.dirty_tracker.write().await.mark(addr);
             }
 
+            // While a console snapshot is loading, DON'T gang/pan-propagate the
+            // desk's echo flood: the desk already applied the snapshot
+            // coherently, and re-propagating it back fights the desk and can
+            // saturate the outbound path into a stall (the App→Console hang).
+            let in_console_load = crate::console::snapshot_engine::console_load_active(
+                &daemon.console_load_suppression,
+            );
+
             // Gang propagation — before macro recording so the engineer's
             // original change is what gets recorded, not ganged echoes.
-            {
+            if !in_console_load {
                 let mut engine = daemon.gang_engine.write().await;
                 let manager = daemon.gang_manager.read().await;
                 engine
@@ -475,7 +497,7 @@ async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender
 
             // Pan link propagation — runs after gangs so a gang-driven
             // pan change on an input also pushes to its linked aux sends.
-            {
+            if !in_console_load {
                 let engine = daemon.pan_link_engine.read().await;
                 engine.process_pan_update(addr, value).await;
             }
@@ -534,6 +556,32 @@ async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender
             let mut s = daemon.state.write().await;
             crate::console::discovery::apply_channel_count(&mut s.config, channel_type, *count);
         }
+        ParsedOscMessage::CurrentSnapshot(row) => {
+            // The desk reported (or echoed) a snapshot load. Normalize the wire
+            // value back to the app's STORED 1-based base so the mirror,
+            // suppression map, and follow dispatcher all speak one base. With
+            // the default offset of 0 this is a no-op; see
+            // `CONSOLE_SNAPSHOT_WIRE_OFFSET` for how to confirm the desk's base.
+            let stored = *row - crate::console::snapshot_engine::CONSOLE_SNAPSHOT_WIRE_OFFSET;
+            // Logged at info so the operator can read the desk's wire base
+            // straight from the app log when calibrating Console→App follow.
+            info!(wire = *row, stored, "Console current-snapshot (GP OSC)");
+            // A snapshot is loading on the desk (our own fire, or a desk-driven
+            // load): arm the suppression window so the resulting parameter
+            // flood isn't gang/pan-propagated back at the console.
+            crate::console::snapshot_engine::arm_console_load(&daemon.console_load_suppression);
+            let changed = {
+                let mut s = daemon.state.write().await;
+                let prev = s.current_console_snapshot;
+                s.current_console_snapshot = Some(stored);
+                prev != Some(stored)
+            };
+            if changed {
+                if let Some(tx) = &daemon.console_snapshot_tx {
+                    let _ = tx.try_send(stored);
+                }
+            }
+        }
         ParsedOscMessage::Unknown(path) => {
             tracing::trace!(path, "Unknown OSC message");
         }
@@ -552,48 +600,112 @@ mod tests {
     #[test]
     fn fader_hi_band_ignores_small_jitter_marks_real_change() {
         // value >= -10 dB → 0.2 dB deadband.
-        assert!(!is_meaningful_change(&ParameterPath::Fader, &f(-5.0), &f(-4.85))); // 0.15 ≤ 0.2
-        assert!(is_meaningful_change(&ParameterPath::Fader, &f(-5.0), &f(-4.75))); // 0.25 > 0.2
+        assert!(!is_meaningful_change(
+            &ParameterPath::Fader,
+            &f(-5.0),
+            &f(-4.85)
+        )); // 0.15 ≤ 0.2
+        assert!(is_meaningful_change(
+            &ParameterPath::Fader,
+            &f(-5.0),
+            &f(-4.75)
+        )); // 0.25 > 0.2
     }
 
     #[test]
     fn fader_mid_band() {
         // -40 <= value < -10 dB → 0.3 dB deadband.
-        assert!(!is_meaningful_change(&ParameterPath::Fader, &f(-25.0), &f(-25.25))); // 0.25 ≤ 0.3
-        assert!(is_meaningful_change(&ParameterPath::Fader, &f(-25.0), &f(-25.35))); // 0.35 > 0.3
+        assert!(!is_meaningful_change(
+            &ParameterPath::Fader,
+            &f(-25.0),
+            &f(-25.25)
+        )); // 0.25 ≤ 0.3
+        assert!(is_meaningful_change(
+            &ParameterPath::Fader,
+            &f(-25.0),
+            &f(-25.35)
+        )); // 0.35 > 0.3
     }
 
     #[test]
     fn fader_lo_band() {
         // value < -40 dB → 0.4 dB deadband.
-        assert!(!is_meaningful_change(&ParameterPath::Fader, &f(-60.0), &f(-60.35))); // 0.35 ≤ 0.4
-        assert!(is_meaningful_change(&ParameterPath::Fader, &f(-60.0), &f(-60.45))); // 0.45 > 0.4
+        assert!(!is_meaningful_change(
+            &ParameterPath::Fader,
+            &f(-60.0),
+            &f(-60.35)
+        )); // 0.35 ≤ 0.4
+        assert!(is_meaningful_change(
+            &ParameterPath::Fader,
+            &f(-60.0),
+            &f(-60.45)
+        )); // 0.45 > 0.4
     }
 
     #[test]
     fn band_boundaries_use_new_value() {
         // Exactly -10.0 → HI band (>= -10). 0.25 dB is a change at HI(0.2)…
-        assert!(is_meaningful_change(&ParameterPath::Fader, &f(-10.25), &f(-10.0)));
+        assert!(is_meaningful_change(
+            &ParameterPath::Fader,
+            &f(-10.25),
+            &f(-10.0)
+        ));
         // …but the same 0.25 dB landing at -40.0 → MID band (>= -40) is ignored.
-        assert!(!is_meaningful_change(&ParameterPath::Fader, &f(-40.25), &f(-40.0)));
+        assert!(!is_meaningful_change(
+            &ParameterPath::Fader,
+            &f(-40.25),
+            &f(-40.0)
+        ));
     }
 
     #[test]
     fn send_levels_share_the_fader_deadband() {
-        assert!(!is_meaningful_change(&ParameterPath::SendLevel(3), &f(-5.0), &f(-4.85)));
-        assert!(is_meaningful_change(&ParameterPath::SendLevel(3), &f(-5.0), &f(-4.5)));
-        assert!(!is_meaningful_change(&ParameterPath::CgLevel, &f(-5.0), &f(-4.85)));
-        assert!(!is_meaningful_change(&ParameterPath::MatrixSendLevel(1), &f(-5.0), &f(-4.85)));
+        assert!(!is_meaningful_change(
+            &ParameterPath::SendLevel(3),
+            &f(-5.0),
+            &f(-4.85)
+        ));
+        assert!(is_meaningful_change(
+            &ParameterPath::SendLevel(3),
+            &f(-5.0),
+            &f(-4.5)
+        ));
+        assert!(!is_meaningful_change(
+            &ParameterPath::CgLevel,
+            &f(-5.0),
+            &f(-4.85)
+        ));
+        assert!(!is_meaningful_change(
+            &ParameterPath::MatrixSendLevel(1),
+            &f(-5.0),
+            &f(-4.85)
+        ));
     }
 
     #[test]
     fn encoder_params_keep_exact_equality() {
         // A 0.5 dB EQ-gain move is a real change — no deadband for encoder params.
-        assert!(is_meaningful_change(&ParameterPath::EqBandGain(1), &f(0.0), &f(0.5)));
-        assert!(is_meaningful_change(&ParameterPath::TotalGain, &f(0.0), &f(0.1)));
+        assert!(is_meaningful_change(
+            &ParameterPath::EqBandGain(1),
+            &f(0.0),
+            &f(0.5)
+        ));
+        assert!(is_meaningful_change(
+            &ParameterPath::TotalGain,
+            &f(0.0),
+            &f(0.1)
+        ));
         // Identical values are never a change, for any param.
-        assert!(!is_meaningful_change(&ParameterPath::EqBandGain(1), &f(0.0), &f(0.0)));
-        assert!(!is_meaningful_change(&ParameterPath::Fader, &f(-5.0), &f(-5.0)));
+        assert!(!is_meaningful_change(
+            &ParameterPath::EqBandGain(1),
+            &f(0.0),
+            &f(0.0)
+        ));
+        assert!(!is_meaningful_change(
+            &ParameterPath::Fader,
+            &f(-5.0),
+            &f(-5.0)
+        ));
     }
 
     #[test]

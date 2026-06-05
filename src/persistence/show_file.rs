@@ -12,6 +12,7 @@ use crate::model::pan_link::PanLinkBindings;
 use crate::model::recall_scope::ConsoleRecallConfig;
 use crate::model::snapshot::{CueList, ScopeTemplate, Snapshot};
 use crate::model::streamdeck::StreamDeckConfig;
+use crate::model::sync_direction::SnapshotSyncDirection;
 use crate::model::ui_mode::UiMode;
 
 /// Connection settings persisted in the show file.
@@ -67,11 +68,19 @@ pub struct ConnectionSettings {
     /// template. Per-show workflow toggle.
     #[serde(default)]
     pub auto_update_on_recall: bool,
-    /// Follow the console's snapshot list — when the desk fires a memory,
-    /// auto-recall the first matching app snapshot in cue-list order.
-    /// iPad-protocol-only (Modes 2/3). Per-show workflow toggle.
+    /// Direction snapshot recalls flow between the app and the desk
+    /// (Off / App→Console / Console→App). Unified on GP OSC, works in all
+    /// modes. Per-show workflow setting. See [`effective_sync_direction`].
+    ///
+    /// [`effective_sync_direction`]: ConnectionSettings::effective_sync_direction
     #[serde(default)]
-    pub console_snapshot_follow: bool,
+    pub snapshot_sync_direction: SnapshotSyncDirection,
+    /// Legacy pre-direction follow toggle. Read-only for backward compat with
+    /// older show files; reconciled into `snapshot_sync_direction` via
+    /// [`effective_sync_direction`](ConnectionSettings::effective_sync_direction)
+    /// and never written back out (newer files only carry the direction).
+    #[serde(default, rename = "console_snapshot_follow", skip_serializing)]
+    pub console_snapshot_follow_legacy: Option<bool>,
     /// Source-IP CIDR allowlist for the **monitor** server (audit C2). Empty
     /// = accept all (current behavior). Each entry is a string in CIDR
     /// form, e.g. `"192.168.10.0/24"` or `"10.0.0.5"` (bare IP = `/32`).
@@ -138,6 +147,20 @@ fn default_web_port() -> u16 {
     8080
 }
 
+impl ConnectionSettings {
+    /// Resolve the effective sync direction, honoring the legacy
+    /// `console_snapshot_follow` bool from pre-direction show files. A legacy
+    /// `true` (which only ever meant follow-the-desk) maps to
+    /// [`ConsoleToApp`](SnapshotSyncDirection::ConsoleToApp); a legacy `false`
+    /// (or no legacy field at all) defers to `snapshot_sync_direction`.
+    pub fn effective_sync_direction(&self) -> SnapshotSyncDirection {
+        if self.console_snapshot_follow_legacy == Some(true) {
+            return SnapshotSyncDirection::ConsoleToApp;
+        }
+        self.snapshot_sync_direction
+    }
+}
+
 impl Default for ConnectionSettings {
     fn default() -> Self {
         Self {
@@ -159,7 +182,8 @@ impl Default for ConnectionSettings {
             qlab_patch_console: default_qlab_patch_console(),
             send_pace_us: 0,
             auto_update_on_recall: false,
-            console_snapshot_follow: false,
+            snapshot_sync_direction: SnapshotSyncDirection::Off,
+            console_snapshot_follow_legacy: None,
             monitor_allow_cidrs: Vec::new(),
             trigger_allow_cidrs: Vec::new(),
             web_port: 8080,
@@ -316,6 +340,44 @@ mod tests {
 
         // Cleanup
         let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[test]
+    fn legacy_follow_true_maps_to_console_to_app() {
+        // A pre-direction show file carried `console_snapshot_follow: true`,
+        // which only ever meant follow-the-desk → Console→App.
+        let cs: ConnectionSettings =
+            serde_json::from_str(r#"{ "console_snapshot_follow": true }"#).unwrap();
+        assert_eq!(cs.console_snapshot_follow_legacy, Some(true));
+        assert_eq!(
+            cs.effective_sync_direction(),
+            SnapshotSyncDirection::ConsoleToApp
+        );
+    }
+
+    #[test]
+    fn legacy_follow_false_is_off() {
+        let cs: ConnectionSettings =
+            serde_json::from_str(r#"{ "console_snapshot_follow": false }"#).unwrap();
+        assert_eq!(cs.effective_sync_direction(), SnapshotSyncDirection::Off);
+    }
+
+    #[test]
+    fn new_direction_round_trips_and_skips_legacy() {
+        let cs = ConnectionSettings {
+            snapshot_sync_direction: SnapshotSyncDirection::AppToConsole,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cs).unwrap();
+        // Newer files only carry the direction; the legacy key is never written.
+        assert!(!json.contains("console_snapshot_follow"));
+        assert!(json.contains("snapshot_sync_direction"));
+        let back: ConnectionSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.console_snapshot_follow_legacy, None);
+        assert_eq!(
+            back.effective_sync_direction(),
+            SnapshotSyncDirection::AppToConsole
+        );
     }
 
     #[tokio::test]

@@ -7,6 +7,7 @@
 //! line under the tab bar. All fields are atomics so neither side ever blocks the
 //! other — mirrors the existing `Arc<AtomicU64>` send-pacing pattern.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 /// What is currently filling the bar. Disambiguates the two `done`-counting
@@ -113,6 +114,25 @@ impl RecallProgress {
             done: self.done.load(Ordering::Relaxed),
             generation: self.generation.load(Ordering::Relaxed),
         }
+    }
+}
+
+/// The two independent progress bars rendered under the tab bar, following
+/// the OSC-log color convention: **inbound** (the console dump flood, green)
+/// and **outbound** (snapshot/cue/macro recall sends, blue). Splitting them
+/// lets both animate at once — e.g. firing a cue while a reconnect dump is
+/// still streaming. Cheap to clone; both fields are `Arc`.
+#[derive(Clone, Debug, Default)]
+pub struct ProgressBars {
+    /// Inbound: driven by the daemon's console-dump / resend loop.
+    pub inbound: Arc<RecallProgress>,
+    /// Outbound: driven by the snapshot / cue / macro recall engines.
+    pub outbound: Arc<RecallProgress>,
+}
+
+impl ProgressBars {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 

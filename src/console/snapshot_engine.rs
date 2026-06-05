@@ -1,9 +1,8 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
-use rosc::OscType;
 use tokio::sync::RwLock;
 use tokio::time::Duration;
 use tracing::{debug, info, warn};
@@ -18,8 +17,10 @@ use crate::model::parameter::{ParameterAddress, ParameterValue, TimingCategory};
 use crate::model::recall_progress::{RecallKind, RecallProgress};
 use crate::model::snapshot::{Cue, ScopeTemplate, Snapshot};
 use crate::model::state::ConsoleState;
+use crate::model::sync_direction::SharedSyncDirection;
 use crate::osc::client::OscSender;
 use crate::osc::encode;
+use crate::osc::encode::SystemCommand;
 use crate::osc::ipad_client::IpadSender;
 use crate::osc::ipad_encode;
 
@@ -32,6 +33,54 @@ const CONSOLE_MEMORY_SETTLE_MS: u64 = 250;
 /// this window, an inbound `/Snapshots/Current_Snapshot` echo for the
 /// same row is no longer assumed to be ours.
 pub const CONSOLE_FIRE_SUPPRESSION_MS: u128 = 2_000;
+
+/// Offset between the app's STORED 1-based console-snapshot row
+/// (`Cue::console_snapshot`) and the value the desk uses ON THE WIRE for
+/// `/digico/snapshots/fire`: `wire = stored + CONSOLE_SNAPSHOT_WIRE_OFFSET`.
+///
+/// Applied symmetrically — outbound at the fire encode, inbound when a desk
+/// report is normalized back to stored space (see `connection.rs`) — so the
+/// dispatcher, suppression map, and `current_console_snapshot` mirror all stay
+/// in one canonical (stored) base and the two directions can never drift.
+///
+/// **Defaults to 0 (no offset) — the desk's wire base is UNVERIFIED.** To
+/// confirm on a real S21: enable Console→App, recall snapshot **1** from the
+/// desk surface, and read the logged `wire=` value at
+/// `connection.rs` ("Console current-snapshot (GP OSC)"). If `wire=0` for
+/// snapshot 1, the desk is 0-based → set this to `-1`. If `wire=1`, it is
+/// 1-based → leave at `0` (and any remaining one-off is an authoring issue or
+/// the multiple-cues-per-row first-match rule).
+pub const CONSOLE_SNAPSHOT_WIRE_OFFSET: i32 = 0;
+
+/// Lock-free shared "a console snapshot is currently loading" window, stored as
+/// a deadline in millis since process start (0 = inactive). While active, the
+/// GP OSC dispatcher SKIPS gang + pan-link propagation: a console memory load
+/// is the desk applying a coherent snapshot, so re-propagating its echo flood
+/// through the app's gangs both fights the desk and can saturate the outbound
+/// path into a self-sustaining storm (the App→Console "stall"). An `AtomicU64`
+/// (not a lock) so the per-message check on the inbound hot path can never
+/// itself become a contended/starved lock.
+pub type ConsoleLoadSuppression = Arc<AtomicU64>;
+
+/// How long gang/pan propagation stays suppressed after a console memory load
+/// — generous enough to cover the desk's echo flood.
+pub const CONSOLE_LOAD_SUPPRESSION_MS: u64 = 2_500;
+
+/// Monotonic base for the lock-free console-load deadline.
+static CONSOLE_LOAD_BASE: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// Arm the console-load suppression window — call right after firing a memory
+/// or when the desk reports a snapshot load.
+pub fn arm_console_load(handle: &AtomicU64) {
+    let deadline = CONSOLE_LOAD_BASE.elapsed().as_millis() as u64 + CONSOLE_LOAD_SUPPRESSION_MS;
+    handle.store(deadline, Ordering::Relaxed);
+}
+
+/// Whether a console snapshot load is currently within its suppression window.
+pub fn console_load_active(handle: &AtomicU64) -> bool {
+    let deadline = handle.load(Ordering::Relaxed);
+    deadline != 0 && (CONSOLE_LOAD_BASE.elapsed().as_millis() as u64) < deadline
+}
 
 /// Map from "console memory row we just fired" → when we fired it. Used
 /// by follow mode to ignore echoes from our own writes. Shared between
@@ -93,6 +142,17 @@ pub struct SnapshotEngine {
     /// progress line under the tab bar (begin / bump / finish). `None` for
     /// engines built in contexts with no UI (tests, trigger dispatch).
     recall_progress: Option<Arc<RecallProgress>>,
+    /// Per-show snapshot sync direction. When attached, a cue's console-memory
+    /// row is fired over GP OSC only while the direction is App→Console. When
+    /// absent (tests, headless, trigger dispatch — no UI master switch) the
+    /// engine defaults to firing any cue that carries a row, preserving the
+    /// long-standing "a row means drive the desk" behavior.
+    sync_direction: Option<SharedSyncDirection>,
+    /// Shared console-load suppression window. Armed right after firing a
+    /// console memory so the inbound dispatcher skips gang/pan propagation of
+    /// the desk's resulting snapshot-load flood. Shared with the connection
+    /// loop via `DaemonState.console_load_suppression`.
+    console_load_suppression: Option<ConsoleLoadSuppression>,
 }
 
 impl SnapshotEngine {
@@ -114,7 +174,22 @@ impl SnapshotEngine {
             auto_update_on_recall: None,
             console_fire_suppression: Arc::new(RwLock::new(HashMap::new())),
             recall_progress: None,
+            sync_direction: None,
+            console_load_suppression: None,
         }
+    }
+
+    /// Attach the shared snapshot sync-direction handle. When set to
+    /// App→Console, recalls fire the cue's console-memory row over GP OSC.
+    pub fn set_sync_direction(&mut self, dir: SharedSyncDirection) {
+        self.sync_direction = Some(dir);
+    }
+
+    /// Attach the shared console-load suppression window so firing a console
+    /// memory tells the inbound dispatcher to skip gang/pan propagation of the
+    /// desk's load flood.
+    pub fn set_console_load_suppression(&mut self, handle: ConsoleLoadSuppression) {
+        self.console_load_suppression = Some(handle);
     }
 
     /// Attach the shared recall-progress handle so recalls drive the UI's
@@ -208,6 +283,10 @@ impl SnapshotEngine {
             return 0;
         }
 
+        // Canonical lock order when more than one of these is held at once:
+        // state → cue_manager → palette_manager → dirty_tracker. We take
+        // state(read) before cue(write) here; the palette-absorb loop releases
+        // its cue read before taking state/palette, so no cycle can form.
         let state = self.state.read().await;
         let mut mgr = cue_arc.write().await;
         let Some(prev_snap) = mgr.snapshots.get_mut(&prev_id) else {
@@ -236,38 +315,62 @@ impl SnapshotEngine {
         count
     }
 
-    /// Fire the given console memory row, if any. Always fires when a row
-    /// is supplied — repeating a cue must reload the desk snapshot so any
-    /// drift between recalls is reset. Waits for a settling period after
-    /// firing so the console's echo flood lands before we start writing
-    /// the parameter overlay. Records the fired row in the suppression
-    /// set so follow mode ignores the resulting echo.
+    /// Fire the given console memory row, if any, over **GP OSC**
+    /// (`/digico/snapshots/fire <row>`) so it works in every operating mode —
+    /// not just the iPad-protocol modes. Honors the per-show sync direction:
+    /// the fire only happens while the direction is App→Console (or when no
+    /// direction handle is attached, e.g. headless / trigger dispatch, where a
+    /// cue carrying a row is taken to mean "drive the desk").
+    ///
+    /// Always fires when a row is supplied and pushing is enabled — repeating a
+    /// cue must reload the desk snapshot so any drift between recalls is reset.
+    /// Waits for a settling period after firing so the console's echo flood
+    /// lands before we start writing the parameter overlay. Records the fired
+    /// row in the suppression set so Console→App follow ignores the echo.
     async fn fire_console_memory_if_needed(&self, row: Option<i32>) {
         let Some(row) = row else {
             return;
         };
 
-        let Some(ipad) = self.ipad_sender.as_ref() else {
-            warn!(
+        // Only push to the desk when the operator selected App→Console. With no
+        // direction handle attached (tests / headless / trigger dispatch) default
+        // to firing so a cue's console row still drives the desk.
+        let should_push = self
+            .sync_direction
+            .as_ref()
+            .map(|d| d.get().pushes_to_console())
+            .unwrap_or(true);
+        if !should_push {
+            debug!(
                 row,
-                "Snapshot has console memory ref but no iPad sender — \
-                 fire skipped (Mode 1?). Parameter overlay will still recall."
+                "Console fire skipped (sync direction is not App→Console)"
             );
             return;
-        };
+        }
 
-        // Mark suppression BEFORE sending so the echo dispatcher sees it.
+        // Mark suppression BEFORE sending so the follow dispatcher ignores the
+        // resulting echo as our own write. Keyed in STORED space (the desk's
+        // echo is normalized back to stored space before the dispatcher sees
+        // it), so the key matches regardless of the wire offset.
         {
             let mut sup = self.console_fire_suppression.write().await;
             sup.insert(row, Instant::now());
         }
-        info!(row, "Firing console memory");
-        if let Err(e) = ipad
-            .send("/Snapshots/Current_Snapshot", vec![OscType::Int(row)])
-            .await
-        {
+        // Convert the stored 1-based row to the desk's wire base only at the
+        // wire boundary (see CONSOLE_SNAPSHOT_WIRE_OFFSET).
+        let wire = row + CONSOLE_SNAPSHOT_WIRE_OFFSET;
+        info!(stored = row, wire, "Firing console memory over GP OSC");
+        let cmd = SystemCommand::SnapshotFire(wire);
+        if let Err(e) = self.sender.send(cmd.path(), cmd.args()).await {
             warn!(row, "Failed to fire console memory: {e}");
             return;
+        }
+
+        // Arm the console-load suppression window: the desk is about to flood
+        // its snapshot-load echoes, and the app must NOT gang/pan-propagate
+        // them back (that fights the desk and can stall outbound OSC).
+        if let Some(handle) = &self.console_load_suppression {
+            arm_console_load(handle);
         }
 
         // Optimistically reflect into our own state mirror so a quick
@@ -367,7 +470,6 @@ impl SnapshotEngine {
         palettes: &HashMap<Uuid, ChannelPalette>,
         ignore_scope: bool,
     ) -> RecallResult {
-        let state = self.state.read().await;
         let mut sent = 0usize;
         let mut skipped = 0usize;
 
@@ -378,6 +480,23 @@ impl SnapshotEngine {
             crate::model::snapshot::resolve_recall_values(snapshot, scope, palettes, ignore_scope);
         skipped += all.len() - resolved.len();
 
+        // Capture pre-recall live values for undo — best-effort, via TRY_read.
+        // This recall runs right after firing a console memory, while the desk
+        // floods echoes; a blocking `state.read().await` would, on tokio's
+        // write-preferring RwLock, STARVE behind that continuous flood and hang
+        // the whole recall here (the App→Console stall). `try_read` never
+        // blocks: if the lock is busy we simply skip undo capture this time
+        // (undo is a convenience, and the recall force-sends every param
+        // regardless, so it needs no live read to be correct).
+        let mut undo_map: HashMap<ParameterAddress, ParameterValue> = HashMap::new();
+        if let Ok(state) = self.state.try_read() {
+            for (addr, _) in &resolved {
+                if let Some(live) = state.get(addr) {
+                    undo_map.insert(addr.clone(), live.clone());
+                }
+            }
+        }
+
         // Drive the shared progress line: one op spanning every resolved
         // parameter, bumped per iteration so the bar reaches 100% (sent +
         // skipped) and finishes when the loop ends.
@@ -385,19 +504,10 @@ impl SnapshotEngine {
             p.begin(RecallKind::Recall, resolved.len());
         }
 
-        let mut undo_map: HashMap<ParameterAddress, ParameterValue> = HashMap::new();
         let pace = self.pace_us.load(Ordering::Relaxed);
         for (addr, effective_value) in &resolved {
             let did_send = self
-                .send_if_changed(
-                    &state,
-                    addr,
-                    effective_value,
-                    &mut sent,
-                    &mut skipped,
-                    Some(&mut undo_map),
-                    true, // force: recall must not trust the (lossy) live mirror
-                )
+                .send_now(addr, effective_value, &mut sent, &mut skipped)
                 .await;
             if let Some(p) = &self.recall_progress {
                 p.bump();
@@ -509,7 +619,6 @@ impl SnapshotEngine {
     /// in-session working overlay, which the caller clears separately) so the
     /// desk returns to the captured state. Returns the number of params sent.
     pub async fn reload_palette(&self, palette: &ChannelPalette) -> usize {
-        let state = self.state.read().await;
         let mut sent = 0usize;
         let mut skipped = 0usize;
         for (path, value) in &palette.values {
@@ -517,8 +626,11 @@ impl SnapshotEngine {
                 channel: palette.channel.clone(),
                 parameter: path.clone(),
             };
-            self.send_if_changed(&state, &addr, value, &mut sent, &mut skipped, None, true)
-                .await;
+            // Force-send with NO state lock held across the await — a revert
+            // never trusts the lossy live mirror, and holding state.read()
+            // across the send loop would reproduce the same reader-starvation
+            // that froze the recall path during the desk's echo flood.
+            self.send_now(&addr, value, &mut sent, &mut skipped).await;
         }
         info!(palette = %palette.name, sent, "Palette revert: reloaded stored values");
         sent
@@ -629,7 +741,14 @@ impl SnapshotEngine {
         self.multi_fade.cancel_all().await;
         self.fade_controller.cancel_active().await;
 
-        let state = self.state.read().await;
+        // Best-effort live snapshot via TRY_read: this runs right after firing
+        // a console memory, while the desk floods echoes. A blocking
+        // `state.read().await` would starve behind that flood (write-preferring
+        // RwLock) and hang the recall. On a miss, start values are simply
+        // absent — continuous params then snap to target (sent as discrete)
+        // instead of fading from the live value, which is acceptable under a
+        // flood and never blocks.
+        let state = self.state.try_read().ok();
 
         // Step 1: Resolve all values with palette overrides
         let resolved = crate::model::snapshot::resolve_recall_values(
@@ -657,7 +776,7 @@ impl SnapshotEngine {
         let mut undo_map: HashMap<ParameterAddress, ParameterValue> = HashMap::new();
 
         for (addr, effective_value) in &resolved {
-            let live_value = state.get(addr);
+            let live_value = state.as_ref().and_then(|s| s.get(addr));
             // Force: do not skip params that merely match the (lossy) live
             // mirror. A param already at target simply fades target→target.
             // Capture live value for undo
@@ -1107,19 +1226,16 @@ impl SnapshotEngine {
 
         let result = self
             .with_dirty_suppression(async {
-                let state = self.state.read().await;
                 let mut sent = 0usize;
                 let mut skipped = 0usize;
                 let pace = self.pace_us.load(Ordering::Relaxed);
 
                 for (addr, value) in &undo.previous_values {
-                    // Force-send: like recall, undo must not trust the live
-                    // mirror (which lags behind the console over UDP) — otherwise
-                    // it skips everything when the mirror hasn't caught up yet
-                    // and the undo appears to do nothing.
-                    let did_send = self
-                        .send_if_changed(&state, addr, value, &mut sent, &mut skipped, None, true)
-                        .await;
+                    // Force-send (no live read): like recall, undo must not trust
+                    // the lossy live mirror. `send_now` sends unconditionally, so
+                    // we hold no state lock across the loop — avoiding the same
+                    // reader-starvation that froze the App→Console path.
+                    let did_send = self.send_now(addr, value, &mut sent, &mut skipped).await;
                     if did_send && pace > 0 {
                         tokio::time::sleep(Duration::from_micros(pace)).await;
                     }

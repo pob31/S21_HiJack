@@ -29,10 +29,11 @@ use crate::model::operating_mode::OperatingMode;
 use crate::model::osc_log::OscLog;
 use crate::model::pan_link::PanLinkBindings;
 use crate::model::parameter::PROTOCOL_COVERAGE;
-use crate::model::recall_progress::RecallProgress;
+use crate::model::recall_progress::ProgressBars;
 use crate::model::recall_scope::ConsoleRecallConfig;
 use crate::model::snapshot::CueList;
 use crate::model::state::{ConnectionHealth, ConsoleState};
+use crate::model::sync_direction::{SharedSyncDirection, SnapshotSyncDirection};
 use crate::model::ui_mode::{ColorTheme, UiMode};
 use crate::osc::client::OscClient;
 use crate::osc::ipad_client::IpadSender;
@@ -545,7 +546,7 @@ pub fn draw_setup_tab(
     stream_deck_config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
     offline_mode: &Arc<AtomicBool>,
     auto_update_on_recall: &Arc<AtomicBool>,
-    console_snapshot_follow: &Arc<AtomicBool>,
+    sync_direction: &SharedSyncDirection,
     console_recall: &ConsoleRecallConfig,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     last_received: &Arc<RwLock<Option<crate::model::parameter::ParameterAddress>>>,
@@ -554,7 +555,7 @@ pub fn draw_setup_tab(
     cancel_token: &mut Option<CancellationToken>,
     osc_log: &OscLog,
     send_pace_us: &Arc<std::sync::atomic::AtomicU64>,
-    recall_progress: &Arc<RecallProgress>,
+    progress: &ProgressBars,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
     egui_ctx: &Arc<std::sync::OnceLock<egui::Context>>,
@@ -656,12 +657,12 @@ pub fn draw_setup_tab(
                                 start_connection(
                                     setup, state, cue_manager, macro_manager, monitor_manager,
                                     palette_manager, gang_manager, pan_link_bindings, offline_mode,
-                                    auto_update_on_recall, console_snapshot_follow, dirty_tracker,
+                                    auto_update_on_recall, sync_direction, dirty_tracker,
                                     last_received,
                                     pending_engines,
                                     connected, cancel_token, osc_log,
                                     send_pace_us,
-                                    recall_progress,
+                                    progress,
                                     runtime, ui_tx, egui_ctx,
                                 );
                             }
@@ -690,7 +691,12 @@ pub fn draw_setup_tab(
             let is_proxy = setup.operating_mode == OperatingMode::Mode3;
 
             let console_status = {
-                let health = runtime.block_on(state.read()).health;
+                // Non-blocking read so the Setup tab never freezes on the
+                // state lock during a heavy inbound dump.
+                let health = state
+                    .try_read()
+                    .map(|s| s.health)
+                    .unwrap_or(ConnectionHealth::Connecting);
                 Some(theme::console_status(is_connected, health))
             };
             let ipad_status = if is_proxy {
@@ -1260,7 +1266,7 @@ pub fn draw_setup_tab(
                                     palette_manager, gang_manager, pan_link_bindings,
                                     stream_deck_config,
                                     auto_update_on_recall.load(Ordering::Relaxed),
-                                    console_snapshot_follow.load(Ordering::Relaxed),
+                                    sync_direction.get(),
                                     console_recall.clone(),
                                     runtime, ui_tx,
                                 );
@@ -1301,7 +1307,7 @@ pub fn draw_setup_tab(
                                     palette_manager, gang_manager, pan_link_bindings,
                                     stream_deck_config,
                                     auto_update_on_recall.load(Ordering::Relaxed),
-                                    console_snapshot_follow.load(Ordering::Relaxed),
+                                    sync_direction.get(),
                                     console_recall.clone(),
                                     runtime, ui_tx,
                                 );
@@ -1808,7 +1814,7 @@ pub(crate) fn start_connection(
     pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
     offline_mode: &Arc<AtomicBool>,
     auto_update_on_recall: &Arc<AtomicBool>,
-    console_snapshot_follow: &Arc<AtomicBool>,
+    sync_direction: &SharedSyncDirection,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     last_received: &Arc<RwLock<Option<crate::model::parameter::ParameterAddress>>>,
     pending_engines: &Arc<std::sync::Mutex<Option<crate::ui::PendingEngines>>>,
@@ -1816,7 +1822,7 @@ pub(crate) fn start_connection(
     cancel_token: &mut Option<CancellationToken>,
     osc_log: &OscLog,
     send_pace_us: &Arc<std::sync::atomic::AtomicU64>,
-    recall_progress: &Arc<RecallProgress>,
+    progress: &ProgressBars,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
     egui_ctx: &Arc<std::sync::OnceLock<egui::Context>>,
@@ -1944,6 +1950,17 @@ pub(crate) fn start_connection(
 
     setup.status_message = Some("Connecting...".into());
 
+    // Idempotency: if a previous connection is still live, cancel + drop its
+    // token first. Otherwise a second Connect (e.g. a macro-driven one) would
+    // overwrite `*cancel_token`, orphaning the old connection's tasks and
+    // sockets forever — exactly the "OSC monitor still shows data after stop"
+    // / "reconnect doesn't work" / stacked-connection failure.
+    if let Some(old) = cancel_token.take() {
+        info!("start_connection: cancelling existing connection before (re)connect");
+        old.cancel();
+    }
+    connected.store(false, Ordering::Relaxed);
+
     // Create a cancellation token for all tasks in this connection
     let token = CancellationToken::new();
     *cancel_token = Some(token.clone());
@@ -1957,7 +1974,7 @@ pub(crate) fn start_connection(
     let pl_bindings = pan_link_bindings.clone();
     let offline = offline_mode.clone();
     let auto_update_flag = auto_update_on_recall.clone();
-    let follow_flag = console_snapshot_follow.clone();
+    let follow_dir = sync_direction.clone();
     let dirty = dirty_tracker.clone();
     let last_recv = last_received.clone();
     let conn_flag = connected.clone();
@@ -1965,7 +1982,7 @@ pub(crate) fn start_connection(
     let ctx = egui_ctx.clone();
     let console_ip = setup.console_ip.clone();
     let send_pace_us = send_pace_us.clone();
-    let recall_progress = recall_progress.clone();
+    let progress = progress.clone();
     let monitor_allow_cidrs = setup.monitor_allow_cidrs.clone();
     let trigger_allow_cidrs = setup.trigger_allow_cidrs.clone();
     let web_allow_cidrs = setup.web_allow_cidrs.clone();
@@ -2015,6 +2032,19 @@ pub(crate) fn start_connection(
             gang_mgr.clone(),
         )));
 
+        // Channel carrying the desk's current snapshot row to the follow-mode
+        // dispatcher (spawned below). Fed by BOTH the GP OSC state-mirror loop
+        // (via `DaemonState.console_snapshot_tx`, so Console→App follow works
+        // in every mode) and the iPad inbound dispatch when present.
+        let (snap_event_tx, snap_event_rx) = tokio::sync::mpsc::channel::<i32>(16);
+        let mut snap_event_rx = Some(snap_event_rx);
+
+        // Lock-free console-load suppression window, shared between the snapshot
+        // engine (arms it on fire) and the connection loop (reads it to skip
+        // gang/pan propagation of the desk's load flood).
+        let console_load_suppression: crate::console::snapshot_engine::ConsoleLoadSuppression =
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
         let daemon = crate::console::connection::DaemonState {
             state: st.clone(),
             macro_manager: macro_mgr.clone(),
@@ -2023,8 +2053,11 @@ pub(crate) fn start_connection(
             pan_link_engine: pan_link_engine.clone(),
             dirty_tracker: dirty.clone(),
             offline_mode: offline.clone(),
-            recall_progress: recall_progress.clone(),
+            // Inbound (green) bar: the console dump / resend flood.
+            recall_progress: progress.inbound.clone(),
             last_received: last_recv.clone(),
+            console_snapshot_tx: Some(snap_event_tx.clone()),
+            console_load_suppression: console_load_suppression.clone(),
         };
         let manager = ConnectionManager::connect_from_parts(osc_sender, rx, daemon, token.clone());
 
@@ -2043,17 +2076,20 @@ pub(crate) fn start_connection(
         let mut snapshot_engine =
             SnapshotEngine::new(st.clone(), manager.sender(), send_pace_us.clone());
         snapshot_engine.set_dirty_tracker(dirty.clone());
-        snapshot_engine.set_recall_progress(recall_progress.clone());
+        // Outbound (blue) bar: snapshot/cue recall sends.
+        snapshot_engine.set_recall_progress(progress.outbound.clone());
         snapshot_engine.set_cue_manager(cue_mgr.clone());
         snapshot_engine.set_auto_update_flag(auto_update_flag.clone());
+        // Per-show sync direction: gates App→Console GP OSC fires on recall.
+        snapshot_engine.set_sync_direction(follow_dir.clone());
+        // Share the console-load suppression window so a fire tells the
+        // connection loop to skip gang/pan propagation of the desk's flood.
+        snapshot_engine.set_console_load_suppression(console_load_suppression.clone());
         let console_fire_suppression = snapshot_engine.console_fire_suppression();
 
-        // iPad connection (Mode 2 or 3)
-        // Channel for console snapshot recall events from the iPad inbound
-        // dispatch. The follow-mode dispatcher consumes from the receiver
-        // (spawned below after the snapshot engine exists).
-        let (snap_event_tx, snap_event_rx) = tokio::sync::mpsc::channel::<i32>(16);
-        let mut snap_event_rx = Some(snap_event_rx);
+        // iPad connection (Mode 2 or 3). The `snap_event_tx` / `snap_event_rx`
+        // pair was created above (before the daemon) so the GP OSC mirror loop
+        // can also feed the follow dispatcher.
 
         // Captured iPad sender to hand back to the App alongside the engines.
         let mut app_ipad_sender: Option<IpadSender> = None;
@@ -2177,7 +2213,8 @@ pub(crate) fn start_connection(
             send_pace_us.clone(),
         );
         macro_eng.set_dirty_tracker(dirty.clone());
-        macro_eng.set_recall_progress(recall_progress.clone());
+        // Outbound (blue) bar: macro recall sends.
+        macro_eng.set_recall_progress(progress.outbound.clone());
         // Wire the iPad sender so recorded iPad-only parameter steps (analog
         // gain, phantom, GEQ bands, …) fall back to the iPad protocol on
         // playback instead of being skipped — matching the gang/snapshot
@@ -2208,13 +2245,25 @@ pub(crate) fn start_connection(
             let follow_engine = engine.clone();
             let follow_cue_mgr = cue_mgr.clone();
             let follow_palette_mgr = pmgr_arc.clone();
-            let follow_flag_clone = follow_flag.clone();
+            let follow_dir_clone = follow_dir.clone();
             let suppression = console_fire_suppression.clone();
             tokio::spawn(async move {
                 let mut rx = rx;
-                while let Some(row) = rx.recv().await {
-                    if !follow_flag_clone.load(Ordering::Relaxed) {
+                while let Some(mut row) = rx.recv().await {
+                    // Only follow the desk when direction is Console→App.
+                    if !follow_dir_clone.get().follows_console() {
                         continue;
+                    }
+                    // Coalesce a near-simultaneous burst of snapshot reports —
+                    // a desk transient, or (Mode 3) the GP OSC dispatcher and
+                    // the iPad capture loop both reporting the same load — and
+                    // act ONLY on the latest value. Otherwise a stale "first
+                    // cue" gets recalled just before the real one. The window
+                    // is short enough not to affect deliberate desk stepping.
+                    while let Ok(Some(next)) =
+                        tokio::time::timeout(std::time::Duration::from_millis(120), rx.recv()).await
+                    {
+                        row = next;
                     }
                     // Was this echo caused by our own fire? Drop it.
                     let suppressed = {
@@ -2239,23 +2288,51 @@ pub(crate) fn start_connection(
                         continue;
                     }
 
-                    // Look up the first cue whose console row matches, then
-                    // recall its overlay (if any).
-                    let target = {
+                    // Find the first cue whose console row matches. Capture its
+                    // id (to move the playhead), its overlay snapshot (if any),
+                    // and whether it's already the current cue.
+                    let (matched_cue_id, snapshot, already_current) = {
                         let mgr = follow_cue_mgr.read().await;
-                        let mut hit = None;
+                        let current = mgr.current_cue().map(|c| c.id);
+                        let mut hit_id = None;
+                        let mut hit_snap = None;
                         for cue in &mgr.cue_list.cues {
                             if cue.console_snapshot == Some(row) {
-                                hit = cue
+                                hit_id = Some(cue.id);
+                                hit_snap = cue
                                     .snapshot_id
                                     .and_then(|id| mgr.snapshots.get(&id).cloned());
                                 break;
                             }
                         }
-                        hit
+                        let already = hit_id.is_some() && hit_id == current;
+                        (hit_id, hit_snap, already)
                     };
-                    let Some(snapshot) = target else {
-                        debug!(row, "Follow: no cue with overlay for this row");
+
+                    // Already on this cue → don't re-recall (avoids a redundant
+                    // overlay re-send fighting the desk on a duplicate report).
+                    if already_current {
+                        debug!(row, "Follow: matched cue already current — skipping");
+                        continue;
+                    }
+
+                    // Move the current-cue pointer to the matched cue — even a
+                    // row-only cue with no overlay — so the top-bar label and the
+                    // cue-list highlight track the desk. (Read guard above is
+                    // already dropped, so this write can't deadlock.)
+                    if let Some(id) = matched_cue_id {
+                        follow_cue_mgr.write().await.set_current_cue_id(id);
+                    }
+
+                    let Some(snapshot) = snapshot else {
+                        if matched_cue_id.is_some() {
+                            debug!(
+                                row,
+                                "Follow: matched row-only cue (no overlay); pointer moved"
+                            );
+                        } else {
+                            debug!(row, "Follow: no cue matches this row");
+                        }
                         continue;
                     };
                     info!(row, name = %snapshot.name, "Follow: recalling app snapshot");
@@ -2449,7 +2526,7 @@ pub(crate) fn start_connection(
 pub(crate) fn connection_settings_from_setup(
     setup: &SetupTabState,
     auto_update_on_recall: bool,
-    console_snapshot_follow: bool,
+    sync_direction: SnapshotSyncDirection,
 ) -> ConnectionSettings {
     ConnectionSettings {
         local_ip: setup.local_ip.clone(),
@@ -2470,7 +2547,8 @@ pub(crate) fn connection_settings_from_setup(
         qlab_patch_console: setup.qlab_patch_console.parse().unwrap_or(2),
         send_pace_us: setup.send_pace_us,
         auto_update_on_recall,
-        console_snapshot_follow,
+        snapshot_sync_direction: sync_direction,
+        console_snapshot_follow_legacy: None,
         monitor_allow_cidrs: setup.monitor_allow_cidrs.clone(),
         trigger_allow_cidrs: setup.trigger_allow_cidrs.clone(),
         web_port: setup.web_port.parse().unwrap_or(0),
@@ -2689,7 +2767,7 @@ pub(crate) fn save_show_file(
     pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
     stream_deck_config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
     auto_update_on_recall: bool,
-    console_snapshot_follow: bool,
+    sync_direction: SnapshotSyncDirection,
     console_recall: ConsoleRecallConfig,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -2716,7 +2794,7 @@ pub(crate) fn save_show_file(
 
     // Capture connection settings from current UI state
     let conn_settings =
-        connection_settings_from_setup(setup, auto_update_on_recall, console_snapshot_follow);
+        connection_settings_from_setup(setup, auto_update_on_recall, sync_direction);
 
     runtime.spawn(async move {
         let show = build_show_file(

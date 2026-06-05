@@ -201,7 +201,21 @@ async fn receive_loop(
                     Ok((size, _src)) => {
                         match rosc::decoder::decode_udp(&buf[..size]) {
                             Ok((_, packet)) => {
-                                process_packet(packet, &tx, &log).await;
+                                // Forward under cancellation: if the consumer
+                                // (run_loop) stalls and the channel fills,
+                                // `tx.send().await` would block here inside the
+                                // branch body where the outer select's cancel
+                                // can't reach — pinning the socket and breaking
+                                // reconnect. Racing cancel lets us drop the
+                                // socket promptly on Disconnect.
+                                tokio::select! {
+                                    biased;
+                                    _ = cancel.cancelled() => {
+                                        info!("OSC receive loop cancelled mid-forward — releasing port");
+                                        break;
+                                    }
+                                    _ = process_packet(packet, &tx, &log) => {}
+                                }
                             }
                             Err(e) => {
                                 warn!("Failed to decode OSC packet: {e}");
