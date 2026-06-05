@@ -7,7 +7,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use super::UiEvent;
-use super::help::{HelpKey, help};
+use super::help::{HelpHover, HelpKey, help};
 use super::status::StatusMessage;
 use super::theme;
 use crate::console::cue_manager::CueManager;
@@ -492,7 +492,7 @@ pub fn draw_macros_tab(
                         ui.add_space(2.0);
                         let resp = ui.colored_label(theme::TEXT_WARNING, &msg.text);
                         if let Some(key) = msg.help {
-                            resp.on_hover_text(help(key));
+                            resp.on_hover_help_inline(key);
                         }
                     }
                 });
@@ -719,7 +719,7 @@ fn draw_macro_list(
 
     if macros_state.cached_list.is_empty() {
         ui.label(egui::RichText::new("No macros defined").color(theme::label_weak()))
-            .on_hover_text(help(HelpKey::MacroInfoEmpty));
+            .on_hover_help_inline(HelpKey::MacroInfoEmpty);
         return;
     }
 
@@ -874,7 +874,7 @@ fn draw_step_editor(
         ui.label(
             egui::RichText::new("Select a macro to edit its steps").color(theme::label_weak()),
         )
-        .on_hover_text(help(HelpKey::MacroInfoSelectToEdit));
+        .on_hover_help_inline(HelpKey::MacroInfoSelectToEdit);
         return;
     };
 
@@ -1114,7 +1114,7 @@ fn draw_step_editor(
                 egui::RichText::new("No steps — add one below or use Learn mode")
                     .color(theme::label_weak()),
             )
-            .on_hover_text(help(HelpKey::MacroInfoNoSteps));
+            .on_hover_help_inline(HelpKey::MacroInfoNoSteps);
             macros_state.step_keep_hover_idx = None;
         } else {
             // Address of the step whose "Keep" button was hovered last
@@ -3170,7 +3170,7 @@ fn draw_streamdeck_step_list(
             egui::RichText::new("No steps yet — pick a macro and click Add step on the right.")
                 .color(theme::label_weak()),
         )
-        .on_hover_text(help(HelpKey::MacroInfoSdNoSteps));
+        .on_hover_help_inline(HelpKey::MacroInfoSdNoSteps);
         return;
     }
 

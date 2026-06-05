@@ -4,7 +4,7 @@ use std::sync::Arc;
 use eframe::egui;
 use tokio::sync::RwLock;
 
-use super::help::{HelpKey, help};
+use super::help::{HelpHover, HelpKey, help};
 use super::status::StatusMessage;
 use super::theme;
 use crate::console::gang_manager::GangManager;
@@ -666,7 +666,7 @@ pub fn draw_gangs_tab(
                 ui.add_space(4.0);
                 let resp = ui.colored_label(theme::TEXT_WARNING, &msg.text);
                 if let Some(key) = msg.help {
-                    resp.on_hover_text(help(key));
+                    resp.on_hover_help_inline(key);
                 }
             }
         });
@@ -707,7 +707,7 @@ pub fn draw_gangs_tab(
                             egui::RichText::new("No gang groups configured.")
                                 .color(theme::label_weak()),
                         )
-                        .on_hover_text(help(HelpKey::GangsInfoEmpty));
+                        .on_hover_help_inline(HelpKey::GangsInfoEmpty);
                     } else {
                         let mut to_remove = None;
                         let mut to_edit = None;

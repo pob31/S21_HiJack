@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use super::UiEvent;
-use super::help::{HelpKey, help};
+use super::help::{HelpHover, HelpKey, help};
 use super::status::StatusMessage;
 use super::theme;
 use crate::console::cue_manager::CueManager;
@@ -257,7 +257,7 @@ pub fn draw_palettes_section(
                         egui::RichText::new("No palettes yet. Capture one above.")
                             .color(theme::label_weak()),
                     )
-                    .on_hover_text(help(HelpKey::PaletteInfoEmpty));
+                    .on_hover_help_inline(HelpKey::PaletteInfoEmpty);
                 }
                 for palette in palettes {
                     let selected = state.selected_palette_id == Some(palette.id);
@@ -371,7 +371,7 @@ pub fn draw_palettes_section(
         ui.add_space(2.0);
         let resp = ui.colored_label(theme::TEXT_WARNING, &msg.text);
         if let Some(key) = msg.help {
-            resp.on_hover_text(help(key));
+            resp.on_hover_help_inline(key);
         }
     }
 }
@@ -447,7 +447,7 @@ fn draw_palette_actions(
                 )
                 .color(theme::label_weak()),
             )
-            .on_hover_text(help(HelpKey::PaletteInfoSelectHint));
+            .on_hover_help_inline(HelpKey::PaletteInfoSelectHint);
             return;
         };
         let pid = *pid;
@@ -605,7 +605,7 @@ fn draw_assign_overlay(
 
                 if rows.is_empty() {
                     ui.label(egui::RichText::new("No snapshots yet.").color(theme::label_weak()))
-                        .on_hover_text(help(HelpKey::PaletteInfoNoSnapshots));
+                        .on_hover_help_inline(HelpKey::PaletteInfoNoSnapshots);
                     return;
                 }
 

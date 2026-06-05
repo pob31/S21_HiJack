@@ -21,7 +21,7 @@ use std::sync::atomic::AtomicBool;
 use eframe::egui;
 use tokio::sync::RwLock;
 
-use super::help::{HelpKey, help};
+use super::help::{HelpHover, HelpKey, help};
 use super::theme;
 use crate::model::channel::ChannelId;
 use crate::model::config::ChannelMode;
@@ -265,7 +265,7 @@ pub fn draw_pan_link_tab(
                     .color(theme::label_weak())
                     .small(),
                 )
-                .on_hover_text(help(HelpKey::PanLinkInfoInstructions));
+                .on_hover_help_inline(HelpKey::PanLinkInfoInstructions);
             });
 
             ui.add_space(8.0);
@@ -357,7 +357,7 @@ fn draw_inputs_grid(
                 theme::label_weak(),
                 "No inputs configured — connect to console or load a show file.",
             )
-            .on_hover_text(help(HelpKey::PanLinkWarnNoInputs));
+            .on_hover_help_inline(HelpKey::PanLinkWarnNoInputs);
             return;
         }
 
@@ -460,7 +460,7 @@ fn draw_auxes_grid(
 
         if aux_buses.is_empty() {
             ui.colored_label(theme::label_weak(), "No auxes configured.")
-                .on_hover_text(help(HelpKey::PanLinkInfoNoAuxes));
+                .on_hover_help_inline(HelpKey::PanLinkInfoNoAuxes);
             return;
         }
 

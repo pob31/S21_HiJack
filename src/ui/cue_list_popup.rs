@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use super::UiEvent;
-use super::help::{HelpKey, help};
+use super::help::{HelpHover, HelpKey, help};
 use super::theme;
 use crate::console::cue_manager::CueManager;
 use crate::console::palette_manager::PaletteManager;
@@ -78,7 +78,7 @@ pub fn draw_cue_list_popup(
         .show(ctx, |ui| {
             if rows.is_empty() {
                 ui.label(egui::RichText::new("No cues yet.").color(theme::label_weak()))
-                    .on_hover_text(help(HelpKey::CueInfoEmpty));
+                    .on_hover_help_inline(HelpKey::CueInfoEmpty);
                 return;
             }
             if !is_connected {
@@ -87,7 +87,7 @@ pub fn draw_cue_list_popup(
                         .color(theme::label_weak())
                         .small(),
                 )
-                .on_hover_text(help(HelpKey::CueInfoConnectToFire));
+                .on_hover_help_inline(HelpKey::CueInfoConnectToFire);
                 ui.add_space(4.0);
             }
             egui::ScrollArea::vertical()

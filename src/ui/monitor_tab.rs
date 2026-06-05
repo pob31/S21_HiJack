@@ -5,7 +5,7 @@ use eframe::egui;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use super::help::{HelpKey, help};
+use super::help::{HelpHover, HelpKey, help};
 use super::monitor_channel_picker::{self, ChannelPickerState, PickerOutcome};
 use super::status::StatusMessage;
 use super::theme;
@@ -165,7 +165,7 @@ pub fn draw_monitor_tab(
                                         .color(theme::label_weak())
                                         .small(),
                                     )
-                                    .on_hover_text(help(HelpKey::MonitorInfoWebPrepare));
+                                    .on_hover_help_inline(HelpKey::MonitorInfoWebPrepare);
                                 }
                                 if ifaces.is_empty() {
                                     ui.label(
@@ -175,14 +175,14 @@ pub fn draw_monitor_tab(
                                         .color(theme::label_weak())
                                         .small(),
                                     )
-                                    .on_hover_text(help(HelpKey::MonitorWarnNoLan));
+                                    .on_hover_help_inline(HelpKey::MonitorWarnNoLan);
                                 } else {
                                     ui.label(
                                         egui::RichText::new("Open in a phone browser (LAN only):")
                                             .color(theme::label_weak())
                                             .small(),
                                     )
-                                    .on_hover_text(help(HelpKey::MonitorInfoBrowserHint));
+                                    .on_hover_help_inline(HelpKey::MonitorInfoBrowserHint);
                                     for iface in &ifaces {
                                         ui.label(
                                             egui::RichText::new(format!(
@@ -215,7 +215,7 @@ pub fn draw_monitor_tab(
                                     egui::RichText::new("Connect to console to see aux channels.")
                                         .color(theme::label_weak()),
                                 )
-                                .on_hover_text(help(HelpKey::MonitorInfoNoAux));
+                                .on_hover_help_inline(HelpKey::MonitorInfoNoAux);
                             } else {
                                 // Force the Ch # and Send # columns to
                                 // fixed widths so the Name column can
@@ -335,7 +335,7 @@ pub fn draw_monitor_tab(
                                     ui.add_space(8.0);
                                     let resp = ui.colored_label(theme::TEXT_WARNING, &msg.text);
                                     if let Some(key) = msg.help {
-                                        resp.on_hover_text(help(key));
+                                        resp.on_hover_help_inline(key);
                                     }
                                 }
                             });
@@ -366,7 +366,7 @@ pub fn draw_monitor_tab(
                                     egui::RichText::new("No monitoring clients configured.")
                                         .color(theme::label_weak()),
                                 )
-                                .on_hover_text(help(HelpKey::MonitorInfoEmpty));
+                                .on_hover_help_inline(HelpKey::MonitorInfoEmpty);
                             } else {
                                 let mut to_remove = None;
                                 let mut to_edit: Option<MonitorClient> = None;

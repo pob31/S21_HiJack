@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
+use eframe::egui;
 use tracing::{info, warn};
 
 /// Stable identifier for one help bubble. Adding a tooltip means adding a
@@ -1863,6 +1864,41 @@ pub fn help(key: HelpKey) -> Cow<'static, str> {
     }
 }
 
+/// Resolve a *prose-backing* help bubble — one attached to text the UI already
+/// shows verbatim on screen in English (banners, empty-state hints, inline
+/// warnings, mode explanations). Unlike a widget tooltip, such a bubble earns
+/// its place only when it can show something the visible text can't: a
+/// translation. So this returns the active language's translation, or `None`
+/// when English is active — or when the active locale has no entry for this key
+/// (its English fallback would just repeat the on-screen prose). The caller
+/// skips the hover on `None`, so a redundant English bubble never appears.
+///
+/// Pair with [`HelpHover::on_hover_help_inline`] at call sites; widget tooltips
+/// that explain an icon or short label keep using [`help`] so they always show.
+pub fn help_inline(key: HelpKey) -> Option<Cow<'static, str>> {
+    let loc = active_locale()?;
+    let translated = loc.get(meta(key).id)?;
+    Some(Cow::Owned(translated.to_owned()))
+}
+
+/// `Response` extension for prose-backing help bubbles. `.on_hover_help_inline(key)`
+/// replaces `.on_hover_text(help(key))` at sites whose visible text *is* the
+/// English bubble: it attaches the hover only when [`help_inline`] yields a
+/// translation, so in English no duplicate bubble is shown. Returns the
+/// `Response` either way, so it chains exactly like `on_hover_text`.
+pub trait HelpHover {
+    fn on_hover_help_inline(self, key: HelpKey) -> Self;
+}
+
+impl HelpHover for egui::Response {
+    fn on_hover_help_inline(self, key: HelpKey) -> Self {
+        match help_inline(key) {
+            Some(text) => self.on_hover_text(text),
+            None => self,
+        }
+    }
+}
+
 // ─── Runtime-loaded translations ────────────────────────────────────────
 //
 // The UI is English-only; only these help bubbles localize. Translations live
@@ -2126,12 +2162,22 @@ mod tests {
         assert_eq!(help(HelpKey::CueUndo), "Annuler");
         assert_eq!(help(HelpKey::CueGo), english(HelpKey::CueGo));
 
+        // Prose-backing bubbles: a translated key surfaces its translation, but
+        // a key with no entry yields None (its English fallback would only
+        // repeat the on-screen prose, so the caller skips the hover).
+        assert_eq!(help_inline(HelpKey::CueUndo).as_deref(), Some("Annuler"));
+        assert_eq!(help_inline(HelpKey::CueGo), None);
+
         // Unknown and English codes reset to the English reference (no locales
         // are loaded in the test binary).
         set_active_language("zz");
         assert_eq!(help(HelpKey::CueUndo), english(HelpKey::CueUndo));
         set_active_language(ENGLISH_CODE);
         assert_eq!(help(HelpKey::CueUndo), english(HelpKey::CueUndo));
+
+        // English active → every prose-backing bubble is suppressed, so it
+        // never duplicates the English text already on screen.
+        assert_eq!(help_inline(HelpKey::CueUndo), None);
     }
 
     #[test]

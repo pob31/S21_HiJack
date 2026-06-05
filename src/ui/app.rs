@@ -24,7 +24,7 @@ use crate::osc::ipad_client::IpadSender;
 use crate::persistence::preferences::AppPreferences;
 
 use super::gangs_tab::GangsTabState;
-use super::help::{HelpKey, help};
+use super::help::{HelpHover, HelpKey, help};
 use super::inspector_tab::InspectorTabState;
 use super::macros_tab::MacrosTabState;
 use super::monitor_tab::MonitorTabState;
@@ -1558,7 +1558,7 @@ impl HiJackApp {
                         ))
                         .strong(),
                     )
-                    .on_hover_text(help(HelpKey::RecoveryInfoCorrupt));
+                    .on_hover_help_inline(HelpKey::RecoveryInfoCorrupt);
                     if rd.recovered {
                         ui.colored_label(
                             super::theme::ACCENT_GREEN,
@@ -1569,10 +1569,10 @@ impl HiJackApp {
 
                     if rd.candidates.is_empty() {
                         ui.label("No backups or autosaves were found for this show.")
-                            .on_hover_text(help(HelpKey::RecoveryInfoNoBackups));
+                            .on_hover_help_inline(HelpKey::RecoveryInfoNoBackups);
                     } else {
                         ui.label("Choose a copy to restore (newest first):")
-                            .on_hover_text(help(HelpKey::RecoveryInfoChoose));
+                            .on_hover_help_inline(HelpKey::RecoveryInfoChoose);
                         egui::ScrollArea::vertical()
                             .max_height(260.0)
                             .show(ui, |ui| {
@@ -2124,7 +2124,7 @@ impl eframe::App for HiJackApp {
                             )
                             .color(super::theme::TEXT_ON_BRIGHT),
                         )
-                        .on_hover_text(help(HelpKey::BannerOffline));
+                        .on_hover_help_inline(HelpKey::BannerOffline);
                     });
                 });
         }
@@ -2158,7 +2158,7 @@ impl eframe::App for HiJackApp {
                             )
                             .color(super::theme::TEXT_ON_BRIGHT),
                         )
-                        .on_hover_text(help(HelpKey::BannerGangsDisconnected));
+                        .on_hover_help_inline(HelpKey::BannerGangsDisconnected);
                     });
                 });
         }
@@ -2188,7 +2188,7 @@ impl eframe::App for HiJackApp {
                             egui::RichText::new("— connect to console to capture snapshots.")
                                 .color(super::theme::TEXT_ON_BRIGHT),
                         )
-                        .on_hover_text(help(HelpKey::BannerSnapshotsDisconnected));
+                        .on_hover_help_inline(HelpKey::BannerSnapshotsDisconnected);
                     });
                 });
         }
@@ -2225,7 +2225,7 @@ impl eframe::App for HiJackApp {
                             )
                             .color(super::theme::TEXT_ON_BRIGHT),
                         )
-                        .on_hover_text(help(HelpKey::BannerNetworkMismatch));
+                        .on_hover_help_inline(HelpKey::BannerNetworkMismatch);
                     });
                     // Make the whole strip clickable so the operator
                     // can dismiss without aiming at the small ⚠ icon.
@@ -2272,7 +2272,7 @@ impl eframe::App for HiJackApp {
                             ))
                             .color(super::theme::TEXT_ON_BRIGHT),
                         )
-                        .on_hover_text(help(HelpKey::BannerGangOverlap));
+                        .on_hover_help_inline(HelpKey::BannerGangOverlap);
                     });
                 });
         }
@@ -2305,7 +2305,7 @@ impl eframe::App for HiJackApp {
                             )
                             .color(super::theme::TEXT_ON_BRIGHT),
                         )
-                        .on_hover_text(help(HelpKey::BannerWebMonitorOff));
+                        .on_hover_help_inline(HelpKey::BannerWebMonitorOff);
                     });
                 });
         }

@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use super::UiEvent;
-use super::help::{HelpKey, help};
+use super::help::{HelpHover, HelpKey, help};
 use super::net_interfaces;
 use super::status::StatusMessage;
 use super::theme;
@@ -1350,7 +1350,7 @@ pub fn draw_setup_tab(
                                 .color(theme::label_disabled())
                                 .small(),
                             )
-                            .on_hover_text(help(HelpKey::SetupInfoMode1));
+                            .on_hover_help_inline(HelpKey::SetupInfoMode1);
                         });
                     }
                     OperatingMode::Mode2 => {
@@ -1365,7 +1365,7 @@ pub fn draw_setup_tab(
                                 .color(theme::label_weak())
                                 .small(),
                             )
-                            .on_hover_text(help(HelpKey::SetupInfoMode2));
+                            .on_hover_help_inline(HelpKey::SetupInfoMode2);
                         });
                     }
                     OperatingMode::Mode3 => {
@@ -1589,7 +1589,7 @@ pub fn draw_setup_tab(
                             .color(theme::label_disabled())
                             .small(),
                         )
-                        .on_hover_text(help(HelpKey::SetupInfoLiveMusic));
+                        .on_hover_help_inline(HelpKey::SetupInfoLiveMusic);
                     });
                 }
 
@@ -1649,7 +1649,7 @@ pub fn draw_setup_tab(
                             .color(theme::label_disabled())
                             .small(),
                         )
-                        .on_hover_text(help(HelpKey::SetupInfoTheatre));
+                        .on_hover_help_inline(HelpKey::SetupInfoTheatre);
                     });
                 }
             });
@@ -1660,7 +1660,7 @@ pub fn draw_setup_tab(
                 ui.add_space(8.0);
                 let resp = ui.colored_label(theme::TEXT_WARNING, &msg.text);
                 if let Some(key) = msg.help {
-                    resp.on_hover_text(help(key));
+                    resp.on_hover_help_inline(key);
                 }
             }
         });
@@ -1686,7 +1686,7 @@ pub fn draw_setup_tab(
                         })
                         .color(theme::label_weak()),
                     )
-                    .on_hover_text(help(HelpKey::SetupInfoCoverage));
+                    .on_hover_help_inline(HelpKey::SetupInfoCoverage);
                     ui.add_space(6.0);
                     egui::Grid::new("protocol_coverage_grid_popup")
                         .num_columns(2)
@@ -2763,7 +2763,7 @@ fn draw_first_run_popup(ui: &mut egui::Ui, setup: &mut SetupTabState) {
                     .strong()
                     .size(theme::FONT_SIZE_BODY),
             )
-            .on_hover_text(help(HelpKey::SetupInfoChooseMode));
+            .on_hover_help_inline(HelpKey::SetupInfoChooseMode);
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new("You can change this any time on the Setup tab.")

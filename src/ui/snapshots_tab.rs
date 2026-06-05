@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use super::UiEvent;
-use super::help::{HelpKey, help};
+use super::help::{HelpHover, HelpKey, help};
 use super::palettes_ui::{PalettesUiState, draw_palettes_section};
 use super::scope_editor::ScopeEditorState;
 use super::status::StatusMessage;
@@ -617,7 +617,7 @@ pub fn draw_snapshots_tab(
                         {
                             ui.add_space(4.0);
                             ui.label(egui::RichText::new("Select scope parameters to capture (or switch to 'On recall').").color(theme::label_weak()))
-                                .on_hover_text(help(HelpKey::SnapshotInfoScopeHint));
+                                .on_hover_help_inline(HelpKey::SnapshotInfoScopeHint);
                         }
 
                         ui.add_space(8.0);
@@ -719,7 +719,7 @@ pub fn draw_snapshots_tab(
 
                                     if mgr.snapshots.is_empty() {
                                         ui.label(egui::RichText::new("No snapshots yet.").color(theme::label_weak()))
-                                            .on_hover_text(help(HelpKey::SnapshotInfoEmpty));
+                                            .on_hover_help_inline(HelpKey::SnapshotInfoEmpty);
                                     }
                                 }
                             });
@@ -730,7 +730,7 @@ pub fn draw_snapshots_tab(
                         ui.add_space(4.0);
                         let resp = ui.colored_label(theme::TEXT_WARNING, &msg.text);
                         if let Some(key) = msg.help {
-                            resp.on_hover_text(help(key));
+                            resp.on_hover_help_inline(key);
                         }
                     }
             });
@@ -1256,7 +1256,7 @@ pub fn draw_snapshots_tab(
                                 }
                                 if mgr.cue_list.cues.is_empty() {
                                     ui.label(egui::RichText::new("No cues yet. Add one below.").color(theme::label_weak()))
-                                        .on_hover_text(help(HelpKey::CueInfoEmpty));
+                                        .on_hover_help_inline(HelpKey::CueInfoEmpty);
                                 }
                             }
                         });
@@ -1282,7 +1282,7 @@ pub fn draw_snapshots_tab(
                     .color(theme::label_weak())
                     .small(),
                 )
-                .on_hover_text(help(HelpKey::ShiftInfoExplain));
+                .on_hover_help_inline(HelpKey::ShiftInfoExplain);
                 ui.add_space(8.0);
                 egui::Grid::new("shift_grid")
                     .num_columns(2)
