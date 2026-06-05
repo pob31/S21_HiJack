@@ -29,6 +29,7 @@ use crate::model::operating_mode::OperatingMode;
 use crate::model::osc_log::OscLog;
 use crate::model::pan_link::PanLinkBindings;
 use crate::model::parameter::PROTOCOL_COVERAGE;
+use crate::model::recall_progress::RecallProgress;
 use crate::model::recall_scope::ConsoleRecallConfig;
 use crate::model::snapshot::CueList;
 use crate::model::state::{ConnectionHealth, ConsoleState};
@@ -553,6 +554,7 @@ pub fn draw_setup_tab(
     cancel_token: &mut Option<CancellationToken>,
     osc_log: &OscLog,
     send_pace_us: &Arc<std::sync::atomic::AtomicU64>,
+    recall_progress: &Arc<RecallProgress>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
     egui_ctx: &Arc<std::sync::OnceLock<egui::Context>>,
@@ -659,6 +661,7 @@ pub fn draw_setup_tab(
                                     pending_engines,
                                     connected, cancel_token, osc_log,
                                     send_pace_us,
+                                    recall_progress,
                                     runtime, ui_tx, egui_ctx,
                                 );
                             }
@@ -1813,6 +1816,7 @@ pub(crate) fn start_connection(
     cancel_token: &mut Option<CancellationToken>,
     osc_log: &OscLog,
     send_pace_us: &Arc<std::sync::atomic::AtomicU64>,
+    recall_progress: &Arc<RecallProgress>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
     egui_ctx: &Arc<std::sync::OnceLock<egui::Context>>,
@@ -1961,6 +1965,7 @@ pub(crate) fn start_connection(
     let ctx = egui_ctx.clone();
     let console_ip = setup.console_ip.clone();
     let send_pace_us = send_pace_us.clone();
+    let recall_progress = recall_progress.clone();
     let monitor_allow_cidrs = setup.monitor_allow_cidrs.clone();
     let trigger_allow_cidrs = setup.trigger_allow_cidrs.clone();
     let web_allow_cidrs = setup.web_allow_cidrs.clone();
@@ -2018,6 +2023,7 @@ pub(crate) fn start_connection(
             pan_link_engine: pan_link_engine.clone(),
             dirty_tracker: dirty.clone(),
             offline_mode: offline.clone(),
+            recall_progress: recall_progress.clone(),
             last_received: last_recv.clone(),
         };
         let manager = ConnectionManager::connect_from_parts(osc_sender, rx, daemon, token.clone());
@@ -2037,6 +2043,7 @@ pub(crate) fn start_connection(
         let mut snapshot_engine =
             SnapshotEngine::new(st.clone(), manager.sender(), send_pace_us.clone());
         snapshot_engine.set_dirty_tracker(dirty.clone());
+        snapshot_engine.set_recall_progress(recall_progress.clone());
         snapshot_engine.set_cue_manager(cue_mgr.clone());
         snapshot_engine.set_auto_update_flag(auto_update_flag.clone());
         let console_fire_suppression = snapshot_engine.console_fire_suppression();
@@ -2170,6 +2177,7 @@ pub(crate) fn start_connection(
             send_pace_us.clone(),
         );
         macro_eng.set_dirty_tracker(dirty.clone());
+        macro_eng.set_recall_progress(recall_progress.clone());
         // Wire the iPad sender so recorded iPad-only parameter steps (analog
         // gain, phantom, GEQ bands, …) fall back to the iPad protocol on
         // playback instead of being skipped — matching the gang/snapshot

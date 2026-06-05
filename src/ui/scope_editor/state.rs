@@ -148,6 +148,10 @@ pub struct ScopeEditorState {
     /// In-window "Save as" name buffer. Cleared on `open(...)` and after
     /// a successful Save.
     pub template_name_buf: String,
+    /// Per-group last-frame body scroll offset (x, y), fed forward to the
+    /// frozen header strip (x) and label column (y) so they track the body.
+    /// A plain tuple keeps this module egui-free. Keyed by channel group.
+    pub matrix_scroll_offset: HashMap<ChannelGroup, (f32, f32)>,
 }
 
 impl Default for ScopeEditorState {
@@ -167,6 +171,7 @@ impl Default for ScopeEditorState {
             recall_popup: RecallScopePopupState::default(),
             selected_template_id: None,
             template_name_buf: String::new(),
+            matrix_scroll_offset: HashMap::new(),
         }
     }
 }

@@ -15,6 +15,7 @@ use crate::model::channel::ChannelId;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::palette::ChannelPalette;
 use crate::model::parameter::{ParameterAddress, ParameterValue, TimingCategory};
+use crate::model::recall_progress::{RecallKind, RecallProgress};
 use crate::model::snapshot::{Cue, ScopeTemplate, Snapshot};
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
@@ -88,6 +89,10 @@ pub struct SnapshotEngine {
     /// follow-mode dispatcher so it can ignore echoes from our own
     /// `/Snapshots/Current_Snapshot` writes.
     console_fire_suppression: ConsoleFireSuppression,
+    /// Optional shared progress handle. When set, recalls drive the thin
+    /// progress line under the tab bar (begin / bump / finish). `None` for
+    /// engines built in contexts with no UI (tests, trigger dispatch).
+    recall_progress: Option<Arc<RecallProgress>>,
 }
 
 impl SnapshotEngine {
@@ -108,7 +113,14 @@ impl SnapshotEngine {
             cue_manager: None,
             auto_update_on_recall: None,
             console_fire_suppression: Arc::new(RwLock::new(HashMap::new())),
+            recall_progress: None,
         }
+    }
+
+    /// Attach the shared recall-progress handle so recalls drive the UI's
+    /// progress line. Called once at engine construction in the UI/daemon path.
+    pub fn set_recall_progress(&mut self, progress: Arc<RecallProgress>) {
+        self.recall_progress = Some(progress);
     }
 
     /// Attach a cue manager handle so the engine can read/write the
@@ -366,6 +378,13 @@ impl SnapshotEngine {
             crate::model::snapshot::resolve_recall_values(snapshot, scope, palettes, ignore_scope);
         skipped += all.len() - resolved.len();
 
+        // Drive the shared progress line: one op spanning every resolved
+        // parameter, bumped per iteration so the bar reaches 100% (sent +
+        // skipped) and finishes when the loop ends.
+        if let Some(p) = &self.recall_progress {
+            p.begin(RecallKind::Recall, resolved.len());
+        }
+
         let mut undo_map: HashMap<ParameterAddress, ParameterValue> = HashMap::new();
         let pace = self.pace_us.load(Ordering::Relaxed);
         for (addr, effective_value) in &resolved {
@@ -380,9 +399,16 @@ impl SnapshotEngine {
                     true, // force: recall must not trust the (lossy) live mirror
                 )
                 .await;
+            if let Some(p) = &self.recall_progress {
+                p.bump();
+            }
             if did_send && pace > 0 {
                 tokio::time::sleep(Duration::from_micros(pace)).await;
             }
+        }
+
+        if let Some(p) = &self.recall_progress {
+            p.finish();
         }
 
         // Store undo state (overwrites any previous — one level only)

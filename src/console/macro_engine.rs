@@ -10,6 +10,7 @@ use super::macro_manager::MacroManager;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::macro_def::{MacroDef, MacroStepKind, MacroStepMode};
 use crate::model::parameter::{ParameterAddress, ParameterValue};
+use crate::model::recall_progress::{RecallKind, RecallProgress};
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
 use crate::osc::encode;
@@ -57,6 +58,10 @@ pub struct MacroEngine {
     /// doesn't flood the console any more than a snapshot recall does.
     /// 0 = no pacing.
     pace_us: Arc<AtomicU64>,
+    /// Optional shared progress handle. When set, macro execution drives the
+    /// thin progress line under the tab bar. `None` for engines built without
+    /// a UI (tests, trigger dispatch).
+    recall_progress: Option<Arc<RecallProgress>>,
 }
 
 impl MacroEngine {
@@ -75,12 +80,19 @@ impl MacroEngine {
             macro_manager,
             ui_tx,
             pace_us,
+            recall_progress: None,
         }
     }
 
     /// Attach a dirty tracker so macros can optionally suppress it.
     pub fn set_dirty_tracker(&mut self, tracker: Arc<RwLock<DirtyTracker>>) {
         self.dirty_tracker = Some(tracker);
+    }
+
+    /// Attach the shared recall-progress handle so macro execution drives the
+    /// UI's progress line.
+    pub fn set_recall_progress(&mut self, progress: Arc<RecallProgress>) {
+        self.recall_progress = Some(progress);
     }
 
     /// Wire in the iPad-protocol sender so macro steps for iPad-only
@@ -151,7 +163,17 @@ impl MacroEngine {
 
     /// Inner execution logic, called by `execute` with or without dirty suppression.
     async fn execute_inner(&self, macro_def: &MacroDef) -> MacroExecutionResult {
-        self.execute_with_depth(macro_def, 0).await
+        // Drive the shared progress line for the top-level macro: one op over
+        // its top-level steps. Nested FireMacro steps count as a single step of
+        // the parent (they don't re-begin), so the bar tracks top-level progress.
+        if let Some(p) = &self.recall_progress {
+            p.begin(RecallKind::Recall, macro_def.steps.len());
+        }
+        let result = self.execute_with_depth(macro_def, 0).await;
+        if let Some(p) = &self.recall_progress {
+            p.finish();
+        }
+        result
     }
 
     /// Recursive executor — `depth` increments for nested `FireMacro`
@@ -332,6 +354,15 @@ impl MacroEngine {
                     });
                     executed += 1;
                 }
+            }
+
+            // Advance the progress bar once per top-level step (nested
+            // FireMacro recursion runs at depth>0 and is already accounted for
+            // by its parent step).
+            if depth == 0
+                && let Some(p) = &self.recall_progress
+            {
+                p.bump();
             }
         }
 

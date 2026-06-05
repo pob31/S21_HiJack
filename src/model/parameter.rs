@@ -129,6 +129,24 @@ pub enum ParameterPath {
 }
 
 impl ParameterPath {
+    /// Level parameters whose value is set by a motorized fader — directly
+    /// (the channel/bus `Fader`) or via sends-on-faders (`SendLevel`,
+    /// `MatrixSendLevel`, `CgLevel`). Motorized faders don't always settle to a
+    /// bit-exact dB after a recall or a console layer change, so the
+    /// auto-preselect dirty screening applies a dB deadband to these (see
+    /// `connection::is_meaningful_change`). Encoder-driven levels (gain, EQ,
+    /// trim, dynamics) are excluded — they return precisely and keep exact
+    /// change detection.
+    pub fn is_fader_level(&self) -> bool {
+        matches!(
+            self,
+            ParameterPath::Fader
+                | ParameterPath::SendLevel(_)
+                | ParameterPath::MatrixSendLevel(_)
+                | ParameterPath::CgLevel
+        )
+    }
+
     /// Convert to GP OSC path suffix (after /channel/{ch}/).
     /// Returns None for iPad-only parameters.
     pub fn to_gp_osc_suffix(&self) -> Option<String> {

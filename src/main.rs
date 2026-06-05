@@ -234,6 +234,7 @@ async fn run_headless(args: Args) {
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let offline_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let last_received = Arc::new(tokio::sync::RwLock::new(None));
+    let recall_progress = Arc::new(model::recall_progress::RecallProgress::new());
     let daemon = console::connection::DaemonState {
         state,
         macro_manager: macro_manager.clone(),
@@ -242,6 +243,7 @@ async fn run_headless(args: Args) {
         pan_link_engine: pan_link_engine.clone(),
         dirty_tracker: dirty_tracker.clone(),
         offline_mode: offline_mode.clone(),
+        recall_progress: recall_progress.clone(),
         last_received,
     };
     let manager =
@@ -261,6 +263,7 @@ async fn run_headless(args: Args) {
     let mut snapshot_engine =
         SnapshotEngine::new(manager.state(), manager.sender(), send_pace_us.clone());
     snapshot_engine.set_dirty_tracker(dirty_tracker.clone());
+    snapshot_engine.set_recall_progress(recall_progress.clone());
     // Headless path: no UI thread to consume macro app-action
     // events (Go / Prev / Connect / Disconnect / RecallSnapshot /
     // RecallPalette). Use a dummy channel whose receiver is dropped
@@ -275,6 +278,7 @@ async fn run_headless(args: Args) {
         send_pace_us.clone(),
     );
     macro_engine.set_dirty_tracker(dirty_tracker.clone());
+    macro_engine.set_recall_progress(recall_progress.clone());
     // Wrapped in `Arc` after the iPad sender is wired in below (see the
     // `ipad_sender_for_monitor` block), so iPad-only macro steps can fall
     // back to the iPad protocol on playback like the gang/snapshot engines.

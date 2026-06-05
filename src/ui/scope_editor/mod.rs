@@ -48,7 +48,10 @@ use crate::model::state::ConsoleState;
 use crate::ui::help::{HelpKey, help};
 use crate::ui::recall_scope_popup::{RecallPopupKind, draw_recall_popup};
 use crate::ui::theme;
-use channel_grid::{GroupRenderData, draw_channel_group_block};
+use channel_grid::{
+    CHANNEL_HEADER_HEIGHT, GroupRenderData, MATRIX_INNER_MARGIN, draw_channel_group_block,
+    draw_channel_header_row,
+};
 
 // ── Window-rendering entrypoint ─────────────────────────────────────
 
@@ -202,13 +205,20 @@ pub fn draw_scope_window(
     let mut still_open = state.window_open;
     let dirty_has_any = dirty.map(|d| d.has_any()).unwrap_or(false);
 
+    // Open spanning the full application window so the maximum number of
+    // channel columns is visible at once. The screen-based default applies on
+    // first show for this id; the operator can still resize/move afterward.
+    let screen = ctx.content_rect();
     egui::Window::new(window_title)
         // Pin a stable id so a changing title (e.g. "Editing scope: <name>")
-        // doesn't reset the window's size/position every frame.
-        .id(egui::Id::new("snapshot_scope_window"))
+        // doesn't reset the window's size/position every frame. The "_full"
+        // suffix re-applies the new full-width default once for sessions that
+        // persisted the older fixed size.
+        .id(egui::Id::new("snapshot_scope_window_full"))
         .collapsible(false)
         .resizable(true)
-        .default_size([1100.0, 700.0])
+        .default_pos(screen.left_top() + egui::vec2(8.0, 40.0))
+        .default_size([screen.width() - 16.0, (screen.height() - 80.0).max(400.0)])
         .open(&mut still_open)
         .show(ctx, |ui| {
             // ─ Toolbar ─
@@ -472,7 +482,12 @@ pub fn draw_scope_window(
             // ─ Per-group matrices (scroll area leaves room for footer) ─
             let footer_height = 60.0; // footer row + separator + margins
             let available = ui.available_height() - footer_height;
-            egui::ScrollArea::both()
+            // Vertical-only: each group renders at its full content height and
+            // the groups stack, so this outer area scrolls the whole stack.
+            // (Horizontal scrolling for channels lives inside each group's body,
+            // with the parameter-name column frozen.)
+            let mut group_rects: Vec<(ChannelGroup, egui::Rect)> = Vec::new();
+            let scroll_out = egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .max_height(available.max(100.0))
                 .show(ui, |ui| {
@@ -480,10 +495,51 @@ pub fn draw_scope_window(
                         if data.channels.is_empty() {
                             continue;
                         }
-                        draw_channel_group_block(ui, state, data);
+                        if let Some(rect) = draw_channel_group_block(ui, state, data) {
+                            group_rects.push((data.group, rect));
+                        }
                         ui.add_space(8.0);
                     }
                 });
+
+            // Sticky channel-number header: when an expanded group is scrolled so
+            // its own header row sits above the viewport, re-pin a copy at the
+            // top of the scroll viewport so the channel numbers stay visible
+            // while paging through that group's parameters.
+            let viewport = scroll_out.inner_rect;
+            let vtop = viewport.top();
+            let active = group_rects
+                .iter()
+                .find(|(_, r)| r.top() < vtop && r.bottom() > vtop + CHANNEL_HEADER_HEIGHT + 8.0)
+                .copied();
+            if let Some((group, rect)) = active
+                && let Some(data) = groups_data.iter().find(|d| d.group == group)
+            {
+                let h_offset = state
+                    .matrix_scroll_offset
+                    .get(&group)
+                    .map(|(x, _)| *x)
+                    .unwrap_or(0.0);
+                let pos = egui::pos2(rect.left() + MATRIX_INNER_MARGIN, vtop);
+                egui::Area::new(egui::Id::new("scope_sticky_header"))
+                    .order(egui::Order::Foreground)
+                    .movable(false)
+                    .fixed_pos(pos)
+                    .constrain_to(viewport)
+                    .show(ctx, |ui| {
+                        ui.set_clip_rect(viewport);
+                        // Match the body's channel-strip width so the same
+                        // columns are visible at the same offset.
+                        ui.set_max_width((viewport.right() - pos.x).max(0.0));
+                        // Opaque backing so scrolled rows don't bleed through.
+                        let bg = egui::Rect::from_min_size(
+                            egui::pos2(rect.left(), vtop),
+                            egui::vec2(rect.width(), CHANNEL_HEADER_HEIGHT),
+                        );
+                        ui.painter().rect_filled(bg, 0.0, theme::bg_panel());
+                        draw_channel_header_row(ui, state, data, h_offset, true);
+                    });
+            }
 
             // ─ Footer: Console Recall + OK/Cancel ─
             ui.separator();

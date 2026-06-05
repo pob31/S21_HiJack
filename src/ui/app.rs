@@ -17,6 +17,7 @@ use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::operating_mode::OperatingMode;
 use crate::model::osc_log::OscLog;
 use crate::model::pan_link::PanLinkBindings;
+use crate::model::recall_progress::RecallProgress;
 use crate::model::snapshot::CueList;
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
@@ -172,6 +173,22 @@ pub struct RecoveryDialog {
     pub recovered: bool,
 }
 
+/// UI-side easing state for the recall progress line. The shared
+/// [`RecallProgress`] holds the raw `done`/`total`; this smooths the drawn
+/// fraction toward the target and fades the bar out when an op completes.
+#[derive(Default)]
+struct RecallProgressUi {
+    /// Smoothed 0.0..=1.0 fraction actually drawn.
+    smoothed: f32,
+    /// Fade-out alpha (1.0 while filling; decays to 0.0 after completion).
+    fade: f32,
+    /// `generation` of the op we're currently showing — when it changes, a new
+    /// op has started and we reset `smoothed`/`fade`.
+    last_generation: u64,
+    /// Sweep phase for the indeterminate (unknown-total) case.
+    sweep: f32,
+}
+
 /// Main application struct implementing eframe::App.
 pub struct HiJackApp {
     // Shared state
@@ -197,6 +214,12 @@ pub struct HiJackApp {
     /// Advanced Settings panel and both engines see one consistent
     /// value; persisted in `AppPreferences`.
     pub send_pace_us: Arc<std::sync::atomic::AtomicU64>,
+    /// Shared progress handle for long parameter transfers (console dump,
+    /// snapshot/cue/macro recalls). Cloned into the daemon/engines on connect;
+    /// the UI polls it each frame to render the progress line under the tabs.
+    pub recall_progress: Arc<RecallProgress>,
+    /// UI-only easing/fade state for the progress line. Not shared.
+    recall_progress_ui: RecallProgressUi,
     pub snapshot_engine: Option<Arc<SnapshotEngine>>,
     pub macro_engine: Option<Arc<MacroEngine>>,
     /// Hand-off slot the connect-console async task uses to deliver the OSC
@@ -357,6 +380,8 @@ impl HiJackApp {
             auto_update_on_recall: Arc::new(AtomicBool::new(false)),
             console_snapshot_follow: Arc::new(AtomicBool::new(false)),
             send_pace_us: Arc::new(std::sync::atomic::AtomicU64::new(prefs.send_pace_us)),
+            recall_progress: Arc::new(RecallProgress::new()),
+            recall_progress_ui: RecallProgressUi::default(),
             snapshot_engine: None,
             macro_engine: None,
             pending_engines: Arc::new(std::sync::Mutex::new(None)),
@@ -781,6 +806,80 @@ impl HiJackApp {
         }
     }
 
+    /// Advance the recall-progress easing and, while a transfer is active or
+    /// fading out, draw the thin progress line. The shared [`RecallProgress`]
+    /// holds the raw `done`/`total`; this eases the drawn fraction and fades the
+    /// bar out on completion so it reads smoothly rather than snapping.
+    fn draw_recall_progress(&mut self, ctx: &egui::Context) {
+        let view = self.recall_progress.snapshot();
+        let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.1);
+        let st = &mut self.recall_progress_ui;
+
+        // A new op (generation bumped) resets the easing/fade.
+        if view.generation != st.last_generation {
+            st.last_generation = view.generation;
+            st.smoothed = 0.0;
+            st.fade = 1.0;
+            st.sweep = 0.0;
+        }
+
+        // Target fraction: determinate when a total is known, otherwise a
+        // looping sweep so the bar still animates while data arrives.
+        let target = if view.total > 0 {
+            let raw = view.done as f32 / view.total as f32;
+            // Hold just shy of full while active so the plateau-snap to 100%
+            // reads as completion; allow full once the op has finished.
+            if view.active { raw.min(0.99) } else { 1.0 }
+        } else if view.active {
+            st.sweep = (st.sweep + dt * 0.6) % 1.0;
+            st.sweep
+        } else {
+            1.0
+        };
+
+        if !view.active && target >= 1.0 {
+            st.smoothed = 1.0; // snap to full on completion
+        } else {
+            st.smoothed += (target - st.smoothed) * 0.25; // ease
+        }
+
+        // Fade out once the op is done.
+        if !view.active {
+            st.fade -= dt / 0.4;
+        }
+
+        // Don't draw during a determinate op's pre-stream handshake (active,
+        // known total, nothing received yet) — that's the multi-second gap
+        // before the console starts flooding on connect — nor when fully idle.
+        let pre_stream = view.active && view.total > 0 && view.done == 0;
+        if pre_stream || (!view.active && st.fade <= 0.0) {
+            return;
+        }
+
+        let frac = st.smoothed.clamp(0.0, 1.0);
+        let alpha = st.fade.clamp(0.0, 1.0);
+
+        egui::TopBottomPanel::top("recall_progress")
+            .show_separator_line(false)
+            .exact_height(3.0)
+            .frame(egui::Frame::new().fill(super::theme::bg_dark()))
+            .show(ctx, |ui| {
+                let r = ui.max_rect();
+                // Subtle track, then the accent fill — both alpha-modulated so
+                // the whole bar fades out together on completion.
+                ui.painter()
+                    .rect_filled(r, 0.0, super::theme::bg_panel().gamma_multiply(alpha * 0.5));
+                let mut fill = r;
+                fill.set_width(r.width() * frac);
+                ui.painter()
+                    .rect_filled(fill, 0.0, super::theme::ACCENT_BLUE.gamma_multiply(alpha));
+            });
+
+        // Keep repainting so the ease/fade animates even when nothing else
+        // requests frames.
+        ctx.request_repaint();
+    }
+
     /// Process UI events from async tasks.
     fn drain_events(&mut self) {
         self.pickup_pending_engines();
@@ -1126,6 +1225,7 @@ impl HiJackApp {
                         &mut self.cancel_token,
                         &self.osc_log,
                         &self.send_pace_us,
+                        &self.recall_progress,
                         &self.runtime,
                         &self.ui_tx,
                         &self.egui_ctx,
@@ -2098,6 +2198,12 @@ impl eframe::App for HiJackApp {
                 });
             });
 
+        // Thin recall-progress line — a top panel declared right after the tab
+        // bar, so egui stacks it directly beneath the tabs and above the tab
+        // panel. Only present while a transfer is active/fading, so idle layout
+        // is unchanged.
+        self.draw_recall_progress(ctx);
+
         // Offline-mode banner — anchored to the bottom of the window so
         // it doesn't push the rest of the UI down when toggled. Drawn
         // before the central panel so the central panel sees the
@@ -2344,6 +2450,7 @@ impl eframe::App for HiJackApp {
                         &mut self.cancel_token,
                         &self.osc_log,
                         &self.send_pace_us,
+                        &self.recall_progress,
                         &self.runtime,
                         &self.ui_tx,
                         &self.egui_ctx,

@@ -13,6 +13,7 @@ use crate::console::gang_manager::GangManager;
 use crate::console::macro_manager::MacroManager;
 use crate::console::pan_link_engine::PanLinkEngine;
 use crate::model::dirty_tracker::DirtyTracker;
+use crate::model::recall_progress::{RecallKind, RecallProgress};
 use crate::model::state::{ConnectionHealth, ConsoleState};
 use crate::osc::client::{OscSender, ReceivedOscMessage};
 use crate::osc::encode::SystemCommand;
@@ -47,6 +48,10 @@ pub struct DaemonState {
     pub pan_link_engine: Arc<RwLock<PanLinkEngine>>,
     pub dirty_tracker: Arc<RwLock<DirtyTracker>>,
     pub offline_mode: Arc<AtomicBool>,
+    /// Shared progress handle for long parameter transfers. The dump loop here
+    /// drives it on connect / recovery resend; the recall engines drive it for
+    /// snapshot/cue/macro recalls; the UI polls it to render the progress line.
+    pub recall_progress: Arc<RecallProgress>,
     /// Address of the most recently dispatched parameter from the
     /// console. Used by the Macros tab "track latest OSC" affordance to
     /// mirror the operator's currently-touched parameter into the Add
@@ -185,6 +190,16 @@ async fn run_loop(
 
     // Step 2: Request full state dump now that config is populated.
     send_system(&sender, SystemCommand::Resend).await;
+    // Start the progress line for the dump. The estimate uses the channel
+    // counts we just received; the bar fills as params flood in and snaps to
+    // 100 % when the inbound stream plateaus (tick arm below).
+    {
+        let total = estimate_expected_param_count(&daemon.state.read().await.config);
+        daemon.recall_progress.begin(RecallKind::Dump, total);
+    }
+    // When the current dump began, so the completion logic can tell "the flood
+    // hasn't started yet" (handshake delay) from "the flood finished".
+    let mut dump_begin: Option<Instant> = Some(Instant::now());
 
     let mut last_inbound_at = Instant::now();
     let mut last_ping_at: Option<Instant> = None;
@@ -198,6 +213,7 @@ async fn run_loop(
         tokio::select! {
             _ = cancel.cancelled() => {
                 info!("Connection cancelled — shutting down state mirror");
+                daemon.recall_progress.finish();
                 return;
             }
 
@@ -214,6 +230,17 @@ async fn run_loop(
                 let parsed = parse::parse_gp_osc_with_config(&msg.path, &msg.args, mix_types.as_deref());
                 process_message(&parsed, &daemon, &sender).await;
 
+                // Advance the dump progress bar per inbound parameter — only
+                // while a Dump op is active. A snapshot recall's inbound echoes
+                // are counted by the recall engine on the send side, so the
+                // `kind == Dump` guard keeps the two sources from double-counting.
+                if matches!(parsed, ParsedOscMessage::ParameterUpdate(..))
+                    && daemon.recall_progress.is_active()
+                    && daemon.recall_progress.kind() == RecallKind::Dump
+                {
+                    daemon.recall_progress.bump();
+                }
+
                 // Any inbound traffic counts as "alive": reset idle/ping bookkeeping.
                 last_inbound_at = Instant::now();
                 last_ping_at = None;
@@ -227,6 +254,29 @@ async fn run_loop(
             _ = tick_interval.tick() => {
                 let now = Instant::now();
                 let idle_for = now.duration_since(last_inbound_at);
+
+                // Dump completion / abandonment. Crucially, do NOT finish before
+                // the flood has actually started: after `/console/resend` the
+                // desk can take a few seconds (handshake) to begin streaming, and
+                // finishing during that gap makes the bar flash and then sit out
+                // the real dump. So gate the plateau on having received at least
+                // one parameter; if none ever arrive, abandon after a generous
+                // wait so a non-responding desk can't leave a stuck 0 % bar.
+                if daemon.recall_progress.is_active()
+                    && daemon.recall_progress.kind() == RecallKind::Dump
+                {
+                    if daemon.recall_progress.done() > 0 {
+                        if idle_for >= Duration::from_millis(1000) {
+                            daemon.recall_progress.finish();
+                            dump_begin = None;
+                        }
+                    } else if let Some(t) = dump_begin
+                        && now.duration_since(t) >= Duration::from_secs(12)
+                    {
+                        daemon.recall_progress.finish();
+                        dump_begin = None;
+                    }
+                }
 
                 if idle_for >= IDLE_THRESHOLD {
                     // Time to ping?
@@ -248,12 +298,24 @@ async fn run_loop(
                                     "GP OSC unresponsive — issuing recovery /console/resend"
                                 );
                                 send_system(&sender, SystemCommand::Resend).await;
+                                // Recovery resend re-floods the state — drive a
+                                // fresh dump bar so the operator sees it refill.
+                                {
+                                    let total = estimate_expected_param_count(
+                                        &daemon.state.read().await.config,
+                                    );
+                                    daemon.recall_progress.begin(RecallKind::Dump, total);
+                                }
+                                dump_begin = Some(now);
                                 recovery_attempted = true;
                                 unanswered_pings = 0; // re-arm; new pings count fresh
                                 set_health(&daemon.state, ConnectionHealth::Stale).await;
                             } else {
                                 warn!("GP OSC still unresponsive after recovery resend — marking link Lost");
                                 set_health(&daemon.state, ConnectionHealth::Lost).await;
+                                // Link is dead — clear any lingering dump bar.
+                                daemon.recall_progress.finish();
+                                dump_begin = None;
                             }
                         } else if ever_confirmed {
                             // Pinging but threshold not yet hit. Only an
@@ -300,6 +362,81 @@ async fn set_health(state: &Arc<RwLock<ConsoleState>>, health: ConnectionHealth)
     }
 }
 
+// ── Fader change-screening deadbands ───────────────────────────────────
+// Motorized faders don't always return to a bit-exact dB after a recall or a
+// console layer change (rotary-encoder params do). These dB deadbands let the
+// auto-preselect "dirty" screening ignore that mechanical jitter. Bands widen
+// as the level drops — the physical track compresses a large dB range into a
+// sliver down low, mirroring the `FADER_GANG_FLOOR_DB` reasoning in `parameter`.
+const FADER_DEADBAND_HI_DB: f32 = 0.2; //  value >= -10 dB
+const FADER_DEADBAND_MID_DB: f32 = 0.3; // -40 <= value < -10 dB
+const FADER_DEADBAND_LO_DB: f32 = 0.4; //  value <  -40 dB
+
+/// True when an inbound value is a *meaningful* change vs the stored previous
+/// value — i.e. it should mark the cell dirty for the self-actualising scope.
+///
+/// Fader-controllable level params (see [`ParameterPath::is_fader_level`]) get a
+/// dB deadband, banded by the new (settled) value, so post-recall / layer-change
+/// fader jitter doesn't auto-preselect. Every other parameter keeps exact
+/// equality, matching the original `prev != value` behaviour.
+///
+/// Note: the comparison is against the immediately-preceding stored value
+/// (`ConsoleState::update` overwrites on every message). A very slow continuous
+/// fader ride in sub-deadband steps could therefore ride a long way without ever
+/// marking dirty — accepted, because this screens recall/layer-change jitter,
+/// not live rides (a real ride moves faster than the band per message). True
+/// hysteresis would need a separate "last-marked value" map, not a change to the
+/// live mirror.
+fn is_meaningful_change(
+    path: &crate::model::parameter::ParameterPath,
+    prev: &crate::model::parameter::ParameterValue,
+    new: &crate::model::parameter::ParameterValue,
+) -> bool {
+    use crate::model::parameter::ParameterValue::Float;
+    if path.is_fader_level()
+        && let (Float(a), Float(b)) = (prev, new)
+    {
+        let band = if *b >= -10.0 {
+            FADER_DEADBAND_HI_DB
+        } else if *b >= -40.0 {
+            FADER_DEADBAND_MID_DB
+        } else {
+            FADER_DEADBAND_LO_DB
+        };
+        return (a - b).abs() > band;
+    }
+    prev != new
+}
+
+/// Expected GP-OSC parameter count for the connection dump — the denominator
+/// for the progress line. Sums, per channel type, the channel count × the number
+/// of *GP-OSC-reachable* applicable paths (those with a `to_gp_osc_suffix`),
+/// i.e. exactly the parameters the console floods back on `/console/resend`.
+/// iPad-only paths are excluded because they don't arrive on this link, so the
+/// bar tracks real progress instead of under-filling and snapping at the end.
+/// It can still be a few percent off (e.g. mono channels omit balance/width);
+/// the 0.99 cap + plateau-snap on the UI side absorb the remainder.
+fn estimate_expected_param_count(config: &crate::model::config::ConsoleConfig) -> usize {
+    use crate::model::channel::ChannelId;
+    use crate::model::parameter::ParameterPath;
+    let aux = config.aux_output_count;
+    let grp = config.group_output_count;
+    let mtx = config.matrix_output_count;
+    let per = |ch: &ChannelId| {
+        ParameterPath::applicable_to(ch, aux, grp, mtx)
+            .iter()
+            .filter(|p| p.to_gp_osc_suffix().is_some())
+            .count()
+    };
+    config.input_channel_count as usize * per(&ChannelId::Input(1))
+        + config.aux_output_count as usize * per(&ChannelId::Aux(1))
+        + config.group_output_count as usize * per(&ChannelId::Group(1))
+        + config.matrix_output_count as usize * per(&ChannelId::Matrix(1))
+        + config.control_group_count as usize * per(&ChannelId::ControlGroup(1))
+        + config.graphic_eq_count as usize * per(&ChannelId::GraphicEq(1))
+        + config.matrix_input_count as usize * per(&ChannelId::MatrixInput(1))
+}
+
 /// Process a parsed GP OSC message — update state mirror, propagate gangs, record macros.
 async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender: &OscSender) {
     match parsed {
@@ -321,7 +458,7 @@ async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender
             // first sample after a connection comes through old_value=None,
             // which we treat as "this is the baseline" — not a change.
             if let Some(prev) = &old_value
-                && prev != value
+                && is_meaningful_change(&addr.parameter, prev, value)
             {
                 daemon.dirty_tracker.write().await.mark(addr);
             }
@@ -400,5 +537,109 @@ async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender
         ParsedOscMessage::Unknown(path) => {
             tracing::trace!(path, "Unknown OSC message");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::parameter::{ParameterPath, ParameterValue};
+
+    fn f(v: f32) -> ParameterValue {
+        ParameterValue::Float(v)
+    }
+
+    #[test]
+    fn fader_hi_band_ignores_small_jitter_marks_real_change() {
+        // value >= -10 dB → 0.2 dB deadband.
+        assert!(!is_meaningful_change(&ParameterPath::Fader, &f(-5.0), &f(-4.85))); // 0.15 ≤ 0.2
+        assert!(is_meaningful_change(&ParameterPath::Fader, &f(-5.0), &f(-4.75))); // 0.25 > 0.2
+    }
+
+    #[test]
+    fn fader_mid_band() {
+        // -40 <= value < -10 dB → 0.3 dB deadband.
+        assert!(!is_meaningful_change(&ParameterPath::Fader, &f(-25.0), &f(-25.25))); // 0.25 ≤ 0.3
+        assert!(is_meaningful_change(&ParameterPath::Fader, &f(-25.0), &f(-25.35))); // 0.35 > 0.3
+    }
+
+    #[test]
+    fn fader_lo_band() {
+        // value < -40 dB → 0.4 dB deadband.
+        assert!(!is_meaningful_change(&ParameterPath::Fader, &f(-60.0), &f(-60.35))); // 0.35 ≤ 0.4
+        assert!(is_meaningful_change(&ParameterPath::Fader, &f(-60.0), &f(-60.45))); // 0.45 > 0.4
+    }
+
+    #[test]
+    fn band_boundaries_use_new_value() {
+        // Exactly -10.0 → HI band (>= -10). 0.25 dB is a change at HI(0.2)…
+        assert!(is_meaningful_change(&ParameterPath::Fader, &f(-10.25), &f(-10.0)));
+        // …but the same 0.25 dB landing at -40.0 → MID band (>= -40) is ignored.
+        assert!(!is_meaningful_change(&ParameterPath::Fader, &f(-40.25), &f(-40.0)));
+    }
+
+    #[test]
+    fn send_levels_share_the_fader_deadband() {
+        assert!(!is_meaningful_change(&ParameterPath::SendLevel(3), &f(-5.0), &f(-4.85)));
+        assert!(is_meaningful_change(&ParameterPath::SendLevel(3), &f(-5.0), &f(-4.5)));
+        assert!(!is_meaningful_change(&ParameterPath::CgLevel, &f(-5.0), &f(-4.85)));
+        assert!(!is_meaningful_change(&ParameterPath::MatrixSendLevel(1), &f(-5.0), &f(-4.85)));
+    }
+
+    #[test]
+    fn encoder_params_keep_exact_equality() {
+        // A 0.5 dB EQ-gain move is a real change — no deadband for encoder params.
+        assert!(is_meaningful_change(&ParameterPath::EqBandGain(1), &f(0.0), &f(0.5)));
+        assert!(is_meaningful_change(&ParameterPath::TotalGain, &f(0.0), &f(0.1)));
+        // Identical values are never a change, for any param.
+        assert!(!is_meaningful_change(&ParameterPath::EqBandGain(1), &f(0.0), &f(0.0)));
+        assert!(!is_meaningful_change(&ParameterPath::Fader, &f(-5.0), &f(-5.0)));
+    }
+
+    #[test]
+    fn non_float_params_use_exact_equality() {
+        assert!(is_meaningful_change(
+            &ParameterPath::Mute,
+            &ParameterValue::Bool(true),
+            &ParameterValue::Bool(false),
+        ));
+        assert!(!is_meaningful_change(
+            &ParameterPath::Mute,
+            &ParameterValue::Bool(true),
+            &ParameterValue::Bool(true),
+        ));
+    }
+
+    #[test]
+    fn is_fader_level_classification() {
+        assert!(ParameterPath::Fader.is_fader_level());
+        assert!(ParameterPath::SendLevel(0).is_fader_level());
+        assert!(ParameterPath::MatrixSendLevel(0).is_fader_level());
+        assert!(ParameterPath::CgLevel.is_fader_level());
+        assert!(!ParameterPath::EqBandGain(1).is_fader_level());
+        assert!(!ParameterPath::TotalGain.is_fader_level());
+        assert!(!ParameterPath::Pan.is_fader_level());
+    }
+
+    #[test]
+    fn dump_estimate_counts_only_gp_osc_paths_and_is_realistic() {
+        use crate::model::config::ConsoleConfig;
+        // The 60-in / 24-mix (10 aux + 14 group) extension reports 11737 GP-mode
+        // params on the real desk; our estimate should land close to that.
+        let mut cfg = ConsoleConfig::default();
+        cfg.input_channel_count = 60;
+        cfg.aux_output_count = 10;
+        cfg.group_output_count = 14;
+        cfg.matrix_output_count = 8;
+        cfg.control_group_count = 10;
+        cfg.graphic_eq_count = 16;
+        cfg.matrix_input_count = 10;
+        let est = estimate_expected_param_count(&cfg);
+        // Within ~15% of the desk-reported 11737 (mono channels omit a few
+        // params, hence the band rather than an exact match).
+        assert!(
+            (10_000..=13_500).contains(&est),
+            "dump estimate {est} not close to the desk-reported 11737"
+        );
     }
 }
