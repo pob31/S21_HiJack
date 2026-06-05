@@ -7,6 +7,7 @@ use tracing::info;
 
 use std::collections::HashMap;
 
+use crate::console::automation_registry::AutomationOverride;
 use crate::model::channel::ChannelId;
 use crate::model::parameter::{ParameterAddress, ParameterValue, TimingCategory};
 use crate::osc::client::OscSender;
@@ -81,6 +82,8 @@ impl FadeController {
             sender,
             ipad_sender,
             child,
+            None,
+            0,
         ))
     }
 }
@@ -147,23 +150,44 @@ impl MultiFadeController {
             sender,
             ipad_sender,
             child,
+            None,
+            0,
         ))
     }
 }
 
 /// Run a fade interpolation loop inline (not spawned). Used by per-category
 /// timed recall where each group already runs in its own spawned task.
+///
+/// `registry`/`gen_id`: when present, each target is checked against the live
+/// operator-override registry every tick — if the operator grabbed that
+/// parameter it is dropped from the fade (the rest keep fading); and every
+/// sent step is recorded so the console's echo of it is not mistaken for an
+/// operator move.
 pub async fn run_fade_inline(
     fade_time_secs: f32,
     targets: Vec<FadeTarget>,
     sender: OscSender,
     ipad_sender: Option<IpadSender>,
     cancel: CancellationToken,
+    registry: Option<AutomationOverride>,
+    gen_id: u64,
 ) -> FadeResult {
-    run_fade(0.0, fade_time_secs, targets, sender, ipad_sender, cancel).await
+    run_fade(
+        0.0,
+        fade_time_secs,
+        targets,
+        sender,
+        ipad_sender,
+        cancel,
+        registry,
+        gen_id,
+    )
+    .await
 }
 
 /// Run a fade interpolation loop.
+#[allow(clippy::too_many_arguments)]
 async fn run_fade(
     cue_number: f32,
     fade_time_secs: f32,
@@ -171,6 +195,8 @@ async fn run_fade(
     sender: OscSender,
     ipad_sender: Option<IpadSender>,
     cancel: CancellationToken,
+    registry: Option<AutomationOverride>,
+    gen_id: u64,
 ) -> FadeResult {
     if targets.is_empty() {
         return FadeResult {
@@ -213,12 +239,25 @@ async fn run_fade(
         // would emit out-of-range intermediate values straight to
         // the console.
         for target in &targets {
+            // Operator override: if the operator grabbed this exact parameter,
+            // it's no longer in the registry — stop fading it (the rest keep
+            // going) so the hands-on console value always wins.
+            if let Some(reg) = &registry {
+                if !reg.is_active(&target.address) {
+                    continue;
+                }
+            }
             if let Some(interpolated) = target.start_value.lerp(&target.end_value, t) {
                 let interpolated = target.address.parameter.clamp_value(interpolated);
                 let sent =
                     send_parameter(&sender, &ipad_sender, &target.address, &interpolated).await;
                 if sent {
                     steps_sent += 1;
+                    // Record what we pushed so the resulting console echo isn't
+                    // misread as an operator move.
+                    if let Some(reg) = &registry {
+                        reg.note_sent(&target.address, &interpolated, gen_id);
+                    }
                 }
             }
         }
@@ -240,6 +279,14 @@ async fn run_fade(
                 };
             }
             () = time::sleep(FADE_INTERVAL) => {}
+        }
+    }
+
+    // Normal completion: drop these addresses from the registry so a finished
+    // fade no longer shadows the operator.
+    if let Some(reg) = &registry {
+        for target in &targets {
+            reg.deregister(&target.address);
         }
     }
 

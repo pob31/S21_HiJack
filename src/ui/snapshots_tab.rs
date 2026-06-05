@@ -30,18 +30,6 @@ const LIST_BOTTOM_RESERVE: f32 = 40.0;
 /// takes over scrolling below this.
 const LIST_MIN_HEIGHT: f32 = 120.0;
 
-/// What the scope editor session is currently editing.
-///
-/// `NewCapture` (default) builds the working scope used by the next capture.
-/// `Snapshot(id)` edits an existing snapshot's scope in place — the editor is
-/// seeded from that snapshot's scope and OK writes the edited scope back to it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ScopeEditTarget {
-    #[default]
-    NewCapture,
-    Snapshot(Uuid),
-}
-
 /// State for the Snapshots tab.
 pub struct SnapshotsTabState {
     // Cue management
@@ -73,9 +61,6 @@ pub struct SnapshotsTabState {
     // Scope
     pub scope_editor: ScopeEditorState,
     pub selected_scope_template_id: Option<Uuid>,
-    /// What the open scope editor targets: the next-capture working scope, or
-    /// an existing snapshot whose scope is being edited in place.
-    pub scope_edit_target: ScopeEditTarget,
 
     // Feedback
     pub status_message: Option<StatusMessage>,
@@ -115,7 +100,6 @@ impl Default for SnapshotsTabState {
             pending_kind: SnapshotKind::default(),
             scope_editor: ScopeEditorState::default(),
             selected_scope_template_id: None,
-            scope_edit_target: ScopeEditTarget::default(),
             status_message: None,
             new_cue_console_row: String::new(),
             shift_modal_open: false,
@@ -200,48 +184,35 @@ pub fn draw_snapshots_tab(
                             theme::ACCENT_BLUE,
                             egui::Vec2::new(120.0, 30.0),
                         );
-                        // When a snapshot is selected, "Edit Scope…" edits THAT
-                        // snapshot's scope in place (and the hover explains the
-                        // ApplyOnSave caveat); otherwise it edits the working
-                        // scope used by the next capture.
-                        let edit_hover = if snap_state.selected_snapshot_id.is_some() {
-                            help(HelpKey::SnapshotEditExistingScope)
-                        } else {
-                            help(HelpKey::SnapshotEditScope)
-                        };
-                        if ui.add(edit_btn).on_hover_text(edit_hover).clicked() {
-                            match snap_state.selected_snapshot_id {
-                                Some(id) => {
-                                    // Seed the editor from the selected snapshot's
-                                    // own scope (paths + per-category timings).
-                                    if let Some(scope) = cue_manager
+                        // "Edit Scope…" always edits the WORKING scope (used by
+                        // the next capture). It is seeded from the selected
+                        // snapshot's scope when one is selected — so you can
+                        // tweak that snapshot's scope — otherwise from the
+                        // current working scope. OK never writes to a snapshot;
+                        // apply it deliberately via the editor's "Apply to
+                        // Selected" button or by recapturing the snapshot.
+                        if ui
+                            .add(edit_btn)
+                            .on_hover_text(help(HelpKey::SnapshotEditScope))
+                            .clicked()
+                        {
+                            let seed = snap_state
+                                .selected_snapshot_id
+                                .and_then(|id| {
+                                    cue_manager
                                         .try_read()
                                         .ok()
                                         .and_then(|m| m.get_snapshot(&id).map(|s| s.scope.clone()))
-                                    {
-                                        snap_state.scope_editor.open(
-                                            &scope,
-                                            aux_count,
-                                            group_count,
-                                            matrix_count,
-                                        );
-                                        snap_state.scope_edit_target =
-                                            ScopeEditTarget::Snapshot(id);
-                                    }
-                                }
-                                None => {
-                                    let template = snap_state
-                                        .scope_editor
-                                        .to_scope_template("Editing".into());
-                                    snap_state.scope_editor.open(
-                                        &template,
-                                        aux_count,
-                                        group_count,
-                                        matrix_count,
-                                    );
-                                    snap_state.scope_edit_target = ScopeEditTarget::NewCapture;
-                                }
-                            }
+                                })
+                                .unwrap_or_else(|| {
+                                    snap_state.scope_editor.to_scope_template("Editing".into())
+                                });
+                            snap_state.scope_editor.open(
+                                &seed,
+                                aux_count,
+                                group_count,
+                                matrix_count,
+                            );
                         }
                         ui.add_space(8.0);
                         let clear_btn = theme::action_button(
@@ -1631,32 +1602,46 @@ fn recapture_snapshot(
         return;
     };
 
+    // Recapture applies the current WORKING scope (from the scope editor) — both
+    // the scope AND fresh console data. So the workflow is: edit the scope, then
+    // recapture to "save" the new scope and re-grab the desk state under it.
+    let working_scope = snap_state.scope_editor.to_scope_template(
+        cue_manager
+            .try_read()
+            .ok()
+            .and_then(|m| m.get_snapshot(&snap_id).map(|s| s.name.clone()))
+            .unwrap_or_default(),
+    );
+
     let st = console_state.clone();
     let cue_mgr = cue_manager.clone();
     let dirty = dirty_tracker.clone();
     let tx = ui_tx.clone();
 
     runtime.spawn(async move {
-        // Read the existing snapshot's scope AND its kind so re-capture
-        // honours the original ApplyOnSave / ApplyOnRecall semantics.
-        let mgr = cue_mgr.read().await;
-        let Some(existing) = mgr.snapshots.get(&snap_id) else {
-            return;
+        // Honour the snapshot's ApplyOnSave / ApplyOnRecall kind on capture.
+        let (name, kind) = {
+            let mgr = cue_mgr.read().await;
+            let Some(existing) = mgr.snapshots.get(&snap_id) else {
+                return;
+            };
+            (existing.name.clone(), existing.kind)
         };
-        let scope = existing.scope.clone();
-        let name = existing.name.clone();
-        let kind = existing.kind;
-        drop(mgr);
 
-        // Capture the live mirror directly (no /console/resend — see
-        // `capture_snapshot`).
-        let state_guard = st.read().await;
-        let data = state_guard.capture(&scope, kind);
-        drop(state_guard);
+        // Capture the live mirror directly with the working scope (no
+        // /console/resend — see `capture_snapshot`).
+        let data = {
+            let state_guard = st.read().await;
+            state_guard.capture(&working_scope, kind)
+        };
 
         // Format for the confirmation popup before `data` moves into the store.
         let params = format_captured_params(&data.values);
-        cue_mgr.write().await.update_snapshot(snap_id, data);
+        {
+            let mut mgr = cue_mgr.write().await;
+            mgr.update_snapshot(snap_id, data);
+            mgr.update_snapshot_scope(snap_id, working_scope);
+        }
 
         // Phase C: re-capture also re-anchors the dirty baseline.
         dirty.write().await.clear();
@@ -1668,7 +1653,7 @@ fn recapture_snapshot(
         });
     });
 
-    snap_state.status_message = Some("Re-capturing...".into());
+    snap_state.status_message = Some("Re-capturing (scope + data)...".into());
 }
 
 /// Recall the currently-selected snapshot, optionally bypassing the scope.

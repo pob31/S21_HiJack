@@ -237,6 +237,8 @@ async fn run_headless(args: Args) {
     let recall_progress = Arc::new(model::recall_progress::RecallProgress::new());
     let console_load_suppression: console::snapshot_engine::ConsoleLoadSuppression =
         Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let automation_override: console::automation_registry::AutomationOverride =
+        Arc::new(console::automation_registry::AutomationRegistry::new());
     let daemon = console::connection::DaemonState {
         state,
         macro_manager: macro_manager.clone(),
@@ -250,6 +252,7 @@ async fn run_headless(args: Args) {
         // Headless has no follow-mode dispatcher to feed.
         console_snapshot_tx: None,
         console_load_suppression: console_load_suppression.clone(),
+        automation_override: Some(automation_override.clone()),
     };
     let manager =
         ConnectionManager::connect_from_parts(sender.clone(), rx, daemon, cancel_token.clone());
@@ -270,6 +273,7 @@ async fn run_headless(args: Args) {
     snapshot_engine.set_dirty_tracker(dirty_tracker.clone());
     snapshot_engine.set_recall_progress(recall_progress.clone());
     snapshot_engine.set_console_load_suppression(console_load_suppression.clone());
+    snapshot_engine.set_automation_override(automation_override.clone());
     // Headless path: no UI thread to consume macro app-action
     // events (Go / Prev / Connect / Disconnect / RecallSnapshot /
     // RecallPalette). Use a dummy channel whose receiver is dropped

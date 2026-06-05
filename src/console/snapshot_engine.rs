@@ -8,6 +8,7 @@ use tokio::time::Duration;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::console::automation_registry::AutomationOverride;
 use crate::console::cue_manager::CueManager;
 use crate::console::fade_engine::{FadeController, FadeTarget, MultiFadeController};
 use crate::model::channel::ChannelId;
@@ -153,6 +154,10 @@ pub struct SnapshotEngine {
     /// the desk's resulting snapshot-load flood. Shared with the connection
     /// loop via `DaemonState.console_load_suppression`.
     console_load_suppression: Option<ConsoleLoadSuppression>,
+    /// Shared live-override registry for timed recalls. Lets the operator take
+    /// back any parameter mid pre-wait/fade. Shared with the connection loop via
+    /// `DaemonState.automation_override`.
+    automation_override: Option<AutomationOverride>,
 }
 
 impl SnapshotEngine {
@@ -176,6 +181,7 @@ impl SnapshotEngine {
             recall_progress: None,
             sync_direction: None,
             console_load_suppression: None,
+            automation_override: None,
         }
     }
 
@@ -190,6 +196,12 @@ impl SnapshotEngine {
     /// desk's load flood.
     pub fn set_console_load_suppression(&mut self, handle: ConsoleLoadSuppression) {
         self.console_load_suppression = Some(handle);
+    }
+
+    /// Attach the shared live-override registry so the operator can take back
+    /// any parameter during a timed recall's pre-wait or fade.
+    pub fn set_automation_override(&mut self, handle: AutomationOverride) {
+        self.automation_override = Some(handle);
     }
 
     /// Attach the shared recall-progress handle so recalls drive the UI's
@@ -741,14 +753,20 @@ impl SnapshotEngine {
         self.multi_fade.cancel_all().await;
         self.fade_controller.cancel_active().await;
 
-        // Best-effort live snapshot via TRY_read: this runs right after firing
-        // a console memory, while the desk floods echoes. A blocking
-        // `state.read().await` would starve behind that flood (write-preferring
-        // RwLock) and hang the recall. On a miss, start values are simply
-        // absent — continuous params then snap to target (sent as discrete)
-        // instead of fading from the live value, which is acceptable under a
-        // flood and never blocks.
-        let state = self.state.try_read().ok();
+        // Begin a fresh live-override generation: clears any prior cue's
+        // automation entries so overrides can't leak across cues. `gen_id` stamps
+        // every register/note_sent below.
+        let registry = self.automation_override.clone();
+        let gen_id = registry.as_ref().map(|r| r.begin_recall()).unwrap_or(0);
+
+        // Fade START VALUES must be reliable, so read the live mirror with a
+        // real (blocking) read — a `try_read` miss would yield `None` start
+        // values, which silently demotes a fade to a discrete jump (the
+        // "jumps after the pre-wait" / inconsistent-fade bug). This read is held
+        // only across the in-memory diff/group build below and is DROPPED before
+        // any send/fade is spawned (line `drop(state)`), so it can't starve the
+        // inbound flood the way holding it across the send loop would.
+        let state = Some(self.state.read().await);
 
         // Step 1: Resolve all values with palette overrides
         let resolved = crate::model::snapshot::resolve_recall_values(
@@ -835,6 +853,10 @@ impl SnapshotEngine {
         // Collect all spawned handles for tracking
         let mut all_handles: Vec<tokio::task::JoinHandle<usize>> = Vec::new();
 
+        // Largest pre_wait+fade across every channel/group — the span the timed
+        // progress bar fills over. Accumulated as each channel is registered.
+        let mut max_span = Duration::ZERO;
+
         // Group the groups by channel for mute ordering
         let mut by_channel: HashMap<ChannelId, Vec<(Option<TimingCategory>, Vec<ParamChange>)>> =
             HashMap::new();
@@ -883,9 +905,35 @@ impl SnapshotEngine {
                 group_tasks.push((cat, pre_wait, fade_time, changes));
             }
 
+            // Register every address this channel will automate BEFORE spawning,
+            // so an operator move arriving during a pre-wait or fade cancels
+            // exactly that `(channel, parameter)` and nothing else. The span
+            // (pre_wait + fade) is what the progress countdown reads back as the
+            // live max(pre_wait + fade). `max_span` is tracked even without a
+            // registry so the timed progress bar still spans the right window.
+            let mute_span = Duration::from_secs_f32(mute_timing.pre_wait_secs);
+            if mute_change.is_some() {
+                max_span = max_span.max(mute_span);
+            }
+            for (_cat, pre_wait, fade_time, _changes) in &group_tasks {
+                max_span = max_span.max(*pre_wait + *fade_time);
+            }
+            if let Some(r) = &registry {
+                if let Some(mc) = &mute_change {
+                    r.register(&mc.addr, gen_id, mute_span);
+                }
+                for (_cat, pre_wait, fade_time, changes) in &group_tasks {
+                    let span = *pre_wait + *fade_time;
+                    for ch in changes {
+                        r.register(&ch.addr, gen_id, span);
+                    }
+                }
+            }
+
             // Clone sender for spawned tasks
             let sender_for_channel = s.clone();
             let ipad_for_channel = is.clone();
+            let reg = registry.clone();
 
             // Spawn the channel's execution
             let handle = tokio::spawn(async move {
@@ -897,8 +945,18 @@ impl SnapshotEngine {
                     ipad: &Option<IpadSender>,
                     addr: &ParameterAddress,
                     value: &ParameterValue,
+                    reg: &Option<AutomationOverride>,
+                    gen_id: u64,
                 ) -> bool {
-                    match encode::encode_parameter(addr, value) {
+                    // Operator override: if the operator grabbed this param
+                    // (e.g. during its pre-wait), it's no longer registered —
+                    // don't clobber the hands-on value.
+                    if let Some(r) = reg {
+                        if !r.is_active(addr) {
+                            return false;
+                        }
+                    }
+                    let ok = match encode::encode_parameter(addr, value) {
                         Some((path, args)) => sender.send(&path, args).await.is_ok(),
                         None => {
                             if let Some(ipad) = ipad {
@@ -910,10 +968,17 @@ impl SnapshotEngine {
                                 false
                             }
                         }
+                    };
+                    if ok {
+                        if let Some(r) = reg {
+                            r.note_sent(addr, value, gen_id);
+                        }
                     }
+                    ok
                 }
 
                 // Execute a single timing group
+                #[allow(clippy::too_many_arguments)]
                 async fn exec_group(
                     sender: &OscSender,
                     ipad: &Option<IpadSender>,
@@ -921,6 +986,8 @@ impl SnapshotEngine {
                     fade_time: Duration,
                     changes: Vec<ParamChange>,
                     pace_us: u64,
+                    reg: &Option<AutomationOverride>,
+                    gen_id: u64,
                 ) -> usize {
                     let mut sent = 0usize;
 
@@ -952,7 +1019,7 @@ impl SnapshotEngine {
 
                     // Send discrete params first (with pacing)
                     for d in &discrete {
-                        if send_one(sender, ipad, &d.addr, &d.value).await {
+                        if send_one(sender, ipad, &d.addr, &d.value, reg, gen_id).await {
                             sent += 1;
                             if pace_us > 0 {
                                 sleep(Duration::from_micros(pace_us)).await;
@@ -970,6 +1037,8 @@ impl SnapshotEngine {
                             sender.clone(),
                             ipad.clone(),
                             child,
+                            reg.clone(),
+                            gen_id,
                         )
                         .await;
                         sent += result.total_steps_sent;
@@ -980,6 +1049,7 @@ impl SnapshotEngine {
 
                 // Execute a Sends group with per-send enable/disable ordering.
                 use crate::model::parameter::ParameterPath;
+                #[allow(clippy::too_many_arguments)]
                 async fn exec_sends_group(
                     sender: &OscSender,
                     ipad: &Option<IpadSender>,
@@ -987,6 +1057,8 @@ impl SnapshotEngine {
                     fade_time: Duration,
                     changes: Vec<ParamChange>,
                     pace_us: u64,
+                    reg: &Option<AutomationOverride>,
+                    gen_id: u64,
                 ) -> usize {
                     let mut sent = 0usize;
 
@@ -1011,7 +1083,7 @@ impl SnapshotEngine {
 
                     // Handle non-send params (shouldn't happen but be safe)
                     for c in &non_send_changes {
-                        if send_one(sender, ipad, &c.addr, &c.value).await {
+                        if send_one(sender, ipad, &c.addr, &c.value, reg, gen_id).await {
                             sent += 1;
                             if pace_us > 0 {
                                 sleep(Duration::from_micros(pace_us)).await;
@@ -1026,6 +1098,8 @@ impl SnapshotEngine {
                         let i = ipad.clone();
                         let ft = fade_time;
                         let pu = pace_us;
+                        let r = reg.clone();
+                        let g = gen_id;
                         per_send_handles.push(tokio::spawn(async move {
                             let mut sent = 0usize;
 
@@ -1052,10 +1126,19 @@ impl SnapshotEngine {
                             match enabling {
                                 Some(true) => {
                                     // Enable ON: fade level/pan first, then enable
-                                    sent +=
-                                        exec_group(&s, &i, Duration::ZERO, ft, level_pan, pu).await;
+                                    sent += exec_group(
+                                        &s,
+                                        &i,
+                                        Duration::ZERO,
+                                        ft,
+                                        level_pan,
+                                        pu,
+                                        &r,
+                                        g,
+                                    )
+                                    .await;
                                     if let Some(ec) = &enable_change {
-                                        if send_one(&s, &i, &ec.addr, &ec.value).await {
+                                        if send_one(&s, &i, &ec.addr, &ec.value, &r, g).await {
                                             sent += 1;
                                         }
                                     }
@@ -1063,17 +1146,35 @@ impl SnapshotEngine {
                                 Some(false) => {
                                     // Enable OFF: disable first, then fade level/pan
                                     if let Some(ec) = &enable_change {
-                                        if send_one(&s, &i, &ec.addr, &ec.value).await {
+                                        if send_one(&s, &i, &ec.addr, &ec.value, &r, g).await {
                                             sent += 1;
                                         }
                                     }
-                                    sent +=
-                                        exec_group(&s, &i, Duration::ZERO, ft, level_pan, pu).await;
+                                    sent += exec_group(
+                                        &s,
+                                        &i,
+                                        Duration::ZERO,
+                                        ft,
+                                        level_pan,
+                                        pu,
+                                        &r,
+                                        g,
+                                    )
+                                    .await;
                                 }
                                 None => {
                                     // No enable change — just fade level/pan
-                                    sent +=
-                                        exec_group(&s, &i, Duration::ZERO, ft, level_pan, pu).await;
+                                    sent += exec_group(
+                                        &s,
+                                        &i,
+                                        Duration::ZERO,
+                                        ft,
+                                        level_pan,
+                                        pu,
+                                        &r,
+                                        g,
+                                    )
+                                    .await;
                                 }
                             }
 
@@ -1098,8 +1199,15 @@ impl SnapshotEngine {
                             sleep(Duration::from_secs_f32(mute_timing.pre_wait_secs)).await;
                         }
                         if let Some(mc) = &mute_change {
-                            if send_one(&sender_for_channel, &ipad_for_channel, &mc.addr, &mc.value)
-                                .await
+                            if send_one(
+                                &sender_for_channel,
+                                &ipad_for_channel,
+                                &mc.addr,
+                                &mc.value,
+                                &reg,
+                                gen_id,
+                            )
+                            .await
                             {
                                 sent += 1;
                             }
@@ -1110,13 +1218,19 @@ impl SnapshotEngine {
                             let s = sender_for_channel.clone();
                             let i = ipad_for_channel.clone();
                             let pu = pace;
+                            let r = reg.clone();
+                            let g = gen_id;
                             if cat == Some(TimingCategory::Sends) {
                                 handles.push(tokio::spawn(async move {
-                                    exec_sends_group(&s, &i, pre_wait, fade_time, changes, pu).await
+                                    exec_sends_group(
+                                        &s, &i, pre_wait, fade_time, changes, pu, &r, g,
+                                    )
+                                    .await
                                 }));
                             } else {
                                 handles.push(tokio::spawn(async move {
-                                    exec_group(&s, &i, pre_wait, fade_time, changes, pu).await
+                                    exec_group(&s, &i, pre_wait, fade_time, changes, pu, &r, g)
+                                        .await
                                 }));
                             }
                         }
@@ -1133,13 +1247,19 @@ impl SnapshotEngine {
                             let s = sender_for_channel.clone();
                             let i = ipad_for_channel.clone();
                             let pu = pace;
+                            let r = reg.clone();
+                            let g = gen_id;
                             if cat == Some(TimingCategory::Sends) {
                                 handles.push(tokio::spawn(async move {
-                                    exec_sends_group(&s, &i, pre_wait, fade_time, changes, pu).await
+                                    exec_sends_group(
+                                        &s, &i, pre_wait, fade_time, changes, pu, &r, g,
+                                    )
+                                    .await
                                 }));
                             } else {
                                 handles.push(tokio::spawn(async move {
-                                    exec_group(&s, &i, pre_wait, fade_time, changes, pu).await
+                                    exec_group(&s, &i, pre_wait, fade_time, changes, pu, &r, g)
+                                        .await
                                 }));
                             }
                         }
@@ -1153,8 +1273,15 @@ impl SnapshotEngine {
                             sleep(Duration::from_secs_f32(mute_timing.pre_wait_secs)).await;
                         }
                         if let Some(mc) = &mute_change {
-                            if send_one(&sender_for_channel, &ipad_for_channel, &mc.addr, &mc.value)
-                                .await
+                            if send_one(
+                                &sender_for_channel,
+                                &ipad_for_channel,
+                                &mc.addr,
+                                &mc.value,
+                                &reg,
+                                gen_id,
+                            )
+                            .await
                             {
                                 sent += 1;
                             }
@@ -1167,13 +1294,19 @@ impl SnapshotEngine {
                             let s = sender_for_channel.clone();
                             let i = ipad_for_channel.clone();
                             let pu = pace;
+                            let r = reg.clone();
+                            let g = gen_id;
                             if cat == Some(TimingCategory::Sends) {
                                 handles.push(tokio::spawn(async move {
-                                    exec_sends_group(&s, &i, pre_wait, fade_time, changes, pu).await
+                                    exec_sends_group(
+                                        &s, &i, pre_wait, fade_time, changes, pu, &r, g,
+                                    )
+                                    .await
                                 }));
                             } else {
                                 handles.push(tokio::spawn(async move {
-                                    exec_group(&s, &i, pre_wait, fade_time, changes, pu).await
+                                    exec_group(&s, &i, pre_wait, fade_time, changes, pu, &r, g)
+                                        .await
                                 }));
                             }
                         }
@@ -1189,6 +1322,45 @@ impl SnapshotEngine {
             });
 
             all_handles.push(handle);
+        }
+
+        // Drive the outbound (blue) progress bar as a time countdown over the
+        // recall's max(pre_wait + fade). A lightweight driver task tracks the
+        // live max remaining from the override registry, so an operator move
+        // that drops a long fade pulls the bar in toward the new, nearer finish.
+        // Stops as soon as a newer recall supersedes this generation or the
+        // registry drains (or, with no registry, after the fixed span elapses).
+        if !max_span.is_zero()
+            && let Some(progress) = self.recall_progress.clone()
+        {
+            let progress_gen = progress.begin_timed(max_span);
+            let registry_for_driver = registry.clone();
+            tokio::spawn(async move {
+                loop {
+                    sleep(Duration::from_millis(80)).await;
+                    // A newer recall bumped the generation — abandon this bar.
+                    if progress.generation() != progress_gen {
+                        return;
+                    }
+                    match &registry_for_driver {
+                        Some(r) => match r.max_remaining() {
+                            Some(rem) if !rem.is_zero() => progress.set_span_end(rem),
+                            // Registry drained: everything finished or was taken.
+                            _ => break,
+                        },
+                        // No registry to follow: hold the fixed span and let the
+                        // bar reach its end on its own.
+                        None => {
+                            if progress.snapshot().time_fraction() >= 1.0 {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if progress.generation() == progress_gen {
+                    progress.finish();
+                }
+            });
         }
 
         // Wait for all channels to complete

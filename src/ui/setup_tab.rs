@@ -2045,6 +2045,12 @@ pub(crate) fn start_connection(
         let console_load_suppression: crate::console::snapshot_engine::ConsoleLoadSuppression =
             std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
+        // Live operator-override registry, shared between the snapshot engine
+        // (registers addresses under timed recall) and the connection loop
+        // (drops one when the operator grabs it on the desk).
+        let automation_override: crate::console::automation_registry::AutomationOverride =
+            std::sync::Arc::new(crate::console::automation_registry::AutomationRegistry::new());
+
         let daemon = crate::console::connection::DaemonState {
             state: st.clone(),
             macro_manager: macro_mgr.clone(),
@@ -2058,6 +2064,7 @@ pub(crate) fn start_connection(
             last_received: last_recv.clone(),
             console_snapshot_tx: Some(snap_event_tx.clone()),
             console_load_suppression: console_load_suppression.clone(),
+            automation_override: Some(automation_override.clone()),
         };
         let manager = ConnectionManager::connect_from_parts(osc_sender, rx, daemon, token.clone());
 
@@ -2085,6 +2092,9 @@ pub(crate) fn start_connection(
         // Share the console-load suppression window so a fire tells the
         // connection loop to skip gang/pan propagation of the desk's flood.
         snapshot_engine.set_console_load_suppression(console_load_suppression.clone());
+        // Share the live-override registry so an operator move on the desk
+        // cancels the matching parameter's pre-wait/fade.
+        snapshot_engine.set_automation_override(automation_override.clone());
         let console_fire_suppression = snapshot_engine.console_fire_suppression();
 
         // iPad connection (Mode 2 or 3). The `snap_event_tx` / `snap_event_rx`

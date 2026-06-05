@@ -1,3 +1,4 @@
+pub mod automation_registry;
 pub mod connection;
 pub mod cue_manager;
 pub mod discovery;

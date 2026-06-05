@@ -65,6 +65,10 @@ pub struct ScopeWindowOutcome {
     /// True if the operator clicked "Clear changes" — the caller should
     /// acquire a write lock on the dirty tracker and call `clear()`.
     pub clear_dirty_requested: bool,
+    /// True if the operator clicked "Apply to selected" — the caller should
+    /// write the current scope (`to_scope_template`) into the selected
+    /// snapshot's scope (data untouched). The window stays open.
+    pub apply_to_selected_requested: bool,
 }
 
 /// Result of a single `draw_scope_window` frame.
@@ -94,6 +98,9 @@ pub fn draw_scope_window(
     cue_manager: &Arc<RwLock<CueManager>>,
     runtime: &tokio::runtime::Handle,
     window_title: &str,
+    // Name of the currently-selected snapshot, if any. Enables the
+    // "Apply to selected" button (which writes this scope into that snapshot).
+    selected_snapshot_name: Option<&str>,
 ) -> ScopeWindowOutcome {
     if !state.window_open {
         return ScopeWindowOutcome::default();
@@ -546,9 +553,12 @@ pub fn draw_scope_window(
             ui.horizontal(|ui| {
                 // Console Recall buttons (left side)
                 ui.label(
+                    // Match the buttons' tiny font (not the slightly-smaller
+                    // `.small()`), so the label baseline sits with the button
+                    // text to its right rather than reading high.
                     egui::RichText::new("Console Recall:")
                         .color(theme::label_weak())
-                        .small(),
+                        .size(theme::FONT_SIZE_TINY),
                 );
                 let btn_size = egui::Vec2::new(100.0, 24.0);
                 let scope_btn = egui::Button::new(
@@ -604,6 +614,27 @@ pub fn draw_scope_window(
                     if ui.add(cancel_btn).clicked() {
                         state.cancel();
                         outcome.status = ScopeWindowResult::Cancelled;
+                    }
+
+                    // Apply this scope to the currently-selected snapshot
+                    // (scope only; data untouched). For offline scope editing.
+                    // The window stays open. Disabled when nothing is selected.
+                    ui.add_space(8.0);
+                    let apply_btn = theme::action_button(
+                        "Apply to Selected",
+                        theme::ACCENT_BLUE,
+                        egui::Vec2::new(140.0, 28.0),
+                    );
+                    let apply_resp = ui.add_enabled(selected_snapshot_name.is_some(), apply_btn);
+                    let apply_resp = match selected_snapshot_name {
+                        Some(name) => apply_resp.on_hover_text(format!(
+                            "Write this scope into snapshot '{name}' (data unchanged)"
+                        )),
+                        None => apply_resp
+                            .on_hover_text("Select a snapshot first to apply this scope to it"),
+                    };
+                    if apply_resp.clicked() {
+                        outcome.apply_to_selected_requested = true;
                     }
                 });
             });

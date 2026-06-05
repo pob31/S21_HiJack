@@ -33,9 +33,8 @@ use super::monitor_tab::MonitorTabState;
 use super::osc_log_tab::OscLogTabState;
 use super::palettes_ui::PalettesUiState;
 use super::pan_link_tab::PanLinkTabState;
-use super::scope_editor::ScopeWindowResult;
 use super::setup_tab::SetupTabState;
-use super::snapshots_tab::{ScopeEditTarget, SnapshotsTabState};
+use super::snapshots_tab::SnapshotsTabState;
 use super::status::StatusMessage;
 use super::{PendingEngines, Tab, UiEvent};
 
@@ -825,28 +824,37 @@ impl HiJackApp {
     /// sends) in blue below — matching the OSC log's In/Out color convention.
     /// Each bar eases its drawn fraction and fades out on completion so it reads
     /// smoothly rather than snapping; either can animate independently.
-    fn draw_recall_progress(&mut self, ctx: &egui::Context) {
+    fn draw_recall_progress(&mut self, ctx: &egui::Context, area: egui::Rect) {
         let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.1);
         let in_view = self.progress.inbound.snapshot();
         let out_view = self.progress.outbound.snapshot();
 
+        // Paint on the BACKGROUND layer (where panels render), not a foreground
+        // layer: that keeps the bars on top of the tab content but BELOW
+        // floating windows (`Order::Middle`) — otherwise they cover popups like
+        // the scope editor. This is called AFTER the CentralPanel renders, so
+        // the bar shapes are appended on top of its content within the same
+        // background layer. `area` is the content rect captured before the
+        // CentralPanel consumed it. Reserves no layout space → no reflow.
+        let painter = ctx.layer_painter(egui::LayerId::background());
+
         // Inbound (green) sits at the very top edge, outbound (blue) 3px below.
         let in_anim = Self::draw_one_progress_bar(
-            ctx,
+            &painter,
+            area,
             in_view,
             &mut self.progress_ui_in,
             dt,
             super::theme::ACCENT_GREEN,
-            "recall_progress_in",
             0.0,
         );
         let out_anim = Self::draw_one_progress_bar(
-            ctx,
+            &painter,
+            area,
             out_view,
             &mut self.progress_ui_out,
             dt,
             super::theme::ACCENT_BLUE,
-            "recall_progress_out",
             3.0,
         );
 
@@ -862,18 +870,17 @@ impl HiJackApp {
     /// frames. Associated fn (no `&self`) so the two bars can borrow their own
     /// easing state mutably without aliasing.
     ///
-    /// Painted on a **foreground layer** rather than a `TopBottomPanel`, so it
-    /// consumes no layout space: whether 0, 1, or 2 bars are visible, the
-    /// CentralPanel never reflows (which previously caused the content to jump
-    /// and flicker as the bars appeared/disappeared during the dump). `y_offset`
-    /// stacks the bars (0 for the top one, 3 for the one below).
+    /// Painted via the supplied background-layer `painter` (no `TopBottomPanel`),
+    /// so it consumes no layout space: whether 0, 1, or 2 bars are visible, the
+    /// CentralPanel never reflows. `y_offset` stacks the bars (0 for the top
+    /// one, 3 for the one below) relative to `area.top()`.
     fn draw_one_progress_bar(
-        ctx: &egui::Context,
+        painter: &egui::Painter,
+        area: egui::Rect,
         view: crate::model::recall_progress::RecallProgressView,
         st: &mut RecallProgressUi,
         dt: f32,
         color: egui::Color32,
-        layer_id: &'static str,
         y_offset: f32,
     ) -> bool {
         // A new op (generation bumped) resets the easing/fade.
@@ -884,9 +891,15 @@ impl HiJackApp {
             st.sweep = 0.0;
         }
 
-        // Target fraction: determinate when a total is known, otherwise a
-        // looping sweep so the bar still animates while data arrives.
-        let target = if view.total > 0 {
+        // Target fraction. Time mode (a timed cue recall) fills over its
+        // max(pre_wait+fade) window — recomputed live so an operator override
+        // that shrinks the window advances the bar toward the nearer finish.
+        // Otherwise: determinate when a total is known, else a looping sweep.
+        use crate::model::recall_progress::ProgressMode;
+        let target = if view.mode == ProgressMode::Time {
+            let raw = view.time_fraction();
+            if view.active { raw.min(0.99) } else { 1.0 }
+        } else if view.total > 0 {
             let raw = view.done as f32 / view.total as f32;
             // Hold just shy of full while active so the plateau-snap to 100%
             // reads as completion; allow full once the op has finished.
@@ -920,21 +933,13 @@ impl HiJackApp {
         let frac = st.smoothed.clamp(0.0, 1.0);
         let alpha = st.fade.clamp(0.0, 1.0);
 
-        // Paint into a foreground layer at the top of the content area. This
-        // does NOT participate in layout, so no panel appears/disappears and the
-        // CentralPanel never reflows. `available_rect` here is below the tab bar
-        // (this runs after it, before the CentralPanel) and is stable frame to
-        // frame because the overlay reserves no space.
-        let avail = ctx.available_rect();
-        let top = avail.top() + y_offset;
+        // Paint at the top of the content area. No layout allocation → no
+        // reflow. The bar spans the full content width at `area.top() + offset`.
+        let top = area.top() + y_offset;
         let track = egui::Rect::from_min_max(
-            egui::pos2(avail.left(), top),
-            egui::pos2(avail.right(), top + 3.0),
+            egui::pos2(area.left(), top),
+            egui::pos2(area.right(), top + 3.0),
         );
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Foreground,
-            egui::Id::new(layer_id),
-        ));
         // Subtle track, then the accent fill — both alpha-modulated so the whole
         // bar fades out together on completion.
         painter.rect_filled(
@@ -1891,6 +1896,25 @@ impl eframe::App for HiJackApp {
         // Drain async events
         self.drain_events();
 
+        // Auto-preselect: keep the working scope tracking changed parameters
+        // even while the scope editor window is CLOSED, so a capture uses the
+        // current changed-since-last-snapshot set instead of a value frozen the
+        // last time the editor happened to be open. (When the window is open,
+        // draw_scope_window already does this every frame the dirty generation
+        // changes.)
+        if !self.snapshots.scope_editor.window_open
+            && self.snapshots.scope_editor.auto_preselect_modified
+            && let Ok(dirty) = self.dirty_tracker.try_read()
+        {
+            let generation = dirty.generation();
+            if generation != self.snapshots.scope_editor.last_dirty_generation {
+                self.snapshots
+                    .scope_editor
+                    .apply_dirty_set(dirty.dirty_set());
+                self.snapshots.scope_editor.last_dirty_generation = generation;
+            }
+        }
+
         // Periodic autosave during quiet periods (no-op most frames).
         self.maybe_autosave();
 
@@ -2291,11 +2315,11 @@ impl eframe::App for HiJackApp {
                 });
             });
 
-        // Thin recall-progress line — a top panel declared right after the tab
-        // bar, so egui stacks it directly beneath the tabs and above the tab
-        // panel. Only present while a transfer is active/fading, so idle layout
-        // is unchanged.
-        self.draw_recall_progress(ctx);
+        // Capture the content rect (below the tab bar) NOW, before the
+        // CentralPanel consumes it. The thin recall-progress lines are painted
+        // from here, but only AFTER the CentralPanel renders (further below) so
+        // they sit on top of its content yet below any popup window.
+        let progress_area = ctx.available_rect();
 
         // Offline-mode banner — anchored to the bottom of the window so
         // it doesn't push the rest of the UI down when toggled. Drawn
@@ -2641,6 +2665,11 @@ impl eframe::App for HiJackApp {
             }
         });
 
+        // Thin recall-progress lines (green inbound / blue outbound), painted on
+        // the background layer AFTER the CentralPanel so they sit on top of its
+        // content but BELOW the floating windows below. No layout reflow.
+        self.draw_recall_progress(ctx, progress_area);
+
         // ── Scope editor window (floats above any tab) ──
         // Drawn outside the CentralPanel so it can overlay anything. Borrows
         // ConsoleState (and the dirty tracker) for one frame to compute
@@ -2648,19 +2677,19 @@ impl eframe::App for HiJackApp {
         // on both so we don't deadlock if a write is in flight; the next
         // frame will redraw.
         if self.snapshots.scope_editor.window_open {
-            // Title reflects what the editor targets: the next-capture working
-            // scope, or an existing snapshot being edited in place.
-            let window_title = match self.snapshots.scope_edit_target {
-                ScopeEditTarget::NewCapture => "Snapshot Scope".to_string(),
-                ScopeEditTarget::Snapshot(id) => self
-                    .cue_manager
+            // The editor always edits the WORKING scope (used by the next
+            // capture). OK never writes to a snapshot. Apply / Recapture
+            // deliberately target the currently-SELECTED snapshot, so the title
+            // shows that target.
+            let selected_name = self.snapshots.selected_snapshot_id.and_then(|id| {
+                self.cue_manager
                     .try_read()
                     .ok()
-                    .and_then(|m| {
-                        m.get_snapshot(&id)
-                            .map(|s| format!("Editing scope: {}", s.name))
-                    })
-                    .unwrap_or_else(|| "Editing scope".to_string()),
+                    .and_then(|m| m.get_snapshot(&id).map(|s| s.name.clone()))
+            });
+            let window_title = match &selected_name {
+                Some(name) => format!("Edit Scope  ·  selected: {name}"),
+                None => "Edit Scope".to_string(),
             };
             if let Ok(state_guard) = self.state.try_read() {
                 let dirty_guard = self.dirty_tracker.try_read().ok();
@@ -2672,6 +2701,7 @@ impl eframe::App for HiJackApp {
                     &self.cue_manager,
                     &self.runtime,
                     &window_title,
+                    selected_name.as_deref(),
                 );
                 drop(dirty_guard);
                 drop(state_guard);
@@ -2686,28 +2716,20 @@ impl eframe::App for HiJackApp {
                     });
                 }
 
-                // When editing an existing snapshot's scope, OK writes the
-                // edited scope (paths + per-category timings) back to it.
-                if outcome.status == ScopeWindowResult::Committed
-                    && let ScopeEditTarget::Snapshot(id) = self.snapshots.scope_edit_target
+                // "Apply to selected": write the current (working) scope into
+                // the selected snapshot's scope — data untouched. For editing a
+                // snapshot's scope offline, with no live desk to recapture from.
+                if outcome.apply_to_selected_requested
+                    && let Some(id) = self.snapshots.selected_snapshot_id
                 {
-                    let name = self
-                        .cue_manager
-                        .try_read()
-                        .ok()
-                        .and_then(|m| m.get_snapshot(&id).map(|s| s.name.clone()))
-                        .unwrap_or_default();
-                    let scope = self.snapshots.scope_editor.to_scope_template(name);
+                    let name = selected_name.clone().unwrap_or_default();
+                    let scope = self.snapshots.scope_editor.to_scope_template(name.clone());
                     let cue_mgr = self.cue_manager.clone();
                     self.runtime.spawn(async move {
                         cue_mgr.write().await.update_snapshot_scope(id, scope);
                     });
-                }
-
-                // Any terminal outcome (OK / Cancel / X-close) resets the target
-                // so the next no-selection "Edit Scope…" edits the working scope.
-                if outcome.status != ScopeWindowResult::StillOpen {
-                    self.snapshots.scope_edit_target = ScopeEditTarget::NewCapture;
+                    self.snapshots.status_message =
+                        Some(format!("Applied scope to '{name}'").into());
                 }
             }
         }

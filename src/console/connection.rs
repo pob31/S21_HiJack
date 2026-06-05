@@ -67,6 +67,11 @@ pub struct DaemonState {
     /// propagation so the app doesn't re-propagate the desk's coherent
     /// snapshot-load flood back at the console.
     pub console_load_suppression: crate::console::snapshot_engine::ConsoleLoadSuppression,
+    /// Shared live-override registry for timed cue recalls. The inbound path
+    /// consults it so that an operator move (hands on the console) during a
+    /// pre-wait or fade cancels the automation for exactly that
+    /// `(channel, parameter)`. `None` when no recall engine is attached.
+    pub automation_override: Option<crate::console::automation_registry::AutomationOverride>,
 }
 
 /// Connection manager handles the lifecycle of the console connection.
@@ -484,6 +489,24 @@ async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender
             let in_console_load = crate::console::snapshot_engine::console_load_active(
                 &daemon.console_load_suppression,
             );
+
+            // Operator live-override: if this inbound change is the operator
+            // (hands on the desk) grabbing a parameter that a timed recall is
+            // currently pre-waiting or fading, the registry drops that one so the
+            // running fade/pre-wait stops sending it and the hands-on value wins.
+            // Gated on `!in_console_load`: the desk's own snapshot-load flood
+            // overlaps the first seconds of a memory-backed recall and would
+            // otherwise look like a storm of operator moves, spuriously
+            // cancelling the very recall it belongs to.
+            if !in_console_load
+                && let Some(reg) = &daemon.automation_override
+                && matches!(
+                    reg.maybe_override(addr, value),
+                    crate::console::automation_registry::Override::Operator
+                )
+            {
+                debug!(%addr, "Operator override — automation cancelled for this parameter");
+            }
 
             // Gang propagation — before macro recording so the engineer's
             // original change is what gets recorded, not ganged echoes.
