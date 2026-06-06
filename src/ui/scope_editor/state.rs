@@ -117,6 +117,17 @@ pub struct ScopeEditorState {
     pub channel_paths: HashMap<ChannelId, HashSet<ParameterPath>>,
     /// Per-channel per-category timing. Edited in PreWait/Fade modes.
     pub channel_timings: HashMap<(ChannelId, TimingCategory), CategoryTiming>,
+    /// Timing-cell selection (PreWait/Fade modes). Scoped to the CURRENT
+    /// `edit_mode` — cleared on mode change and window open/close, so a
+    /// selection never leaks between pre-wait and fade. Mode is intentionally
+    /// NOT part of the key; `apply_timing_value_to_selection` picks the field.
+    pub timing_selection: HashSet<(ChannelId, TimingCategory)>,
+    /// Anchor for shift-click rectangle selection: the last plainly-clicked
+    /// cell. `None` until the first click of the current selection session.
+    pub timing_anchor: Option<(ChannelId, TimingCategory)>,
+    /// Draft text for the numeric entry box (seconds). Synced to the
+    /// first-selected cell's value when the box is not being edited.
+    pub timing_value_draft: String,
     /// Which aspect of the scope is being edited.
     pub edit_mode: ScopeEditMode,
     /// Which channel-type groups are expanded in the window.
@@ -159,6 +170,9 @@ impl Default for ScopeEditorState {
         Self {
             channel_paths: HashMap::new(),
             channel_timings: HashMap::new(),
+            timing_selection: HashSet::new(),
+            timing_anchor: None,
+            timing_value_draft: String::new(),
             edit_mode: ScopeEditMode::Scope,
             expanded_groups: HashSet::new(),
             expanded_sections: HashSet::new(),
@@ -217,6 +231,7 @@ impl ScopeEditorState {
         // Fresh template-picker state per editing session.
         self.selected_template_id = None;
         self.template_name_buf.clear();
+        self.clear_timing_selection();
     }
 
     /// Cancel: restore the backup and close the window.
@@ -227,6 +242,7 @@ impl ScopeEditorState {
         if let Some(backup) = self.timing_backup.take() {
             self.channel_timings = backup;
         }
+        self.clear_timing_selection();
         self.window_open = false;
     }
 
@@ -235,6 +251,7 @@ impl ScopeEditorState {
     pub fn commit(&mut self) {
         self.backup = None;
         self.timing_backup = None;
+        self.clear_timing_selection();
         self.window_open = false;
     }
 
@@ -362,6 +379,136 @@ impl ScopeEditorState {
 
     pub fn is_cell_selected(&self, ch: &ChannelId, path: &ParameterPath) -> bool {
         self.channel_paths.get(ch).is_some_and(|s| s.contains(path))
+    }
+
+    // ─── Timing-cell selection (PreWait / Fade modes) ────────────────
+
+    /// Clear the timing selection, anchor, and draft text. Called on mode
+    /// change and window open/close so a selection never leaks across modes
+    /// or editing sessions.
+    pub fn clear_timing_selection(&mut self) {
+        self.timing_selection.clear();
+        self.timing_anchor = None;
+        self.timing_value_draft.clear();
+    }
+
+    /// Set the edit mode. Switching to a different mode clears the timing
+    /// selection (each mode is "one set of timings"); a no-op same-mode call
+    /// leaves the selection alone.
+    pub fn set_edit_mode(&mut self, mode: ScopeEditMode) {
+        if self.edit_mode != mode {
+            self.edit_mode = mode;
+            self.clear_timing_selection();
+        }
+    }
+
+    /// Toggle a single timing cell in/out of the selection (plain click).
+    /// Re-clicking a selected cell removes it. The clicked cell becomes the
+    /// anchor for a subsequent shift-click rectangle.
+    pub fn toggle_timing_cell(&mut self, ch: &ChannelId, cat: TimingCategory) {
+        let key = (ch.clone(), cat);
+        if !self.timing_selection.insert(key.clone()) {
+            self.timing_selection.remove(&key);
+        }
+        self.timing_anchor = Some((ch.clone(), cat));
+    }
+
+    pub fn is_timing_selected(&self, ch: &ChannelId, cat: TimingCategory) -> bool {
+        self.timing_selection.contains(&(ch.clone(), cat))
+    }
+
+    /// Shift-click rectangle selection. Selects every timing cell in the block
+    /// spanning the rows (categories) and channels between the anchor and the
+    /// clicked cell, within one channel group. Additive — adds to the existing
+    /// selection without clearing — and leaves the anchor unchanged so repeated
+    /// shift-clicks grow from the same start.
+    ///
+    /// `ordered_channels` / `ordered_cats` give the group's display order (the
+    /// only source of ordering, since `ChannelId` is not `Ord`). Falls back to
+    /// a plain toggle when there is no anchor or either endpoint is outside the
+    /// supplied lists (e.g. the anchor lives in another group).
+    pub fn select_timing_rect(
+        &mut self,
+        ch: &ChannelId,
+        cat: TimingCategory,
+        ordered_channels: &[ChannelId],
+        ordered_cats: &[TimingCategory],
+    ) {
+        let Some((anchor_ch, anchor_cat)) = self.timing_anchor.clone() else {
+            self.toggle_timing_cell(ch, cat);
+            return;
+        };
+        let ch_a = ordered_channels.iter().position(|c| *c == anchor_ch);
+        let ch_b = ordered_channels.iter().position(|c| c == ch);
+        let cat_a = ordered_cats.iter().position(|c| *c == anchor_cat);
+        let cat_b = ordered_cats.iter().position(|c| *c == cat);
+        let (Some(ch_a), Some(ch_b), Some(cat_a), Some(cat_b)) = (ch_a, ch_b, cat_a, cat_b) else {
+            // Anchor (or target) not in this group's lists — treat as a plain
+            // toggle so the click is never silently ignored.
+            self.toggle_timing_cell(ch, cat);
+            return;
+        };
+        let (ch_lo, ch_hi) = (ch_a.min(ch_b), ch_a.max(ch_b));
+        let (cat_lo, cat_hi) = (cat_a.min(cat_b), cat_a.max(cat_b));
+        for c in &ordered_channels[ch_lo..=ch_hi] {
+            for k in &ordered_cats[cat_lo..=cat_hi] {
+                self.timing_selection.insert((c.clone(), *k));
+            }
+        }
+        // Anchor intentionally left unchanged.
+    }
+
+    /// Number of selected timing cells.
+    pub fn timing_selection_count(&self) -> usize {
+        self.timing_selection.len()
+    }
+
+    /// Value of the first selected cell in render order (top-left-most), for
+    /// the given mode — what the numeric box displays. `ordered_keys` is the
+    /// caller's render-order key list (the `HashSet` itself has no order).
+    /// `None` when the selection is empty.
+    pub fn first_timing_value(
+        &self,
+        mode: ScopeEditMode,
+        ordered_keys: &[(ChannelId, TimingCategory)],
+    ) -> Option<f32> {
+        let (ch, cat) = ordered_keys
+            .iter()
+            .find(|k| self.timing_selection.contains(k))?;
+        let t = self
+            .channel_timings
+            .get(&(ch.clone(), *cat))
+            .cloned()
+            .unwrap_or_default();
+        Some(match mode {
+            ScopeEditMode::PreWait => t.pre_wait_secs,
+            ScopeEditMode::Fade => t.fade_time_secs,
+            ScopeEditMode::Scope => return None,
+        })
+    }
+
+    /// Apply an already-parsed/clamped seconds value to every selected cell's
+    /// per-mode field. `Scope` mode is a no-op.
+    pub fn apply_timing_value_to_selection(&mut self, mode: ScopeEditMode, secs: f32) {
+        if mode == ScopeEditMode::Scope {
+            return;
+        }
+        let sel = &self.timing_selection;
+        let timings = &mut self.channel_timings;
+        for (ch, cat) in sel {
+            let t = timings.entry((ch.clone(), *cat)).or_default();
+            match mode {
+                ScopeEditMode::PreWait => t.pre_wait_secs = secs,
+                ScopeEditMode::Fade => t.fade_time_secs = secs,
+                ScopeEditMode::Scope => {}
+            }
+        }
+    }
+
+    /// Parse a seconds value from the numeric box: `.`-decimal, clamped to the
+    /// cell range `0.0..=30.0`. `None` on unparseable input.
+    pub fn parse_timing_secs(s: &str) -> Option<f32> {
+        s.trim().parse::<f32>().ok().map(|v| v.clamp(0.0, 30.0))
     }
 
     // ─── Row toggles (one path across many channels) ────────────────
@@ -1022,5 +1169,237 @@ mod tests {
         let s = ScopeEditorState::default();
         assert!(!s.auto_preselect_modified);
         assert_eq!(s.last_dirty_generation, 0);
+    }
+
+    // ─── Timing-cell selection ───────────────────────────────────────
+
+    #[test]
+    fn toggle_timing_cell_adds_then_removes_and_sets_anchor() {
+        let mut s = ScopeEditorState::default();
+        let ch = ChannelId::Input(1);
+        s.toggle_timing_cell(&ch, TimingCategory::Fader);
+        assert!(s.is_timing_selected(&ch, TimingCategory::Fader));
+        assert_eq!(s.timing_anchor, Some((ch.clone(), TimingCategory::Fader)));
+        s.toggle_timing_cell(&ch, TimingCategory::Fader);
+        assert!(!s.is_timing_selected(&ch, TimingCategory::Fader));
+        // Anchor still points at the last clicked cell.
+        assert_eq!(s.timing_anchor, Some((ch, TimingCategory::Fader)));
+    }
+
+    #[test]
+    fn toggle_timing_cell_is_additive_across_cells() {
+        let mut s = ScopeEditorState::default();
+        s.toggle_timing_cell(&ChannelId::Input(1), TimingCategory::Fader);
+        s.toggle_timing_cell(&ChannelId::Input(2), TimingCategory::Eq);
+        assert_eq!(s.timing_selection_count(), 2);
+    }
+
+    #[test]
+    fn select_timing_rect_selects_inclusive_block() {
+        let mut s = ScopeEditorState::default();
+        let channels: Vec<ChannelId> = (1..=8).map(ChannelId::Input).collect();
+        let cats = [
+            TimingCategory::Fader,
+            TimingCategory::Eq,
+            TimingCategory::Dyn1,
+        ];
+        // Anchor at (ch2, Fader), rectangle to (ch5, Eq) → 4 channels × 2 cats.
+        s.toggle_timing_cell(&ChannelId::Input(2), TimingCategory::Fader);
+        s.select_timing_rect(&ChannelId::Input(5), TimingCategory::Eq, &channels, &cats);
+        assert_eq!(s.timing_selection_count(), 8);
+        for n in 2..=5 {
+            assert!(s.is_timing_selected(&ChannelId::Input(n), TimingCategory::Fader));
+            assert!(s.is_timing_selected(&ChannelId::Input(n), TimingCategory::Eq));
+            assert!(!s.is_timing_selected(&ChannelId::Input(n), TimingCategory::Dyn1));
+        }
+        assert!(!s.is_timing_selected(&ChannelId::Input(1), TimingCategory::Fader));
+        assert!(!s.is_timing_selected(&ChannelId::Input(6), TimingCategory::Fader));
+    }
+
+    #[test]
+    fn select_timing_rect_handles_reversed_endpoints() {
+        let mut s = ScopeEditorState::default();
+        let channels: Vec<ChannelId> = (1..=8).map(ChannelId::Input).collect();
+        let cats = [TimingCategory::Fader, TimingCategory::Eq];
+        s.toggle_timing_cell(&ChannelId::Input(5), TimingCategory::Eq);
+        // Click "before" the anchor on both axes.
+        s.select_timing_rect(
+            &ChannelId::Input(2),
+            TimingCategory::Fader,
+            &channels,
+            &cats,
+        );
+        assert_eq!(s.timing_selection_count(), 8); // ch2..=5 × Fader,Eq
+        assert!(s.is_timing_selected(&ChannelId::Input(2), TimingCategory::Fader));
+        assert!(s.is_timing_selected(&ChannelId::Input(5), TimingCategory::Eq));
+    }
+
+    #[test]
+    fn select_timing_rect_keeps_anchor_for_repeated_shift_clicks() {
+        let mut s = ScopeEditorState::default();
+        let channels: Vec<ChannelId> = (1..=8).map(ChannelId::Input).collect();
+        let cats = [TimingCategory::Fader];
+        s.toggle_timing_cell(&ChannelId::Input(2), TimingCategory::Fader);
+        s.select_timing_rect(
+            &ChannelId::Input(4),
+            TimingCategory::Fader,
+            &channels,
+            &cats,
+        );
+        // A second shift-click should grow from the ORIGINAL anchor (ch2).
+        s.select_timing_rect(
+            &ChannelId::Input(6),
+            TimingCategory::Fader,
+            &channels,
+            &cats,
+        );
+        for n in 2..=6 {
+            assert!(s.is_timing_selected(&ChannelId::Input(n), TimingCategory::Fader));
+        }
+        assert_eq!(
+            s.timing_anchor,
+            Some((ChannelId::Input(2), TimingCategory::Fader))
+        );
+    }
+
+    #[test]
+    fn select_timing_rect_falls_back_without_anchor() {
+        let mut s = ScopeEditorState::default();
+        let channels: Vec<ChannelId> = (1..=8).map(ChannelId::Input).collect();
+        let cats = [TimingCategory::Fader];
+        s.select_timing_rect(
+            &ChannelId::Input(3),
+            TimingCategory::Fader,
+            &channels,
+            &cats,
+        );
+        // No anchor → behaves as a single-cell toggle.
+        assert_eq!(s.timing_selection_count(), 1);
+        assert!(s.is_timing_selected(&ChannelId::Input(3), TimingCategory::Fader));
+    }
+
+    #[test]
+    fn select_timing_rect_cross_group_falls_back_to_single_cell() {
+        let mut s = ScopeEditorState::default();
+        // Anchor in the Aux group.
+        s.toggle_timing_cell(&ChannelId::Aux(1), TimingCategory::Fader);
+        // Shift-click in the Inputs group: anchor channel isn't in this list.
+        let channels: Vec<ChannelId> = (1..=8).map(ChannelId::Input).collect();
+        let cats = [TimingCategory::Fader];
+        s.select_timing_rect(
+            &ChannelId::Input(4),
+            TimingCategory::Fader,
+            &channels,
+            &cats,
+        );
+        // Only the new single cell got added (plus the original anchor).
+        assert!(s.is_timing_selected(&ChannelId::Input(4), TimingCategory::Fader));
+        assert!(s.is_timing_selected(&ChannelId::Aux(1), TimingCategory::Fader));
+        assert_eq!(s.timing_selection_count(), 2);
+    }
+
+    #[test]
+    fn first_timing_value_returns_render_order_first() {
+        let mut s = ScopeEditorState::default();
+        // Seed distinct pre-wait values.
+        s.channel_timings.insert(
+            (ChannelId::Input(1), TimingCategory::Fader),
+            CategoryTiming {
+                pre_wait_secs: 1.0,
+                fade_time_secs: 0.0,
+            },
+        );
+        s.channel_timings.insert(
+            (ChannelId::Input(3), TimingCategory::Fader),
+            CategoryTiming {
+                pre_wait_secs: 3.0,
+                fade_time_secs: 0.0,
+            },
+        );
+        // Select ch3 first, ch1 second — insertion order must not matter.
+        s.toggle_timing_cell(&ChannelId::Input(3), TimingCategory::Fader);
+        s.toggle_timing_cell(&ChannelId::Input(1), TimingCategory::Fader);
+        let order = vec![
+            (ChannelId::Input(1), TimingCategory::Fader),
+            (ChannelId::Input(2), TimingCategory::Fader),
+            (ChannelId::Input(3), TimingCategory::Fader),
+        ];
+        assert_eq!(
+            s.first_timing_value(ScopeEditMode::PreWait, &order),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn first_timing_value_empty_selection_is_none() {
+        let s = ScopeEditorState::default();
+        let order = vec![(ChannelId::Input(1), TimingCategory::Fader)];
+        assert_eq!(s.first_timing_value(ScopeEditMode::PreWait, &order), None);
+    }
+
+    #[test]
+    fn apply_timing_value_writes_correct_field_per_mode() {
+        let mut s = ScopeEditorState::default();
+        s.toggle_timing_cell(&ChannelId::Input(1), TimingCategory::Fader);
+        s.toggle_timing_cell(&ChannelId::Input(2), TimingCategory::Fader);
+
+        s.apply_timing_value_to_selection(ScopeEditMode::PreWait, 1.5);
+        for n in 1..=2 {
+            let t = &s.channel_timings[&(ChannelId::Input(n), TimingCategory::Fader)];
+            assert_eq!(t.pre_wait_secs, 1.5);
+            assert_eq!(t.fade_time_secs, 0.0); // untouched
+        }
+
+        s.apply_timing_value_to_selection(ScopeEditMode::Fade, 2.0);
+        for n in 1..=2 {
+            let t = &s.channel_timings[&(ChannelId::Input(n), TimingCategory::Fader)];
+            assert_eq!(t.pre_wait_secs, 1.5); // untouched
+            assert_eq!(t.fade_time_secs, 2.0);
+        }
+    }
+
+    #[test]
+    fn parse_timing_secs_parses_and_clamps() {
+        assert_eq!(ScopeEditorState::parse_timing_secs("1.5"), Some(1.5));
+        assert_eq!(ScopeEditorState::parse_timing_secs("  .5 "), Some(0.5));
+        assert_eq!(ScopeEditorState::parse_timing_secs("99"), Some(30.0));
+        assert_eq!(ScopeEditorState::parse_timing_secs("-4"), Some(0.0));
+        assert_eq!(ScopeEditorState::parse_timing_secs("abc"), None);
+        assert_eq!(ScopeEditorState::parse_timing_secs(""), None);
+    }
+
+    #[test]
+    fn clear_timing_selection_resets_all_three() {
+        let mut s = ScopeEditorState::default();
+        s.toggle_timing_cell(&ChannelId::Input(1), TimingCategory::Fader);
+        s.timing_value_draft = "1.5".into();
+        s.clear_timing_selection();
+        assert_eq!(s.timing_selection_count(), 0);
+        assert!(s.timing_anchor.is_none());
+        assert!(s.timing_value_draft.is_empty());
+    }
+
+    #[test]
+    fn set_edit_mode_clears_selection_only_on_change() {
+        let mut s = ScopeEditorState::default();
+        s.set_edit_mode(ScopeEditMode::PreWait);
+        s.toggle_timing_cell(&ChannelId::Input(1), TimingCategory::Fader);
+        // Same-mode call leaves selection alone.
+        s.set_edit_mode(ScopeEditMode::PreWait);
+        assert_eq!(s.timing_selection_count(), 1);
+        // Switching to Fade clears it.
+        s.set_edit_mode(ScopeEditMode::Fade);
+        assert_eq!(s.timing_selection_count(), 0);
+    }
+
+    #[test]
+    fn cancel_clears_timing_selection() {
+        let mut s = ScopeEditorState::default();
+        let template = ScopeTemplate::new("empty".into(), vec![]);
+        s.open(&template, 8, 8, 10);
+        s.set_edit_mode(ScopeEditMode::PreWait);
+        s.toggle_timing_cell(&ChannelId::Input(1), TimingCategory::Fader);
+        s.cancel();
+        assert_eq!(s.timing_selection_count(), 0);
     }
 }

@@ -198,6 +198,37 @@ fn build_matrix_rows(
     rows
 }
 
+/// Build the global render-order list of timing-cell keys `(channel, category)`
+/// for the given mode, across every group. Mirrors `build_matrix_rows`' timing
+/// logic (sections in signal-flow order; Mute skipped in Fade mode) so the
+/// scope editor's numeric box can resolve a deterministic "first selected"
+/// cell. Returns an empty list in Scope mode. Keys may repeat when a category
+/// appears under two sections (InputGain + Delay → Preprocessing); the first
+/// occurrence wins for "first selected", so this is harmless.
+pub(super) fn timing_keys_in_order(
+    groups: &[GroupRenderData],
+    mode: ScopeEditMode,
+) -> Vec<(ChannelId, TimingCategory)> {
+    let mut out = Vec::new();
+    if mode == ScopeEditMode::Scope {
+        return out;
+    }
+    for data in groups {
+        let paths_by_section = group_paths_by_section(&data.paths);
+        for (section, _) in &paths_by_section {
+            for cat in TimingCategory::for_section(section) {
+                if mode == ScopeEditMode::Fade && !cat.supports_fade() {
+                    continue;
+                }
+                for ch in &data.channels {
+                    out.push((ch.clone(), *cat));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Draw the matrix for one expanded channel-type group as a frozen-pane table.
 fn draw_group_matrix(ui: &mut egui::Ui, state: &mut ScopeEditorState, data: &GroupRenderData) {
     if data.paths.is_empty() {
@@ -421,6 +452,21 @@ fn draw_body_grid(
     data: &GroupRenderData,
     rows: &[MatrixRow],
 ) {
+    // Distinct timing categories in display order — the row axis for
+    // shift-click rectangle selection. Deduped so the InputGain + Delay →
+    // Preprocessing double-row collapses to one logical row.
+    let ordered_cats: Vec<TimingCategory> = {
+        let mut v: Vec<TimingCategory> = Vec::new();
+        for row in rows {
+            if let MatrixRow::Timing { cat } = row {
+                if !v.contains(cat) {
+                    v.push(*cat);
+                }
+            }
+        }
+        v
+    };
+
     for row in rows {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
@@ -511,18 +557,22 @@ fn draw_body_grid(
                 MatrixRow::Timing { cat } => {
                     for ch in &data.channels {
                         let key = (ch.clone(), *cat);
-                        let timing = state.channel_timings.entry(key.clone()).or_default();
+                        // Read value + selection BEFORE allocating the cell, so
+                        // we don't hold a `&mut channel_timings` borrow across
+                        // the selection reads / click handling below.
+                        let cur = state.channel_timings.get(&key).cloned().unwrap_or_default();
                         let val = match state.edit_mode {
-                            ScopeEditMode::PreWait => &mut timing.pre_wait_secs,
-                            ScopeEditMode::Fade => &mut timing.fade_time_secs,
+                            ScopeEditMode::PreWait => cur.pre_wait_secs,
+                            ScopeEditMode::Fade => cur.fade_time_secs,
                             ScopeEditMode::Scope => unreachable!(),
                         };
+                        let selected = state.is_timing_selected(ch, *cat);
 
                         let (rect, resp) =
                             ui.allocate_exact_size(CELL_SIZE, egui::Sense::click_and_drag());
 
                         // Background.
-                        let bg = if *val != 0.0 {
+                        let bg = if val != 0.0 {
                             theme::SCOPE_ACTIVE
                         } else {
                             theme::SCOPE_INACTIVE
@@ -533,6 +583,18 @@ fn draw_body_grid(
                             bg
                         };
                         ui.painter().rect_filled(rect, 3.0, bg);
+
+                        // Selection highlight: accent-blue inner stroke painted
+                        // over the fill, so the green/inactive/hover colours are
+                        // untouched.
+                        if selected {
+                            ui.painter().rect_stroke(
+                                rect,
+                                3.0,
+                                egui::Stroke::new(2.0, theme::ACCENT_BLUE),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
 
                         // Display value.
                         let text = format!("{:.1}", val);
@@ -547,10 +609,24 @@ fn draw_body_grid(
                         );
                         ui.painter().galley(text_pos, galley, theme::TEXT_PRIMARY);
 
-                        // Drag interaction.
+                        // Interaction: drag still fine-tunes one cell; a plain
+                        // click toggles its selection, shift-click extends a
+                        // rectangle. Drag and click are mutually exclusive.
                         if resp.dragged() {
                             let delta = resp.drag_delta().x * 0.05;
-                            *val = (*val + delta).clamp(0.0, 30.0);
+                            let nv = (val + delta).clamp(0.0, 30.0);
+                            let t = state.channel_timings.entry(key).or_default();
+                            match state.edit_mode {
+                                ScopeEditMode::PreWait => t.pre_wait_secs = nv,
+                                ScopeEditMode::Fade => t.fade_time_secs = nv,
+                                ScopeEditMode::Scope => {}
+                            }
+                        } else if resp.clicked() {
+                            if ui.input(|i| i.modifiers.shift) {
+                                state.select_timing_rect(ch, *cat, &data.channels, &ordered_cats);
+                            } else {
+                                state.toggle_timing_cell(ch, *cat);
+                            }
                         }
 
                         ui.add_space(CELL_SPACING);

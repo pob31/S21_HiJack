@@ -43,14 +43,14 @@ use uuid::Uuid;
 use crate::console::cue_manager::CueManager;
 use crate::model::channel::ChannelId;
 use crate::model::dirty_tracker::DirtyTracker;
-use crate::model::parameter::ParameterPath;
+use crate::model::parameter::{ParameterPath, TimingCategory};
 use crate::model::state::ConsoleState;
 use crate::ui::help::{HelpKey, help};
 use crate::ui::recall_scope_popup::{RecallPopupKind, draw_recall_popup};
 use crate::ui::theme;
 use channel_grid::{
     CHANNEL_HEADER_HEIGHT, GroupRenderData, MATRIX_INNER_MARGIN, draw_channel_group_block,
-    draw_channel_header_row,
+    draw_channel_header_row, timing_keys_in_order,
 };
 
 // ── Window-rendering entrypoint ─────────────────────────────────────
@@ -208,6 +208,12 @@ pub fn draw_scope_window(
         })
         .collect();
 
+    // Global render-order key list for the timing selection — lets the numeric
+    // entry box resolve a deterministic "first selected" cell. Empty in Scope
+    // mode (the selection only exists in timing modes).
+    let timing_order: Vec<(ChannelId, TimingCategory)> =
+        timing_keys_in_order(&groups_data, state.edit_mode);
+
     let mut outcome = ScopeWindowOutcome::default();
     let mut still_open = state.window_open;
     let dirty_has_any = dirty.map(|d| d.has_any()).unwrap_or(false);
@@ -241,7 +247,7 @@ pub fn draw_scope_window(
                     .on_hover_text(help(HelpKey::ScopeModeScope))
                     .clicked()
                 {
-                    state.edit_mode = ScopeEditMode::Scope;
+                    state.set_edit_mode(ScopeEditMode::Scope);
                 }
                 if ui
                     .add(
@@ -252,7 +258,7 @@ pub fn draw_scope_window(
                     .on_hover_text(help(HelpKey::ScopeModePreWait))
                     .clicked()
                 {
-                    state.edit_mode = ScopeEditMode::PreWait;
+                    state.set_edit_mode(ScopeEditMode::PreWait);
                 }
                 if ui
                     .add(
@@ -263,103 +269,204 @@ pub fn draw_scope_window(
                     .on_hover_text(help(HelpKey::ScopeModeFade))
                     .clicked()
                 {
-                    state.edit_mode = ScopeEditMode::Fade;
+                    state.set_edit_mode(ScopeEditMode::Fade);
                 }
                 ui.separator();
                 ui.add_space(8.0);
 
-                let clear_btn = theme::action_button(
-                    "Clear All",
-                    theme::btn_neutral(),
-                    egui::Vec2::new(80.0, 28.0),
-                );
-                if ui
-                    .add(clear_btn)
-                    .on_hover_text(help(HelpKey::ScopeClearAll))
-                    .clicked()
-                {
-                    state.clear();
-                }
-                ui.add_space(8.0);
-                let sel_count = state.selection_count();
-                // Fixed width so the badge doesn't grow with the count and
-                // shove the controls after it along the row. Singular
-                // "Selection" for 0 and 1, plural otherwise.
-                theme::colored_badge_sized(
-                    ui,
-                    &format!(
-                        "{sel_count} Selection{}",
-                        if sel_count > 1 { "s" } else { "" }
-                    ),
-                    theme::ACCENT_BLUE,
-                    120.0,
-                );
-                ui.add_space(16.0);
-
-                // ── Phase C: dirty tracker controls ──
-                ui.separator();
-                ui.add_space(8.0);
-                let dirty_available = dirty.is_some();
-
-                // "Auto-preselect modified" toggle.
-                let auto_resp = ui.add_enabled(
-                    dirty_available,
-                    egui::Checkbox::new(
-                        &mut state.auto_preselect_modified,
-                        "Auto-preselect modified",
-                    ),
-                );
-                if auto_resp.changed()
-                    && state.auto_preselect_modified
-                    && let Some(d) = dirty
-                {
-                    state.apply_dirty_set(d.dirty_set());
-                    state.last_dirty_generation = d.generation();
-                }
-
-                // "Select modified" one-shot button (hidden when auto is on,
-                // following WFS-DIY behaviour — the auto toggle subsumes it).
-                if !state.auto_preselect_modified {
-                    let select_btn = theme::action_button(
-                        "Select modified",
-                        theme::ACCENT_BLUE,
-                        egui::Vec2::new(130.0, 28.0),
+                if state.edit_mode == ScopeEditMode::Scope {
+                    let clear_btn = theme::action_button(
+                        "Clear All",
+                        theme::btn_neutral(),
+                        egui::Vec2::new(80.0, 28.0),
                     );
                     if ui
-                        .add_enabled(dirty_available && dirty_has_any, select_btn)
+                        .add(clear_btn)
+                        .on_hover_text(help(HelpKey::ScopeClearAll))
                         .clicked()
+                    {
+                        state.clear();
+                    }
+                    ui.add_space(8.0);
+                    let sel_count = state.selection_count();
+                    // Fixed width so the badge doesn't grow with the count and
+                    // shove the controls after it along the row. Singular
+                    // "Selection" for 0 and 1, plural otherwise.
+                    theme::colored_badge_sized(
+                        ui,
+                        &format!(
+                            "{sel_count} Selection{}",
+                            if sel_count > 1 { "s" } else { "" }
+                        ),
+                        theme::ACCENT_BLUE,
+                        120.0,
+                    );
+                    ui.add_space(16.0);
+
+                    // ── Phase C: dirty tracker controls ──
+                    ui.separator();
+                    ui.add_space(8.0);
+                    let dirty_available = dirty.is_some();
+
+                    // "Auto-preselect modified" toggle.
+                    let auto_resp = ui.add_enabled(
+                        dirty_available,
+                        egui::Checkbox::new(
+                            &mut state.auto_preselect_modified,
+                            "Auto-preselect modified",
+                        ),
+                    );
+                    if auto_resp.changed()
+                        && state.auto_preselect_modified
                         && let Some(d) = dirty
                     {
                         state.apply_dirty_set(d.dirty_set());
                         state.last_dirty_generation = d.generation();
                     }
-                }
 
-                // "Clear changes" — wipe the dirty set without sending
-                // anything. The actual clear happens in the caller after
-                // this frame returns (we only have a borrow of the tracker).
-                let clear_changes_btn = theme::action_button(
-                    "Clear changes",
-                    theme::btn_neutral(),
-                    egui::Vec2::new(120.0, 28.0),
-                );
-                if ui
-                    .add_enabled(dirty_available && dirty_has_any, clear_changes_btn)
-                    .on_hover_text(help(HelpKey::ScopeClearChanges))
-                    .on_disabled_hover_text(help(HelpKey::ScopeClearChangesDisabled))
-                    .clicked()
-                {
-                    outcome.clear_dirty_requested = true;
-                    state.last_dirty_generation = 0;
-                }
+                    // "Select modified" one-shot button (hidden when auto is on,
+                    // following WFS-DIY behaviour — the auto toggle subsumes it).
+                    if !state.auto_preselect_modified {
+                        let select_btn = theme::action_button(
+                            "Select modified",
+                            theme::ACCENT_BLUE,
+                            egui::Vec2::new(130.0, 28.0),
+                        );
+                        if ui
+                            .add_enabled(dirty_available && dirty_has_any, select_btn)
+                            .clicked()
+                            && let Some(d) = dirty
+                        {
+                            state.apply_dirty_set(d.dirty_set());
+                            state.last_dirty_generation = d.generation();
+                        }
+                    }
 
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("Click any header to bulk toggle.")
-                        .color(theme::label_weak())
-                        .size(theme::FONT_SIZE_BADGE),
-                );
+                    // "Clear changes" — wipe the dirty set without sending
+                    // anything. The actual clear happens in the caller after
+                    // this frame returns (we only have a borrow of the tracker).
+                    let clear_changes_btn = theme::action_button(
+                        "Clear changes",
+                        theme::btn_neutral(),
+                        egui::Vec2::new(120.0, 28.0),
+                    );
+                    if ui
+                        .add_enabled(dirty_available && dirty_has_any, clear_changes_btn)
+                        .on_hover_text(help(HelpKey::ScopeClearChanges))
+                        .on_disabled_hover_text(help(HelpKey::ScopeClearChangesDisabled))
+                        .clicked()
+                    {
+                        outcome.clear_dirty_requested = true;
+                        state.last_dirty_generation = 0;
+                    }
+
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new("Click any header to bulk toggle.")
+                            .color(theme::label_weak())
+                            .size(theme::FONT_SIZE_BADGE),
+                    );
+                } else {
+                    // ── Timing entry panel (Pre-wait / Fade modes) ──
+                    // Replaces the scope-only "modified" controls so the strip
+                    // stays one row tall and the table keeps its full height.
+                    let sel = state.timing_selection_count();
+                    theme::colored_badge_sized(
+                        ui,
+                        &format!("{sel} cell{}", if sel == 1 { "" } else { "s" }),
+                        theme::ACCENT_BLUE,
+                        80.0,
+                    );
+                    ui.add_space(8.0);
+
+                    if sel == 0 {
+                        ui.label(
+                            egui::RichText::new(
+                                "Click a timing cell to select; Shift-click for a rectangle.",
+                            )
+                            .color(theme::label_weak())
+                            .size(theme::FONT_SIZE_BADGE),
+                        );
+                    } else {
+                        let unit = match state.edit_mode {
+                            ScopeEditMode::PreWait => "pre-wait (s):",
+                            ScopeEditMode::Fade => "fade (s):",
+                            ScopeEditMode::Scope => "",
+                        };
+                        theme::row_label(ui, unit, theme::label_color());
+
+                        let resp = theme::padded_text_edit_sized(
+                            ui,
+                            &mut state.timing_value_draft,
+                            70.0,
+                            theme::ROW_H,
+                            true,
+                            "0.0",
+                        );
+
+                        let enter =
+                            resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let esc_in_box =
+                            resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+                        if esc_in_box {
+                            // Cancel the edit: revert the box, keep the selection.
+                            state.timing_value_draft = fmt_first_timing(state, &timing_order);
+                            resp.surrender_focus();
+                        } else if enter {
+                            apply_timing_draft(state);
+                        } else if !resp.has_focus() && !resp.changed() {
+                            // Keep the box showing the first selected cell's
+                            // value as the selection changes, without clobbering
+                            // what the operator is currently typing.
+                            state.timing_value_draft = fmt_first_timing(state, &timing_order);
+                        }
+
+                        ui.add_space(8.0);
+                        if theme::row_action_button(
+                            ui,
+                            "OK",
+                            theme::ACCENT_GREEN,
+                            56.0,
+                            true,
+                            "Apply the value to every selected cell",
+                        ) {
+                            apply_timing_draft(state);
+                        }
+                        if theme::row_action_button(
+                            ui,
+                            "Cancel",
+                            theme::btn_neutral(),
+                            70.0,
+                            true,
+                            "Revert the entered value",
+                        ) {
+                            state.timing_value_draft = fmt_first_timing(state, &timing_order);
+                        }
+                        if theme::row_action_button(
+                            ui,
+                            "Clear selection",
+                            theme::ACCENT_RED,
+                            120.0,
+                            true,
+                            "Deselect all cells",
+                        ) {
+                            state.clear_timing_selection();
+                        }
+                    }
+                }
             });
+
+            // Esc with a timing selection active but no text field focused
+            // clears the selection (Esc inside the numeric box cancels the edit
+            // instead — handled above via `esc_in_box`).
+            if state.edit_mode != ScopeEditMode::Scope
+                && !state.timing_selection.is_empty()
+                && ui.ctx().memory(|m| m.focused().is_none())
+                && ui.input(|i| i.key_pressed(egui::Key::Escape))
+            {
+                state.clear_timing_selection();
+            }
 
             // ── Templates row ─────────────────────────────────────────
             ui.add_space(4.0);
@@ -656,4 +763,23 @@ pub fn draw_scope_window(
     );
 
     outcome
+}
+
+/// Format the first-selected timing cell's value for the numeric box (one
+/// decimal, matching the cells), or "" when the selection is empty.
+fn fmt_first_timing(state: &ScopeEditorState, order: &[(ChannelId, TimingCategory)]) -> String {
+    state
+        .first_timing_value(state.edit_mode, order)
+        .map(|v| format!("{v:.1}"))
+        .unwrap_or_default()
+}
+
+/// Parse the numeric box and apply it to every selected timing cell, then
+/// canonicalise the box text. A no-op on unparseable input — the operator keeps
+/// their text so a typo can be fixed rather than silently lost.
+fn apply_timing_draft(state: &mut ScopeEditorState) {
+    if let Some(secs) = ScopeEditorState::parse_timing_secs(&state.timing_value_draft) {
+        state.apply_timing_value_to_selection(state.edit_mode, secs);
+        state.timing_value_draft = format!("{secs:.1}");
+    }
 }
