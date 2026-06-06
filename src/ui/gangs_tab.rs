@@ -192,6 +192,7 @@ fn try_save_gang(
         None => base.into(),
     };
 
+    let was_editing = tab.editing_gang_id.is_some();
     if let Some(edit_id) = tab.editing_gang_id.take() {
         runtime.spawn(async move {
             let mut mgr = mgr_clone.write().await;
@@ -213,6 +214,11 @@ fn try_save_gang(
     }
 
     reset_gang_form(tab);
+    // Finishing an edit collapses the builder again; adding a brand-new gang
+    // leaves it expanded so the operator can keep building.
+    if was_editing {
+        tab.form_collapsed = true;
+    }
 }
 
 /// One-line tooltip explaining what a `ParameterSection` actually links
@@ -351,8 +357,13 @@ pub struct GangsTabState {
     /// Collapse the New/Edit Gang builder body (channel grid + parameters) to
     /// just its title row, so the Gang Groups list below is reachable without
     /// scrolling past the full picker. The title row (name + Add/Save) stays
-    /// visible; editing a gang auto-expands it.
+    /// visible; editing a gang auto-expands it, finishing an edit re-collapses.
     pub form_collapsed: bool,
+    /// One-shot guard for the initial collapse state. The first time the Gangs
+    /// tab is drawn (i.e. first switched to) the builder starts expanded if the
+    /// session has no gangs yet, collapsed otherwise. After that the operator's
+    /// own toggling (and the edit flow) owns the state.
+    pub collapse_initialized: bool,
     pub status_message: Option<StatusMessage>,
 }
 
@@ -366,6 +377,7 @@ impl Default for GangsTabState {
             new_gang_pan_mode: GangPanMode::On,
             editing_gang_id: None,
             form_collapsed: false,
+            collapse_initialized: false,
             status_message: None,
         }
     }
@@ -392,6 +404,15 @@ pub fn draw_gangs_tab(
     let mgr = runtime.block_on(gang_manager.read());
     let active_count = mgr.groups.values().filter(|g| g.enabled).count();
     let total_count = mgr.groups.len();
+
+    // First time the tab is shown this session: start expanded if there are no
+    // gangs yet (so the operator can build one straight away), collapsed if the
+    // session already has gangs (so the list below is front-and-centre). After
+    // this one-shot the operator's toggling / the edit flow owns the state.
+    if !tab.collapse_initialized {
+        tab.collapse_initialized = true;
+        tab.form_collapsed = total_count > 0;
+    }
 
     ui.vertical(|ui| {
         // Header
@@ -520,6 +541,8 @@ pub fn draw_gangs_tab(
                     {
                         tab.editing_gang_id = None;
                         reset_gang_form(tab);
+                        // Leaving the edit collapses the builder again.
+                        tab.form_collapsed = true;
                         tab.status_message = None;
                     }
                     let (btn_text, btn_color) = if editing {
