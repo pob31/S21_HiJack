@@ -962,6 +962,19 @@ mod tests {
     }
 
     #[test]
+    fn migrate_sections_to_paths_input_gain_excludes_total_gain() {
+        // The InputGain section still expands to its real controls, but the
+        // read-only TotalGain monitor value must never be re-added.
+        let mut cs = ChannelScope::from_sections(
+            ChannelId::Input(1),
+            HashSet::from([ParameterSection::InputGain]),
+        );
+        cs.migrate_sections_to_paths(8, 8, 8);
+        assert!(!cs.paths.contains(&ParameterPath::TotalGain));
+        assert!(cs.paths.contains(&ParameterPath::AnalogGain));
+    }
+
+    #[test]
     fn migrate_sections_to_paths_is_idempotent() {
         let mut cs = ChannelScope::from_sections(
             ChannelId::Input(1),

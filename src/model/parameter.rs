@@ -13,6 +13,15 @@ pub const FADER_INF_DB: f32 = -150.0;
 /// large dB delta onto an audible sibling. See `gang_engine`.
 pub const FADER_GANG_FLOOR_DB: f32 = -60.0;
 
+/// Floor used when FADING a fader-family level to/from −inf. A naive
+/// linear-in-dB fade from `FADER_INF_DB` (−150) spends almost its whole
+/// duration below ~−80 dB (inaudible), cramming the audible swell into a sliver
+/// so it reads as a jump. Interpolating in "floored" space — endpoints clamped
+/// up to this floor, with sub-floor results reported as −inf — spreads the
+/// audible portion across the whole fade. Distinct from `FADER_GANG_FLOOR_DB`
+/// (−60), which governs gang propagation rather than fades. See `floored_db_lerp`.
+pub const FADER_FADE_FLOOR_DB: f32 = -80.0;
+
 /// A specific parameter on a specific channel.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ParameterAddress {
@@ -145,6 +154,24 @@ impl ParameterPath {
                 | ParameterPath::MatrixSendLevel(_)
                 | ParameterPath::CgLevel
         )
+    }
+
+    /// dB-taper level parameters that should fade in "floored" space (see
+    /// [`FADER_FADE_FLOOR_DB`] / [`floored_db_lerp`]): the main fader and the
+    /// fader-driven send/matrix/CG levels. Returns the floor for those; `None`
+    /// for everything else (EQ gain/freq/Q, dynamics, pan, …), which keep naive
+    /// linear interpolation. Same variant set as [`is_fader_level`] but kept a
+    /// separate method so fade behavior isn't coupled to the dirty-screen
+    /// deadband should either set ever diverge.
+    pub fn fade_floor_db(&self) -> Option<f32> {
+        matches!(
+            self,
+            ParameterPath::Fader
+                | ParameterPath::SendLevel(_)
+                | ParameterPath::MatrixSendLevel(_)
+                | ParameterPath::CgLevel
+        )
+        .then_some(FADER_FADE_FLOOR_DB)
     }
 
     /// Convert to GP OSC path suffix (after /channel/{ch}/).
@@ -801,7 +828,8 @@ impl ParameterPath {
 
         // Input
         push(ParameterPath::AnalogGain, &mut out);
-        push(ParameterPath::TotalGain, &mut out);
+        // TotalGain (post-fader + CG sum) is a console-derived, read-only
+        // monitor value — never selectable for capture/recall.
         push(ParameterPath::GainTracking, &mut out);
         push(ParameterPath::Trim, &mut out);
         push(ParameterPath::Balance, &mut out);
@@ -1869,6 +1897,26 @@ impl ParameterValue {
     }
 }
 
+/// Floored dB interpolation for fader-family levels (see [`FADER_FADE_FLOOR_DB`]).
+/// Both endpoints are clamped UP to `floor`, interpolated linearly in that
+/// floored space, and a result at/below the floor is reported as [`FADER_INF_DB`]
+/// (fully off). Mirrors the gang engine's floor/snap pattern (`gang_floor` /
+/// `apply_fader_gang_delta`) but for fades.
+///
+/// Exactness: at `t >= 1.0` the RAW `end` is returned unchanged, so a fade
+/// landing on true-off ends at exactly −150 and a fade to a real sub-floor level
+/// (e.g. −85) ends exactly there rather than being snapped to −inf or to the
+/// floor.
+pub(crate) fn floored_db_lerp(start: f32, end: f32, t: f32, floor: f32) -> f32 {
+    if t >= 1.0 {
+        return end; // land exactly on the true target (incl. −150 / sub-floor)
+    }
+    let s = start.max(floor);
+    let e = end.max(floor);
+    let v = s + (e - s) * t;
+    if v <= floor { FADER_INF_DB } else { v }
+}
+
 impl fmt::Display for ParameterValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -2267,6 +2315,90 @@ mod tests {
         assert_eq!(a.lerp(&b, 0.5), None);
     }
 
+    // ─── Fader-family fade floor (−inf handling) ────────────────────────
+
+    #[test]
+    fn fade_floor_db_set_membership() {
+        // Fader-family dB-taper levels are floored.
+        assert_eq!(
+            ParameterPath::Fader.fade_floor_db(),
+            Some(FADER_FADE_FLOOR_DB)
+        );
+        assert_eq!(
+            ParameterPath::SendLevel(1).fade_floor_db(),
+            Some(FADER_FADE_FLOOR_DB)
+        );
+        assert_eq!(
+            ParameterPath::CgLevel.fade_floor_db(),
+            Some(FADER_FADE_FLOOR_DB)
+        );
+        assert_eq!(
+            ParameterPath::MatrixSendLevel(2).fade_floor_db(),
+            Some(FADER_FADE_FLOOR_DB)
+        );
+        // Other continuous params keep naive interpolation.
+        assert_eq!(ParameterPath::Pan.fade_floor_db(), None);
+        assert_eq!(ParameterPath::EqBandGain(1).fade_floor_db(), None);
+        assert_eq!(ParameterPath::Dyn1Threshold(1).fade_floor_db(), None);
+        assert_eq!(ParameterPath::TotalGain.fade_floor_db(), None);
+    }
+
+    #[test]
+    fn floored_lerp_to_off_lands_on_minus150() {
+        // Fade 0 dB → off ends exactly at −150 at t=1.
+        assert_eq!(
+            floored_db_lerp(0.0, FADER_INF_DB, 1.0, FADER_FADE_FLOOR_DB),
+            FADER_INF_DB
+        );
+    }
+
+    #[test]
+    fn floored_lerp_to_off_spreads_audible_and_lands_off() {
+        let floor = FADER_FADE_FLOOR_DB;
+        // The audible drop is spread linearly across the whole fade (0 → −80),
+        // not crammed into a sliver.
+        assert!((floored_db_lerp(0.0, FADER_INF_DB, 0.1, floor) - (-8.0)).abs() < 1e-4);
+        assert!((floored_db_lerp(0.0, FADER_INF_DB, 0.5, floor) - (-40.0)).abs() < 1e-4);
+        // Still audible (just above the floor) right up until the very end.
+        let late = floored_db_lerp(0.0, FADER_INF_DB, 0.99, floor);
+        assert!(
+            late > floor && late < 0.0,
+            "late {late} should be just above floor"
+        );
+        // Lands exactly on true off at t=1.
+        assert_eq!(floored_db_lerp(0.0, FADER_INF_DB, 1.0, floor), FADER_INF_DB);
+    }
+
+    #[test]
+    fn floored_lerp_from_off_spans_floor_to_target() {
+        let floor = FADER_FADE_FLOOR_DB;
+        // Just after the start we're just above the floor, NOT at −150.
+        let early = floored_db_lerp(FADER_INF_DB, 0.0, 0.01, floor);
+        assert!(
+            early > floor && early < 0.0,
+            "early {early} should be just above floor"
+        );
+        // Midway spans the floored band: −80 → 0 at t=0.5 ≈ −40.
+        let mid = floored_db_lerp(FADER_INF_DB, 0.0, 0.5, floor);
+        assert!((mid - (-40.0)).abs() < 1e-4, "mid {mid} expected ≈ -40");
+        // Lands exactly on the target.
+        assert_eq!(floored_db_lerp(FADER_INF_DB, 0.0, 1.0, floor), 0.0);
+    }
+
+    #[test]
+    fn floored_lerp_to_real_low_value_is_exact() {
+        // A real sub-floor target (−85) is preserved exactly at t=1, not snapped.
+        assert_eq!(floored_db_lerp(0.0, -85.0, 1.0, FADER_FADE_FLOOR_DB), -85.0);
+    }
+
+    #[test]
+    fn floored_lerp_both_subfloor_collapses_then_exact() {
+        let floor = FADER_FADE_FLOOR_DB;
+        // Both endpoints below the floor: −inf throughout, exact end at t=1.
+        assert_eq!(floored_db_lerp(-150.0, -120.0, 0.5, floor), FADER_INF_DB);
+        assert_eq!(floored_db_lerp(-150.0, -120.0, 1.0, floor), -120.0);
+    }
+
     // ─── Phase 0: per-path scope granularity ────────────────────────────
 
     /// Sample of `ParameterPath` variants used by tests below. Includes at
@@ -2551,6 +2683,16 @@ mod tests {
             assert!(paths.contains(&ParameterPath::EqBandGain(b)));
             assert!(paths.contains(&ParameterPath::EqBandQ(b)));
         }
+    }
+
+    #[test]
+    fn applicable_to_input_excludes_total_gain() {
+        // TotalGain is a console-derived, read-only monitor value — it must not
+        // be selectable for capture/recall, while its InputGain siblings remain.
+        let paths = ParameterPath::applicable_to(&ChannelId::Input(1), 8, 8, 8);
+        assert!(!paths.contains(&ParameterPath::TotalGain));
+        assert!(paths.contains(&ParameterPath::AnalogGain));
+        assert!(paths.contains(&ParameterPath::GainTracking));
     }
 
     #[test]

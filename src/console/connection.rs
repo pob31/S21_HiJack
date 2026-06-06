@@ -460,6 +460,17 @@ fn estimate_expected_param_count(config: &crate::model::config::ConsoleConfig) -
 async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender: &OscSender) {
     match parsed {
         ParsedOscMessage::ParameterUpdate(addr, value) => {
+            // TotalGain (GP OSC `total/gain`) is a console-derived, read-only
+            // monitor value (post-fader + CG sum). It can't be written back or
+            // meaningfully recalled, so drop it on receipt before it pollutes
+            // the state mirror, dirty tracker, override registry, gangs,
+            // pan-link, or macro recording. Mirrors macro_manager::record_change.
+            if matches!(
+                addr.parameter,
+                crate::model::parameter::ParameterPath::TotalGain
+            ) {
+                return;
+            }
             debug!(%addr, %value, "Parameter update");
             let old_value = daemon
                 .state

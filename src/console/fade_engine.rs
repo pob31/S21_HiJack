@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use crate::console::automation_registry::AutomationOverride;
 use crate::model::channel::ChannelId;
-use crate::model::parameter::{ParameterAddress, ParameterValue, TimingCategory};
+use crate::model::parameter::{ParameterAddress, ParameterValue, TimingCategory, floored_db_lerp};
 use crate::osc::client::OscSender;
 use crate::osc::encode;
 use crate::osc::ipad_client::IpadSender;
@@ -247,8 +247,25 @@ async fn run_fade(
                     continue;
                 }
             }
-            if let Some(interpolated) = target.start_value.lerp(&target.end_value, t) {
-                let interpolated = target.address.parameter.clamp_value(interpolated);
+            // Fader-family dB levels interpolate in "floored" space so fades
+            // to/from −inf are smooth (see `floored_db_lerp`); everything else
+            // keeps the naive lerp + range clamp. The floored result is already
+            // bounded to [−150, end], so it deliberately skips `clamp_value`
+            // (which only models the pan family and is a passthrough for fader dB).
+            let interpolated = match (
+                &target.start_value,
+                &target.end_value,
+                target.address.parameter.fade_floor_db(),
+            ) {
+                (ParameterValue::Float(s), ParameterValue::Float(e), Some(floor)) => {
+                    Some(ParameterValue::Float(floored_db_lerp(*s, *e, t, floor)))
+                }
+                _ => target
+                    .start_value
+                    .lerp(&target.end_value, t)
+                    .map(|v| target.address.parameter.clamp_value(v)),
+            };
+            if let Some(interpolated) = interpolated {
                 let sent =
                     send_parameter(&sender, &ipad_sender, &target.address, &interpolated).await;
                 if sent {

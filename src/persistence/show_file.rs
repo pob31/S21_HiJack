@@ -301,13 +301,52 @@ impl ShowFile {
     /// Load a show file from disk.
     pub async fn load(path: &Path) -> std::io::Result<Self> {
         let json = tokio::fs::read_to_string(path).await?;
-        let show: ShowFile = serde_json::from_str(&json).map_err(|e| {
+        let mut show: ShowFile = serde_json::from_str(&json).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("Deserialize error: {e}"),
             )
         })?;
+        // In-memory cleanup of values that older versions should never have
+        // persisted. Non-destructive: the cleaned show is written out the next
+        // time the operator saves.
+        show.strip_total_gain();
         Ok(show)
+    }
+
+    /// Remove every persisted `TotalGain` reference from a loaded show. TotalGain
+    /// (GP OSC `total/gain`) is a console-derived, read-only monitor value
+    /// (post-fader + CG sum) that older versions captured into snapshots,
+    /// selected in scopes, or recorded in macros. It can't be written back, so
+    /// strip it on load. Idempotent: a show with no TotalGain is left unchanged.
+    fn strip_total_gain(&mut self) {
+        use crate::model::parameter::ParameterPath;
+
+        // Snapshot stored values + each snapshot's embedded scope paths.
+        for snap in &mut self.snapshots {
+            snap.data
+                .values
+                .retain(|addr, _| addr.parameter != ParameterPath::TotalGain);
+            for cs in &mut snap.scope.channel_scopes {
+                cs.paths.remove(&ParameterPath::TotalGain);
+            }
+        }
+
+        // Standalone scope templates.
+        for tmpl in &mut self.scope_templates {
+            for cs in &mut tmpl.channel_scopes {
+                cs.paths.remove(&ParameterPath::TotalGain);
+            }
+        }
+
+        // Macro parameter-write steps (keep all non-Parameter steps).
+        for mac in &mut self.macros {
+            mac.steps.retain(|step| {
+                step.parameter_address()
+                    .map(|a| a.parameter != ParameterPath::TotalGain)
+                    .unwrap_or(true)
+            });
+        }
     }
 }
 
@@ -653,5 +692,111 @@ mod tests {
         );
 
         let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[test]
+    fn strip_total_gain_removes_all_references() {
+        use crate::model::channel::ChannelId;
+        use crate::model::macro_def::{MacroDef, MacroStep, MacroStepKind, MacroStepMode};
+        use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
+        use crate::model::snapshot::{
+            ChannelScope, ScopeTemplate, Snapshot, SnapshotData, SnapshotKind,
+        };
+        use std::collections::HashSet;
+
+        let tg = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::TotalGain,
+        };
+        let fader = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        let again = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::AnalogGain,
+        };
+
+        // Snapshot: TotalGain + Fader in data; TotalGain + AnalogGain in scope paths.
+        let mut data = SnapshotData::new();
+        data.values.insert(tg.clone(), ParameterValue::Float(-10.0));
+        data.values
+            .insert(fader.clone(), ParameterValue::Float(-5.0));
+        let snap_scope = ScopeTemplate::new(
+            "snap".into(),
+            vec![ChannelScope::new(
+                ChannelId::Input(1),
+                HashSet::from([ParameterPath::TotalGain, ParameterPath::AnalogGain]),
+            )],
+        );
+        let snapshot = Snapshot::new("S".into(), snap_scope, data, SnapshotKind::ApplyOnSave);
+
+        // Standalone scope template with TotalGain + Fader.
+        let tmpl = ScopeTemplate::new(
+            "tmpl".into(),
+            vec![ChannelScope::new(
+                ChannelId::Input(1),
+                HashSet::from([ParameterPath::TotalGain, ParameterPath::Fader]),
+            )],
+        );
+
+        // Macro: a TotalGain step, an AnalogGain step, and a non-Parameter step.
+        let mac = MacroDef::new(
+            "M".into(),
+            vec![
+                MacroStep::parameter(
+                    tg.clone(),
+                    MacroStepMode::Fixed(ParameterValue::Float(-10.0)),
+                    0,
+                ),
+                MacroStep::parameter(
+                    again.clone(),
+                    MacroStepMode::Fixed(ParameterValue::Float(20.0)),
+                    0,
+                ),
+                MacroStep {
+                    kind: MacroStepKind::GoNextCue,
+                    delay_ms: 0,
+                },
+            ],
+        );
+
+        let mut show = ShowFile::new(ConsoleConfig::default());
+        show.snapshots.push(snapshot);
+        show.scope_templates.push(tmpl);
+        show.macros.push(mac);
+
+        show.strip_total_gain();
+
+        // Snapshot data: TotalGain gone, Fader kept.
+        assert!(!show.snapshots[0].data.values.contains_key(&tg));
+        assert!(show.snapshots[0].data.values.contains_key(&fader));
+        // Snapshot scope paths: TotalGain gone, AnalogGain kept.
+        let snap_paths = &show.snapshots[0].scope.channel_scopes[0].paths;
+        assert!(!snap_paths.contains(&ParameterPath::TotalGain));
+        assert!(snap_paths.contains(&ParameterPath::AnalogGain));
+        // Standalone template: TotalGain gone, Fader kept.
+        let tmpl_paths = &show.scope_templates[0].channel_scopes[0].paths;
+        assert!(!tmpl_paths.contains(&ParameterPath::TotalGain));
+        assert!(tmpl_paths.contains(&ParameterPath::Fader));
+        // Macro: TotalGain step gone; AnalogGain + GoNextCue kept.
+        assert_eq!(show.macros[0].steps.len(), 2);
+        assert!(
+            show.macros[0]
+                .steps
+                .iter()
+                .any(|s| matches!(&s.kind, MacroStepKind::GoNextCue))
+        );
+        assert!(
+            show.macros[0]
+                .steps
+                .iter()
+                .any(|s| s.parameter_address() == Some(&again))
+        );
+
+        // Idempotent: a second pass changes nothing.
+        let before = show.macros[0].steps.len();
+        show.strip_total_gain();
+        assert_eq!(show.macros[0].steps.len(), before);
     }
 }

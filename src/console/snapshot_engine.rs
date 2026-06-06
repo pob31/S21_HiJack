@@ -4,7 +4,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
 use tokio::sync::RwLock;
-use tokio::time::Duration;
+use tokio::time::{Duration, sleep};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -14,7 +14,9 @@ use crate::console::fade_engine::{FadeController, FadeTarget, MultiFadeControlle
 use crate::model::channel::ChannelId;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::palette::ChannelPalette;
-use crate::model::parameter::{ParameterAddress, ParameterValue, TimingCategory};
+use crate::model::parameter::{
+    FADER_INF_DB, ParameterAddress, ParameterPath, ParameterValue, TimingCategory,
+};
 use crate::model::recall_progress::{RecallKind, RecallProgress};
 use crate::model::snapshot::{Cue, ScopeTemplate, Snapshot};
 use crate::model::state::ConsoleState;
@@ -81,6 +83,60 @@ pub fn arm_console_load(handle: &AtomicU64) {
 pub fn console_load_active(handle: &AtomicU64) -> bool {
     let deadline = handle.load(Ordering::Relaxed);
     deadline != 0 && (CONSOLE_LOAD_BASE.elapsed().as_millis() as u64) < deadline
+}
+
+/// Poll interval for [`cancellable_pre_wait`] — small enough (below the 50 ms
+/// fade tick) that an operator grab during a pre-wait is honoured promptly.
+const PRE_WAIT_POLL: Duration = Duration::from_millis(25);
+
+/// Sleep up to `pre_wait`, but return EARLY the moment none of `addrs` remain
+/// under automation (the operator grabbed them all during the pre-wait). A
+/// single-parameter group's pre-wait ends instantly when that parameter is
+/// grabbed; a multi-parameter group waits for its still-active members, which
+/// then fade normally. With no registry (legacy path) this is a plain sleep.
+async fn cancellable_pre_wait(
+    pre_wait: Duration,
+    addrs: &[ParameterAddress],
+    reg: &Option<AutomationOverride>,
+) {
+    if pre_wait.is_zero() {
+        return;
+    }
+    let Some(r) = reg else {
+        // Legacy path / no registry: can't observe overrides — plain sleep.
+        sleep(pre_wait).await;
+        return;
+    };
+    let deadline = Instant::now() + pre_wait;
+    loop {
+        // Early-out: every address has been overridden (removed from registry).
+        if !addrs.iter().any(|a| r.is_active(a)) {
+            return;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return;
+        }
+        // `.min` keeps the final partial slice exact so we never overshoot.
+        sleep((deadline - now).min(PRE_WAIT_POLL)).await;
+    }
+}
+
+/// Effective fade start value for a param given its (possibly missing) live
+/// mirror value. Present mirror values pass through. For FADER-FAMILY params a
+/// mirror miss (`None`) defaults to [`FADER_INF_DB`] (off) so the param fades IN
+/// from silence (and, via the −80 floor, smoothly) instead of jumping straight
+/// to target as a discrete send. Non-fader params with no start stay `None`
+/// (the caller keeps their discrete behavior).
+fn effective_fade_start(
+    start: &Option<ParameterValue>,
+    path: &ParameterPath,
+) -> Option<ParameterValue> {
+    match start {
+        Some(sv) => Some(sv.clone()),
+        None if path.fade_floor_db().is_some() => Some(ParameterValue::Float(FADER_INF_DB)),
+        None => None,
+    }
 }
 
 /// Map from "console memory row we just fired" → when we fired it. Used
@@ -934,6 +990,10 @@ impl SnapshotEngine {
             let sender_for_channel = s.clone();
             let ipad_for_channel = is.clone();
             let reg = registry.clone();
+            // Shared live mirror, so each group can re-read the fader's CURRENT
+            // position at fade-start (after its pre-wait) instead of using the
+            // value captured at recall time — see exec_group's re-read below.
+            let state_for_channel = self.state.clone();
 
             // Spawn the channel's execution
             let handle = tokio::spawn(async move {
@@ -982,6 +1042,7 @@ impl SnapshotEngine {
                 async fn exec_group(
                     sender: &OscSender,
                     ipad: &Option<IpadSender>,
+                    state: &Arc<RwLock<ConsoleState>>,
                     pre_wait: Duration,
                     fade_time: Duration,
                     changes: Vec<ParamChange>,
@@ -991,19 +1052,37 @@ impl SnapshotEngine {
                 ) -> usize {
                     let mut sent = 0usize;
 
-                    if !pre_wait.is_zero() {
-                        sleep(pre_wait).await;
-                    }
+                    // Cancellable pre-wait: abort our upcoming send/fade for any
+                    // param the operator grabs during the wait; the rest still run.
+                    let addrs: Vec<ParameterAddress> =
+                        changes.iter().map(|c| c.addr.clone()).collect();
+                    cancellable_pre_wait(pre_wait, &addrs, reg).await;
 
                     // Separate discrete from continuous
                     let mut discrete = Vec::new();
                     let mut continuous_targets = Vec::new();
 
                     for change in changes {
-                        // Clone start_value so the else branch can still push
-                        // `change` whole. The pattern check and `is_continuous`
-                        // / fade_time guards are short-circuit-evaluated.
-                        if let Some(start_value) = change.start_value.clone()
+                        // Re-read the live mirror NOW (after the pre-wait) so the
+                        // fade starts from the fader's CURRENT position, not the
+                        // value captured at recall time (pre_wait seconds ago) — a
+                        // stale or moved-during-wait start makes the desk snap there
+                        // before fading ("jump then fade"). Brief read lock, dropped
+                        // immediately, never held across a send/await.
+                        let fresh = {
+                            let s = state.read().await;
+                            s.get(&change.addr).cloned()
+                        };
+                        // `effective_fade_start` prefers the fresh live value, falls
+                        // back to the recall-time capture, then (fader-family only)
+                        // to −inf so the param fades IN from silence instead of
+                        // jumping (a discrete send). Non-fader misses stay None and
+                        // fall through to `discrete`.
+                        let start = effective_fade_start(
+                            &fresh.or_else(|| change.start_value.clone()),
+                            &change.addr.parameter,
+                        );
+                        if let Some(start_value) = start
                             && change.addr.parameter.is_continuous()
                             && !fade_time.is_zero()
                         {
@@ -1048,11 +1127,11 @@ impl SnapshotEngine {
                 }
 
                 // Execute a Sends group with per-send enable/disable ordering.
-                use crate::model::parameter::ParameterPath;
                 #[allow(clippy::too_many_arguments)]
                 async fn exec_sends_group(
                     sender: &OscSender,
                     ipad: &Option<IpadSender>,
+                    state: &Arc<RwLock<ConsoleState>>,
                     pre_wait: Duration,
                     fade_time: Duration,
                     changes: Vec<ParamChange>,
@@ -1062,9 +1141,12 @@ impl SnapshotEngine {
                 ) -> usize {
                     let mut sent = 0usize;
 
-                    if !pre_wait.is_zero() {
-                        sleep(pre_wait).await;
-                    }
+                    // Cancellable pre-wait (see exec_group): a grabbed send drops
+                    // out; the inner exec_group calls below pass Duration::ZERO so
+                    // there is no second pre-wait.
+                    let addrs: Vec<ParameterAddress> =
+                        changes.iter().map(|c| c.addr.clone()).collect();
+                    cancellable_pre_wait(pre_wait, &addrs, reg).await;
 
                     // Sub-group by send index
                     let mut by_send: HashMap<u8, Vec<ParamChange>> = HashMap::new();
@@ -1096,6 +1178,7 @@ impl SnapshotEngine {
                     for (_send_idx, send_changes) in by_send {
                         let s = sender.clone();
                         let i = ipad.clone();
+                        let st = state.clone();
                         let ft = fade_time;
                         let pu = pace_us;
                         let r = reg.clone();
@@ -1129,6 +1212,7 @@ impl SnapshotEngine {
                                     sent += exec_group(
                                         &s,
                                         &i,
+                                        &st,
                                         Duration::ZERO,
                                         ft,
                                         level_pan,
@@ -1153,6 +1237,7 @@ impl SnapshotEngine {
                                     sent += exec_group(
                                         &s,
                                         &i,
+                                        &st,
                                         Duration::ZERO,
                                         ft,
                                         level_pan,
@@ -1167,6 +1252,7 @@ impl SnapshotEngine {
                                     sent += exec_group(
                                         &s,
                                         &i,
+                                        &st,
                                         Duration::ZERO,
                                         ft,
                                         level_pan,
@@ -1195,9 +1281,14 @@ impl SnapshotEngine {
                 match mute_dir {
                     Some(true) => {
                         // Mute ON: send mute first, then start everything else
-                        if !Duration::from_secs_f32(mute_timing.pre_wait_secs).is_zero() {
-                            sleep(Duration::from_secs_f32(mute_timing.pre_wait_secs)).await;
-                        }
+                        let mute_addrs: Vec<ParameterAddress> =
+                            mute_change.iter().map(|mc| mc.addr.clone()).collect();
+                        cancellable_pre_wait(
+                            Duration::from_secs_f32(mute_timing.pre_wait_secs),
+                            &mute_addrs,
+                            &reg,
+                        )
+                        .await;
                         if let Some(mc) = &mute_change {
                             if send_one(
                                 &sender_for_channel,
@@ -1217,19 +1308,20 @@ impl SnapshotEngine {
                         for (cat, pre_wait, fade_time, changes) in group_tasks {
                             let s = sender_for_channel.clone();
                             let i = ipad_for_channel.clone();
+                            let st = state_for_channel.clone();
                             let pu = pace;
                             let r = reg.clone();
                             let g = gen_id;
                             if cat == Some(TimingCategory::Sends) {
                                 handles.push(tokio::spawn(async move {
                                     exec_sends_group(
-                                        &s, &i, pre_wait, fade_time, changes, pu, &r, g,
+                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g,
                                     )
                                     .await
                                 }));
                             } else {
                                 handles.push(tokio::spawn(async move {
-                                    exec_group(&s, &i, pre_wait, fade_time, changes, pu, &r, g)
+                                    exec_group(&s, &i, &st, pre_wait, fade_time, changes, pu, &r, g)
                                         .await
                                 }));
                             }
@@ -1246,19 +1338,20 @@ impl SnapshotEngine {
                         for (cat, pre_wait, fade_time, changes) in group_tasks {
                             let s = sender_for_channel.clone();
                             let i = ipad_for_channel.clone();
+                            let st = state_for_channel.clone();
                             let pu = pace;
                             let r = reg.clone();
                             let g = gen_id;
                             if cat == Some(TimingCategory::Sends) {
                                 handles.push(tokio::spawn(async move {
                                     exec_sends_group(
-                                        &s, &i, pre_wait, fade_time, changes, pu, &r, g,
+                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g,
                                     )
                                     .await
                                 }));
                             } else {
                                 handles.push(tokio::spawn(async move {
-                                    exec_group(&s, &i, pre_wait, fade_time, changes, pu, &r, g)
+                                    exec_group(&s, &i, &st, pre_wait, fade_time, changes, pu, &r, g)
                                         .await
                                 }));
                             }
@@ -1269,9 +1362,14 @@ impl SnapshotEngine {
                             }
                         }
                         // All non-mute complete, now unmute
-                        if !Duration::from_secs_f32(mute_timing.pre_wait_secs).is_zero() {
-                            sleep(Duration::from_secs_f32(mute_timing.pre_wait_secs)).await;
-                        }
+                        let mute_addrs: Vec<ParameterAddress> =
+                            mute_change.iter().map(|mc| mc.addr.clone()).collect();
+                        cancellable_pre_wait(
+                            Duration::from_secs_f32(mute_timing.pre_wait_secs),
+                            &mute_addrs,
+                            &reg,
+                        )
+                        .await;
                         if let Some(mc) = &mute_change {
                             if send_one(
                                 &sender_for_channel,
@@ -1293,19 +1391,20 @@ impl SnapshotEngine {
                         for (cat, pre_wait, fade_time, changes) in group_tasks {
                             let s = sender_for_channel.clone();
                             let i = ipad_for_channel.clone();
+                            let st = state_for_channel.clone();
                             let pu = pace;
                             let r = reg.clone();
                             let g = gen_id;
                             if cat == Some(TimingCategory::Sends) {
                                 handles.push(tokio::spawn(async move {
                                     exec_sends_group(
-                                        &s, &i, pre_wait, fade_time, changes, pu, &r, g,
+                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g,
                                     )
                                     .await
                                 }));
                             } else {
                                 handles.push(tokio::spawn(async move {
-                                    exec_group(&s, &i, pre_wait, fade_time, changes, pu, &r, g)
+                                    exec_group(&s, &i, &st, pre_wait, fade_time, changes, pu, &r, g)
                                         .await
                                 }));
                             }
@@ -2505,5 +2604,159 @@ mod tests {
             .recall_cue(&fired_cue, Some(snapshot), &no_palettes(), false)
             .await;
         assert_eq!(result.parameters_sent, 1);
+    }
+
+    // ─── cancellable_pre_wait + effective_fade_start ────────────────────
+
+    use crate::console::automation_registry::AutomationRegistry;
+
+    fn fader_addr(ch: u8) -> ParameterAddress {
+        ParameterAddress {
+            channel: ChannelId::Input(ch),
+            parameter: ParameterPath::Fader,
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellable_pre_wait_single_addr_returns_early() {
+        let reg: AutomationOverride = Arc::new(AutomationRegistry::new());
+        let g = reg.begin_recall();
+        let a = fader_addr(1);
+        reg.register(&a, g, Duration::from_secs(5));
+
+        // Override the only address shortly after the pre-wait starts; the wait
+        // must then return well before its nominal 5 s.
+        let reg2 = reg.clone();
+        let a2 = a.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(30)).await;
+            reg2.maybe_override(&a2, &ParameterValue::Float(0.0));
+        });
+
+        let r = tokio::time::timeout(
+            Duration::from_millis(500),
+            cancellable_pre_wait(Duration::from_secs(5), &[a], &Some(reg)),
+        )
+        .await;
+        assert!(r.is_ok(), "pre-wait should return early after override");
+    }
+
+    #[tokio::test]
+    async fn cancellable_pre_wait_multi_addr_waits_for_all() {
+        let reg: AutomationOverride = Arc::new(AutomationRegistry::new());
+        let g = reg.begin_recall();
+        let a1 = fader_addr(1);
+        let a2 = fader_addr(2);
+        reg.register(&a1, g, Duration::from_secs(5));
+        reg.register(&a2, g, Duration::from_secs(5));
+
+        // Override only one address: the group still has an active member, so
+        // the pre-wait must NOT return early.
+        reg.maybe_override(&a1, &ParameterValue::Float(0.0));
+        let early = tokio::time::timeout(
+            Duration::from_millis(120),
+            cancellable_pre_wait(
+                Duration::from_secs(5),
+                &[a1.clone(), a2.clone()],
+                &Some(reg.clone()),
+            ),
+        )
+        .await;
+        assert!(
+            early.is_err(),
+            "should still be waiting while one addr is active"
+        );
+
+        // Override the second too → now it returns promptly.
+        reg.maybe_override(&a2, &ParameterValue::Float(0.0));
+        let done = tokio::time::timeout(
+            Duration::from_millis(200),
+            cancellable_pre_wait(Duration::from_secs(5), &[a1, a2], &Some(reg)),
+        )
+        .await;
+        assert!(done.is_ok(), "should return once all addrs are overridden");
+    }
+
+    #[tokio::test]
+    async fn cancellable_pre_wait_no_registry_is_plain_sleep() {
+        let start = Instant::now();
+        cancellable_pre_wait(Duration::from_millis(60), &[fader_addr(1)], &None).await;
+        assert!(
+            start.elapsed() >= Duration::from_millis(55),
+            "should sleep ~full pre-wait"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellable_pre_wait_zero_is_noop() {
+        let start = Instant::now();
+        cancellable_pre_wait(Duration::ZERO, &[fader_addr(1)], &None).await;
+        assert!(
+            start.elapsed() < Duration::from_millis(20),
+            "zero pre-wait returns immediately"
+        );
+    }
+
+    #[test]
+    fn effective_fade_start_fader_none_defaults_to_inf() {
+        assert_eq!(
+            effective_fade_start(&None, &ParameterPath::Fader),
+            Some(ParameterValue::Float(FADER_INF_DB))
+        );
+        assert_eq!(
+            effective_fade_start(&None, &ParameterPath::SendLevel(1)),
+            Some(ParameterValue::Float(FADER_INF_DB))
+        );
+    }
+
+    #[test]
+    fn effective_fade_start_non_fader_none_stays_none() {
+        assert_eq!(
+            effective_fade_start(&None, &ParameterPath::EqBandGain(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn effective_fade_start_some_passes_through() {
+        assert_eq!(
+            effective_fade_start(&Some(ParameterValue::Float(-20.0)), &ParameterPath::Fader),
+            Some(ParameterValue::Float(-20.0))
+        );
+    }
+
+    // ─── Fade-start selection (re-read live value after the pre-wait) ────
+    //
+    // exec_group needs a live OscSender to drive directly, but the load-bearing
+    // new logic is the pure selection rule it applies:
+    //   effective_fade_start(&fresh.or_else(|| captured.clone()), &param)
+    // These pin that composition: fresh live value wins, then the recall-time
+    // capture, then the fader −inf floor.
+
+    #[test]
+    fn fresh_live_value_preferred_over_recall_capture() {
+        let captured = Some(ParameterValue::Float(-30.0)); // stale, recall-time
+        let fresh = Some(ParameterValue::Float(-6.0)); // live, post-pre-wait
+        let start =
+            effective_fade_start(&fresh.or_else(|| captured.clone()), &ParameterPath::Fader);
+        assert_eq!(start, Some(ParameterValue::Float(-6.0)));
+    }
+
+    #[test]
+    fn falls_back_to_recall_capture_on_mirror_miss() {
+        let captured = Some(ParameterValue::Float(-30.0));
+        let fresh: Option<ParameterValue> = None; // mirror miss after pre-wait
+        let start =
+            effective_fade_start(&fresh.or_else(|| captured.clone()), &ParameterPath::Fader);
+        assert_eq!(start, Some(ParameterValue::Float(-30.0)));
+    }
+
+    #[test]
+    fn double_miss_fader_floors_to_inf() {
+        let captured: Option<ParameterValue> = None;
+        let fresh: Option<ParameterValue> = None;
+        let start =
+            effective_fade_start(&fresh.or_else(|| captured.clone()), &ParameterPath::Fader);
+        assert_eq!(start, Some(ParameterValue::Float(FADER_INF_DB)));
     }
 }
