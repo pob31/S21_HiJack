@@ -291,6 +291,16 @@ pub struct HiJackApp {
     /// Whether the top-bar cue-list popup window is open.
     pub show_cue_list_popup: bool,
 
+    /// True while the "Quit while connected?" confirmation modal is showing.
+    /// Raised when a window-close is requested while the console link is up so
+    /// an accidental close doesn't silently drop a live show. Cleared on either
+    /// choice. Runtime-only.
+    pub confirm_close: bool,
+    /// Set once the operator confirms the quit, so the close request we re-issue
+    /// (and any later OS close) passes straight through instead of re-opening
+    /// the confirmation modal. Runtime-only.
+    pub close_confirmed: bool,
+
     // ─── Autosave scheduler (see persistence::backup) ────────────────
     /// When the last autosave was taken — throttles to `AUTOSAVE_INTERVAL`.
     pub last_autosave_at: std::time::Instant,
@@ -431,6 +441,8 @@ impl HiJackApp {
             inspector: InspectorTabState::default(),
             capture_confirm: None,
             show_cue_list_popup: false,
+            confirm_close: false,
+            close_confirmed: false,
 
             last_autosave_at: std::time::Instant::now(),
             last_autosaved_fingerprint: 0,
@@ -1178,6 +1190,7 @@ impl HiJackApp {
                             help_language: self.setup.help_language.clone(),
                             window_size: self.setup.window_size,
                             window_pos: self.setup.window_pos,
+                            last_open_dir: self.setup.last_open_dir.clone(),
                         };
                         if let Err(e) = prefs.save() {
                             tracing::warn!(error = %e, "Failed to save app preferences after show load");
@@ -1847,6 +1860,78 @@ impl HiJackApp {
             }
         }
     }
+
+    /// Confirmation modal for closing the app while the console link is live.
+    ///
+    /// The close itself is intercepted in `update` (vetoed with
+    /// `ViewportCommand::CancelClose`, `confirm_close` raised) only while
+    /// `connected`, so a disconnected app still quits instantly. "Quit"
+    /// re-issues the close — now allowed through by `close_confirmed` — and
+    /// "Stay connected" simply dismisses the modal. The modal's backdrop blocks
+    /// the rest of the UI until the operator chooses.
+    fn draw_close_confirm(&mut self, ctx: &egui::Context) {
+        if !self.confirm_close {
+            return;
+        }
+
+        enum Action {
+            None,
+            Stay,
+            Quit,
+        }
+        let mut action = Action::None;
+
+        egui::Modal::new(egui::Id::new("close_confirm_modal")).show(ctx, |ui| {
+            ui.set_min_width(380.0);
+            ui.label(
+                egui::RichText::new("Quit while connected?")
+                    .strong()
+                    .size(super::theme::FONT_SIZE_SECTION)
+                    .color(super::theme::ACCENT_BLUE),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                "The app is still connected to the console. Quitting now drops \
+                 the link, so it will stop responding to triggers, macros and \
+                 incoming OSC until you reconnect.",
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(super::theme::action_button(
+                        "Quit",
+                        super::theme::ACCENT_RED,
+                        egui::Vec2::new(120.0, 28.0),
+                    ))
+                    .clicked()
+                {
+                    action = Action::Quit;
+                }
+                if ui
+                    .add(super::theme::action_button(
+                        "Stay connected",
+                        super::theme::ACCENT_GREEN,
+                        egui::Vec2::new(160.0, 28.0),
+                    ))
+                    .clicked()
+                {
+                    action = Action::Stay;
+                }
+            });
+        });
+
+        match action {
+            Action::None => {}
+            Action::Stay => {
+                self.confirm_close = false;
+            }
+            Action::Quit => {
+                self.confirm_close = false;
+                self.close_confirmed = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
 }
 
 impl eframe::App for HiJackApp {
@@ -1898,6 +1983,19 @@ impl eframe::App for HiJackApp {
 
         // Drain async events
         self.drain_events();
+
+        // Intercept a window-close request while the console link is live so an
+        // accidental close doesn't silently drop a running show. The first close
+        // is vetoed and a confirmation modal is raised (see `draw_close_confirm`);
+        // once the operator confirms (`close_confirmed`) — or when we're not
+        // connected — the close proceeds normally.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            let connected = self.connected.load(Ordering::Relaxed);
+            if connected && !self.close_confirmed {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.confirm_close = true;
+            }
+        }
 
         // Auto-preselect: keep the working scope tracking changed parameters
         // even while the scope editor window is CLOSED, so a capture uses the
@@ -2742,6 +2840,9 @@ impl eframe::App for HiJackApp {
 
         // Corruption-recovery modal (when a load failed on a bad file).
         self.draw_recovery_dialog(ctx);
+
+        // Confirmation modal for quitting while connected to the console.
+        self.draw_close_confirm(ctx);
 
         // Cue-list popup (opened from the top-bar "Cues" button).
         super::cue_list_popup::draw_cue_list_popup(

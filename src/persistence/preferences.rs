@@ -52,6 +52,14 @@ pub struct AppPreferences {
     /// restored on the next launch. `None` on first run.
     #[serde(default)]
     pub window_pos: Option<[f32; 2]>,
+    /// Last directory a show file was opened from or saved to. Used to seed the
+    /// starting folder of the Open / Save dialogs so the operator resumes where
+    /// they last were instead of the OS default each session. `None` until the
+    /// first file is picked. Cross-platform: serde (de)serializes `PathBuf` as
+    /// the native path string, so a folder saved on one OS is simply ignored
+    /// (falls back to the default) if the file is later opened on another.
+    #[serde(default)]
+    pub last_open_dir: Option<PathBuf>,
 }
 
 /// Default UI scale multiplier — `1.0` means "use the automatic scaling
@@ -73,6 +81,7 @@ impl Default for AppPreferences {
             help_language: String::new(),
             window_size: None,
             window_pos: None,
+            last_open_dir: None,
         }
     }
 }
@@ -164,6 +173,8 @@ mod tests {
         // Missing window geometry defaults to None — first-run on-screen fit.
         assert!(prefs.window_size.is_none());
         assert!(prefs.window_pos.is_none());
+        // Missing last-open dir defaults to None — dialogs use the OS default.
+        assert!(prefs.last_open_dir.is_none());
     }
 
     #[test]
@@ -177,6 +188,7 @@ mod tests {
         assert!(prefs.help_language.is_empty());
         assert!(prefs.window_size.is_none());
         assert!(prefs.window_pos.is_none());
+        assert!(prefs.last_open_dir.is_none());
     }
 
     #[test]
@@ -190,6 +202,7 @@ mod tests {
             help_language: "fr".to_string(),
             window_size: Some([1600.0, 900.0]),
             window_pos: Some([40.0, 30.0]),
+            last_open_dir: Some(PathBuf::from("/shows/tour-2026")),
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: AppPreferences = serde_json::from_str(&json).unwrap();
@@ -200,5 +213,6 @@ mod tests {
         assert_eq!(prefs.help_language, back.help_language);
         assert_eq!(prefs.window_size, back.window_size);
         assert_eq!(prefs.window_pos, back.window_pos);
+        assert_eq!(prefs.last_open_dir, back.last_open_dir);
     }
 }

@@ -99,6 +99,11 @@ pub struct SetupTabState {
     /// first frame reports a size.
     pub window_size: Option<[f32; 2]>,
     pub window_pos: Option<[f32; 2]>,
+    /// Last directory a show file was opened from or saved to. Mirrors
+    /// `AppPreferences::last_open_dir`; seeded at startup, updated whenever a
+    /// file dialog picks a file, and persisted via `save_app_preferences` so
+    /// the next Open / Save dialog starts in the operator's last-used folder.
+    pub last_open_dir: Option<std::path::PathBuf>,
     /// Source-IP CIDR allowlist for the monitor server (audit C2). Round-trips
     /// through the show file. UI editor is a follow-up; for now operators
     /// edit the JSON directly or use the `--monitor-allow-cidr` CLI flag.
@@ -196,6 +201,7 @@ impl SetupTabState {
             help_language: prefs.help_language.clone(),
             window_size: prefs.window_size,
             window_pos: prefs.window_pos,
+            last_open_dir: prefs.last_open_dir.clone(),
             monitor_allow_cidrs: Vec::new(),
             trigger_allow_cidrs: Vec::new(),
             // Default the web monitor on (matches the headless `--web-port`
@@ -304,6 +310,37 @@ pub fn truncate_show_path(path: &str) -> String {
         }
         None => path.to_string(),
     }
+}
+
+/// Seed a file dialog's starting directory with the operator's last-used show
+/// folder (`SetupTabState::last_open_dir`) so Open / Save resumes where they
+/// last were instead of the OS default. No-op when nothing has been remembered
+/// yet or the remembered folder no longer exists (e.g. an unplugged USB stick),
+/// in which case rfd falls back to its own default. Callers that already pin a
+/// directory (Save As… seeding from the current show path) should not call this.
+fn seed_last_open_dir(mut dlg: rfd::FileDialog, setup: &SetupTabState) -> rfd::FileDialog {
+    if let Some(dir) = setup.last_open_dir.as_ref()
+        && dir.is_dir()
+    {
+        dlg = dlg.set_directory(dir);
+    }
+    dlg
+}
+
+/// Record the folder a show file was just opened from or saved to so the next
+/// Open / Save dialog starts there. Persists immediately via the app
+/// preferences (cross-platform path string). No-op when the path has no parent
+/// or the folder is already the remembered one, so we don't rewrite the prefs
+/// file on every pick within the same directory.
+fn remember_last_open_dir(setup: &mut SetupTabState, path: &std::path::Path) {
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    if setup.last_open_dir.as_deref() == Some(dir) {
+        return;
+    }
+    setup.last_open_dir = Some(dir.to_path_buf());
+    save_app_preferences(setup);
 }
 
 // ── Connection diagram layout constants ──
@@ -1167,6 +1204,11 @@ pub fn draw_setup_tab(
                     ui.add_space(6.0);
 
                     // ── Show File ──
+                    // Set by either the "Open…" button or a click on the empty
+                    // file field; the actual (blocking, native) file dialog runs
+                    // once after the grid closes so the borrow of `setup` inside
+                    // the grid closure stays simple.
+                    let mut open_show_dialog = false;
                     server_grid("server_show_file_grid").show(ui, |ui| {
                         theme::row_label(ui, "Show file:", theme::label_color());
                         ui.horizontal(|ui| {
@@ -1178,6 +1220,7 @@ pub fn draw_setup_tab(
                             // the look matches an editable field, with
                             // the full path on hover.
                             let mut display = truncate_show_path(&setup.show_file_path);
+                            let is_empty = setup.show_file_path.is_empty();
                             // Field + Open span the same `action_row_w`
                             // as the Save / Save As… / New row below,
                             // so the grid lines up: edit + gap + Open
@@ -1191,13 +1234,35 @@ pub fn draw_setup_tab(
                             // of 26 px would leave the field 2 px
                             // shorter than the buttons next to it.
                             let row_h = 28.0;
-                            let resp = ui.add_sized(
-                                [edit_w, row_h],
-                                egui::TextEdit::singleline(&mut display)
-                                    .margin(theme::TEXT_EDIT_MARGIN)
-                                    .interactive(false),
-                            );
-                            if !setup.show_file_path.is_empty() {
+                            let mut field = egui::TextEdit::singleline(&mut display)
+                                .margin(theme::TEXT_EDIT_MARGIN)
+                                .interactive(false);
+                            // With no show loaded, hint that the field itself is
+                            // a shortcut to the picker (see the click sense below).
+                            if is_empty {
+                                field = field.hint_text("Click to open a show file…");
+                            }
+                            let resp = ui.add_sized([edit_w, row_h], field);
+                            if is_empty {
+                                // The field is non-interactive (display-only), so
+                                // its own response never reports clicks. Overlay
+                                // a click sense on the same rect so tapping the
+                                // empty field opens the picker — same action as
+                                // the Open… button next to it.
+                                let click = ui.interact(
+                                    resp.rect,
+                                    resp.id.with("open_on_click"),
+                                    egui::Sense::click(),
+                                );
+                                if click.hovered() {
+                                    ui.ctx()
+                                        .set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
+                                if click.clicked() {
+                                    open_show_dialog = true;
+                                }
+                                click.on_hover_text(help(HelpKey::SetupOpenShow));
+                            } else {
                                 resp.on_hover_text(setup.show_file_path.clone());
                             }
                             // Open button — inherits the panel-level
@@ -1212,23 +1277,29 @@ pub fn draw_setup_tab(
                                 .on_hover_text(help(HelpKey::SetupOpenShow))
                                 .clicked()
                             {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Show files", &["s21show", "json"])
-                                    .add_filter("All files", &["*"])
-                                    .pick_file()
-                                {
-                                    setup.show_file_path = path.display().to_string();
-                                    load_show_file(
-                                        setup, state, cue_manager, macro_manager,
-                                        monitor_manager, palette_manager, gang_manager,
-                                        pan_link_bindings, stream_deck_config, connected,
-                                        runtime, ui_tx,
-                                    );
-                                }
+                                open_show_dialog = true;
                             }
                         });
                         ui.end_row();
                     });
+                    if open_show_dialog {
+                        let dlg = seed_last_open_dir(
+                            rfd::FileDialog::new()
+                                .add_filter("Show files", &["s21show", "json"])
+                                .add_filter("All files", &["*"]),
+                            setup,
+                        );
+                        if let Some(path) = dlg.pick_file() {
+                            remember_last_open_dir(setup, &path);
+                            setup.show_file_path = path.display().to_string();
+                            load_show_file(
+                                setup, state, cue_manager, macro_manager,
+                                monitor_manager, palette_manager, gang_manager,
+                                pan_link_bindings, stream_deck_config, connected,
+                                runtime, ui_tx,
+                            );
+                        }
+                    }
                     ui.add_space(4.0);
                     // 3 buttons (Save / Save As… / New) reusing the
                     // shared `action_btn_w` so the row mirrors every
@@ -1251,13 +1322,17 @@ pub fn draw_setup_tab(
                             theme::LONG_PRESS_DURATION_MS,
                             save_hover,
                         ) {
-                            if setup.show_file_path.is_empty()
-                                && let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Show files", &["s21show", "json"])
-                                    .set_file_name("show.s21show")
-                                    .save_file()
-                            {
-                                setup.show_file_path = path.display().to_string();
+                            if setup.show_file_path.is_empty() {
+                                let dlg = seed_last_open_dir(
+                                    rfd::FileDialog::new()
+                                        .add_filter("Show files", &["s21show", "json"])
+                                        .set_file_name("show.s21show"),
+                                    setup,
+                                );
+                                if let Some(path) = dlg.save_file() {
+                                    remember_last_open_dir(setup, &path);
+                                    setup.show_file_path = path.display().to_string();
+                                }
                             }
                             if !setup.show_file_path.is_empty() {
                                 ensure_show_file_extension(&mut setup.show_file_path);
@@ -1285,7 +1360,8 @@ pub fn draw_setup_tab(
                         {
                             // Pre-seed the dialog with the current path's
                             // directory + filename when available; otherwise
-                            // fall back to the default `show.s21show`.
+                            // fall back to the last-used folder (if any) and
+                            // the default `show.s21show` name.
                             let mut dlg = rfd::FileDialog::new()
                                 .add_filter("Show files", &["s21show", "json"]);
                             if !setup.show_file_path.is_empty() {
@@ -1297,9 +1373,11 @@ pub fn draw_setup_tab(
                                     dlg = dlg.set_file_name(name.to_string_lossy());
                                 }
                             } else {
-                                dlg = dlg.set_file_name("show.s21show");
+                                dlg = seed_last_open_dir(dlg, setup)
+                                    .set_file_name("show.s21show");
                             }
                             if let Some(path) = dlg.save_file() {
+                                remember_last_open_dir(setup, &path);
                                 setup.show_file_path = path.display().to_string();
                                 ensure_show_file_extension(&mut setup.show_file_path);
                                 save_show_file(
@@ -2626,13 +2704,16 @@ pub(crate) fn load_show_file(
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    // If no path, open a file dialog
+    // If no path, open a file dialog (seeded with the last-used folder).
     if setup.show_file_path.is_empty() {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Show files", &["s21show", "json"])
-            .add_filter("All files", &["*"])
-            .pick_file()
-        {
+        let dlg = seed_last_open_dir(
+            rfd::FileDialog::new()
+                .add_filter("Show files", &["s21show", "json"])
+                .add_filter("All files", &["*"]),
+            setup,
+        );
+        if let Some(path) = dlg.pick_file() {
+            remember_last_open_dir(setup, &path);
             setup.show_file_path = path.display().to_string();
         } else {
             return;
@@ -2850,6 +2931,7 @@ pub(crate) fn save_app_preferences(setup: &SetupTabState) {
         help_language: setup.help_language.clone(),
         window_size: setup.window_size,
         window_pos: setup.window_pos,
+        last_open_dir: setup.last_open_dir.clone(),
     };
     if let Err(e) = prefs.save() {
         tracing::warn!(error = %e, "Failed to save app preferences");
