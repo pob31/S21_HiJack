@@ -5,12 +5,11 @@
 //! `[target.'cfg(windows)'.build-dependencies]` table in Cargo.toml), so the
 //! Linux/macOS release builds never compile or invoke it.
 //!
-//! The embedded resource gives the installed `s21_hijack.exe`:
-//!   * its taskbar / Explorer icon,
-//!   * the icon the `.s21show` file association points at
-//!     (`DefaultIcon = s21_hijack.exe,0` in assets/s21_hijack_assoc.iss), and
-//!   * FileVersion / ProductVersion in the Properties → Details tab,
-//! matching the `CARGO_PKG_VERSION` the in-app update check compares on GitHub.
+//! The embedded resource gives the installed `s21_hijack.exe` its taskbar /
+//! Explorer icon, the icon the `.s21show` file association points at
+//! (`DefaultIcon = s21_hijack.exe,0` in assets/s21_hijack_assoc.iss), and the
+//! FileVersion / ProductVersion shown in Properties → Details — matching the
+//! `CARGO_PKG_VERSION` the in-app update check compares on GitHub.
 
 fn main() {
     // Re-run if the icon changes. The version is read from Cargo.toml, which
