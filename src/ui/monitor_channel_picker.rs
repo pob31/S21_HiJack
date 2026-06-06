@@ -647,6 +647,7 @@ fn draw_inputs_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState, tile_w: f
                         order,
                         false,
                         highlight,
+                        true,
                     );
                     if tile_resp.clicked() {
                         match state.ripple {
@@ -760,6 +761,7 @@ fn draw_auxes_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState, tile_w: f3
                         order,
                         stereo,
                         RippleHighlight::None,
+                        true,
                     )
                     .clicked()
                     {

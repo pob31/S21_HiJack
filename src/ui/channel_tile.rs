@@ -40,6 +40,12 @@ pub enum RippleHighlight {
 /// When `stereo` is true a darker vertical bar is painted along the right edge
 /// — the convention used by the desk's picker. `ripple_highlight` overlays an
 /// orange marker for endpoints / range-preview when a ripple is in progress.
+///
+/// `enabled == false` renders the tile **disabled**: an extra-dim fill, weak
+/// title text, no hover tint, and a hover-only `Sense` so the returned
+/// response never reports `clicked()`. Disabled tiles are treated as
+/// unselected (the selected stroke / badge are skipped). Used by pickers that
+/// lock out incompatible channel types.
 pub fn draw_tile(
     ui: &mut egui::Ui,
     tile_size: egui::Vec2,
@@ -49,15 +55,28 @@ pub fn draw_tile(
     order: Option<usize>,
     stereo: bool,
     ripple_highlight: RippleHighlight,
+    enabled: bool,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(tile_size, egui::Sense::click());
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(tile_size, sense);
 
     let painter = ui.painter_at(rect);
-    let selected = order.is_some();
+    // Disabled tiles are never "selected" — drop the highlight so a locked-out
+    // type can't show a white border / badge.
+    let selected = enabled && order.is_some();
 
-    // Tile fill: full-saturation when selected, dimmed when not. Hover gets a
-    // slight tint so the operator sees what's about to be clicked.
-    let fill = if selected {
+    // Tile fill: full-saturation when selected, dimmed when not, extra-dim when
+    // disabled. Hover gets a slight tint (enabled tiles only) so the operator
+    // sees what's about to be clicked.
+    let fill = if !enabled {
+        // Mix further toward the dark base so a locked-out tile reads clearly
+        // inert next to the merely-unselected ones.
+        blend(base_color, theme::tile_dim_bg(), 0.25)
+    } else if selected {
         base_color
     } else {
         // Mix base_color towards a dark base at ~30% strength. Theme-
@@ -65,7 +84,7 @@ pub fn draw_tile(
         // on the dimmed tile in the light theme too.
         blend(base_color, theme::tile_dim_bg(), 0.7)
     };
-    let hover_fill = if response.hovered() {
+    let hover_fill = if enabled && response.hovered() {
         blend(fill, theme::TEXT_PRIMARY, 0.85)
     } else {
         fill
@@ -79,6 +98,12 @@ pub fn draw_tile(
         egui::Stroke::new(1.0, theme::border_subtle())
     };
     painter.rect_stroke(rect, 4.0, stroke, egui::StrokeKind::Inside);
+
+    let text_color = if enabled {
+        theme::TEXT_PRIMARY
+    } else {
+        theme::label_weak()
+    };
 
     // Stereo bar: a darker rectangle pinned to the right edge.
     if stereo {
@@ -123,7 +148,7 @@ pub fn draw_tile(
         egui::Align2::CENTER_CENTER,
         title,
         egui::FontId::proportional(13.0),
-        theme::TEXT_PRIMARY,
+        text_color,
     );
     if !name.is_empty() {
         let name_pos = egui::pos2(rect.center().x, rect.min.y + 34.0);
@@ -132,7 +157,7 @@ pub fn draw_tile(
             egui::Align2::CENTER_CENTER,
             name,
             egui::FontId::proportional(11.0),
-            theme::TEXT_PRIMARY,
+            text_color,
         );
     }
 
