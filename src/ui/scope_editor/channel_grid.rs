@@ -609,17 +609,23 @@ fn draw_body_grid(
                         );
                         ui.painter().galley(text_pos, galley, theme::TEXT_PRIMARY);
 
-                        // Interaction: drag still fine-tunes one cell; a plain
-                        // click toggles its selection, shift-click extends a
-                        // rectangle. Drag and click are mutually exclusive.
+                        // Interaction: dragging a SELECTED cell nudges the whole
+                        // selection by the same relative delta; dragging an
+                        // unselected cell fine-tunes just that one. A plain click
+                        // toggles selection, shift-click extends a rectangle.
+                        // Drag and click are mutually exclusive.
                         if resp.dragged() {
                             let delta = resp.drag_delta().x * 0.05;
-                            let nv = (val + delta).clamp(0.0, 30.0);
-                            let t = state.channel_timings.entry(key).or_default();
-                            match state.edit_mode {
-                                ScopeEditMode::PreWait => t.pre_wait_secs = nv,
-                                ScopeEditMode::Fade => t.fade_time_secs = nv,
-                                ScopeEditMode::Scope => {}
+                            if selected {
+                                state.nudge_timing_selection(state.edit_mode, delta);
+                            } else {
+                                let nv = (val + delta).clamp(0.0, 30.0);
+                                let t = state.channel_timings.entry(key).or_default();
+                                match state.edit_mode {
+                                    ScopeEditMode::PreWait => t.pre_wait_secs = nv,
+                                    ScopeEditMode::Fade => t.fade_time_secs = nv,
+                                    ScopeEditMode::Scope => {}
+                                }
                             }
                         } else if resp.clicked() {
                             if ui.input(|i| i.modifiers.shift) {

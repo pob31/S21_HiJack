@@ -402,6 +402,11 @@ pub fn draw_scope_window(
                             theme::ROW_H,
                             true,
                             "0.0",
+                        )
+                        .on_hover_text(
+                            "Type seconds to set all selected cells. \
+                             Or nudge the selection: Up/Down ±0.1 s, \
+                             Alt+Up/Down ±1 s, or drag a selected cell.",
                         );
 
                         let enter =
@@ -466,6 +471,37 @@ pub fn draw_scope_window(
                 && ui.input(|i| i.key_pressed(egui::Key::Escape))
             {
                 state.clear_timing_selection();
+            }
+
+            // Arrow keys nudge the whole selection by a relative amount:
+            // Up/Down = ±0.1 s, Alt+Up/Down = ±1.0 s. Only when a selection is
+            // active and no text field has focus (so typing in the numeric box
+            // is unaffected). `consume_key` stops the keys from also scrolling
+            // the group list below.
+            if state.edit_mode != ScopeEditMode::Scope
+                && !state.timing_selection.is_empty()
+                && ui.ctx().memory(|m| m.focused().is_none())
+            {
+                let delta = ui.input_mut(|i| {
+                    let mut d = 0.0_f32;
+                    if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                        d += 0.1;
+                    }
+                    if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                        d -= 0.1;
+                    }
+                    if i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowUp) {
+                        d += 1.0;
+                    }
+                    if i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowDown) {
+                        d -= 1.0;
+                    }
+                    d
+                });
+                if delta != 0.0 {
+                    state.nudge_timing_selection(state.edit_mode, delta);
+                    state.timing_value_draft = fmt_first_timing(state, &timing_order);
+                }
             }
 
             // ── Templates row ─────────────────────────────────────────

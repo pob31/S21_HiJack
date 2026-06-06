@@ -505,6 +505,29 @@ impl ScopeEditorState {
         }
     }
 
+    /// Nudge every selected cell's per-mode field by a relative `delta` seconds
+    /// (clamped to `0.0..=30.0`). Used by the arrow keys (±0.1 / Alt ±1.0) and
+    /// by dragging a selected cell. `Scope` mode is a no-op.
+    pub fn nudge_timing_selection(&mut self, mode: ScopeEditMode, delta: f32) {
+        if mode == ScopeEditMode::Scope {
+            return;
+        }
+        let sel = &self.timing_selection;
+        let timings = &mut self.channel_timings;
+        for (ch, cat) in sel {
+            let t = timings.entry((ch.clone(), *cat)).or_default();
+            match mode {
+                ScopeEditMode::PreWait => {
+                    t.pre_wait_secs = (t.pre_wait_secs + delta).clamp(0.0, 30.0)
+                }
+                ScopeEditMode::Fade => {
+                    t.fade_time_secs = (t.fade_time_secs + delta).clamp(0.0, 30.0)
+                }
+                ScopeEditMode::Scope => {}
+            }
+        }
+    }
+
     /// Parse a seconds value from the numeric box: `.`-decimal, clamped to the
     /// cell range `0.0..=30.0`. `None` on unparseable input.
     pub fn parse_timing_secs(s: &str) -> Option<f32> {
@@ -1356,6 +1379,47 @@ mod tests {
             assert_eq!(t.pre_wait_secs, 1.5); // untouched
             assert_eq!(t.fade_time_secs, 2.0);
         }
+    }
+
+    #[test]
+    fn nudge_timing_selection_applies_relative_delta_and_clamps() {
+        let mut s = ScopeEditorState::default();
+        s.channel_timings.insert(
+            (ChannelId::Input(1), TimingCategory::Fader),
+            CategoryTiming {
+                pre_wait_secs: 1.0,
+                fade_time_secs: 0.0,
+            },
+        );
+        s.toggle_timing_cell(&ChannelId::Input(1), TimingCategory::Fader);
+        s.toggle_timing_cell(&ChannelId::Input(2), TimingCategory::Fader); // starts at 0.0
+
+        s.nudge_timing_selection(ScopeEditMode::PreWait, 0.1);
+        assert!(
+            (s.channel_timings[&(ChannelId::Input(1), TimingCategory::Fader)].pre_wait_secs - 1.1)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            (s.channel_timings[&(ChannelId::Input(2), TimingCategory::Fader)].pre_wait_secs - 0.1)
+                .abs()
+                < 1e-6
+        );
+
+        // Clamp at the low end: a -1.0 nudge floors at 0.0, not negative.
+        s.nudge_timing_selection(ScopeEditMode::PreWait, -1.0);
+        assert_eq!(
+            s.channel_timings[&(ChannelId::Input(2), TimingCategory::Fader)].pre_wait_secs,
+            0.0
+        );
+
+        // Nudging in Fade mode leaves pre_wait untouched.
+        s.nudge_timing_selection(ScopeEditMode::Fade, 0.5);
+        assert!(
+            (s.channel_timings[&(ChannelId::Input(1), TimingCategory::Fader)].fade_time_secs - 0.5)
+                .abs()
+                < 1e-6
+        );
     }
 
     #[test]
