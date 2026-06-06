@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">S21 Monitor</string>
+    <string name="notif_channel_name">Monitor connection</string>
+    <string name="notif_channel_desc">Keeps the OSC connection to the daemon alive</string>
+</resources>
