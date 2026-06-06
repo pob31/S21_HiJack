@@ -20,5 +20,14 @@ test_s21
 /assets/fonts/NotoSansSC-Regular.ttf
 /assets/fonts/NotoSansSC-VariableFont_wght.ttf
 
-# Linux release artifacts (scripts/build-linux-release.sh)
+# Desktop release artifacts — every packaging script stages here:
+#   scripts/build-linux-release.sh  -> .tar.gz + .sha256
+#   scripts/build-macos-release.sh  -> S21 HiJack.app, .dmg + .sha256
 /dist
+
+# OS packaging byproducts that can land outside /dist
+*.dmg                 # macOS disk images, wherever built
+*.app/                # macOS app bundles, wherever built
+*.iconset/            # transient iconset staged for iconutil
+/Output               # Windows Inno Setup compiler output (assets/*.iss)
+*.AppImage            # Linux AppImage, if produced ad hoc

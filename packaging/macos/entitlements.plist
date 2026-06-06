@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hardened-runtime entitlements for the notarized S21 HiJack build.
+
+  Intentionally empty: the app is notarized, NOT App-Sandboxed, so outbound /
+  inbound UDP (OSC) and USB-HID (Elgato Stream Deck via hidapi) work without
+  any entitlement — the App Sandbox is what gates those, and we do not enable
+  it. The statically linked Rust binary needs neither JIT nor unsigned
+  executable memory, so no com.apple.security.cs.* exceptions are required.
+
+  If a future dependency needs one (e.g. a JIT'd scripting engine), add the
+  specific key here rather than disabling library validation wholesale.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+</dict>
+</plist>
