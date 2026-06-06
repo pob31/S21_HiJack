@@ -4,6 +4,7 @@ use std::sync::Arc;
 use eframe::egui;
 use tokio::sync::RwLock;
 
+use super::gang_member_picker::{GangMemberPickerState, GangPickerOutcome, draw_gang_member_picker};
 use super::help::{HelpHover, HelpKey, help};
 use super::status::StatusMessage;
 use super::theme;
@@ -94,61 +95,25 @@ fn pan_mode_buttons(
     clicked
 }
 
-/// Channel type selector for the Add Gang form.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChannelTypeSelection {
-    Input,
-    Aux,
-    Group,
-    Matrix,
-    ControlGroup,
-    GraphicEq,
-    MatrixInput,
-    Mixed,
-}
-
-impl ChannelTypeSelection {
-    fn label(&self) -> &'static str {
-        match self {
-            Self::Input => "Input",
-            Self::Aux => "Aux",
-            Self::Group => "Group",
-            Self::Matrix => "Matrix",
-            Self::ControlGroup => "Control Group",
-            Self::GraphicEq => "Graphic EQ",
-            Self::MatrixInput => "Matrix Input",
-            Self::Mixed => "Mixed",
+/// Union of the parameter sections applicable to the distinct channel *types*
+/// present in `members`. With no members the union is every section variant,
+/// so the operator can pre-pick sections before choosing members (and the
+/// `retain` that follows prunes the set once real members narrow it). The gang
+/// engine still resolves per-pair applicability at propagation time.
+fn applicable_sections_for(members: &[ChannelId]) -> HashSet<ParameterSection> {
+    if members.is_empty() {
+        return ParameterSection::all_variants().iter().cloned().collect();
+    }
+    let mut seen: Vec<std::mem::Discriminant<ChannelId>> = Vec::new();
+    let mut out: HashSet<ParameterSection> = HashSet::new();
+    for m in members {
+        let d = std::mem::discriminant(m);
+        if !seen.contains(&d) {
+            seen.push(d);
+            out.extend(ParameterSection::applicable_to(m));
         }
     }
-
-    /// Variants offered in the Channel Type dropdown. `Mixed`,
-    /// `GraphicEq` and `MatrixInput` are kept in the enum (so the
-    /// underlying parser still recognises GEQn / MIn prefixes if they
-    /// ever appear in a saved show file) but excluded from the UI
-    /// picker — operators only build gangs on the five common types.
-    const ALL: [Self; 5] = [
-        Self::Input,
-        Self::Aux,
-        Self::Group,
-        Self::Matrix,
-        Self::ControlGroup,
-    ];
-
-    /// Sections this channel type can sensibly gang. Returned in display order.
-    /// `Mixed` returns the union of all sections so the user can compose
-    /// across types and let the engine sort out per-pair applicability.
-    fn applicable_sections(&self) -> Vec<ParameterSection> {
-        match self {
-            Self::Input => ParameterSection::applicable_to(&ChannelId::Input(1)),
-            Self::Aux => ParameterSection::applicable_to(&ChannelId::Aux(1)),
-            Self::Group => ParameterSection::applicable_to(&ChannelId::Group(1)),
-            Self::Matrix => ParameterSection::applicable_to(&ChannelId::Matrix(1)),
-            Self::ControlGroup => ParameterSection::applicable_to(&ChannelId::ControlGroup(1)),
-            Self::GraphicEq => ParameterSection::applicable_to(&ChannelId::GraphicEq(1)),
-            Self::MatrixInput => ParameterSection::applicable_to(&ChannelId::MatrixInput(1)),
-            Self::Mixed => ParameterSection::all_variants().to_vec(),
-        }
-    }
+    out
 }
 
 /// One-line tooltip explaining what a `ParameterSection` actually links
@@ -272,14 +237,16 @@ fn wrap_badges<'a>(
 /// Per-tab UI state for the Gangs tab.
 pub struct GangsTabState {
     pub new_gang_name: String,
-    pub new_gang_channel_type: ChannelTypeSelection,
-    /// Range notation: "1-4,7,12" or for Mixed: "I1-4,A1-2,G5"
-    pub new_gang_members: String,
+    /// Staged member list for the gang being created / edited. Picked via the
+    /// tile picker modal ([`member_picker`]), not typed.
+    pub new_gang_members: Vec<ChannelId>,
     pub new_gang_sections: HashSet<ParameterSection>,
     /// Pan link mode for the gang being created / edited (independent of the
     /// linked sections above).
     pub new_gang_pan_mode: GangPanMode,
     pub editing_gang_id: Option<uuid::Uuid>,
+    /// `Some(_)` while the tile member picker window is open.
+    pub member_picker: Option<GangMemberPickerState>,
     pub status_message: Option<StatusMessage>,
 }
 
@@ -287,11 +254,11 @@ impl Default for GangsTabState {
     fn default() -> Self {
         Self {
             new_gang_name: String::new(),
-            new_gang_channel_type: ChannelTypeSelection::Input,
-            new_gang_members: String::new(),
+            new_gang_members: Vec::new(),
             new_gang_sections: HashSet::from([ParameterSection::FaderMutePan]),
             new_gang_pan_mode: GangPanMode::On,
             editing_gang_id: None,
+            member_picker: None,
             status_message: None,
         }
     }
@@ -357,13 +324,12 @@ pub fn draw_gangs_tab(
             theme::section_heading(ui, if editing { "Edit Gang" } else { "New Gang" });
 
             // Compute the applicable section set once, here, so we can
-            // both retain the user's selection across channel-type flips
-            // and pass the set into the right-column closure cheaply.
-            let applicable: HashSet<ParameterSection> = tab
-                .new_gang_channel_type
-                .applicable_sections()
-                .into_iter()
-                .collect();
+            // both retain the user's selection as members change and pass
+            // the set into the right-column closure cheaply. The set is the
+            // union of the sections applicable to each distinct channel type
+            // among the picked members (empty members → all variants).
+            let applicable: HashSet<ParameterSection> =
+                applicable_sections_for(&tab.new_gang_members);
             tab.new_gang_sections.retain(|s| applicable.contains(s));
 
             ui.horizontal_top(|ui| {
@@ -396,40 +362,50 @@ pub fn draw_gangs_tab(
                                 .on_hover_text(help(HelpKey::GangNewName));
                                 ui.end_row();
 
-                                theme::row_label(ui, "Channel type:", theme::label_weak());
-                                theme::row_combo(ui, 0, |ui| {
-                                    let combo = egui::ComboBox::from_id_salt("gang_channel_type")
-                                        .width(240.0)
-                                        .selected_text(tab.new_gang_channel_type.label())
-                                        .show_ui(ui, |ui| {
-                                            for ct in &ChannelTypeSelection::ALL {
-                                                ui.selectable_value(
-                                                    &mut tab.new_gang_channel_type,
-                                                    *ct,
-                                                    ct.label(),
-                                                );
-                                            }
-                                        });
-                                    combo.response.on_hover_text(help(HelpKey::GangChannelType));
-                                });
-                                ui.end_row();
-
                                 theme::row_label(ui, "Members:", theme::label_weak());
-                                let hint =
-                                    if tab.new_gang_channel_type == ChannelTypeSelection::Mixed {
-                                        "I1-4,A1-2,G5"
-                                    } else {
-                                        "1-4,7,12"
-                                    };
-                                theme::padded_text_edit_sized(
-                                    ui,
-                                    &mut tab.new_gang_members,
-                                    240.0,
-                                    theme::ROW_H,
-                                    true,
-                                    hint,
-                                )
-                                .on_hover_text(help(HelpKey::GangNewMembers));
+                                // Open the tile picker modal; show how many are
+                                // currently picked. Centre the button + count in
+                                // a ROW_H cell so they sit on the "Members:"
+                                // centreline (Grid cells top-align by default).
+                                ui.allocate_ui_with_layout(
+                                    egui::Vec2::new(240.0, theme::ROW_H),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        let label = if tab.editing_gang_id.is_some() {
+                                            "Edit members…"
+                                        } else {
+                                            "Pick members…"
+                                        };
+                                        if theme::row_action_button(
+                                            ui,
+                                            label,
+                                            theme::ACCENT_BLUE,
+                                            130.0,
+                                            true,
+                                            help(HelpKey::GangNewMembers),
+                                        ) && tab.member_picker.is_none()
+                                        {
+                                            // Non-blocking read: skip opening this
+                                            // frame if the state lock is busy.
+                                            if let Ok(st) = state.try_read() {
+                                                let editing = tab.editing_gang_id.is_some();
+                                                tab.member_picker =
+                                                    Some(GangMemberPickerState::new(
+                                                        &tab.new_gang_members,
+                                                        editing,
+                                                        &st,
+                                                    ));
+                                            }
+                                        }
+                                        ui.add_space(8.0);
+                                        let n = tab.new_gang_members.len();
+                                        ui.label(
+                                            egui::RichText::new(format!("{n} picked"))
+                                                .small()
+                                                .color(theme::label_weak()),
+                                        );
+                                    },
+                                );
                                 ui.end_row();
 
                                 // Pan link mode — its own control, separate
@@ -451,11 +427,7 @@ pub fn draw_gangs_tab(
                                         // buttons off the "Pan:" centreline.
                                         ui.spacing_mut().button_padding =
                                             egui::Vec2::new(12.0, 4.0);
-                                        let member_count = parse_channel_members(
-                                            tab.new_gang_channel_type,
-                                            &tab.new_gang_members,
-                                        )
-                                        .len();
+                                        let member_count = tab.new_gang_members.len();
                                         if let Some(m) = pan_mode_buttons(
                                             ui,
                                             tab.new_gang_pan_mode,
@@ -561,8 +533,7 @@ pub fn draw_gangs_tab(
                     .clicked()
                     && !tab.new_gang_name.trim().is_empty()
                 {
-                    let members =
-                        parse_channel_members(tab.new_gang_channel_type, &tab.new_gang_members);
+                    let members = tab.new_gang_members.clone();
 
                     if members.is_empty() {
                         tab.status_message = Some(StatusMessage::with_help(
@@ -662,6 +633,7 @@ pub fn draw_gangs_tab(
                         tab.new_gang_members.clear();
                         tab.new_gang_sections = HashSet::from([ParameterSection::FaderMutePan]);
                         tab.new_gang_pan_mode = GangPanMode::On;
+                        tab.member_picker = None;
                         tab.status_message = None;
                     }
                 }
@@ -966,7 +938,7 @@ pub fn draw_gangs_tab(
                         if let Some(group) = to_edit {
                             tab.editing_gang_id = Some(group.id);
                             tab.new_gang_name = group.name.clone();
-                            tab.new_gang_members = format_members(&group.members);
+                            tab.new_gang_members = group.members.clone();
                             tab.new_gang_sections = group.linked_sections.clone();
                             tab.new_gang_pan_mode = group.effective_pan_mode();
                             tab.status_message = None;
@@ -974,6 +946,27 @@ pub fn draw_gangs_tab(
                     }
                 });
         });
+
+        // ── Member picker modal ── Driven here, after the form and list
+        // cards, where no gang-manager read-guard is held. The picker touches
+        // only `state` / the egui context, so it never contends with the
+        // gang-manager lock. Save writes the chosen members straight back into
+        // the form's staged list; the next frame recomputes the applicable
+        // Linked Sections from them.
+        let picker_outcome = tab
+            .member_picker
+            .as_mut()
+            .and_then(|p| draw_gang_member_picker(ui.ctx(), p));
+        match picker_outcome {
+            Some(GangPickerOutcome::Save(members)) => {
+                tab.new_gang_members = members;
+                tab.member_picker = None;
+            }
+            Some(GangPickerOutcome::Cancel) => {
+                tab.member_picker = None;
+            }
+            None => {}
+        }
     });
 }
 
@@ -1067,133 +1060,9 @@ fn format_ranges(numbers: &[u8]) -> String {
     parts.join(",")
 }
 
-/// Parse channel members from text input.
-///
-/// For single-type modes: "1-4,7,12" -> vec of that type.
-/// For Mixed mode: "I1-4,A1-2,G5" -> mixed vec.
-pub fn parse_channel_members(channel_type: ChannelTypeSelection, input: &str) -> Vec<ChannelId> {
-    let input = input.trim();
-    if input.is_empty() {
-        return Vec::new();
-    }
-
-    if channel_type == ChannelTypeSelection::Mixed {
-        parse_mixed_members(input)
-    } else {
-        let numbers = parse_number_ranges(input);
-        let constructor: fn(u8) -> ChannelId = match channel_type {
-            ChannelTypeSelection::Input => ChannelId::Input,
-            ChannelTypeSelection::Aux => ChannelId::Aux,
-            ChannelTypeSelection::Group => ChannelId::Group,
-            ChannelTypeSelection::Matrix => ChannelId::Matrix,
-            ChannelTypeSelection::ControlGroup => ChannelId::ControlGroup,
-            ChannelTypeSelection::GraphicEq => ChannelId::GraphicEq,
-            ChannelTypeSelection::MatrixInput => ChannelId::MatrixInput,
-            ChannelTypeSelection::Mixed => unreachable!(),
-        };
-        numbers.into_iter().map(constructor).collect()
-    }
-}
-
-/// Parse "I1-4,A1-2,G5" into mixed channel IDs.
-fn parse_mixed_members(input: &str) -> Vec<ChannelId> {
-    let mut result = Vec::new();
-
-    for token in input.split(',') {
-        let token = token.trim();
-        if token.is_empty() {
-            continue;
-        }
-
-        // Determine prefix and rest
-        let (constructor, rest): (fn(u8) -> ChannelId, &str) =
-            if let Some(r) = token.strip_prefix("CG") {
-                (ChannelId::ControlGroup, r)
-            } else if let Some(r) = token.strip_prefix("GEQ") {
-                (ChannelId::GraphicEq, r)
-            } else if let Some(r) = token.strip_prefix("MI") {
-                (ChannelId::MatrixInput, r)
-            } else if let Some(r) = token.strip_prefix('I') {
-                (ChannelId::Input, r)
-            } else if let Some(r) = token.strip_prefix('A') {
-                (ChannelId::Aux, r)
-            } else if let Some(r) = token.strip_prefix('G') {
-                (ChannelId::Group, r)
-            } else if let Some(r) = token.strip_prefix('M') {
-                (ChannelId::Matrix, r)
-            } else {
-                continue; // Unknown prefix, skip
-            };
-
-        let numbers = parse_number_ranges(rest);
-        result.extend(numbers.into_iter().map(constructor));
-    }
-
-    result
-}
-
-/// Parse "1-4,7,12" into a vec of numbers.
-fn parse_number_ranges(input: &str) -> Vec<u8> {
-    let mut result = Vec::new();
-
-    for part in input.split([',', ' ']) {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-
-        if let Some((start_str, end_str)) = part.split_once('-') {
-            if let (Ok(start), Ok(end)) =
-                (start_str.trim().parse::<u8>(), end_str.trim().parse::<u8>())
-            {
-                for n in start..=end {
-                    result.push(n);
-                }
-            }
-        } else if let Ok(n) = part.parse::<u8>() {
-            result.push(n);
-        }
-    }
-
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_simple_range() {
-        let result = parse_channel_members(ChannelTypeSelection::Input, "1-4,7,12");
-        assert_eq!(result.len(), 6);
-        assert_eq!(result[0], ChannelId::Input(1));
-        assert_eq!(result[3], ChannelId::Input(4));
-        assert_eq!(result[4], ChannelId::Input(7));
-        assert_eq!(result[5], ChannelId::Input(12));
-    }
-
-    #[test]
-    fn parse_aux_single() {
-        let result = parse_channel_members(ChannelTypeSelection::Aux, "3");
-        assert_eq!(result, vec![ChannelId::Aux(3)]);
-    }
-
-    #[test]
-    fn parse_mixed_members_notation() {
-        let result = parse_channel_members(ChannelTypeSelection::Mixed, "I1-3,A1,G5");
-        assert_eq!(result.len(), 5);
-        assert_eq!(result[0], ChannelId::Input(1));
-        assert_eq!(result[1], ChannelId::Input(2));
-        assert_eq!(result[2], ChannelId::Input(3));
-        assert_eq!(result[3], ChannelId::Aux(1));
-        assert_eq!(result[4], ChannelId::Group(5));
-    }
-
-    #[test]
-    fn parse_empty_returns_empty() {
-        let result = parse_channel_members(ChannelTypeSelection::Input, "");
-        assert!(result.is_empty());
-    }
 
     #[test]
     fn format_ranges_compresses() {
@@ -1216,15 +1085,5 @@ mod tests {
     fn format_members_mixed() {
         let members = vec![ChannelId::Input(1), ChannelId::Aux(2), ChannelId::Group(5)];
         assert_eq!(format_members(&members), "I1,A2,G5");
-    }
-
-    #[test]
-    fn parse_mixed_control_group() {
-        let result = parse_channel_members(ChannelTypeSelection::Mixed, "CG1-3,I5");
-        assert_eq!(result.len(), 4);
-        assert_eq!(result[0], ChannelId::ControlGroup(1));
-        assert_eq!(result[1], ChannelId::ControlGroup(2));
-        assert_eq!(result[2], ChannelId::ControlGroup(3));
-        assert_eq!(result[3], ChannelId::Input(5));
     }
 }

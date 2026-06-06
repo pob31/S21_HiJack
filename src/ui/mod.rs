@@ -1,8 +1,10 @@
 pub mod advanced_settings;
 pub mod app;
+pub mod channel_tile;
 pub mod cue_list_popup;
 pub mod cue_transport;
 pub mod fonts;
+pub mod gang_member_picker;
 pub mod gangs_tab;
 pub mod help;
 pub mod inspector_tab;
