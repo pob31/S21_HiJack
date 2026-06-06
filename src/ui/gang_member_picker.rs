@@ -272,7 +272,7 @@ pub fn draw_channel_grid(
                 for row in chans.chunks(AVAIL_COLS as usize) {
                     ui.horizontal(|ui| {
                         for ch in row {
-                            let enabled = active.map_or(true, |b| b == bucket_of(ch));
+                            let enabled = active.is_none_or(|b| b == bucket_of(ch));
                             let name = data.names.get(ch).map(String::as_str).unwrap_or("");
                             let selected = selection.contains(ch);
                             let stereo = data.stereo.contains(ch);
