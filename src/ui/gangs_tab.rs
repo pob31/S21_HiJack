@@ -348,6 +348,11 @@ pub struct GangsTabState {
     /// linked sections above).
     pub new_gang_pan_mode: GangPanMode,
     pub editing_gang_id: Option<uuid::Uuid>,
+    /// Collapse the New/Edit Gang builder body (channel grid + parameters) to
+    /// just its title row, so the Gang Groups list below is reachable without
+    /// scrolling past the full picker. The title row (name + Add/Save) stays
+    /// visible; editing a gang auto-expands it.
+    pub form_collapsed: bool,
     pub status_message: Option<StatusMessage>,
 }
 
@@ -360,6 +365,7 @@ impl Default for GangsTabState {
             new_gang_sections: HashSet::from([ParameterSection::FaderMutePan]),
             new_gang_pan_mode: GangPanMode::On,
             editing_gang_id: None,
+            form_collapsed: false,
             status_message: None,
         }
     }
@@ -433,175 +439,257 @@ pub fn draw_gangs_tab(
                 applicable_sections_for(&tab.new_gang_members);
             tab.new_gang_sections.retain(|s| applicable.contains(s));
 
-            // ── Title row: heading + Name + Add/Save (+ Cancel) ──
-            theme::section_heading_with(ui, if editing { "Edit Gang" } else { "New Gang" }, |ui| {
-                // right_to_left layout: the first widget added sits furthest
-                // right. Cancel → Save → Name field → label, so it reads
-                // "Name: [field]  [Add Gang] [Cancel]" left-to-right.
-                if editing
-                    && theme::row_action_button(
-                        ui,
-                        "Cancel",
-                        theme::btn_neutral(),
-                        80.0,
-                        true,
-                        help(HelpKey::GangCancelEdit),
-                    )
-                {
-                    tab.editing_gang_id = None;
-                    reset_gang_form(tab);
-                    tab.status_message = None;
-                }
-                let (btn_text, btn_color) = if editing {
-                    ("Save", theme::ACCENT_BLUE)
+            // ── Title row: collapse toggle + heading + Name + Add/Save (+ Cancel) ──
+            // Always visible; collapsing hides only the body so the Gang Groups
+            // list below is reachable without scrolling past the full picker.
+            let header_title = if editing { "Edit Gang" } else { "New Gang" };
+            ui.horizontal(|ui| {
+                // Clickable disclosure triangle — painted (not a font glyph) so
+                // it renders regardless of the bundled font. ▶ collapsed / ▼ open.
+                let (tri_rect, tri_resp) =
+                    ui.allocate_exact_size(egui::Vec2::splat(16.0), egui::Sense::click());
+                let c = tri_rect.center();
+                let r = 4.5;
+                let tri_color = if tri_resp.hovered() {
+                    theme::label_color()
                 } else {
-                    ("Add Gang", theme::ACCENT_GREEN)
+                    theme::label_weak()
                 };
-                if theme::row_action_button(
-                    ui,
-                    btn_text,
-                    btn_color,
-                    100.0,
-                    true,
-                    help(HelpKey::GangSave),
-                ) {
-                    try_save_gang(tab, gang_manager, state, runtime);
+                let pts = if tab.form_collapsed {
+                    vec![
+                        egui::pos2(c.x - r * 0.6, c.y - r),
+                        egui::pos2(c.x + r, c.y),
+                        egui::pos2(c.x - r * 0.6, c.y + r),
+                    ]
+                } else {
+                    vec![
+                        egui::pos2(c.x - r, c.y - r * 0.6),
+                        egui::pos2(c.x + r, c.y - r * 0.6),
+                        egui::pos2(c.x, c.y + r),
+                    ]
+                };
+                ui.painter().add(egui::Shape::convex_polygon(
+                    pts,
+                    tri_color,
+                    egui::Stroke::NONE,
+                ));
+                if tri_resp.clicked() {
+                    tab.form_collapsed = !tab.form_collapsed;
                 }
-                ui.add_space(8.0);
-                theme::padded_text_edit_sized(
-                    ui,
-                    &mut tab.new_gang_name,
-                    220.0,
-                    theme::ROW_H,
-                    true,
-                    "Gang name",
-                )
-                .on_hover_text(help(HelpKey::GangNewName));
-                theme::row_label(ui, "Name:", theme::label_weak());
+
+                ui.add_space(2.0);
+                // The heading is also a click target for the toggle.
+                let head = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(header_title)
+                            .size(theme::FONT_SIZE_SECTION)
+                            .strong()
+                            .color(theme::label_color()),
+                    )
+                    .sense(egui::Sense::click()),
+                );
+                if head.clicked() {
+                    tab.form_collapsed = !tab.form_collapsed;
+                }
+                // When collapsed, surface the staged member count so the operator
+                // sees something is in progress without expanding.
+                if tab.form_collapsed && !tab.new_gang_members.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!("· {} selected", tab.new_gang_members.len()))
+                            .color(theme::label_weak()),
+                    );
+                }
+
+                // Right side — Name + Add/Save (+ Cancel), compacted the same way
+                // `theme::section_heading_with` does so the row stays short. The
+                // first widget added sits furthest right.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let body_h = ui.text_style_height(&egui::TextStyle::Body);
+                    ui.spacing_mut().button_padding.y = 0.0;
+                    ui.spacing_mut().interact_size.y = body_h;
+
+                    if editing
+                        && theme::row_action_button(
+                            ui,
+                            "Cancel",
+                            theme::btn_neutral(),
+                            80.0,
+                            true,
+                            help(HelpKey::GangCancelEdit),
+                        )
+                    {
+                        tab.editing_gang_id = None;
+                        reset_gang_form(tab);
+                        tab.status_message = None;
+                    }
+                    let (btn_text, btn_color) = if editing {
+                        ("Save", theme::ACCENT_BLUE)
+                    } else {
+                        ("Add Gang", theme::ACCENT_GREEN)
+                    };
+                    if theme::row_action_button(
+                        ui,
+                        btn_text,
+                        btn_color,
+                        100.0,
+                        true,
+                        help(HelpKey::GangSave),
+                    ) {
+                        try_save_gang(tab, gang_manager, state, runtime);
+                    }
+                    ui.add_space(8.0);
+                    theme::padded_text_edit_sized(
+                        ui,
+                        &mut tab.new_gang_name,
+                        220.0,
+                        theme::ROW_H,
+                        true,
+                        "Gang name",
+                    )
+                    .on_hover_text(help(HelpKey::GangNewName));
+                    theme::row_label(ui, "Name:", theme::label_weak());
+                });
             });
+            // Underline rule (matches the section-heading look).
+            ui.add_space(2.0);
+            {
+                let rule_w = ui.available_width();
+                let (rule_rect, _) =
+                    ui.allocate_exact_size(egui::Vec2::new(rule_w, 1.0), egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(rule_rect, 0.0, theme::border_subtle());
+            }
+            ui.add_space(6.0);
 
-            // ── Body: channel grid (≈⅔) | parameter column (≈⅓) ──
-            // Capped-height scroll so a tall channel count scrolls here while the
-            // gang list below stays reachable.
-            let body_h = (ui.available_height() - 220.0).max(220.0);
-            egui::ScrollArea::vertical()
-                .id_salt("gang_form_body")
-                .max_height(body_h)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    let gap = theme::TILE_COLUMN_GAP;
-                    let avail = ui.available_width();
-                    let right_w = ((avail - gap) / 3.0).floor().max(180.0);
-                    let left_w = (avail - gap - right_w).max(theme::TILE_W_MIN);
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.horizontal_top(|ui| {
-                        // LEFT ⅔ — channel tiles (selection shown in place).
-                        match &grid_data {
-                            Some(data) => {
-                                draw_channel_grid(
-                                    ui,
-                                    data,
-                                    &mut tab.new_gang_members,
-                                    &mut tab.member_anchor,
-                                    left_w,
-                                    shift_held,
-                                );
-                            }
-                            None => {
-                                ui.allocate_ui_with_layout(
-                                    egui::Vec2::new(left_w, ui.available_height()),
-                                    egui::Layout::top_down(egui::Align::Min),
-                                    |ui| {
-                                        ui.set_min_width(left_w);
-                                        ui.set_max_width(left_w);
-                                        ui.colored_label(theme::label_weak(), "Loading channels…");
-                                    },
-                                );
-                            }
-                        }
-
-                        ui.add_space(gap);
-
-                        // RIGHT ⅓ — Pan on top, then the Linked Sections grid.
-                        ui.allocate_ui_with_layout(
-                            egui::Vec2::new(right_w, ui.available_height()),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                ui.set_min_width(right_w);
-                                ui.set_max_width(right_w);
-                                // Restore a normal horizontal gap (the enclosing
-                                // row forced item_spacing.x = 0 for tile math).
-                                ui.spacing_mut().item_spacing.x = 8.0;
-
-                                // Pan link mode — its own control, REV only for
-                                // an exact pair.
-                                ui.label(
-                                    egui::RichText::new("Pan")
-                                        .strong()
-                                        .color(theme::label_color()),
-                                );
-                                ui.add_space(2.0);
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
-                                    let member_count = tab.new_gang_members.len();
-                                    if let Some(m) = pan_mode_buttons(
+            if !tab.form_collapsed {
+                // ── Body: channel grid (≈⅔) | parameter column (≈⅓) ──
+                // Capped-height scroll so a tall channel count scrolls here while
+                // the gang list below stays reachable.
+                let body_h = (ui.available_height() - 220.0).max(220.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("gang_form_body")
+                    .max_height(body_h)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        let gap = theme::TILE_COLUMN_GAP;
+                        let avail = ui.available_width();
+                        let right_w = ((avail - gap) / 3.0).floor().max(180.0);
+                        let left_w = (avail - gap - right_w).max(theme::TILE_W_MIN);
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        ui.horizontal_top(|ui| {
+                            // LEFT ⅔ — channel tiles (selection shown in place).
+                            match &grid_data {
+                                Some(data) => {
+                                    draw_channel_grid(
                                         ui,
-                                        tab.new_gang_pan_mode,
-                                        true,
-                                        member_count == 2,
-                                    ) {
-                                        tab.new_gang_pan_mode = m;
-                                    }
-                                });
+                                        data,
+                                        &mut tab.new_gang_members,
+                                        &mut tab.member_anchor,
+                                        left_w,
+                                        shift_held,
+                                    );
+                                }
+                                None => {
+                                    ui.allocate_ui_with_layout(
+                                        egui::Vec2::new(left_w, ui.available_height()),
+                                        egui::Layout::top_down(egui::Align::Min),
+                                        |ui| {
+                                            ui.set_min_width(left_w);
+                                            ui.set_max_width(left_w);
+                                            ui.colored_label(
+                                                theme::label_weak(),
+                                                "Loading channels…",
+                                            );
+                                        },
+                                    );
+                                }
+                            }
 
-                                ui.add_space(8.0);
-                                ui.separator();
-                                ui.add_space(4.0);
+                            ui.add_space(gap);
 
-                                ui.label(
-                                    egui::RichText::new("Linked Sections")
-                                        .strong()
-                                        .color(theme::label_color()),
-                                );
-                                ui.add_space(4.0);
-                                // Manual row wrapping — horizontal_wrapped won't
-                                // break rows in this nesting.
-                                let rows = wrap_section_tiles(ui, right_w);
-                                for row in &rows {
+                            // RIGHT ⅓ — Pan on top, then the Linked Sections grid.
+                            ui.allocate_ui_with_layout(
+                                egui::Vec2::new(right_w, ui.available_height()),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_min_width(right_w);
+                                    ui.set_max_width(right_w);
+                                    // Restore a normal horizontal gap (the enclosing
+                                    // row forced item_spacing.x = 0 for tile math).
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+
+                                    // Pan link mode — its own control, REV only for
+                                    // an exact pair.
+                                    ui.label(
+                                        egui::RichText::new("Pan")
+                                            .strong()
+                                            .color(theme::label_color()),
+                                    );
+                                    ui.add_space(2.0);
                                     ui.horizontal(|ui| {
-                                        for section in row {
-                                            let is_applicable = applicable.contains(section);
-                                            let active = tab.new_gang_sections.contains(section);
-                                            let builder = if is_applicable {
-                                                egui::UiBuilder::new()
-                                            } else {
-                                                egui::UiBuilder::new().invisible()
-                                            };
-                                            let resp = ui
-                                                .scope_builder(builder, |ui| {
-                                                    theme::toggle_block(
-                                                        ui,
-                                                        &gang_section_label(section),
-                                                        active,
-                                                    )
-                                                    .on_hover_text(section_tooltip(section))
-                                                })
-                                                .inner;
-                                            if is_applicable && resp.clicked() {
-                                                if active {
-                                                    tab.new_gang_sections.remove(*section);
-                                                } else {
-                                                    tab.new_gang_sections
-                                                        .insert((*section).clone());
-                                                }
-                                            }
+                                        ui.spacing_mut().button_padding =
+                                            egui::Vec2::new(12.0, 4.0);
+                                        let member_count = tab.new_gang_members.len();
+                                        if let Some(m) = pan_mode_buttons(
+                                            ui,
+                                            tab.new_gang_pan_mode,
+                                            true,
+                                            member_count == 2,
+                                        ) {
+                                            tab.new_gang_pan_mode = m;
                                         }
                                     });
-                                }
-                            },
-                        );
+
+                                    ui.add_space(8.0);
+                                    ui.separator();
+                                    ui.add_space(4.0);
+
+                                    ui.label(
+                                        egui::RichText::new("Linked Sections")
+                                            .strong()
+                                            .color(theme::label_color()),
+                                    );
+                                    ui.add_space(4.0);
+                                    // Manual row wrapping — horizontal_wrapped won't
+                                    // break rows in this nesting.
+                                    let rows = wrap_section_tiles(ui, right_w);
+                                    for row in &rows {
+                                        ui.horizontal(|ui| {
+                                            for section in row {
+                                                let is_applicable = applicable.contains(section);
+                                                let active =
+                                                    tab.new_gang_sections.contains(section);
+                                                let builder = if is_applicable {
+                                                    egui::UiBuilder::new()
+                                                } else {
+                                                    egui::UiBuilder::new().invisible()
+                                                };
+                                                let resp = ui
+                                                    .scope_builder(builder, |ui| {
+                                                        theme::toggle_block(
+                                                            ui,
+                                                            &gang_section_label(section),
+                                                            active,
+                                                        )
+                                                        .on_hover_text(section_tooltip(section))
+                                                    })
+                                                    .inner;
+                                                if is_applicable && resp.clicked() {
+                                                    if active {
+                                                        tab.new_gang_sections.remove(*section);
+                                                    } else {
+                                                        tab.new_gang_sections
+                                                            .insert((*section).clone());
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
+                                },
+                            );
+                        });
                     });
-                });
+            }
 
             // Status message
             if let Some(ref msg) = tab.status_message {
@@ -906,6 +994,9 @@ pub fn draw_gangs_tab(
                             tab.member_anchor.clear();
                             tab.new_gang_sections = group.linked_sections.clone();
                             tab.new_gang_pan_mode = group.effective_pan_mode();
+                            // Expand the builder so the edited gang's channels and
+                            // parameters are visible.
+                            tab.form_collapsed = false;
                             tab.status_message = None;
                         }
                     }
