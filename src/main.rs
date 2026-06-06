@@ -13,6 +13,7 @@ mod osc;
 mod persistence;
 mod platform;
 mod ui;
+mod version;
 mod web;
 
 use std::net::SocketAddr;

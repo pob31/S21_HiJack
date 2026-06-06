@@ -19,3 +19,6 @@ test_s21
 # locally only, if at all).
 /assets/fonts/NotoSansSC-Regular.ttf
 /assets/fonts/NotoSansSC-VariableFont_wght.ttf
+
+# Linux release artifacts (scripts/build-linux-release.sh)
+/dist

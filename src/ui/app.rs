@@ -389,6 +389,11 @@ impl HiJackApp {
             setup.pending_initial_load = Some(path);
         }
 
+        // Auto-check for a newer release on launch — background + fail-silent,
+        // so it never blocks startup or surfaces errors when offline. The
+        // result lands in `setup.update_status` via `UiEvent::UpdateCheckResult`.
+        super::setup_tab::spawn_update_check(&mut setup, &runtime, &ui_tx);
+
         Self {
             state: Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default()))),
             cue_manager: Arc::new(RwLock::new(CueManager::new(CueList::default()))),
@@ -1448,6 +1453,9 @@ impl HiJackApp {
                 UiEvent::StreamDeckError { message } => {
                     tracing::warn!("Stream Deck error: {message}");
                     self.macros.status_message = Some(format!("Stream Deck: {message}").into());
+                }
+                UiEvent::UpdateCheckResult(status) => {
+                    self.setup.update_status = status;
                 }
             }
         }

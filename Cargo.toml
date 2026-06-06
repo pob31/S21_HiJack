@@ -64,6 +64,7 @@ mime_guess = "2"
 # Per-profile QR codes in the Monitor tab (deep-link a musician's browser to
 # their mix). Core only — we rasterize the modules to an egui texture ourselves.
 qrcode = { version = "0.14", default-features = false }
+ureq = "3.3.0"
 
 # ── Physical display metrics (real PPI) for DPI-aware UI scaling ──
 # Per-platform: macOS via Core Graphics, Windows via the raw-DPI monitor API,

@@ -221,4 +221,10 @@ pub enum UiEvent {
     StreamDeckError {
         message: String,
     },
+
+    // ─── App update check ────────────────────────────────────────────
+    /// Result of a GitHub "latest release" lookup (auto on launch or the
+    /// Setup-tab "Check for updates" button). Drained on the UI thread into
+    /// `setup.update_status` for the version footer.
+    UpdateCheckResult(crate::version::UpdateStatus),
 }

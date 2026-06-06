@@ -147,6 +147,10 @@ pub struct SetupTabState {
     /// Setup tab draws — `draw_setup_tab` calls `load_show_file` once
     /// and clears the slot. Runtime-only.
     pub pending_initial_load: Option<std::path::PathBuf>,
+    /// Latest result of the GitHub release check, shown in the Setup-tab
+    /// version footer. Updated by `UiEvent::UpdateCheckResult`. Runtime-only;
+    /// starts `Unknown`, flips to `Checking` while a lookup is in flight.
+    pub update_status: crate::version::UpdateStatus,
 }
 
 impl SetupTabState {
@@ -216,6 +220,7 @@ impl SetupTabState {
             show_advanced_panel: false,
             console_ip_warning_dismissed: false,
             pending_initial_load: None,
+            update_status: crate::version::UpdateStatus::Unknown,
         }
     }
 }
@@ -1837,7 +1842,7 @@ pub fn draw_setup_tab(
     });
     });
 
-    // ── Footer: Advanced Settings button anchored bottom-left ──
+    // ── Footer: Advanced Settings (left) + version / update check (right) ──
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         if ui
@@ -1851,6 +1856,12 @@ pub fn draw_setup_tab(
         {
             setup.show_advanced_panel = !setup.show_advanced_panel;
         }
+
+        // Version label + update-check state + re-check button, anchored to the
+        // bottom-right corner of the tab.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            draw_version_footer(ui, setup, runtime, ui_tx);
+        });
     });
 
     // The window floats above everything via `ui.ctx()`; not clipped
@@ -2673,7 +2684,8 @@ pub(crate) async fn build_show_file(
     let sd = stream_deck_config.read().await;
 
     ShowFile {
-        version: 15,
+        version: 16,
+        app_version: crate::version::APP_VERSION.to_string(),
         console_config: state_guard.config.clone(),
         connection,
         scope_templates: mgr.scope_templates.values().cloned().collect(),
@@ -2916,6 +2928,99 @@ pub(crate) fn save_show_file(
             }
         }
     });
+}
+
+/// Kick off a GitHub "latest release" check on a background thread, flipping
+/// `update_status` to `Checking` so the footer shows progress. The blocking
+/// HTTPS lookup runs on the runtime's blocking pool; its result returns to the
+/// UI thread as `UiEvent::UpdateCheckResult`. Used both for the auto-check at
+/// launch and the manual "Check for updates" button — and is fail-silent
+/// (offline / rate-limited just yields `UpdateStatus::Failed`).
+pub(crate) fn spawn_update_check(
+    setup: &mut SetupTabState,
+    runtime: &tokio::runtime::Handle,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+) {
+    setup.update_status = crate::version::UpdateStatus::Checking;
+    let tx = ui_tx.clone();
+    runtime.spawn_blocking(move || {
+        let status = crate::version::check_latest_release();
+        let _ = tx.send(UiEvent::UpdateCheckResult(status));
+    });
+}
+
+/// Bottom-right of the Setup tab: the running version, the GitHub release-check
+/// state, and a manual "Check for updates" button. The caller wraps this in a
+/// right-to-left layout, so widgets are added in visual right→left order.
+fn draw_version_footer(
+    ui: &mut egui::Ui,
+    setup: &mut SetupTabState,
+    runtime: &tokio::runtime::Handle,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+) {
+    use crate::version::UpdateStatus;
+
+    // Far right: re-check button (disabled while a check is already running).
+    let checking = matches!(setup.update_status, UpdateStatus::Checking);
+    if ui
+        .add_enabled(
+            !checking,
+            theme::action_button(
+                "Check for updates",
+                theme::btn_neutral(),
+                egui::Vec2::new(150.0, 24.0),
+            ),
+        )
+        .on_hover_text("Check GitHub for a newer release of S21 HiJack")
+        .clicked()
+    {
+        spawn_update_check(setup, runtime, ui_tx);
+    }
+
+    ui.add_space(8.0);
+
+    // Check result, just left of the button.
+    match setup.update_status.clone() {
+        UpdateStatus::Unknown => {}
+        UpdateStatus::Checking => {
+            ui.label(egui::RichText::new("Checking…").color(theme::label_weak()));
+        }
+        UpdateStatus::UpToDate => {
+            ui.label(egui::RichText::new("Up to date").color(theme::ACCENT_GREEN));
+        }
+        UpdateStatus::Available { version, url } => {
+            if url.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!("Update available: v{version}"))
+                        .color(theme::ACCENT_ORANGE)
+                        .strong(),
+                );
+            } else {
+                ui.hyperlink_to(
+                    egui::RichText::new(format!("Update available: v{version} ↗"))
+                        .color(theme::ACCENT_ORANGE)
+                        .strong(),
+                    url,
+                )
+                .on_hover_text("Open the release page on GitHub");
+            }
+        }
+        UpdateStatus::Failed(reason) => {
+            // Neutral wording: covers both "offline / rate-limited" and the
+            // pre-first-release "no releases yet" case without alarming the
+            // operator. The specific reason is on hover.
+            ui.label(egui::RichText::new("Update check unavailable").color(theme::label_weak()))
+                .on_hover_text(reason);
+        }
+    }
+
+    ui.add_space(12.0);
+
+    // The running version itself, anchored furthest left of this group.
+    ui.label(
+        egui::RichText::new(format!("v{}", crate::version::APP_VERSION)).color(theme::label_weak()),
+    )
+    .on_hover_text("Running version of S21 HiJack");
 }
 
 /// Persist the current UI mode + diagnostic toggle as the application

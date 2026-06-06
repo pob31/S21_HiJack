@@ -198,6 +198,12 @@ impl Default for ConnectionSettings {
 pub struct ShowFile {
     /// File format version for future compatibility.
     pub version: u32,
+    /// App version that wrote this file (e.g. `"0.1.0"`), for support and
+    /// diagnostics — distinct from `version`, which is the file *format*
+    /// revision used for migrations. New in v16; files written by older builds
+    /// load with an empty string ("unknown").
+    #[serde(default)]
+    pub app_version: String,
     /// Console configuration from discovery.
     pub console_config: ConsoleConfig,
     /// Connection settings (IP, ports, mode).
@@ -243,7 +249,8 @@ pub struct ShowFile {
 impl ShowFile {
     pub fn new(config: ConsoleConfig) -> Self {
         Self {
-            version: 15,
+            version: 16,
+            app_version: crate::version::APP_VERSION.to_string(),
             console_config: config,
             connection: ConnectionSettings::default(),
             scope_templates: Vec::new(),
@@ -366,7 +373,9 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 15);
+        assert_eq!(loaded.version, 16);
+        // A freshly-written show stamps the running app version.
+        assert_eq!(loaded.app_version, crate::version::APP_VERSION);
         assert_eq!(loaded.console_config.input_channel_count, 48);
         assert_eq!(loaded.console_config.control_group_count, 10);
         assert!(loaded.scope_templates.is_empty());
@@ -451,7 +460,7 @@ mod tests {
         let path = dir.join("test_show_streamdeck.json");
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
-        assert_eq!(loaded.version, 15);
+        assert_eq!(loaded.version, 16);
         assert_eq!(loaded.stream_deck, show.stream_deck);
         let _ = tokio::fs::remove_file(&path).await;
     }
