@@ -4,7 +4,9 @@ use std::sync::Arc;
 use eframe::egui;
 use tokio::sync::RwLock;
 
-use super::gang_member_picker::{GangMemberPickerState, GangPickerOutcome, draw_gang_member_picker};
+use super::gang_member_picker::{
+    GangMemberPickerState, GangPickerOutcome, draw_gang_member_picker,
+};
 use super::help::{HelpHover, HelpKey, help};
 use super::status::StatusMessage;
 use super::theme;

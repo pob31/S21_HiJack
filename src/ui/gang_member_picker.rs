@@ -105,7 +105,11 @@ impl GangMemberPickerState {
     fn apply_click(&mut self, group: ChannelGroup, ch: &ChannelId, num: u8, shift: bool) {
         if shift {
             if let Some(&anchor) = self.anchor.get(&group) {
-                let (lo, hi) = if anchor <= num { (anchor, num) } else { (num, anchor) };
+                let (lo, hi) = if anchor <= num {
+                    (anchor, num)
+                } else {
+                    (num, anchor)
+                };
                 // Collect first (releases the `groups` borrow) then insert.
                 let in_range: Vec<ChannelId> = self
                     .groups
@@ -359,8 +363,7 @@ fn draw_available_pane(
                 for row in chans.chunks(AVAIL_COLS as usize) {
                     ui.horizontal(|ui| {
                         for ch in row {
-                            let name =
-                                state.names.get(ch).map(String::as_str).unwrap_or("");
+                            let name = state.names.get(ch).map(String::as_str).unwrap_or("");
                             let selected = state.selected.contains(ch);
                             let stereo = state.stereo.contains(ch);
                             if draw_tile(
@@ -441,8 +444,7 @@ fn draw_linked_pane(
                 for row in members.chunks(LINKED_COLS as usize) {
                     ui.horizontal(|ui| {
                         for ch in row {
-                            let name =
-                                state.names.get(*ch).map(String::as_str).unwrap_or("");
+                            let name = state.names.get(*ch).map(String::as_str).unwrap_or("");
                             let stereo = state.stereo.contains(*ch);
                             if draw_tile(
                                 ui,
@@ -505,11 +507,7 @@ mod tests {
         cfg.matrix_input_count = 0;
         let state = ConsoleState::new(cfg);
 
-        let p = GangMemberPickerState::new(
-            &[ChannelId::Input(1), ChannelId::Aux(2)],
-            true,
-            &state,
-        );
+        let p = GangMemberPickerState::new(&[ChannelId::Input(1), ChannelId::Aux(2)], true, &state);
         assert!(p.editing);
         assert!(p.selected.contains(&ChannelId::Input(1)));
         assert!(p.selected.contains(&ChannelId::Aux(2)));
