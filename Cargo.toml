@@ -81,6 +81,11 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_HiDpi",
 ] }
 
+# Embed the app icon + version-info resource into s21_hijack.exe (see build.rs).
+# Host-gated to Windows so non-Windows builds neither pull nor compile it.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [dev-dependencies]
 # Property-based / random-input testing for the network-boundary OSC parsers
 # (audit M6). Stable Rust; runs as part of `cargo test`. For deeper

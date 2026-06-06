@@ -46,11 +46,42 @@ restart your file manager) to pick up the new association.
 
 ## Windows
 
-If you're using **Inno Setup** for the installer, drop
-`assets/s21_hijack_assoc.iss` into your `.iss` script — it has the
-`[Registry]` entries to register the extension with the installed
-binary. Inno picks `HKLM` vs `HKCU` automatically based on your
-`PrivilegesRequired` setting.
+The simplest path is the release helper, which builds the exe, bundles the
+runtime `locales\` tree + docs, and (when Inno Setup is installed) compiles the
+installer in one step:
+
+```powershell
+scripts\build-windows-release.ps1
+```
+
+It writes to `dist\`:
+
+- `s21_hijack-v<version>-windows-x64.zip` — portable: `s21_hijack.exe`,
+  `locales\`, README, and both licenses (no Rust toolchain needed to run).
+- `s21_hijack-v<version>-windows-x64-setup.exe` — the Inno Setup installer
+  (Start-menu / optional desktop shortcut + the `.s21show` association).
+
+Both get a `.sha256` sidecar. The version comes from `Cargo.toml`, so the
+artifact names match the GitHub release tag the in-app update check compares
+against. Pass `-SkipBuild` to repackage an existing `target\release` binary, or
+`-SkipInstaller` for the zip only. The exe icon and version info are embedded at
+compile time (see `build.rs`), so Explorer and the `.s21show` association both
+show the app icon.
+
+The installer is defined by `packaging\windows\s21_hijack.iss`. To compile it
+directly (e.g. from the Inno IDE) instead of via the helper:
+
+```powershell
+ISCC /DMyAppVersion=0.1.0 packaging\windows\s21_hijack.iss
+```
+
+> **Important:** any Inno script must ship the `locales\` folder *beside*
+> `s21_hijack.exe` (the bundled `.iss` does this) — without it every tooltip
+> falls back to English (see [Help-bubble translations](#help-bubble-translations)).
+
+The `.s21show` file association lives in `assets/s21_hijack_assoc.iss` as a
+standalone `[Registry]` fragment (the full `.iss` `#include`s it, so there's one
+source of truth). To add it to a different `.iss` instead:
 
 ```iss
 ; In your .iss file:
@@ -58,7 +89,8 @@ binary. Inno picks `HKLM` vs `HKCU` automatically based on your
 ```
 
 Or copy its `[Registry]` section verbatim into your existing
-`[Registry]` block.
+`[Registry]` block. Inno picks `HKLM` vs `HKCU` automatically based on your
+`PrivilegesRequired` setting.
 
 For a manual one-off install without an installer, use the
 ready-made `.reg` template:
