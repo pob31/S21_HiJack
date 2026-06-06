@@ -1350,9 +1350,12 @@ impl HiJackApp {
                             format!("(macro) {}", snapshot.name),
                         )
                         .with_snapshot_id(snapshot_id);
-                        let pmgr = pmgr.read().await;
+                        // Clone palettes and drop the read guard before the
+                        // recall await (avoids the palette<->state ABBA deadlock
+                        // with the absorb loop; see palette_tracker.rs).
+                        let palettes = pmgr.read().await.palettes.clone();
                         let _ = engine
-                            .recall_cue(&cue, Some(&snapshot), &pmgr.palettes, false)
+                            .recall_cue(&cue, Some(&snapshot), &palettes, false)
                             .await;
                     });
                 }

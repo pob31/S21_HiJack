@@ -1727,12 +1727,13 @@ pub fn recall_snapshot_by_id(
         let name = snapshot.name.clone();
         drop(mgr);
 
-        // Read palettes under the palette-manager lock.
-        let palettes_guard = pmgr.read().await;
+        // Clone palettes and drop the read guard BEFORE the recall await:
+        // holding it across the recall (which takes state.write per param) forms
+        // an ABBA deadlock with the palette-absorb loop. See palette_tracker.rs.
+        let palettes = pmgr.read().await.palettes.clone();
         let result = engine
-            .recall(&snapshot, &scope, &palettes_guard.palettes, ignore_scope)
+            .recall(&snapshot, &scope, &palettes, ignore_scope)
             .await;
-        drop(palettes_guard);
 
         // Emit a recall-specific event so the status reads "Recalled …",
         // not "Captured …". The handler adds the "(N params sent)" suffix.

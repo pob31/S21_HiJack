@@ -51,9 +51,26 @@ impl OscClient {
                 format!("OSC encode error: {e}"),
             )
         })?;
-        self.socket.send_to(&buf, self.console_addr).await?;
-        debug!(path, "Sent OSC message");
-        Ok(())
+        // Bounded send. A non-blocking UDP `send_to` PENDS indefinitely when the
+        // OS send buffer is full (tokio parks the future). If that happens while
+        // a caller holds a lock — e.g. `process_message` holds `gang_engine.write()`
+        // across a gang send — the whole serial inbound loop wedges and outbound
+        // never recovers. Cap the wait and DROP on timeout: UDP is already lossy
+        // and the desk re-syncs on the next recall/echo, so no single send can
+        // permanently stall the app.
+        const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
+        match tokio::time::timeout(SEND_TIMEOUT, self.socket.send_to(&buf, self.console_addr)).await
+        {
+            Ok(Ok(_)) => {
+                debug!(path, "Sent OSC message");
+                Ok(())
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => {
+                warn!(path, "OSC send timed out (send buffer full?) — dropped");
+                Ok(())
+            }
+        }
     }
 
     /// Split this client into a sender handle and a receive loop (no logging, no cancellation).
@@ -153,9 +170,26 @@ impl OscSender {
                 format!("OSC encode error: {e}"),
             )
         })?;
-        self.socket.send_to(&buf, self.console_addr).await?;
-        debug!(path, "Sent OSC message");
-        Ok(())
+        // Bounded send. A non-blocking UDP `send_to` PENDS indefinitely when the
+        // OS send buffer is full (tokio parks the future). If that happens while
+        // a caller holds a lock — e.g. `process_message` holds `gang_engine.write()`
+        // across a gang send — the whole serial inbound loop wedges and outbound
+        // never recovers. Cap the wait and DROP on timeout: UDP is already lossy
+        // and the desk re-syncs on the next recall/echo, so no single send can
+        // permanently stall the app.
+        const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
+        match tokio::time::timeout(SEND_TIMEOUT, self.socket.send_to(&buf, self.console_addr)).await
+        {
+            Ok(Ok(_)) => {
+                debug!(path, "Sent OSC message");
+                Ok(())
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => {
+                warn!(path, "OSC send timed out (send buffer full?) — dropped");
+                Ok(())
+            }
+        }
     }
 }
 

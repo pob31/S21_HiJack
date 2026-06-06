@@ -2346,10 +2346,13 @@ pub(crate) fn start_connection(
                         continue;
                     };
                     info!(row, name = %snapshot.name, "Follow: recalling app snapshot");
-                    let palettes = follow_palette_mgr.read().await;
+                    // Clone palettes and drop the read guard before the recall
+                    // await (avoids the palette<->state ABBA deadlock; see
+                    // palette_tracker.rs).
+                    let palettes = follow_palette_mgr.read().await.palettes.clone();
                     let scope = snapshot.scope.clone();
                     let result = follow_engine
-                        .recall(&snapshot, &scope, &palettes.palettes, false)
+                        .recall(&snapshot, &scope, &palettes, false)
                         .await;
                     info!(
                         sent = result.parameters_sent,

@@ -39,9 +39,14 @@ pub fn fire_go(
                 .snapshot_id
                 .and_then(|id| mgr.get_snapshot(&id).cloned());
             drop(mgr);
-            let pmgr = pmgr_arc.read().await;
+            // Clone the palettes and DROP the palette-manager read guard BEFORE
+            // awaiting the recall. Holding it across the recall (which takes
+            // state.write per param) is one arm of an ABBA deadlock with the
+            // palette-absorb loop (state.read -> palette.write); see
+            // palette_tracker.rs.
+            let palettes = pmgr_arc.read().await.palettes.clone();
             let result = engine
-                .recall_cue(&cue, snapshot.as_ref(), &pmgr.palettes, false)
+                .recall_cue(&cue, snapshot.as_ref(), &palettes, false)
                 .await;
             let _ = tx.send(UiEvent::CueRecalled {
                 cue_number: cue.cue_number,
@@ -124,9 +129,14 @@ pub fn fire_cue_by_id(
                 .snapshot_id
                 .and_then(|id| mgr.get_snapshot(&id).cloned());
             drop(mgr);
-            let pmgr = pmgr_arc.read().await;
+            // Clone the palettes and DROP the palette-manager read guard BEFORE
+            // awaiting the recall. Holding it across the recall (which takes
+            // state.write per param) is one arm of an ABBA deadlock with the
+            // palette-absorb loop (state.read -> palette.write); see
+            // palette_tracker.rs.
+            let palettes = pmgr_arc.read().await.palettes.clone();
             let result = engine
-                .recall_cue(&cue, snapshot.as_ref(), &pmgr.palettes, false)
+                .recall_cue(&cue, snapshot.as_ref(), &palettes, false)
                 .await;
             let _ = tx.send(UiEvent::CueRecalled {
                 cue_number: cue.cue_number,
@@ -160,9 +170,14 @@ pub fn fire_prev(
                 .snapshot_id
                 .and_then(|id| mgr.get_snapshot(&id).cloned());
             drop(mgr);
-            let pmgr = pmgr_arc.read().await;
+            // Clone the palettes and DROP the palette-manager read guard BEFORE
+            // awaiting the recall. Holding it across the recall (which takes
+            // state.write per param) is one arm of an ABBA deadlock with the
+            // palette-absorb loop (state.read -> palette.write); see
+            // palette_tracker.rs.
+            let palettes = pmgr_arc.read().await.palettes.clone();
             let result = engine
-                .recall_cue(&cue, snapshot.as_ref(), &pmgr.palettes, false)
+                .recall_cue(&cue, snapshot.as_ref(), &palettes, false)
                 .await;
             let _ = tx.send(UiEvent::CueRecalled {
                 cue_number: cue.cue_number,

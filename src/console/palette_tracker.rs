@@ -89,30 +89,45 @@ async fn absorb_once(
         return;
     }
 
-    // Lock order is state(read) → palette(write), matching capture/recapture
-    // (which release the state guard before taking the palette lock) and recall
-    // (palette-read → state-read, both shared), so no cycle can form.
-    let st = state.read().await;
-    let mut pmgr = palette_manager.write().await;
-    for (channel, paths) in &dirty {
-        for path in paths {
-            // Only EQ/Dyn parameters belong to a palette kind.
-            let Some(kind) = path.section().palette_kind() else {
-                continue;
-            };
-            // Only when the active snapshot links a palette for this slot.
-            let Some(pid) = palette_refs.get(&(channel.clone(), kind)) else {
-                continue;
-            };
-            let addr = ParameterAddress {
-                channel: channel.clone(),
-                parameter: path.clone(),
-            };
-            if let Some(value) = st.get(&addr).cloned()
-                && let Some(palette) = pmgr.get_palette_mut(pid)
-            {
-                palette.set_working(path.clone(), value);
+    // Collect (palette_id, path, value) under the state READ lock, then DROP it
+    // BEFORE taking the palette WRITE lock. Crucial: a recall holds
+    // palette.read() while it takes state.write() per param (see
+    // cue_transport.rs / snapshot_engine.rs send_now). If this loop held
+    // state.read() across palette.write() (the previous code), the two opposing
+    // orders form an ABBA deadlock that wedges the recall task. Releasing the
+    // state guard before crossing to palette keeps a single safe order.
+    let updates = {
+        let st = state.read().await;
+        let mut out = Vec::new();
+        for (channel, paths) in &dirty {
+            for path in paths {
+                // Only EQ/Dyn parameters belong to a palette kind.
+                let Some(kind) = path.section().palette_kind() else {
+                    continue;
+                };
+                // Only when the active snapshot links a palette for this slot.
+                let Some(pid) = palette_refs.get(&(channel.clone(), kind)) else {
+                    continue;
+                };
+                let addr = ParameterAddress {
+                    channel: channel.clone(),
+                    parameter: path.clone(),
+                };
+                if let Some(value) = st.get(&addr).cloned() {
+                    out.push((*pid, path.clone(), value));
+                }
             }
+        }
+        out
+    }; // state read guard dropped here
+
+    if updates.is_empty() {
+        return;
+    }
+    let mut pmgr = palette_manager.write().await;
+    for (pid, path, value) in updates {
+        if let Some(palette) = pmgr.get_palette_mut(&pid) {
+            palette.set_working(path, value);
         }
     }
 }

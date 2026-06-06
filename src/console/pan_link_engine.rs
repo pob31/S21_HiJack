@@ -276,26 +276,41 @@ impl PanLinkEngine {
     }
 
     async fn send_to_console(&self, addr: &ParameterAddress, value: &ParameterValue) {
-        match encode::encode_parameter(addr, value) {
-            Some((path, args)) => {
-                if let Err(e) = self.sender.send(&path, args).await {
+        // Whether the send actually went out — gate the optimistic mirror update
+        // on success so a failed send doesn't leave the mirror ahead of the desk.
+        let sent = match encode::encode_parameter(addr, value) {
+            Some((path, args)) => match self.sender.send(&path, args).await {
+                Ok(()) => true,
+                Err(e) => {
                     warn!(%addr, "PanLink: failed to send: {e}");
+                    false
                 }
-            }
+            },
             None => {
                 if let Some(ref ipad) = self.ipad_sender {
                     match ipad_encode::encode_ipad_parameter(addr, value) {
-                        Some((path, args)) => {
-                            if let Err(e) = ipad.send(&path, args).await {
+                        Some((path, args)) => match ipad.send(&path, args).await {
+                            Ok(()) => true,
+                            Err(e) => {
                                 warn!(%addr, "PanLink: iPad send failed: {e}");
+                                false
                             }
+                        },
+                        None => {
+                            warn!(%addr, "PanLink: cannot encode for either protocol");
+                            false
                         }
-                        None => warn!(%addr, "PanLink: cannot encode for either protocol"),
                     }
                 } else {
                     warn!(%addr, "PanLink: no sender available for iPad-only parameter");
+                    false
                 }
             }
+        };
+        // Optimistically reflect our own send into the mirror — the desk doesn't
+        // echo OSC-set values back (mirrors the gang engine's mirror update).
+        if sent {
+            self.state.write().await.update(addr.clone(), value.clone());
         }
     }
 }

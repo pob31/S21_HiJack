@@ -103,10 +103,12 @@ pub async fn handle_trigger_event(
                 return;
             };
             drop(mgr);
-            let pmgr = palette_manager.read().await;
+            // Clone palettes and drop the read guard before the recall await
+            // (avoids the palette<->state ABBA deadlock; see palette_tracker.rs).
+            let palettes = palette_manager.read().await.palettes.clone();
             let scope = snapshot.scope.clone();
             let result = snapshot_engine
-                .recall(&snapshot, &scope, &pmgr.palettes, ignore_scope)
+                .recall(&snapshot, &scope, &palettes, ignore_scope)
                 .await;
             info!(
                 identifier,
@@ -142,9 +144,11 @@ async fn recall_cue_with_label<F>(
         warn!(snapshot_id = ?cue.snapshot_id, label, "Trigger: snapshot not found for cue");
     }
     drop(mgr);
-    let pmgr = palette_manager.read().await;
+    // Clone palettes and drop the read guard before the recall await (avoids the
+    // palette<->state ABBA deadlock; see palette_tracker.rs).
+    let palettes = palette_manager.read().await.palettes.clone();
     let result = snapshot_engine
-        .recall_cue(&cue, snapshot.as_ref(), &pmgr.palettes, false)
+        .recall_cue(&cue, snapshot.as_ref(), &palettes, false)
         .await;
     info!(
         label,

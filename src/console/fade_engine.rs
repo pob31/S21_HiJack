@@ -1,15 +1,17 @@
 use std::time::Duration;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::time;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::console::automation_registry::AutomationOverride;
 use crate::model::channel::ChannelId;
 use crate::model::parameter::{ParameterAddress, ParameterValue, TimingCategory, floored_db_lerp};
+use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
 use crate::osc::encode;
 use crate::osc::ipad_client::IpadSender;
@@ -84,6 +86,7 @@ impl FadeController {
             child,
             None,
             0,
+            None,
         ))
     }
 }
@@ -152,6 +155,7 @@ impl MultiFadeController {
             child,
             None,
             0,
+            None,
         ))
     }
 }
@@ -164,6 +168,7 @@ impl MultiFadeController {
 /// parameter it is dropped from the fade (the rest keep fading); and every
 /// sent step is recorded so the console's echo of it is not mistaken for an
 /// operator move.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_fade_inline(
     fade_time_secs: f32,
     targets: Vec<FadeTarget>,
@@ -172,6 +177,7 @@ pub async fn run_fade_inline(
     cancel: CancellationToken,
     registry: Option<AutomationOverride>,
     gen_id: u64,
+    state: Option<Arc<RwLock<ConsoleState>>>,
 ) -> FadeResult {
     run_fade(
         0.0,
@@ -182,6 +188,7 @@ pub async fn run_fade_inline(
         cancel,
         registry,
         gen_id,
+        state,
     )
     .await
 }
@@ -197,6 +204,7 @@ async fn run_fade(
     cancel: CancellationToken,
     registry: Option<AutomationOverride>,
     gen_id: u64,
+    state: Option<Arc<RwLock<ConsoleState>>>,
 ) -> FadeResult {
     if targets.is_empty() {
         return FadeResult {
@@ -274,6 +282,16 @@ async fn run_fade(
                     // misread as an operator move.
                     if let Some(reg) = &registry {
                         reg.note_sent(&target.address, &interpolated, gen_id);
+                    }
+                    // Optimistically reflect our own send into the live mirror.
+                    // The desk doesn't echo OSC-set values back, so without this
+                    // the mirror goes stale and the NEXT fade would start from a
+                    // stale value (the "jump after a cue change"). Mirrors the
+                    // gang / monitor engines' optimistic mirror updates.
+                    if let Some(st) = &state {
+                        st.write()
+                            .await
+                            .update(target.address.clone(), interpolated.clone());
                     }
                 }
             }

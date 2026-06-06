@@ -105,25 +105,25 @@ impl MacroEngine {
     /// iPad protocol as a fallback for iPad-only parameters (mirrors
     /// `GangEngine::send_to_console`). Returns true on a successful send.
     async fn send_parameter(&self, addr: &ParameterAddress, value: &ParameterValue) -> bool {
-        match encode::encode_parameter(addr, value) {
-            Some((path, args)) => {
-                if let Err(e) = self.sender.send(&path, args).await {
+        let sent = match encode::encode_parameter(addr, value) {
+            Some((path, args)) => match self.sender.send(&path, args).await {
+                Ok(()) => true,
+                Err(e) => {
                     warn!(%addr, "Macro: GP OSC send failed: {e}");
-                    return false;
+                    false
                 }
-                true
-            }
+            },
             None => {
                 // GP OSC can't encode it — try the iPad protocol.
                 if let Some(ref ipad) = self.ipad_sender {
                     match ipad_encode::encode_ipad_parameter(addr, value) {
-                        Some((path, args)) => {
-                            if let Err(e) = ipad.send(&path, args).await {
+                        Some((path, args)) => match ipad.send(&path, args).await {
+                            Ok(()) => true,
+                            Err(e) => {
                                 warn!(%addr, "Macro: iPad send failed: {e}");
-                                return false;
+                                false
                             }
-                            true
-                        }
+                        },
                         None => {
                             warn!(%addr, "Macro: cannot encode parameter for either protocol");
                             false
@@ -134,7 +134,13 @@ impl MacroEngine {
                     false
                 }
             }
+        };
+        // Optimistically reflect our own send into the mirror — the desk doesn't
+        // echo OSC-set values back (mirrors the gang engine's mirror update).
+        if sent {
+            self.state.write().await.update(addr.clone(), value.clone());
         }
+        sent
     }
 
     /// Execute all steps of a macro in sequence, respecting per-step delays.

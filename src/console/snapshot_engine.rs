@@ -1000,9 +1000,11 @@ impl SnapshotEngine {
                 let mut sent = 0usize;
 
                 // Helper to send one param
+                #[allow(clippy::too_many_arguments)]
                 async fn send_one(
                     sender: &OscSender,
                     ipad: &Option<IpadSender>,
+                    state: &Arc<RwLock<ConsoleState>>,
                     addr: &ParameterAddress,
                     value: &ParameterValue,
                     reg: &Option<AutomationOverride>,
@@ -1033,6 +1035,10 @@ impl SnapshotEngine {
                         if let Some(r) = reg {
                             r.note_sent(addr, value, gen_id);
                         }
+                        // Optimistically reflect our own send into the mirror so
+                        // the next recall/fade reads the value we set (the desk
+                        // doesn't echo OSC-set values back).
+                        state.write().await.update(addr.clone(), value.clone());
                     }
                     ok
                 }
@@ -1098,7 +1104,7 @@ impl SnapshotEngine {
 
                     // Send discrete params first (with pacing)
                     for d in &discrete {
-                        if send_one(sender, ipad, &d.addr, &d.value, reg, gen_id).await {
+                        if send_one(sender, ipad, state, &d.addr, &d.value, reg, gen_id).await {
                             sent += 1;
                             if pace_us > 0 {
                                 sleep(Duration::from_micros(pace_us)).await;
@@ -1118,6 +1124,7 @@ impl SnapshotEngine {
                             child,
                             reg.clone(),
                             gen_id,
+                            Some(state.clone()),
                         )
                         .await;
                         sent += result.total_steps_sent;
@@ -1165,7 +1172,7 @@ impl SnapshotEngine {
 
                     // Handle non-send params (shouldn't happen but be safe)
                     for c in &non_send_changes {
-                        if send_one(sender, ipad, &c.addr, &c.value, reg, gen_id).await {
+                        if send_one(sender, ipad, state, &c.addr, &c.value, reg, gen_id).await {
                             sent += 1;
                             if pace_us > 0 {
                                 sleep(Duration::from_micros(pace_us)).await;
@@ -1222,7 +1229,7 @@ impl SnapshotEngine {
                                     )
                                     .await;
                                     if let Some(ec) = &enable_change {
-                                        if send_one(&s, &i, &ec.addr, &ec.value, &r, g).await {
+                                        if send_one(&s, &i, &st, &ec.addr, &ec.value, &r, g).await {
                                             sent += 1;
                                         }
                                     }
@@ -1230,7 +1237,7 @@ impl SnapshotEngine {
                                 Some(false) => {
                                     // Enable OFF: disable first, then fade level/pan
                                     if let Some(ec) = &enable_change {
-                                        if send_one(&s, &i, &ec.addr, &ec.value, &r, g).await {
+                                        if send_one(&s, &i, &st, &ec.addr, &ec.value, &r, g).await {
                                             sent += 1;
                                         }
                                     }
@@ -1293,6 +1300,7 @@ impl SnapshotEngine {
                             if send_one(
                                 &sender_for_channel,
                                 &ipad_for_channel,
+                                &state_for_channel,
                                 &mc.addr,
                                 &mc.value,
                                 &reg,
@@ -1374,6 +1382,7 @@ impl SnapshotEngine {
                             if send_one(
                                 &sender_for_channel,
                                 &ipad_for_channel,
+                                &state_for_channel,
                                 &mc.addr,
                                 &mc.value,
                                 &reg,
@@ -1542,6 +1551,9 @@ impl SnapshotEngine {
         sent: &mut usize,
         skipped: &mut usize,
     ) -> bool {
+        // Optimistically reflect our own send into the mirror on success — the
+        // desk doesn't echo OSC-set values back, so without this the mirror goes
+        // stale and a later fade would start from a stale value.
         match encode::encode_parameter(addr, value) {
             Some((path, args)) => {
                 if let Err(e) = self.sender.send(&path, args).await {
@@ -1551,6 +1563,7 @@ impl SnapshotEngine {
                 } else {
                     debug!(%addr, %value, "Recall: sent discrete param");
                     *sent += 1;
+                    self.state.write().await.update(addr.clone(), value.clone());
                     true
                 }
             }
@@ -1565,6 +1578,7 @@ impl SnapshotEngine {
                             } else {
                                 debug!(%addr, %value, "Recall: sent discrete via iPad");
                                 *sent += 1;
+                                self.state.write().await.update(addr.clone(), value.clone());
                                 true
                             }
                         }
@@ -1700,6 +1714,20 @@ mod tests {
         // Both the changed fader and the unchanged mute are sent.
         assert_eq!(result.parameters_sent, 2);
         assert_eq!(result.parameters_skipped, 0);
+
+        // Optimistic mirror update: the desk doesn't echo OSC-set values back,
+        // so the recall must reflect what it sent into the live mirror itself —
+        // otherwise the mirror stays at the stale -10 and a later fade would
+        // start from there (the "jump after a cue change").
+        let st = state.read().await;
+        assert_eq!(
+            st.get(&ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Fader,
+            }),
+            Some(&ParameterValue::Float(0.0)),
+            "recall should optimistically update the mirror to the sent value"
+        );
     }
 
     #[tokio::test]
