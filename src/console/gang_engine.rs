@@ -42,6 +42,14 @@ pub struct GangEngine {
     /// Recently-sent ganged changes, keyed by address.
     /// Used to suppress feedback loops from console echo-back.
     suppression_set: HashMap<ParameterAddress, (ParameterValue, Instant)>,
+    /// Unclamped "virtual" gang position per member, for continuous Float
+    /// parameters that clamp at a bound (fader −inf snap, pan-family ±1). A
+    /// relative gang move accumulates the delta here *without* clamping, so the
+    /// offset survives a round trip to a bound; only the value SENT to the
+    /// console is clamped. Seeded from the mirror and re-baselined whenever the
+    /// mirror no longer matches our last clamped send (operator grabbed the
+    /// member, or it moved while the gang was paused). Runtime-only.
+    gang_virtual: HashMap<ParameterAddress, f32>,
 }
 
 impl GangEngine {
@@ -51,6 +59,7 @@ impl GangEngine {
             sender,
             ipad_sender: None,
             suppression_set: HashMap::new(),
+            gang_virtual: HashMap::new(),
         }
     }
 
@@ -171,17 +180,18 @@ impl GangEngine {
 
                 // Compute target value
                 let target_value = if let Some(d) = delta {
-                    // Relative mode: apply delta to target's current value
+                    // Relative mode: accumulate the delta on the sibling's
+                    // unclamped virtual position so the offset survives a round
+                    // trip to a bound (fader −inf, pan-family ±1); only the sent
+                    // value is clamped. The fader's floored source delta and
+                    // dead-zone guard are already applied to `d` above.
                     let current = self.state.read().await.get(&target_addr).cloned();
                     match current {
-                        Some(ref cv) => {
-                            let applied = if is_fader {
-                                apply_fader_gang_delta(cv, d)
-                            } else {
-                                apply_delta(cv, d)
-                            };
-                            applied.unwrap_or_else(|| new_value.clone()) // fallback to absolute
+                        Some(ParameterValue::Float(mirror)) => {
+                            ParameterValue::Float(self.next_gang_value(&target_addr, mirror, d))
                         }
+                        // Non-float continuous (e.g. Int): raw delta, no bound.
+                        Some(ref cv) => apply_delta(cv, d).unwrap_or_else(|| new_value.clone()),
                         None => new_value.clone(), // no current value, use absolute
                     }
                 } else {
@@ -227,6 +237,11 @@ impl GangEngine {
                         let target_value = if let Some(d) = delta {
                             let current = self.state.read().await.get(&target_addr).cloned();
                             match current {
+                                // Virtual position so a pan offset survives a
+                                // sweep to the ±1 rail and back (see next_gang_value).
+                                Some(ParameterValue::Float(mirror)) => ParameterValue::Float(
+                                    self.next_gang_value(&target_addr, mirror, d),
+                                ),
                                 Some(ref cv) => {
                                     apply_delta(cv, d).unwrap_or_else(|| new_value.clone())
                                 }
@@ -277,6 +292,33 @@ impl GangEngine {
     /// undefined, producing the "jumping" the operator sees on aux pans.
     /// Pass-through for parameters whose range we don't yet model (Fader, EQ
     /// band gain, etc.).
+    /// Advance one Relative continuous Float sibling by `delta`, preserving its
+    /// offset across the parameter's bound. `mirror` is the sibling's current
+    /// (clamped) value from the state mirror; the returned value is what to send
+    /// (already clamped). The unclamped position is accumulated in
+    /// `gang_virtual` so a round trip to a bound restores the offset.
+    ///
+    /// Seeding rule: trust the stored virtual only while `clamp(virtual)` still
+    /// matches the mirror (the mirror reflects our last clamped send). If the
+    /// mirror has moved out-of-band — the operator grabbed this member, or it
+    /// was hand-moved while the gang was paused — re-baseline from the mirror.
+    fn next_gang_value(&mut self, target: &ParameterAddress, mirror: f32, delta: f32) -> f32 {
+        let vcur = match self.gang_virtual.get(target).copied() {
+            // Keep the driven-down offset: the stored virtual is un-floored, so a
+            // sibling pushed below a bound by the gang restores its true position.
+            Some(v) if (clamp_gang_send(&target.parameter, v) - mirror).abs() < FLOAT_TOLERANCE => {
+                v
+            }
+            // Re-baseline from the mirror. For the fader, a *resting* position
+            // below the gang floor collapses to the floor (the inaudible sub-floor
+            // region is one point), matching the original behaviour.
+            _ => gang_seed(&target.parameter, mirror),
+        };
+        let vnew = vcur + delta;
+        self.gang_virtual.insert(target.clone(), vnew);
+        clamp_gang_send(&target.parameter, vnew)
+    }
+
     async fn dispatch_target(&mut self, target_addr: ParameterAddress, value: ParameterValue) {
         let target_value = target_addr.parameter.clamp_value(value);
         if self.send_to_console(&target_addr, &target_value).await {
@@ -363,20 +405,35 @@ fn fader_gang_delta(old: &ParameterValue, new: &ParameterValue) -> Option<f32> {
     }
 }
 
-/// Apply a floored fader delta to a sibling's current value, snapping to −inf
-/// when the result lands at or below the floor (everything below floor reads as
-/// fully off). `None` for non-float values.
-fn apply_fader_gang_delta(current: &ParameterValue, delta: f32) -> Option<ParameterValue> {
-    match current {
-        ParameterValue::Float(f) => {
-            let t = gang_floor(*f) + delta;
-            Some(ParameterValue::Float(if t <= FADER_GANG_FLOOR_DB {
-                FADER_INF_DB
-            } else {
-                t
-            }))
-        }
-        _ => None,
+/// Clamp a gang sibling's (unclamped) virtual position to what actually goes on
+/// the wire, reproducing each parameter's existing bound exactly:
+/// - **Fader**: snap to −inf below the gang floor (everything below reads fully
+///   off); the top is left to the console clamp, as before.
+/// - **Pan / SendPan / Balance / Width**: ±1 via [`ParameterPath::clamp_value`].
+/// - **everything else**: pass-through (the console owns the range).
+///
+/// The virtual position itself is kept unclamped by the caller, so an offset
+/// driven past a bound and back is restored — only this sent value is clamped.
+fn clamp_gang_send(param: &ParameterPath, v: f32) -> f32 {
+    if *param == ParameterPath::Fader && v <= FADER_GANG_FLOOR_DB {
+        return FADER_INF_DB;
+    }
+    match param.clamp_value(ParameterValue::Float(v)) {
+        ParameterValue::Float(c) => c,
+        _ => v,
+    }
+}
+
+/// Re-baseline seed for a sibling's virtual position from its current mirror
+/// value. The fader collapses a *resting* position below the gang floor to the
+/// floor — the inaudible sub-floor region is a single point, so two parked
+/// faders rise together from the floor rather than preserving a meaningless
+/// sub-floor offset. Other parameters seed from the raw mirror.
+fn gang_seed(param: &ParameterPath, mirror: f32) -> f32 {
+    if *param == ParameterPath::Fader {
+        gang_floor(mirror)
+    } else {
+        mirror
     }
 }
 
@@ -515,38 +572,51 @@ mod tests {
     }
 
     #[test]
-    fn apply_fader_gang_delta_normal_above_floor() {
-        assert_eq!(
-            apply_fader_gang_delta(&ParameterValue::Float(-30.0), 10.0),
-            Some(ParameterValue::Float(-20.0))
-        );
-        // A sub-floor sibling floors to −60 before the delta is applied.
-        assert_eq!(
-            apply_fader_gang_delta(&ParameterValue::Float(-100.0), 10.0),
-            Some(ParameterValue::Float(-50.0))
-        );
+    fn clamp_gang_send_fader_snaps_below_floor_passes_above() {
+        // At/below the gang floor the SENT value snaps to −inf...
+        assert_eq!(clamp_gang_send(&ParameterPath::Fader, -60.0), FADER_INF_DB);
+        assert_eq!(clamp_gang_send(&ParameterPath::Fader, -66.0), FADER_INF_DB);
+        // ...above the floor it passes through unchanged — the caller's virtual
+        // position is what restores the offset on the way back up.
+        assert_eq!(clamp_gang_send(&ParameterPath::Fader, -6.0), -6.0);
+        assert_eq!(clamp_gang_send(&ParameterPath::Fader, 0.0), 0.0);
     }
 
     #[test]
-    fn apply_fader_gang_delta_snaps_to_inf_at_or_below_floor() {
-        // Result below the floor snaps to −inf.
-        assert_eq!(
-            apply_fader_gang_delta(&ParameterValue::Float(-50.0), -30.0),
-            Some(ParameterValue::Float(FADER_INF_DB))
-        );
-        // Boundary: a result of exactly the floor also snaps (`<=`).
-        assert_eq!(
-            apply_fader_gang_delta(&ParameterValue::Float(-50.0), -10.0),
-            Some(ParameterValue::Float(FADER_INF_DB))
-        );
+    fn clamp_gang_send_pan_family_clamps_to_unit() {
+        for p in [
+            ParameterPath::Pan,
+            ParameterPath::Balance,
+            ParameterPath::Width,
+        ] {
+            assert_eq!(clamp_gang_send(&p, 1.3), 1.0);
+            assert_eq!(clamp_gang_send(&p, -1.3), -1.0);
+            assert_eq!(clamp_gang_send(&p, 0.4), 0.4);
+        }
     }
 
     #[test]
-    fn apply_fader_gang_delta_non_float_none() {
+    fn gang_seed_floors_resting_subfloor_fader_only() {
+        // A fader resting below the floor seeds from the floor (sub-floor is one
+        // point); above the floor it seeds raw.
         assert_eq!(
-            apply_fader_gang_delta(&ParameterValue::Bool(true), 1.0),
-            None
+            gang_seed(&ParameterPath::Fader, -100.0),
+            FADER_GANG_FLOOR_DB
         );
+        assert_eq!(gang_seed(&ParameterPath::Fader, -6.0), -6.0);
+        // Pan seeds raw — no floor concept.
+        assert_eq!(gang_seed(&ParameterPath::Pan, 0.8), 0.8);
+    }
+
+    #[tokio::test]
+    async fn next_gang_value_fader_offset_survives_inf_round_trip() {
+        // Direct unit test of the virtual accumulation: sibling at −6, floored
+        // master delta −60 then +60. Sent snaps to −inf, but the offset returns.
+        let mut engine = make_engine();
+        let t = fader(ChannelId::Input(4));
+        assert_eq!(engine.next_gang_value(&t, -6.0, -60.0), FADER_INF_DB);
+        // Mirror is now −150 (the clamped send); the virtual remembers −66.
+        assert!((engine.next_gang_value(&t, FADER_INF_DB, 60.0) - (-6.0)).abs() < 1e-3);
     }
 
     #[test]
@@ -1120,6 +1190,12 @@ mod tests {
             .await;
 
         assert_eq!(fader_db(&engine, 2).await, Some(-60.0));
+        // The dead-zone skip never touches the sibling's virtual position either.
+        assert!(
+            !engine
+                .gang_virtual
+                .contains_key(&fader(ChannelId::Input(2)))
+        );
     }
 
     #[tokio::test]
@@ -1228,6 +1304,159 @@ mod tests {
 
         let v = fader_db(&engine, 2).await.unwrap();
         assert!((v - (-35.0)).abs() < 1e-3, "expected −35, got {v}");
+    }
+
+    async fn pan_db(engine: &GangEngine, ch: u8) -> Option<f32> {
+        match engine.state.read().await.get(&pan(ChannelId::Input(ch))) {
+            Some(ParameterValue::Float(f)) => Some(*f),
+            _ => None,
+        }
+    }
+
+    // ---- Offset preservation across bounds (the headline fix) ----
+
+    #[tokio::test]
+    async fn fader_gang_offset_restored_after_inf_round_trip() {
+        // f3 = 0, f4 = −6 (a −6 dB offset). Pull f3 to −inf and back: f4 reads
+        // fully off while f3 is off, then RESTORES to −6 — not 0.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        relative_fader_gang(&engine, &mut manager, &[(3, 0.0), (4, -6.0)]).await;
+
+        engine
+            .process_gang_update(
+                &fader(ChannelId::Input(3)),
+                &ParameterValue::Float(-150.0),
+                Some(&ParameterValue::Float(0.0)),
+                &manager,
+            )
+            .await;
+        assert_eq!(fader_db(&engine, 4).await, Some(FADER_INF_DB));
+
+        engine
+            .process_gang_update(
+                &fader(ChannelId::Input(3)),
+                &ParameterValue::Float(0.0),
+                Some(&ParameterValue::Float(-150.0)),
+                &manager,
+            )
+            .await;
+        let v = fader_db(&engine, 4).await.unwrap();
+        assert!((v - (-6.0)).abs() < 1e-3, "expected −6 restored, got {v}");
+    }
+
+    #[tokio::test]
+    async fn fader_gang_offset_restored_multistep() {
+        // 0 → −30 → −150 → 0 still restores the −6 offset at the end.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        relative_fader_gang(&engine, &mut manager, &[(3, 0.0), (4, -6.0)]).await;
+
+        for (old, new) in [(0.0, -30.0), (-30.0, -150.0), (-150.0, 0.0)] {
+            engine
+                .process_gang_update(
+                    &fader(ChannelId::Input(3)),
+                    &ParameterValue::Float(new),
+                    Some(&ParameterValue::Float(old)),
+                    &manager,
+                )
+                .await;
+        }
+        let v = fader_db(&engine, 4).await.unwrap();
+        assert!((v - (-6.0)).abs() < 1e-3, "expected −6 restored, got {v}");
+    }
+
+    #[tokio::test]
+    async fn pan_gang_offset_restored_after_rail_round_trip() {
+        // Sibling pan 0.5; master swept to the +1 rail and back must restore the
+        // 0.5 offset (the ±1 clamp would otherwise crush it, like the fader −inf).
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        let mut group = GangGroup::new(
+            "Vox".into(),
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        );
+        group.mode = GangMode::Relative;
+        manager.add_group(group);
+        engine
+            .state
+            .write()
+            .await
+            .update(pan(ChannelId::Input(2)), ParameterValue::Float(0.5));
+
+        // Master pan 0.0 → +0.8: sibling 0.5 → 1.3 clamped to the +1 rail.
+        engine
+            .process_gang_update(
+                &pan(ChannelId::Input(1)),
+                &ParameterValue::Float(0.8),
+                Some(&ParameterValue::Float(0.0)),
+                &manager,
+            )
+            .await;
+        let v = pan_db(&engine, 2).await.unwrap();
+        assert!(
+            (v - 1.0).abs() < 1e-3,
+            "sibling pan should pin at the rail, got {v}"
+        );
+
+        // Master pan +0.8 → 0.0: sibling restores to 0.5, not 0.2.
+        engine
+            .process_gang_update(
+                &pan(ChannelId::Input(1)),
+                &ParameterValue::Float(0.0),
+                Some(&ParameterValue::Float(0.8)),
+                &manager,
+            )
+            .await;
+        let v = pan_db(&engine, 2).await.unwrap();
+        assert!(
+            (v - 0.5).abs() < 1e-3,
+            "sibling pan offset should restore to 0.5, got {v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fader_gang_direct_grab_rebaselines_offset() {
+        // With the master at −inf (sibling off), the operator grabs the sibling
+        // and sets it to −20. A later master move must track from the hand-set
+        // −20 (mirror wins — clamp(stale virtual) ≠ mirror), not the old −66.
+        let mut engine = make_engine();
+        let mut manager = GangManager::new();
+        relative_fader_gang(&engine, &mut manager, &[(3, 0.0), (4, -6.0)]).await;
+
+        engine
+            .process_gang_update(
+                &fader(ChannelId::Input(3)),
+                &ParameterValue::Float(-150.0),
+                Some(&ParameterValue::Float(0.0)),
+                &manager,
+            )
+            .await;
+        assert_eq!(fader_db(&engine, 4).await, Some(FADER_INF_DB));
+
+        // Operator re-grabs the sibling directly (mirror set, as the inbound
+        // handler would before propagation).
+        engine
+            .state
+            .write()
+            .await
+            .update(fader(ChannelId::Input(4)), ParameterValue::Float(-20.0));
+
+        // Master −150 → −50 (floored delta +10). Sibling re-baselines from −20.
+        engine
+            .process_gang_update(
+                &fader(ChannelId::Input(3)),
+                &ParameterValue::Float(-50.0),
+                Some(&ParameterValue::Float(-150.0)),
+                &manager,
+            )
+            .await;
+        let v = fader_db(&engine, 4).await.unwrap();
+        assert!(
+            (v - (-10.0)).abs() < 1e-3,
+            "expected re-baseline −20 + 10 = −10, got {v}"
+        );
     }
 
     #[tokio::test]
