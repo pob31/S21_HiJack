@@ -1,14 +1,15 @@
 package com.pob31.s21monitor.ui.widgets
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -18,6 +19,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -26,7 +29,11 @@ import com.pob31.s21monitor.ui.theme.Accent
 import com.pob31.s21monitor.ui.theme.FaderFillBottom
 import com.pob31.s21monitor.ui.theme.FaderFillTop
 import com.pob31.s21monitor.ui.theme.FaderTrack
+import com.pob31.s21monitor.ui.theme.Panel2
 import com.pob31.s21monitor.ui.theme.TextPrimary
+import com.pob31.s21monitor.ui.theme.Warn
+import kotlin.math.max
+import kotlin.math.min
 
 /** Fader dB range (matches the web/Flutter clients). */
 const val FADER_MIN_DB = -80f
@@ -77,7 +84,6 @@ fun VerticalFader(
             },
         contentAlignment = Alignment.BottomCenter,
     ) {
-        // Fill (bottom-anchored, fractional height).
         Box(
             Modifier
                 .fillMaxWidth()
@@ -86,7 +92,6 @@ fun VerticalFader(
                 .background(Brush.verticalGradient(listOf(FaderFillTop, FaderFillBottom))),
             contentAlignment = Alignment.TopCenter,
         ) {
-            // Cap line at the top of the fill.
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -98,24 +103,58 @@ fun VerticalFader(
     }
 }
 
-/** Compact pan slider, −1 (L) .. +1 (R), 0 = centre. */
+/**
+ * Bidirectional pan slider — the amber fill grows from the centre out to the
+ * thumb (left of centre = pan L, right = pan R), matching the web monitor's
+ * `panGradient`. Drag to set; double-tap to recentre.
+ */
 @Composable
 fun PanControl(
     pan: Float,
     onPan: (Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Slider(
-        value = pan.coerceIn(-1f, 1f),
-        onValueChange = onPan,
-        valueRange = -1f..1f,
-        modifier = modifier,
-        colors = SliderDefaults.colors(
-            thumbColor = Accent,
-            activeTrackColor = FaderFillTop,
-            inactiveTrackColor = FaderTrack,
-        ),
-    )
+    var widthPx by remember { mutableFloatStateOf(1f) }
+
+    fun setFromX(x: Float) {
+        val f = (x / widthPx).coerceIn(0f, 1f)
+        onPan((f * 2f - 1f).coerceIn(-1f, 1f))
+    }
+
+    Canvas(
+        modifier
+            .fillMaxWidth()
+            .height(24.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(Panel2)
+            .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onDragStart = { setFromX(it.x) },
+                    onHorizontalDrag = { change, _ ->
+                        change.consume()
+                        setFromX(change.position.x)
+                    },
+                )
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(onDoubleTap = { onPan(0f) })
+            },
+    ) {
+        val w = size.width
+        val h = size.height
+        val frac = (pan.coerceIn(-1f, 1f) + 1f) / 2f
+        val center = w * 0.5f
+        val pos = w * frac
+        val lo = min(pos, center)
+        val hi = max(pos, center)
+        // Amber fill from centre to the thumb (bidirectional).
+        drawRect(color = Warn, topLeft = Offset(lo, 0f), size = Size(hi - lo, h))
+        // Custom thumb.
+        val tw = 10.dp.toPx()
+        val tx = (pos - tw / 2f).coerceIn(0f, w - tw)
+        drawRect(color = TextPrimary, topLeft = Offset(tx, 0f), size = Size(tw, h))
+    }
 }
 
 fun panLabel(pan: Float): String = when {

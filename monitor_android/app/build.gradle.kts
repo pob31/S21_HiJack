@@ -4,7 +4,7 @@ plugins {
 }
 
 base {
-    archivesName.set("s21-monitor-0.1.0")
+    archivesName.set("s21-monitor-0.1.1")
 }
 
 android {
@@ -15,8 +15,8 @@ android {
         applicationId = "com.pob31.s21monitor"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

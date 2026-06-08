@@ -10,7 +10,7 @@
 ; Build it with the release helper (reads the version from Cargo.toml):
 ;     scripts\build-windows-release.ps1
 ; or directly:
-;     ISCC /DMyAppVersion=0.1.0 packaging\windows\s21_hijack.iss
+;     ISCC /DMyAppVersion=0.1.1 packaging\windows\s21_hijack.iss
 ;
 ; Requires the release exe at target\release\s21_hijack.exe — run
 ; `cargo build --release --bin s21_hijack` first (the helper does this).
@@ -22,7 +22,7 @@
 ; passes the Cargo.toml version so the installer matches the GitHub release tag
 ; the in-app update check compares against.
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.0"
+  #define MyAppVersion "0.1.1"
 #endif
 #define MyAppName "S21 HiJack"
 #define MyAppPublisher "pob31"

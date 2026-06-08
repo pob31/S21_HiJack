@@ -20,7 +20,7 @@ AGP 9.2.1 · Kotlin 2.3.0 · Compose BOM 2026.01.01 · Gradle 9.4.1 · compileSd
 ```powershell
 # Debug APK
 .\gradlew.bat assembleDebug
-#   -> app\build\outputs\apk\debug\s21-monitor-0.1.0-debug.apk
+#   -> app\build\outputs\apk\debug\s21-monitor-0.1.1-debug.apk
 
 # Build + install to a connected device
 .\gradlew.bat installDebug

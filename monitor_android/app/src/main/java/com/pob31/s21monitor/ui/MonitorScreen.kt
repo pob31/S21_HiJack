@@ -7,10 +7,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -62,12 +65,13 @@ fun MonitorScreen(
         if (selectedAux == null || selectedAux !in auxes) selectedAux = auxes.firstOrNull()
     }
 
-    Column(Modifier.fillMaxSize().background(Bg)) {
+    Column(
+        Modifier.fillMaxSize().background(Bg).windowInsetsPadding(WindowInsets.systemBars),
+    ) {
         Header(
             console = state.console.ifEmpty { "S21 Monitor" },
             clientName = clientName,
             connected = state.connected,
-            onShutdown = onShutdown,
         )
         TabsRow(
             tab = tab,
@@ -78,9 +82,10 @@ fun MonitorScreen(
             selectedAux = selectedAux,
             onSelectAux = { selectedAux = it },
         )
-        Box(Modifier.fillMaxSize()) {
+        Box(Modifier.weight(1f).fillMaxWidth()) {
             if (tab == 0) MyMix(state, selectedAux, service) else MyAux(state, service)
         }
+        BottomBar(onShutdown = onShutdown)
     }
 }
 
@@ -89,7 +94,6 @@ private fun Header(
     console: String,
     clientName: String,
     connected: Boolean,
-    onShutdown: () -> Unit,
 ) {
     Row(
         Modifier.fillMaxWidth().background(Panel).padding(horizontal = 14.dp, vertical = 10.dp),
@@ -107,12 +111,38 @@ private fun Header(
             if (connected) "Connected" else "Connecting…",
             color = Muted, fontSize = 12.sp,
         )
-        Icon(
-            Icons.Filled.PowerSettingsNew,
-            contentDescription = "Shut down",
-            tint = Muted,
-            modifier = Modifier.size(22.dp).clip(CircleShape).clickable(onClick = onShutdown),
-        )
+    }
+}
+
+@Composable
+private fun BottomBar(onShutdown: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().background(Panel).padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.weight(1f))
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(Panel2)
+                .clickable(onClick = onShutdown)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                Icons.Filled.PowerSettingsNew,
+                contentDescription = null,
+                tint = Danger,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                "Disconnect",
+                color = TextPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
     }
 }
 
