@@ -30,6 +30,11 @@
 #                        --team-id <TEAMID> \
 #                        --password <app-specific-password>
 #
+#   For CI (no keychain profile) pass notary credentials via the environment
+#   instead — App Store Connect API key (preferred) or Apple-ID:
+#     NOTARY_API_KEY (.p8 path) + NOTARY_API_KEY_ID + NOTARY_API_ISSUER
+#     NOTARY_APPLE_ID + NOTARY_PASSWORD (app-specific) + NOTARY_TEAM_ID
+#
 # Requirements: Rust toolchain with aarch64- and x86_64-apple-darwin targets,
 # plus the Xcode command line tools (codesign, notarytool, stapler, hdiutil,
 # sips, iconutil, lipo).
@@ -147,10 +152,25 @@ echo "==> Signing DMG"
 codesign --force --timestamp --sign "$DEVELOPER_ID" "$DMG"
 
 # ── Notarize + staple ─────────────────────────────────────────────────────
+# Notarization credentials. Local default: the stored keychain profile
+# ($NOTARY_PROFILE). CI has no keychain profile, so it passes credentials via
+# the environment instead — App Store Connect API key (preferred) or Apple-ID:
+#   NOTARY_API_KEY (path to .p8) + NOTARY_API_KEY_ID + NOTARY_API_ISSUER
+#   NOTARY_APPLE_ID + NOTARY_PASSWORD (app-specific) + NOTARY_TEAM_ID
+if [ -n "${NOTARY_API_KEY:-}" ] && [ -n "${NOTARY_API_KEY_ID:-}" ] && [ -n "${NOTARY_API_ISSUER:-}" ]; then
+    NOTARY_AUTH=(--key "$NOTARY_API_KEY" --key-id "$NOTARY_API_KEY_ID" --issuer "$NOTARY_API_ISSUER")
+    NOTARY_DESC="API key $NOTARY_API_KEY_ID"
+elif [ -n "${NOTARY_APPLE_ID:-}" ] && [ -n "${NOTARY_PASSWORD:-}" ] && [ -n "${NOTARY_TEAM_ID:-}" ]; then
+    NOTARY_AUTH=(--apple-id "$NOTARY_APPLE_ID" --password "$NOTARY_PASSWORD" --team-id "$NOTARY_TEAM_ID")
+    NOTARY_DESC="Apple ID $NOTARY_APPLE_ID"
+else
+    NOTARY_AUTH=(--keychain-profile "$NOTARY_PROFILE")
+    NOTARY_DESC="keychain profile $NOTARY_PROFILE"
+fi
+
 if [ "${SKIP_NOTARIZE:-0}" != "1" ]; then
-    echo "==> Submitting to Apple notary service (profile: $NOTARY_PROFILE)"
-    xcrun notarytool submit "$DMG" \
-        --keychain-profile "$NOTARY_PROFILE" --wait
+    echo "==> Submitting to Apple notary service ($NOTARY_DESC)"
+    xcrun notarytool submit "$DMG" "${NOTARY_AUTH[@]}" --wait
 
     echo "==> Stapling notarization ticket"
     xcrun stapler staple "$DMG"

@@ -1,0 +1,136 @@
+name: Release
+
+# Build the distributable packages for every desktop OS and attach them to the
+# GitHub Release. This runs ONLY when a release is published (not on every
+# push — that's CI's job), or on manual dispatch against an existing tag.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build and attach to (e.g. v0.1.1)"
+        required: true
+
+# Let the Release jobs upload assets with the default GITHUB_TOKEN.
+permissions:
+  contents: write
+
+# One release build per tag at a time; a re-publish supersedes an in-flight run.
+concurrency:
+  group: release-${{ github.event.release.tag_name || github.event.inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Single source of truth for the tag across all jobs.
+  RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+
+jobs:
+  # ── Guard: the artifact names derive from Cargo.toml, the release is named by
+  #    the tag. Refuse to publish mismatched artifacts (e.g. v0.1.1 files on a
+  #    v0.2.0 release) before spending build minutes. ────────────────────────
+  verify-version:
+    name: verify tag == Cargo.toml version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tag matches Cargo.toml version
+        run: |
+          VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
+          if [ "$RELEASE_TAG" != "v$VERSION" ]; then
+            echo "::error::release tag '$RELEASE_TAG' does not match Cargo.toml 'v$VERSION'"
+            exit 1
+          fi
+          echo "ok: $RELEASE_TAG == v$VERSION"
+
+  # ── Linux: .tar.gz (binary + assets + installer) ──────────────────────────
+  linux:
+    name: linux package
+    needs: verify-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps (libudev for hidapi-rs)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build Linux release
+        run: scripts/build-linux-release.sh
+      - name: Attach artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/*-linux-*.tar.gz
+            dist/*-linux-*.tar.gz.sha256
+
+  # ── macOS: signed + notarized + stapled universal DMG ─────────────────────
+  macos:
+    name: macOS package
+    needs: verify-version
+    runs-on: macos-latest
+    # Signing cert + notary key live in the protected `release` environment, so
+    # only approved release runs (per the environment's protection rules) can
+    # read them.
+    environment: release
+    env:
+      # App Store Connect API-key notary auth, consumed by build-macos-release.sh
+      # (the .p8 key file path is set by the "Materialize" step below).
+      NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+      NOTARY_API_ISSUER: ${{ secrets.NOTARY_API_ISSUER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Import Developer ID signing certificate
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          p12-password: ${{ secrets.MACOS_CERT_PASSWORD }}
+      - name: Materialize App Store Connect API key
+        run: |
+          mkdir -p "$RUNNER_TEMP/notary"
+          KEY="$RUNNER_TEMP/notary/AuthKey.p8"
+          echo "${{ secrets.NOTARY_API_KEY_BASE64 }}" | base64 --decode > "$KEY"
+          echo "NOTARY_API_KEY=$KEY" >> "$GITHUB_ENV"
+      - name: Build, sign, notarize, staple
+        run: scripts/build-macos-release.sh
+      - name: Attach artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/*-macos-universal.dmg
+            dist/*-macos-universal.dmg.sha256
+
+  # ── Windows: portable .zip + Inno Setup installer ─────────────────────────
+  windows:
+    name: Windows package
+    needs: verify-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Inno Setup (for the installer)
+        run: choco install innosetup -y --no-progress
+      - name: Build Windows release
+        shell: pwsh
+        run: ./scripts/build-windows-release.ps1
+      - name: Attach artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/*-windows-x64.zip
+            dist/*-windows-x64.zip.sha256
+            dist/*-windows-x64-setup.exe
+            dist/*-windows-x64-setup.exe.sha256
