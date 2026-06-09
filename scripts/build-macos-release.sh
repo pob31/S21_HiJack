@@ -144,8 +144,25 @@ DMG_STAGE="$(mktemp -d)/dmg"
 mkdir -p "$DMG_STAGE"
 cp -R "$APP_DIR" "$DMG_STAGE/"
 ln -s /Applications "$DMG_STAGE/Applications"
-hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGE" \
-    -ov -format UDZO "$DMG" >/dev/null
+# hdiutil intermittently fails with "Resource busy" — Spotlight/indexing
+# touching the freshly staged tree, or a stale volume of the same name still
+# attached (common on CI). Detach any leftover mount and retry a few times.
+make_dmg() {
+    hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGE" \
+        -ov -format UDZO "$DMG"
+}
+attempt=0
+until make_dmg >/dev/null 2>&1; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge 5 ]; then
+        echo "error: hdiutil create failed after $attempt attempts:" >&2
+        make_dmg >&2 || true   # run once more unsuppressed to surface the cause
+        exit 1
+    fi
+    echo "    hdiutil busy — detaching stale volume, retry $attempt/5 in 5s"
+    hdiutil detach "/Volumes/$APP_NAME" >/dev/null 2>&1 || true
+    sleep 5
+done
 rm -rf "$(dirname "$DMG_STAGE")"
 
 echo "==> Signing DMG"
