@@ -252,9 +252,9 @@ macOS and Windows work out of the box — no extra setup needed.
 
 ## Target Platforms
 
-- **Raspberry Pi** (Linux ARM) — primary deployment target, runs headless as a daemon
+- **Raspberry Pi 3 or newer, on a 64-bit OS** — primary deployment target; runs headless as a daemon. The Pi 3 (the first 64-bit Pi) is the baseline given the real-time OSC data flow; the Pi 4/5 have ample headroom.
 - **macOS / Windows / Linux desktop** — development and GUI use
-- Each release ships prebuilt Linux tarballs for **x86_64** and **aarch64/arm64** (Pi 3/4/5 and other 64-bit-OS SBCs) — download, extract, and run `./install-linux.sh`. For 32-bit Pi OS, cross-compile with `cross build --release --target armv7-unknown-linux-gnueabihf` or build natively on the Pi.
+- Each release ships prebuilt Linux tarballs for **x86_64** and **aarch64/arm64** — download, extract, and run `./install-linux.sh`. The arm64 build requires a 64-bit OS (e.g. Raspberry Pi OS 64-bit); 32-bit Pi OS isn't supported, but you can build from source with `cross build --release --target armv7-unknown-linux-gnueabihf` or natively on the Pi.
 - Linux desktop integration (icon, .desktop entry) is provided by `install-linux.sh`
 
 ## License
