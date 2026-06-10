@@ -19,7 +19,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Linux build deps (libudev for hidapi-rs)
         if: runner.os == 'Linux'
@@ -43,7 +43,7 @@ jobs:
     name: cargo fmt --check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -54,7 +54,7 @@ jobs:
     name: cargo clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Linux build deps (libudev for hidapi-rs)
         run: |
           sudo apt-get update
@@ -70,7 +70,12 @@ jobs:
     name: cargo audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      # NOTE: pinned at v2 (Node 20) deliberately — rustsec/audit-check has no
+      # Node 24 release yet (latest is v2.0.0). This emits the GitHub Actions
+      # "Node.js 20 is deprecated" WARNING (not an error); the runner forces it
+      # onto Node 24 from 2026-06-16 and removes Node 20 on 2026-09-16. Bump to
+      # a Node 24 release when one ships.
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
