@@ -1420,12 +1420,17 @@ pub fn draw_setup_tab(
                                 mgr.cue_list = CueList::default();
                                 mgr.snapshots.clear();
                                 mgr.scope_templates.clear();
+                                // Direct field writes bypass the manager's
+                                // hooked mutators — invalidate the look-ahead
+                                // recall cache explicitly.
+                                mgr.bump_model_gen();
                                 drop(mgr);
                                 let mut mmgr = macro_mgr.write().await;
                                 mmgr.macros.clear();
                                 drop(mmgr);
                                 let mut pmgr = pmgr_arc.write().await;
                                 pmgr.palettes.clear();
+                                pmgr.bump_model_gen();
                             });
                             setup.show_file_path.clear();
                             setup.status_message = Some("New show created".into());
@@ -2109,6 +2114,21 @@ pub(crate) fn start_connection(
             token.clone(),
         ));
 
+        // Look-ahead recall cache: pre-resolves the next cues' recall data
+        // in the idle time between cues so the recall hot path skips the
+        // resolve passes. The managers bump its model generation on every
+        // edit; the snapshot engine consults it at recall start. Cancelled
+        // with the connection (a reconnect builds a fresh one).
+        let recall_cache = Arc::new(crate::console::recall_cache::RecallCache::new());
+        cue_mgr.write().await.set_model_gen(recall_cache.clone());
+        pmgr_arc.write().await.set_model_gen(recall_cache.clone());
+        tokio::spawn(crate::console::recall_cache::run_precompute_loop(
+            recall_cache.clone(),
+            cue_mgr.clone(),
+            pmgr_arc.clone(),
+            token.clone(),
+        ));
+
         // Create GangEngine with the sender
         let gang_engine = Arc::new(RwLock::new(GangEngine::new(st.clone(), osc_sender.clone())));
 
@@ -2184,6 +2204,8 @@ pub(crate) fn start_connection(
         // Share the live-override registry so an operator move on the desk
         // cancels the matching parameter's pre-wait/fade.
         snapshot_engine.set_automation_override(automation_override.clone());
+        // Look-ahead recall cache (created above, next to the absorb loop).
+        snapshot_engine.set_recall_cache(recall_cache.clone());
         let console_fire_suppression = snapshot_engine.console_fire_suppression();
 
         // iPad connection (Mode 2 or 3). The `snap_event_tx` / `snap_event_rx`
@@ -2353,64 +2375,49 @@ pub(crate) fn start_connection(
                     if !follow_dir_clone.get().follows_console() {
                         continue;
                     }
-                    // Coalesce a near-simultaneous burst of snapshot reports —
-                    // a desk transient, or (Mode 3) the GP OSC dispatcher and
-                    // the iPad capture loop both reporting the same load — and
-                    // act ONLY on the latest value. Otherwise a stale "first
-                    // cue" gets recalled just before the real one. The window
-                    // is short enough not to affect deliberate desk stepping.
-                    while let Ok(Some(next)) =
-                        tokio::time::timeout(std::time::Duration::from_millis(120), rx.recv()).await
-                    {
+                    // Coalesce whatever is ALREADY queued (latest wins) at no
+                    // latency cost. Duplicate same-row reports never reach
+                    // this channel — every reporter site (GP OSC dispatcher,
+                    // Mode 2 mirror, Mode 3 capture) dedupes against the
+                    // shared ConsoleState.current_console_snapshot under the
+                    // state write lock — so a backlog only forms when the
+                    // desk steps faster than we drain.
+                    while let Ok(next) = rx.try_recv() {
                         row = next;
                     }
                     // Was this echo caused by our own fire? Drop it.
-                    let suppressed = {
-                        let mut sup = suppression.write().await;
-                        if let Some(when) = sup.get(&row).copied() {
-                            // Expire stale entries.
-                            if when.elapsed().as_millis()
-                                >= crate::console::snapshot_engine::CONSOLE_FIRE_SUPPRESSION_MS
-                            {
-                                sup.remove(&row);
-                                false
-                            } else {
-                                sup.remove(&row);
-                                true
-                            }
-                        } else {
-                            false
-                        }
-                    };
-                    if suppressed {
+                    if follow_row_suppressed(&suppression, row).await {
                         debug!(row, "Follow: suppressed (our own fire)");
                         continue;
                     }
 
-                    // Find the first cue whose console row matches. Capture its
-                    // id (to move the playhead), its overlay snapshot (if any),
-                    // and whether it's already the current cue.
-                    let (matched_cue_id, snapshot, already_current) = {
-                        let mgr = follow_cue_mgr.read().await;
-                        let current = mgr.current_cue().map(|c| c.id);
-                        let mut hit_id = None;
-                        let mut hit_snap = None;
-                        for cue in &mgr.cue_list.cues {
-                            if cue.console_snapshot == Some(row) {
-                                hit_id = Some(cue.id);
-                                hit_snap = cue
-                                    .snapshot_id
-                                    .and_then(|id| mgr.snapshots.get(&id).cloned());
-                                break;
-                            }
+                    let mut hit = classify_follow_row(&follow_cue_mgr, row).await;
+                    // Fast path: the reported row matches the NEXT cue — the
+                    // operator pressed NEXT on the desk — so recall right away
+                    // with no settling window. (A desk transient re-reporting
+                    // the OLD row lands on the already_current skip below, so
+                    // it can't trigger a wrong recall.) Anything else — a
+                    // jump, an unknown row, a possible transient — keeps the
+                    // original 120 ms coalescing window so a stale row
+                    // arriving just before the real one is still folded into
+                    // a single recall of the latest value.
+                    if !(hit.is_next || hit.already_current) {
+                        while let Ok(Some(next)) =
+                            tokio::time::timeout(std::time::Duration::from_millis(120), rx.recv())
+                                .await
+                        {
+                            row = next;
                         }
-                        let already = hit_id.is_some() && hit_id == current;
-                        (hit_id, hit_snap, already)
-                    };
+                        if follow_row_suppressed(&suppression, row).await {
+                            debug!(row, "Follow: suppressed (our own fire)");
+                            continue;
+                        }
+                        hit = classify_follow_row(&follow_cue_mgr, row).await;
+                    }
 
                     // Already on this cue → don't re-recall (avoids a redundant
                     // overlay re-send fighting the desk on a duplicate report).
-                    if already_current {
+                    if hit.already_current {
                         debug!(row, "Follow: matched cue already current — skipping");
                         continue;
                     }
@@ -2419,12 +2426,12 @@ pub(crate) fn start_connection(
                     // row-only cue with no overlay — so the top-bar label and the
                     // cue-list highlight track the desk. (Read guard above is
                     // already dropped, so this write can't deadlock.)
-                    if let Some(id) = matched_cue_id {
+                    if let Some(id) = hit.matched_cue_id {
                         follow_cue_mgr.write().await.set_current_cue_id(id);
                     }
 
-                    let Some(snapshot) = snapshot else {
-                        if matched_cue_id.is_some() {
+                    let Some(snapshot) = hit.snapshot else {
+                        if hit.matched_cue_id.is_some() {
                             debug!(
                                 row,
                                 "Follow: matched row-only cue (no overlay); pointer moved"
@@ -2758,6 +2765,9 @@ pub(crate) fn load_show_file(
                 for tmpl in show.scope_templates {
                     mgr.scope_templates.insert(tmpl.id, tmpl);
                 }
+                // Direct field writes bypass the manager's hooked mutators —
+                // invalidate the look-ahead recall cache explicitly.
+                mgr.bump_model_gen();
                 drop(mgr);
 
                 // Restore macros
@@ -2774,6 +2784,7 @@ pub(crate) fn load_show_file(
                 for palette in show.palettes {
                     pmgr.palettes.insert(palette.id, palette);
                 }
+                pmgr.bump_model_gen();
                 drop(pmgr);
 
                 // Restore monitor clients
@@ -2947,6 +2958,59 @@ pub(crate) fn spawn_update_check(
         let status = crate::version::check_latest_release();
         let _ = tx.send(UiEvent::UpdateCheckResult(status));
     });
+}
+
+/// Outcome of matching a desk-reported snapshot row against the cue list.
+/// `is_next` flags the common "operator pressed NEXT on the desk" case so
+/// the follow dispatcher can recall immediately instead of sitting out the
+/// coalescing window.
+struct FollowRowMatch {
+    matched_cue_id: Option<uuid::Uuid>,
+    snapshot: Option<crate::model::snapshot::Snapshot>,
+    already_current: bool,
+    is_next: bool,
+}
+
+/// One short cue-manager read: find the first cue whose console row matches,
+/// capture its overlay snapshot, and classify it against the playhead. The
+/// guard is dropped on return, before the caller awaits anything else.
+async fn classify_follow_row(cue_mgr: &Arc<RwLock<CueManager>>, row: i32) -> FollowRowMatch {
+    let mgr = cue_mgr.read().await;
+    let current = mgr.current_cue().map(|c| c.id);
+    let next = mgr.next_cue().map(|c| c.id);
+    let mut hit_id = None;
+    let mut hit_snap = None;
+    for cue in &mgr.cue_list.cues {
+        if cue.console_snapshot == Some(row) {
+            hit_id = Some(cue.id);
+            hit_snap = cue
+                .snapshot_id
+                .and_then(|id| mgr.snapshots.get(&id).cloned());
+            break;
+        }
+    }
+    FollowRowMatch {
+        matched_cue_id: hit_id,
+        snapshot: hit_snap,
+        already_current: hit_id.is_some() && hit_id == current,
+        is_next: hit_id.is_some() && hit_id == next,
+    }
+}
+
+/// Was this row echo caused by our own console-memory fire? Consumes the
+/// suppression entry either way (an expired entry is just dropped).
+async fn follow_row_suppressed(
+    suppression: &crate::console::snapshot_engine::ConsoleFireSuppression,
+    row: i32,
+) -> bool {
+    let mut sup = suppression.write().await;
+    match sup.remove(&row) {
+        Some(when) => {
+            when.elapsed().as_millis()
+                < crate::console::snapshot_engine::CONSOLE_FIRE_SUPPRESSION_MS
+        }
+        None => false,
+    }
 }
 
 /// Bottom-right of the Setup tab: the running version, the GitHub release-check

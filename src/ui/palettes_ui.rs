@@ -1002,6 +1002,9 @@ fn link_palette(
             } else {
                 return;
             };
+        // `palette_refs` is a direct snapshot-field write that changes what
+        // a recall resolves to — invalidate the look-ahead cache.
+        mgr.bump_model_gen();
         drop(mgr);
 
         let _ = tx.send(UiEvent::PaletteLinked {
@@ -1034,6 +1037,9 @@ fn unlink_palette(
         } else {
             true
         };
+        // `palette_refs` is a direct snapshot-field write that changes what
+        // a recall resolves to — invalidate the look-ahead cache.
+        mgr.bump_model_gen();
         drop(mgr);
 
         if !still_referenced {

@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::console::recall_cache::RecallCache;
 use crate::model::snapshot::{Cue, CueList, ScopeTemplate, Snapshot};
 
 /// Manages the cue list, snapshots, and scope templates.
@@ -15,6 +17,12 @@ pub struct CueManager {
     /// the auto-update-on-recall feature to know which snapshot to merge
     /// the dirty parameters into when the next recall fires.
     last_recalled_snapshot_id: Option<Uuid>,
+    /// Optional look-ahead recall cache handle. Every structural mutation
+    /// (cues, snapshots, scope templates) bumps its model generation so
+    /// pre-resolved recall data can't go stale. Playhead moves deliberately
+    /// do NOT bump — they only re-target the precompute, which self-heals
+    /// on its own tick. `None` in tests and before the first connect.
+    model_gen: Option<Arc<RecallCache>>,
 }
 
 impl CueManager {
@@ -25,6 +33,22 @@ impl CueManager {
             scope_templates: HashMap::new(),
             current_cue_index: None,
             last_recalled_snapshot_id: None,
+            model_gen: None,
+        }
+    }
+
+    /// Attach the look-ahead recall cache so mutations invalidate it.
+    pub fn set_model_gen(&mut self, cache: Arc<RecallCache>) {
+        self.model_gen = Some(cache);
+    }
+
+    /// Notify the look-ahead recall cache that cue/snapshot/scope data
+    /// changed. Also used by callers that mutate the pub fields directly
+    /// (show load, new show, palette link editing). Harmless no-op when no
+    /// cache is attached.
+    pub fn bump_model_gen(&self) {
+        if let Some(cache) = &self.model_gen {
+            cache.bump();
         }
     }
 
@@ -183,6 +207,7 @@ impl CueManager {
     pub fn add_snapshot(&mut self, snapshot: Snapshot) {
         info!(name = %snapshot.name, id = %snapshot.id, "Added snapshot");
         self.snapshots.insert(snapshot.id, snapshot);
+        self.bump_model_gen();
     }
 
     /// Add a cue to the cue list.
@@ -195,6 +220,7 @@ impl CueManager {
                 .partial_cmp(&b.cue_number)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        self.bump_model_gen();
     }
 
     /// Remove a cue by ID.
@@ -203,6 +229,7 @@ impl CueManager {
         self.cue_list.cues.retain(|c| c.id != cue_id);
         let removed = self.cue_list.cues.len() < before;
         if removed {
+            self.bump_model_gen();
             // Reset current index if it's now invalid
             if let Some(idx) = self.current_cue_index {
                 if idx >= self.cue_list.cues.len() {
@@ -225,11 +252,23 @@ impl CueManager {
         }
     }
 
+    /// Peek at the next `n` cues after the playhead (without advancing).
+    /// When no cue is current yet the list starts at the first cue,
+    /// matching `next_cue()`. Used by the look-ahead recall precompute.
+    pub fn upcoming_cues(&self, n: usize) -> Vec<&Cue> {
+        let start = match self.current_cue_index {
+            None => 0,
+            Some(i) => i + 1,
+        };
+        self.cue_list.cues.iter().skip(start).take(n).collect()
+    }
+
     /// Remove a snapshot by ID.
     pub fn remove_snapshot(&mut self, id: Uuid) -> bool {
         let removed = self.snapshots.remove(&id).is_some();
         if removed {
             info!(%id, "Removed snapshot");
+            self.bump_model_gen();
         }
         removed
     }
@@ -240,6 +279,7 @@ impl CueManager {
             snapshot.data = data;
             snapshot.modified_at = chrono::Utc::now();
             info!(name = %snapshot.name, %id, "Updated snapshot data");
+            self.bump_model_gen();
         }
     }
 
@@ -252,6 +292,7 @@ impl CueManager {
             snapshot.scope = scope;
             snapshot.modified_at = chrono::Utc::now();
             info!(name = %snapshot.name, %id, "Updated snapshot scope");
+            self.bump_model_gen();
             true
         } else {
             warn!(%id, "Snapshot not found for scope update");
@@ -263,6 +304,7 @@ impl CueManager {
     pub fn add_scope_template(&mut self, template: ScopeTemplate) {
         info!(name = %template.name, id = %template.id, "Added scope template");
         self.scope_templates.insert(template.id, template);
+        self.bump_model_gen();
     }
 
     /// Replace the scope template with the given id. Returns `false` when
@@ -276,6 +318,7 @@ impl CueManager {
         template.id = id;
         info!(name = %template.name, %id, "Updated scope template");
         self.scope_templates.insert(id, template);
+        self.bump_model_gen();
         true
     }
 
@@ -284,6 +327,7 @@ impl CueManager {
         let removed = self.scope_templates.remove(&id).is_some();
         if removed {
             info!(%id, "Removed scope template");
+            self.bump_model_gen();
         }
         removed
     }
@@ -322,6 +366,9 @@ impl CueManager {
                     .partial_cmp(&b.cue_number)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
+        }
+        if updated {
+            self.bump_model_gen();
         }
         updated
     }

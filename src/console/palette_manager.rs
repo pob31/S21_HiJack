@@ -5,10 +5,12 @@
 //! filtering by kind / channel happens at lookup time.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tracing::info;
 use uuid::Uuid;
 
+use crate::console::recall_cache::RecallCache;
 use crate::model::channel::ChannelId;
 use crate::model::palette::ChannelPalette;
 use crate::model::parameter::PaletteKind;
@@ -18,12 +20,34 @@ use crate::model::parameter::PaletteKind;
 pub struct PaletteManager {
     /// All palettes indexed by UUID, regardless of kind.
     pub palettes: HashMap<Uuid, ChannelPalette>,
+    /// Optional look-ahead recall cache handle. Every palette mutation —
+    /// including handing out `&mut` access, which covers the absorb loop's
+    /// working-overlay writes and all UI edit paths — bumps its model
+    /// generation so pre-resolved recall data can't go stale. A spurious
+    /// bump only costs a background recompute. `None` in tests and before
+    /// the first connect.
+    model_gen: Option<Arc<RecallCache>>,
 }
 
 impl PaletteManager {
     pub fn new() -> Self {
         Self {
             palettes: HashMap::new(),
+            model_gen: None,
+        }
+    }
+
+    /// Attach the look-ahead recall cache so mutations invalidate it.
+    pub fn set_model_gen(&mut self, cache: Arc<RecallCache>) {
+        self.model_gen = Some(cache);
+    }
+
+    /// Notify the look-ahead recall cache that palette data changed. Also
+    /// used by callers that mutate the pub `palettes` field directly (show
+    /// load, new show). Harmless no-op when no cache is attached.
+    pub fn bump_model_gen(&self) {
+        if let Some(cache) = &self.model_gen {
+            cache.bump();
         }
     }
 
@@ -38,12 +62,14 @@ impl PaletteManager {
             "Added palette"
         );
         self.palettes.insert(palette.id, palette);
+        self.bump_model_gen();
     }
 
     pub fn remove_palette(&mut self, id: Uuid) -> bool {
         let removed = self.palettes.remove(&id).is_some();
         if removed {
             info!(%id, "Removed palette");
+            self.bump_model_gen();
         }
         removed
     }
@@ -52,7 +78,12 @@ impl PaletteManager {
         self.palettes.get(id)
     }
 
+    /// Mutable palette access. Conservatively bumps the look-ahead cache's
+    /// model generation — the caller may be about to change values the
+    /// cache resolved against (this is the choke point for the absorb
+    /// loop's `set_working` and the palette editor).
     pub fn get_palette_mut(&mut self, id: &Uuid) -> Option<&mut ChannelPalette> {
+        self.bump_model_gen();
         self.palettes.get_mut(id)
     }
 
@@ -106,6 +137,7 @@ impl PaletteManager {
                 info!(palette = %palette.name, %snapshot_id, "Linked palette to snapshot");
             }
         }
+        self.bump_model_gen();
     }
 
     /// Remove a snapshot back-reference from a palette.
@@ -116,6 +148,7 @@ impl PaletteManager {
                 .retain(|id| *id != snapshot_id);
             info!(palette = %palette.name, %snapshot_id, "Unlinked palette from snapshot");
         }
+        self.bump_model_gen();
     }
 
     /// Remove all back-references to a snapshot across all palettes.
@@ -127,6 +160,7 @@ impl PaletteManager {
                 .referencing_snapshots
                 .retain(|id| *id != snapshot_id);
         }
+        self.bump_model_gen();
     }
 
     /// Return snapshot IDs that reference a given palette (for ripple tracking).
@@ -147,6 +181,9 @@ impl PaletteManager {
             if palette.store_changes() > 0 {
                 changed += 1;
             }
+        }
+        if changed > 0 {
+            self.bump_model_gen();
         }
         changed
     }

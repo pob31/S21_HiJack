@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::console::automation_registry::AutomationOverride;
 use crate::console::cue_manager::CueManager;
 use crate::console::fade_engine::{FadeController, FadeTarget, MultiFadeController};
+use crate::console::recall_cache::RecallCache;
 use crate::model::channel::ChannelId;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::palette::ChannelPalette;
@@ -214,6 +215,12 @@ pub struct SnapshotEngine {
     /// back any parameter mid pre-wait/fade. Shared with the connection loop via
     /// `DaemonState.automation_override`.
     automation_override: Option<AutomationOverride>,
+    /// Optional look-ahead recall cache. When attached, recall paths first
+    /// try the pre-resolved `(snapshot, scope)` entry — skipping the double
+    /// `resolve_recall_values` pass — and fall back to synchronous
+    /// resolution on any staleness mismatch. `None` for engines built in
+    /// contexts without the precompute loop (tests, trigger dispatch).
+    recall_cache: Option<Arc<RecallCache>>,
 }
 
 impl SnapshotEngine {
@@ -238,7 +245,14 @@ impl SnapshotEngine {
             sync_direction: None,
             console_load_suppression: None,
             automation_override: None,
+            recall_cache: None,
         }
+    }
+
+    /// Attach the look-ahead recall cache so recalls can start from
+    /// pre-resolved data instead of resolving synchronously.
+    pub fn set_recall_cache(&mut self, cache: Arc<RecallCache>) {
+        self.recall_cache = Some(cache);
     }
 
     /// Attach the shared snapshot sync-direction handle. When set to
@@ -456,6 +470,11 @@ impl SnapshotEngine {
         if let Some(cue_arc) = self.cue_manager.as_ref() {
             cue_arc.write().await.set_last_recalled(snapshot_id);
         }
+        // Re-target the look-ahead precompute: the playhead likely moved,
+        // so the "next cues" set changed. Existing entries stay valid.
+        if let Some(cache) = &self.recall_cache {
+            cache.poke();
+        }
     }
 
     /// Helper: bracket an async operation with begin/end suppression on the
@@ -541,12 +560,41 @@ impl SnapshotEngine {
         let mut sent = 0usize;
         let mut skipped = 0usize;
 
+        // Look-ahead fast path: when the precompute task already resolved
+        // this exact (snapshot, scope) at the current model generation, skip
+        // both resolve passes. Falls back to synchronous resolution on any
+        // staleness mismatch — identical output either way.
+        let cached = self
+            .recall_cache
+            .as_ref()
+            .and_then(|c| c.get_valid(snapshot, scope.id));
+        debug!(cache_hit = cached.is_some(), snapshot = %snapshot.name, "Recall: resolution source");
+
         // Resolve all candidates (ignore_scope=true) so we can count
         // scope-filtered params as skipped, matching the old behaviour.
-        let all = crate::model::snapshot::resolve_recall_values(snapshot, scope, palettes, true);
-        let resolved =
-            crate::model::snapshot::resolve_recall_values(snapshot, scope, palettes, ignore_scope);
-        skipped += all.len() - resolved.len();
+        // `fallback` keeps the synchronous resolution alive for the borrows
+        // in `resolved` when there's no cache hit.
+        let fallback: Vec<(ParameterAddress, &ParameterValue)>;
+        let (all_len, resolved): (usize, Vec<(&ParameterAddress, &ParameterValue)>) = match &cached
+        {
+            Some(c) => {
+                let src = if ignore_scope { &c.all } else { &c.scoped };
+                (c.all.len(), src.iter().map(|(a, v)| (a, v)).collect())
+            }
+            None => {
+                let all_len =
+                    crate::model::snapshot::resolve_recall_values(snapshot, scope, palettes, true)
+                        .len();
+                fallback = crate::model::snapshot::resolve_recall_values(
+                    snapshot,
+                    scope,
+                    palettes,
+                    ignore_scope,
+                );
+                (all_len, fallback.iter().map(|(a, v)| (a, *v)).collect())
+            }
+        };
+        skipped += all_len - resolved.len();
 
         // Capture pre-recall live values for undo — best-effort, via TRY_read.
         // This recall runs right after firing a console memory, while the desk
@@ -558,7 +606,7 @@ impl SnapshotEngine {
         // regardless, so it needs no live read to be correct).
         let mut undo_map: HashMap<ParameterAddress, ParameterValue> = HashMap::new();
         if let Ok(state) = self.state.try_read() {
-            for (addr, _) in &resolved {
+            for &(addr, _) in &resolved {
                 if let Some(live) = state.get(addr) {
                     undo_map.insert(addr.clone(), live.clone());
                 }
@@ -573,7 +621,7 @@ impl SnapshotEngine {
         }
 
         let pace = self.pace_us.load(Ordering::Relaxed);
-        for (addr, effective_value) in &resolved {
+        for &(addr, effective_value) in &resolved {
             let did_send = self
                 .send_now(addr, effective_value, &mut sent, &mut skipped)
                 .await;
@@ -822,15 +870,42 @@ impl SnapshotEngine {
         // only across the in-memory diff/group build below and is DROPPED before
         // any send/fade is spawned (line `drop(state)`), so it can't starve the
         // inbound flood the way holding it across the send loop would.
+        // Look-ahead fast path (see `recall_inner`): a pre-resolved
+        // (snapshot, scope) entry skips both resolve passes. The live
+        // diff/grouping below — start values, undo — stays at recall time.
+        let cached = self
+            .recall_cache
+            .as_ref()
+            .and_then(|c| c.get_valid(snapshot, effective_scope.id));
+        debug!(cache_hit = cached.is_some(), snapshot = %snapshot.name, "Timed recall: resolution source");
+
         let state = Some(self.state.read().await);
 
         // Step 1: Resolve all values with palette overrides
-        let resolved = crate::model::snapshot::resolve_recall_values(
-            snapshot,
-            effective_scope,
-            palettes,
-            ignore_scope,
-        );
+        let fallback: Vec<(ParameterAddress, &ParameterValue)>;
+        let (all_len, resolved): (usize, Vec<(&ParameterAddress, &ParameterValue)>) = match &cached
+        {
+            Some(c) => {
+                let src = if ignore_scope { &c.all } else { &c.scoped };
+                (c.all.len(), src.iter().map(|(a, v)| (a, v)).collect())
+            }
+            None => {
+                let all_len = crate::model::snapshot::resolve_recall_values(
+                    snapshot,
+                    effective_scope,
+                    palettes,
+                    true,
+                )
+                .len();
+                fallback = crate::model::snapshot::resolve_recall_values(
+                    snapshot,
+                    effective_scope,
+                    palettes,
+                    ignore_scope,
+                );
+                (all_len, fallback.iter().map(|(a, v)| (a, *v)).collect())
+            }
+        };
 
         // Step 2: Diff against live state and group by (channel, category)
         //
@@ -849,7 +924,7 @@ impl SnapshotEngine {
         let mut total_skipped = 0usize;
         let mut undo_map: HashMap<ParameterAddress, ParameterValue> = HashMap::new();
 
-        for (addr, effective_value) in &resolved {
+        for &(addr, effective_value) in &resolved {
             let live_value = state.as_ref().and_then(|s| s.get(addr));
             // Force: do not skip params that merely match the (lossy) live
             // mirror. A param already at target simply fades target→target.
@@ -869,13 +944,7 @@ impl SnapshotEngine {
         }
 
         // Count scope-filtered params as skipped (for RecallResult compatibility)
-        let all_resolved = crate::model::snapshot::resolve_recall_values(
-            snapshot,
-            effective_scope,
-            palettes,
-            true,
-        );
-        total_skipped += all_resolved.len() - resolved.len();
+        total_skipped += all_len - resolved.len();
 
         drop(state);
 
@@ -1727,6 +1796,117 @@ mod tests {
             }),
             Some(&ParameterValue::Float(0.0)),
             "recall should optimistically update the mirror to the sent value"
+        );
+    }
+
+    /// Helper for the look-ahead cache tests: one Input-1 fader at 0.0.
+    fn fader_snapshot() -> (ScopeTemplate, ParameterAddress, Snapshot) {
+        let scope = ScopeTemplate::new(
+            "Test".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        let mut values = HashMap::new();
+        values.insert(addr.clone(), ParameterValue::Float(0.0));
+        let snapshot = Snapshot::new(
+            "Snap".into(),
+            scope.clone(),
+            SnapshotData { values },
+            SnapshotKind::ApplyOnSave,
+        );
+        (scope, addr, snapshot)
+    }
+
+    /// Cache entry whose value deliberately DIFFERS from the snapshot's
+    /// stored 0.0, so the mirror reveals which resolution path was sent.
+    fn marker_entry(
+        snapshot: &Snapshot,
+        scope: &ScopeTemplate,
+        generation: u64,
+        addr: &ParameterAddress,
+    ) -> crate::console::recall_cache::CachedResolution {
+        crate::console::recall_cache::CachedResolution {
+            snapshot_id: snapshot.id,
+            scope_id: scope.id,
+            snapshot_modified_at: snapshot.modified_at,
+            generation,
+            all: vec![(addr.clone(), ParameterValue::Float(-7.0))],
+            scoped: vec![(addr.clone(), ParameterValue::Float(-7.0))],
+        }
+    }
+
+    #[tokio::test]
+    async fn recall_uses_valid_lookahead_cache_entry() {
+        let (mut engine, state) = setup_test().await;
+        let cache = Arc::new(crate::console::recall_cache::RecallCache::new());
+        engine.set_recall_cache(cache.clone());
+
+        let (scope, addr, snapshot) = fader_snapshot();
+        let entry = marker_entry(&snapshot, &scope, cache.generation(), &addr);
+        assert!(cache.replace_all(cache.generation(), vec![entry]));
+
+        let result = engine
+            .recall(&snapshot, &scope, &no_palettes(), false)
+            .await;
+        assert_eq!(result.parameters_sent, 1);
+        assert_eq!(result.parameters_skipped, 0);
+        assert_eq!(
+            state.read().await.get(&addr),
+            Some(&ParameterValue::Float(-7.0)),
+            "a valid cache entry is what the recall must send"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_falls_back_when_cache_generation_stale() {
+        let (mut engine, state) = setup_test().await;
+        let cache = Arc::new(crate::console::recall_cache::RecallCache::new());
+        engine.set_recall_cache(cache.clone());
+
+        let (scope, addr, snapshot) = fader_snapshot();
+        let entry = marker_entry(&snapshot, &scope, cache.generation(), &addr);
+        assert!(cache.replace_all(cache.generation(), vec![entry]));
+        // Model edited after the precompute (palette tweak, cue edit, ...).
+        cache.bump();
+
+        let result = engine
+            .recall(&snapshot, &scope, &no_palettes(), false)
+            .await;
+        assert_eq!(result.parameters_sent, 1);
+        assert_eq!(
+            state.read().await.get(&addr),
+            Some(&ParameterValue::Float(0.0)),
+            "a stale-generation entry must be ignored in favour of synchronous resolution"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_falls_back_when_snapshot_edited() {
+        let (mut engine, state) = setup_test().await;
+        let cache = Arc::new(crate::console::recall_cache::RecallCache::new());
+        engine.set_recall_cache(cache.clone());
+
+        let (scope, addr, mut snapshot) = fader_snapshot();
+        let entry = marker_entry(&snapshot, &scope, cache.generation(), &addr);
+        assert!(cache.replace_all(cache.generation(), vec![entry]));
+        // Snapshot revised after the precompute (re-capture / auto-update
+        // bump `modified_at`) — same generation, different snapshot.
+        snapshot.modified_at = chrono::Utc::now() + chrono::Duration::seconds(1);
+
+        let result = engine
+            .recall(&snapshot, &scope, &no_palettes(), false)
+            .await;
+        assert_eq!(result.parameters_sent, 1);
+        assert_eq!(
+            state.read().await.get(&addr),
+            Some(&ParameterValue::Float(0.0)),
+            "an entry for an older snapshot revision must be ignored"
         );
     }
 

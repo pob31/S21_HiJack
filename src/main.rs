@@ -275,6 +275,23 @@ async fn run_headless(args: Args) {
     snapshot_engine.set_recall_progress(recall_progress.clone());
     snapshot_engine.set_console_load_suppression(console_load_suppression.clone());
     snapshot_engine.set_automation_override(automation_override.clone());
+    // Look-ahead recall cache: pre-resolves the next cues' recall data in
+    // the idle time between cues — matters most on the small SBC targets
+    // headless mode is built for. Managers bump it on edits; the engine
+    // consults it at recall start.
+    let recall_cache = Arc::new(console::recall_cache::RecallCache::new());
+    cue_manager.write().await.set_model_gen(recall_cache.clone());
+    palette_manager
+        .write()
+        .await
+        .set_model_gen(recall_cache.clone());
+    tokio::spawn(console::recall_cache::run_precompute_loop(
+        recall_cache.clone(),
+        cue_manager.clone(),
+        palette_manager.clone(),
+        cancel_token.clone(),
+    ));
+    snapshot_engine.set_recall_cache(recall_cache);
     // Headless path: no UI thread to consume macro app-action
     // events (Go / Prev / Connect / Disconnect / RecallSnapshot /
     // RecallPalette). Use a dummy channel whose receiver is dropped
