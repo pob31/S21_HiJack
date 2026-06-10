@@ -44,11 +44,23 @@ jobs:
           fi
           echo "ok: $RELEASE_TAG == v$VERSION"
 
-  # ── Linux: .tar.gz (binary + assets + installer) ──────────────────────────
+  # ── Linux: .tar.gz (binary + assets + installer), x86_64 + arm64 ───────────
+  # Both arches build natively — arm64 on GitHub's ARM runners (free for public
+  # repos), covering Raspberry Pi 3/4/5 and other aarch64 SBCs on a 64-bit OS.
+  # build-linux-release.sh derives the arch from `uname -m`, so one script and
+  # one installer serve both; only the runner differs.
   linux:
-    name: linux package
+    name: linux package (${{ matrix.arch }})
     needs: verify-version
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Install build deps (libudev for hidapi-rs)
@@ -65,8 +77,8 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           fail_on_unmatched_files: true
           files: |
-            dist/*-linux-*.tar.gz
-            dist/*-linux-*.tar.gz.sha256
+            dist/*-linux-${{ matrix.arch }}.tar.gz
+            dist/*-linux-${{ matrix.arch }}.tar.gz.sha256
 
   # ── macOS: signed + notarized + stapled universal DMG ─────────────────────
   macos:

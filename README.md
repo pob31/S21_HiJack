@@ -254,7 +254,7 @@ macOS and Windows work out of the box — no extra setup needed.
 
 - **Raspberry Pi** (Linux ARM) — primary deployment target, runs headless as a daemon
 - **macOS / Windows / Linux desktop** — development and GUI use
-- Cross-compile for Pi with `cross build --release --target armv7-unknown-linux-gnueabihf` or build natively on the Pi
+- Each release ships prebuilt Linux tarballs for **x86_64** and **aarch64/arm64** (Pi 3/4/5 and other 64-bit-OS SBCs) — download, extract, and run `./install-linux.sh`. For 32-bit Pi OS, cross-compile with `cross build --release --target armv7-unknown-linux-gnueabihf` or build natively on the Pi.
 - Linux desktop integration (icon, .desktop entry) is provided by `install-linux.sh`
 
 ## License
