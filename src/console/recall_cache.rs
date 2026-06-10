@@ -268,7 +268,10 @@ mod tests {
         let channel = ChannelId::Input(1);
         let mut paths = HashSet::new();
         paths.insert(ParameterPath::Fader);
-        let scope = ScopeTemplate::new("test".into(), vec![ChannelScope::new(channel.clone(), paths)]);
+        let scope = ScopeTemplate::new(
+            "test".into(),
+            vec![ChannelScope::new(channel.clone(), paths)],
+        );
         let mut data = SnapshotData::new();
         data.values.insert(
             ParameterAddress {
@@ -339,9 +342,7 @@ mod tests {
         assert_eq!(entry.scoped.len(), sync_scoped.len());
         for (addr, value) in &entry.scoped {
             assert!(
-                sync_scoped
-                    .iter()
-                    .any(|(a, v)| a == addr && *v == value),
+                sync_scoped.iter().any(|(a, v)| a == addr && *v == value),
                 "cached pair missing from synchronous resolution: {addr}"
             );
         }

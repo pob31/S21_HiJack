@@ -280,7 +280,10 @@ async fn run_headless(args: Args) {
     // headless mode is built for. Managers bump it on edits; the engine
     // consults it at recall start.
     let recall_cache = Arc::new(console::recall_cache::RecallCache::new());
-    cue_manager.write().await.set_model_gen(recall_cache.clone());
+    cue_manager
+        .write()
+        .await
+        .set_model_gen(recall_cache.clone());
     palette_manager
         .write()
         .await
