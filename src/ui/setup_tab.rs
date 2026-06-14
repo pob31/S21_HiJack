@@ -104,6 +104,14 @@ pub struct SetupTabState {
     /// file dialog picks a file, and persisted via `save_app_preferences` so
     /// the next Open / Save dialog starts in the operator's last-used folder.
     pub last_open_dir: Option<std::path::PathBuf>,
+    /// MIDI output settings (machine-bound). Mirrors `AppPreferences::midi`;
+    /// seeded at startup, edited in the Setup MIDI panel, applied to the
+    /// [`MidiEngine`](crate::console::midi_engine) and persisted in prefs.
+    pub midi: crate::persistence::preferences::MidiSettings,
+    /// Scratch fields for the "add OSC target" form in Advanced Settings.
+    pub new_osc_target_name: String,
+    pub new_osc_target_host: String,
+    pub new_osc_target_port: String,
     /// Source-IP CIDR allowlist for the monitor server (audit C2). Round-trips
     /// through the show file. UI editor is a follow-up; for now operators
     /// edit the JSON directly or use the `--monitor-allow-cidr` CLI flag.
@@ -206,6 +214,10 @@ impl SetupTabState {
             window_size: prefs.window_size,
             window_pos: prefs.window_pos,
             last_open_dir: prefs.last_open_dir.clone(),
+            midi: prefs.midi.clone(),
+            new_osc_target_name: String::new(),
+            new_osc_target_host: String::new(),
+            new_osc_target_port: "53000".to_string(),
             monitor_allow_cidrs: Vec::new(),
             trigger_allow_cidrs: Vec::new(),
             // Default the web monitor on (matches the headless `--web-port`
@@ -593,6 +605,8 @@ pub fn draw_setup_tab(
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     last_received: &Arc<RwLock<Option<crate::model::parameter::ParameterAddress>>>,
     pending_engines: &Arc<std::sync::Mutex<Option<crate::ui::PendingEngines>>>,
+    trigger_dispatcher: &Arc<crate::console::trigger_dispatcher::TriggerDispatcher>,
+    midi_engine: &Arc<crate::console::midi_engine::MidiEngine>,
     connected: &Arc<AtomicBool>,
     cancel_token: &mut Option<CancellationToken>,
     osc_log: &OscLog,
@@ -702,6 +716,7 @@ pub fn draw_setup_tab(
                                     auto_update_on_recall, sync_direction, dirty_tracker,
                                     last_received,
                                     pending_engines,
+                                    trigger_dispatcher,
                                     connected, cancel_token, osc_log,
                                     send_pace_us,
                                     progress,
@@ -1420,6 +1435,8 @@ pub fn draw_setup_tab(
                                 mgr.cue_list = CueList::default();
                                 mgr.snapshots.clear();
                                 mgr.scope_templates.clear();
+                                mgr.osc_targets.clear();
+                                mgr.trigger_templates.clear();
                                 // Direct field writes bypass the manager's
                                 // hooked mutators — invalidate the look-ahead
                                 // recall cache explicitly.
@@ -1878,6 +1895,9 @@ pub fn draw_setup_tab(
         &mut open,
         setup,
         send_pace_us,
+        cue_manager,
+        midi_engine,
+        runtime,
     );
     setup.show_advanced_panel = open;
 }
@@ -1912,6 +1932,7 @@ pub(crate) fn start_connection(
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
     last_received: &Arc<RwLock<Option<crate::model::parameter::ParameterAddress>>>,
     pending_engines: &Arc<std::sync::Mutex<Option<crate::ui::PendingEngines>>>,
+    trigger_dispatcher: &Arc<crate::console::trigger_dispatcher::TriggerDispatcher>,
     connected: &Arc<AtomicBool>,
     cancel_token: &mut Option<CancellationToken>,
     osc_log: &OscLog,
@@ -2085,6 +2106,7 @@ pub(crate) fn start_connection(
     // into `into_parts_with_log`). Lets iPad traffic appear in the OSC Log.
     let ipad_log = osc_log.clone();
     let pending = pending_engines.clone();
+    let trigger_dispatcher = trigger_dispatcher.clone();
     runtime.spawn(async move {
         // Create OscClient manually so we can build GangEngine with the sender
         let client = match OscClient::new(local_addr, console_addr, iface_name.as_deref()).await {
@@ -2206,6 +2228,9 @@ pub(crate) fn start_connection(
         snapshot_engine.set_automation_override(automation_override.clone());
         // Look-ahead recall cache (created above, next to the absorb loop).
         snapshot_engine.set_recall_cache(recall_cache.clone());
+        // External cue triggers (QLab / LiveProfessor / MIDI) fire at the end
+        // of each cue recall via this app-lifetime dispatcher.
+        snapshot_engine.set_trigger_dispatcher(trigger_dispatcher.clone());
         let console_fire_suppression = snapshot_engine.console_fire_suppression();
 
         // iPad connection (Mode 2 or 3). The `snap_event_tx` / `snap_event_rx`
@@ -2691,7 +2716,7 @@ pub(crate) async fn build_show_file(
     let sd = stream_deck_config.read().await;
 
     ShowFile {
-        version: 16,
+        version: 17,
         app_version: crate::version::APP_VERSION.to_string(),
         console_config: state_guard.config.clone(),
         connection,
@@ -2705,6 +2730,8 @@ pub(crate) async fn build_show_file(
         console_recall,
         pan_link: pl.clone(),
         stream_deck: sd.clone(),
+        osc_targets: mgr.osc_targets.values().cloned().collect(),
+        trigger_templates: mgr.trigger_templates.values().cloned().collect(),
     }
 }
 
@@ -2764,6 +2791,15 @@ pub(crate) fn load_show_file(
                 mgr.scope_templates.clear();
                 for tmpl in show.scope_templates {
                     mgr.scope_templates.insert(tmpl.id, tmpl);
+                }
+                // External-trigger targets + user templates (v17).
+                mgr.osc_targets.clear();
+                for target in show.osc_targets {
+                    mgr.osc_targets.insert(target.id, target);
+                }
+                mgr.trigger_templates.clear();
+                for tmpl in show.trigger_templates {
+                    mgr.trigger_templates.insert(tmpl.id, tmpl);
                 }
                 // Direct field writes bypass the manager's hooked mutators —
                 // invalidate the look-ahead recall cache explicitly.
@@ -3101,6 +3137,7 @@ pub(crate) fn save_app_preferences(setup: &SetupTabState) {
         window_size: setup.window_size,
         window_pos: setup.window_pos,
         last_open_dir: setup.last_open_dir.clone(),
+        midi: setup.midi.clone(),
     };
     if let Err(e) = prefs.save() {
         tracing::warn!(error = %e, "Failed to save app preferences");

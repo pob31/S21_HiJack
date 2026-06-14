@@ -8,6 +8,24 @@ use crate::model::ui_mode::{ColorTheme, UiMode};
 const APP_DIR: &str = "s21_hijack";
 const PREFS_FILE: &str = "preferences.json";
 
+/// MIDI output settings. **Machine-bound** (a port name / virtual-port choice
+/// is a property of this computer, not of any show), so it lives in app
+/// preferences rather than the show file. The MIDI engine auto-connects to the
+/// configured port on launch.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MidiSettings {
+    /// Master enable for MIDI output.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Existing output port to connect to (when `use_virtual_port` is false).
+    #[serde(default)]
+    pub output_port_name: Option<String>,
+    /// When true (macOS / Linux only), create a virtual `S21_HiJack` output
+    /// port instead of connecting to an existing one.
+    #[serde(default)]
+    pub use_virtual_port: bool,
+}
+
 /// Application-wide UI preferences. Lives outside any show file: tracks
 /// the operator's last-used display mode and whether the diagnostic tabs
 /// should be shown. Loaded once at startup and rewritten whenever the
@@ -60,6 +78,10 @@ pub struct AppPreferences {
     /// (falls back to the default) if the file is later opened on another.
     #[serde(default)]
     pub last_open_dir: Option<PathBuf>,
+    /// MIDI output settings (machine-bound; see [`MidiSettings`]). New in
+    /// v0.1.2; older preference files load with MIDI disabled.
+    #[serde(default)]
+    pub midi: MidiSettings,
 }
 
 /// Default UI scale multiplier — `1.0` means "use the automatic scaling
@@ -82,6 +104,7 @@ impl Default for AppPreferences {
             window_size: None,
             window_pos: None,
             last_open_dir: None,
+            midi: MidiSettings::default(),
         }
     }
 }
@@ -203,9 +226,15 @@ mod tests {
             window_size: Some([1600.0, 900.0]),
             window_pos: Some([40.0, 30.0]),
             last_open_dir: Some(PathBuf::from("/shows/tour-2026")),
+            midi: MidiSettings {
+                enabled: true,
+                output_port_name: Some("IAC Driver Bus 1".into()),
+                use_virtual_port: false,
+            },
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: AppPreferences = serde_json::from_str(&json).unwrap();
+        assert_eq!(prefs.midi, back.midi);
         assert_eq!(prefs.send_pace_us, back.send_pace_us);
         assert_eq!(prefs.show_diagnostics, back.show_diagnostics);
         assert_eq!(prefs.ui_scale, back.ui_scale);

@@ -3,6 +3,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::model::config::ConsoleConfig;
+use crate::model::cue_trigger::{OscTarget, TriggerTemplate};
 use crate::model::gang::GangGroup;
 use crate::model::macro_def::MacroDef;
 use crate::model::monitor::MonitorClient;
@@ -244,12 +245,20 @@ pub struct ShowFile {
     /// button list).
     #[serde(default)]
     pub stream_deck: StreamDeckConfig,
+    /// Reusable OSC trigger destinations (QLab / LiveProfessor / custom).
+    /// New in v17; older show files load with an empty list.
+    #[serde(default)]
+    pub osc_targets: Vec<OscTarget>,
+    /// User-created external-trigger templates. Built-in templates live in
+    /// code, so only user templates persist here. New in v17.
+    #[serde(default)]
+    pub trigger_templates: Vec<TriggerTemplate>,
 }
 
 impl ShowFile {
     pub fn new(config: ConsoleConfig) -> Self {
         Self {
-            version: 16,
+            version: 17,
             app_version: crate::version::APP_VERSION.to_string(),
             console_config: config,
             connection: ConnectionSettings::default(),
@@ -263,6 +272,8 @@ impl ShowFile {
             console_recall: ConsoleRecallConfig::default(),
             pan_link: PanLinkBindings::default(),
             stream_deck: StreamDeckConfig::default(),
+            osc_targets: Vec::new(),
+            trigger_templates: Vec::new(),
         }
     }
 
@@ -373,7 +384,7 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 16);
+        assert_eq!(loaded.version, 17);
         // A freshly-written show stamps the running app version.
         assert_eq!(loaded.app_version, crate::version::APP_VERSION);
         assert_eq!(loaded.console_config.input_channel_count, 48);
@@ -460,7 +471,7 @@ mod tests {
         let path = dir.join("test_show_streamdeck.json");
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
-        assert_eq!(loaded.version, 16);
+        assert_eq!(loaded.version, 17);
         assert_eq!(loaded.stream_deck, show.stream_deck);
         let _ = tokio::fs::remove_file(&path).await;
     }
@@ -807,5 +818,114 @@ mod tests {
         let before = show.macros[0].steps.len();
         show.strip_total_gain();
         assert_eq!(show.macros[0].steps.len(), before);
+    }
+
+    #[tokio::test]
+    async fn cue_triggers_and_targets_round_trip() {
+        use crate::model::cue_trigger::{
+            CueTrigger, MidiMessage, OscArg, OscTarget, TriggerAction, TriggerTemplate,
+        };
+        use crate::model::snapshot::Cue;
+
+        let mut show = ShowFile::new(ConsoleConfig::default());
+
+        // OSC target + a user template persisted on the show.
+        let target = OscTarget::new("QLab", "10.0.0.9", 53000);
+        let target_id = target.id;
+        show.osc_targets.push(target);
+        show.trigger_templates.push(TriggerTemplate::user(
+            "My LiveProfessor",
+            TriggerAction::Osc {
+                target_id: None,
+                host: Some("10.0.0.5".into()),
+                port: Some(8000),
+                path: "/GlobalSnapshots/Recall".into(),
+                args: vec![OscArg::Int(3)],
+            },
+        ));
+
+        // A cue carrying mixed OSC (named + inline) + MIDI triggers.
+        let mut cue = Cue::new(1.0, "Opening".into());
+        cue.console_snapshot = Some(1);
+        cue.triggers = vec![
+            CueTrigger::new(TriggerAction::Osc {
+                target_id: Some(target_id),
+                host: None,
+                port: None,
+                path: "/go".into(),
+                args: vec![OscArg::Str("Q3".into())],
+            }),
+            CueTrigger::new(TriggerAction::Midi {
+                message: MidiMessage::ProgramChange {
+                    channel: 1,
+                    program: 7,
+                },
+            }),
+        ];
+        show.cue_list.cues.push(cue);
+
+        let dir = std::env::temp_dir().join("s21_hijack_test");
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let path = dir.join("test_show_triggers.json");
+        show.save(&path).await.unwrap();
+        let loaded = ShowFile::load(&path).await.unwrap();
+
+        assert_eq!(loaded.version, 17);
+        assert_eq!(loaded.osc_targets, show.osc_targets);
+        assert_eq!(loaded.trigger_templates, show.trigger_templates);
+        assert_eq!(
+            loaded.cue_list.cues[0].triggers,
+            show.cue_list.cues[0].triggers
+        );
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn legacy_v16_show_loads_with_empty_triggers() {
+        // A v16 show (no triggers / osc_targets / trigger_templates) loads with
+        // those fields defaulted empty — zero-migration backward compatibility.
+        let json = r#"{
+            "version": 16,
+            "console_config": {
+                "console_name": "",
+                "console_serial": "",
+                "session_filename": null,
+                "input_channel_count": 48,
+                "aux_output_count": 8,
+                "group_output_count": 8,
+                "matrix_output_count": 8,
+                "matrix_input_count": 10,
+                "control_group_count": 10,
+                "graphic_eq_count": 16,
+                "talkback_output_count": 0,
+                "mix_output_types": [],
+                "mix_output_modes": [],
+                "input_modes": [],
+                "group_modes": []
+            },
+            "cue_list": {
+                "id": "00000000-0000-0000-0000-000000000000",
+                "name": "Main",
+                "cues": [
+                    {
+                        "id": "00000000-0000-0000-0000-000000000001",
+                        "cue_number": 1.0,
+                        "name": "Old cue",
+                        "console_snapshot": 1,
+                        "snapshot_id": null,
+                        "scope_override": null,
+                        "qlab_cue_id": null,
+                        "notes": ""
+                    }
+                ]
+            }
+        }"#;
+        let parsed: ShowFile = serde_json::from_str(json).expect("v16 JSON parses");
+        assert_eq!(parsed.version, 16);
+        assert!(parsed.osc_targets.is_empty());
+        assert!(parsed.trigger_templates.is_empty());
+        assert_eq!(parsed.cue_list.cues.len(), 1);
+        assert!(parsed.cue_list.cues[0].triggers.is_empty());
     }
 }

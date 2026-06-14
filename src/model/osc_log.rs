@@ -35,6 +35,10 @@ pub enum OscProtocol {
     GpOsc,
     /// DiGiCo iPad remote protocol (Modes 2/3).
     Ipad,
+    /// External cue triggers — OSC to QLab / LiveProfessor / custom targets,
+    /// and MIDI (CC / Note / Program Change). Colour-coded distinctly so the
+    /// operator can tell show-control sends apart from console traffic.
+    External,
 }
 
 /// A single logged OSC message.
@@ -146,6 +150,18 @@ impl OscLog {
         self.push(OscLogEntry::with_protocol(
             OscProtocol::Ipad,
             OscDirection::In,
+            path.to_string(),
+            args.to_string(),
+        ));
+    }
+
+    /// Convenience: log an outbound external cue trigger (OSC to QLab /
+    /// LiveProfessor / custom, or a MIDI message). `path` is the OSC address
+    /// or a synthetic label like `"MIDI"`.
+    pub fn log_external_out(&self, path: &str, args: &str) {
+        self.push(OscLogEntry::with_protocol(
+            OscProtocol::External,
+            OscDirection::Out,
             path.to_string(),
             args.to_string(),
         ));

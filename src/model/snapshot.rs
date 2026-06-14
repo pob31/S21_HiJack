@@ -519,7 +519,18 @@ pub struct Cue {
     /// If set, overrides the snapshot's built-in scope for this cue.
     pub scope_override: Option<ScopeTemplate>,
     /// QLab cue identifier for trigger mapping.
+    ///
+    /// **Deprecated (v0.1.2):** never read or written by any code — superseded
+    /// by `triggers`. Kept (skip-serialized when `None`) so older builds can
+    /// still load show files written by this one. Slated for removal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qlab_cue_id: Option<String>,
+    /// External triggers fired when this cue is recalled, in addition to the
+    /// console memory row + snapshot overlay: OSC (QLab / LiveProfessor /
+    /// custom) and MIDI (CC / Note / Program Change). New in v0.1.2; older show
+    /// files load with an empty list.
+    #[serde(default)]
+    pub triggers: Vec<crate::model::cue_trigger::CueTrigger>,
     /// Notes for the operator.
     pub notes: String,
 }
@@ -534,6 +545,7 @@ impl Cue {
             snapshot_id: None,
             scope_override: None,
             qlab_cue_id: None,
+            triggers: Vec::new(),
             notes: String::new(),
         }
     }

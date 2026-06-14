@@ -295,6 +295,16 @@ async fn run_headless(args: Args) {
         cancel_token.clone(),
     ));
     snapshot_engine.set_recall_cache(recall_cache);
+    // External cue triggers (headless): MIDI engine + dispatcher. No OSC log in
+    // headless; OSC triggers with named targets (from a loaded show) and inline
+    // host/port still fire. MIDI auto-connect isn't wired headless (no prefs UI).
+    let midi_engine = console::midi_engine::MidiEngine::new();
+    let trigger_dispatcher = console::trigger_dispatcher::TriggerDispatcher::new(
+        midi_engine.clone(),
+        cue_manager.clone(),
+        None,
+    );
+    snapshot_engine.set_trigger_dispatcher(trigger_dispatcher.clone());
     // Headless path: no UI thread to consume macro app-action
     // events (Go / Prev / Connect / Disconnect / RecallSnapshot /
     // RecallPalette). Use a dummy channel whose receiver is dropped

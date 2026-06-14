@@ -63,10 +63,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
-      - name: Install build deps (libudev for hidapi-rs)
+      - name: Install build deps (libudev for hidapi-rs, libasound2 for midir)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libudev-dev pkg-config
+          sudo apt-get install -y libudev-dev libasound2-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build Linux release

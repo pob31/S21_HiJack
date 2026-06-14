@@ -5,6 +5,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::console::recall_cache::RecallCache;
+use crate::model::cue_trigger::{OscTarget, TriggerTemplate};
 use crate::model::snapshot::{Cue, CueList, ScopeTemplate, Snapshot};
 
 /// Manages the cue list, snapshots, and scope templates.
@@ -12,6 +13,13 @@ pub struct CueManager {
     pub cue_list: CueList,
     pub snapshots: HashMap<Uuid, Snapshot>,
     pub scope_templates: HashMap<Uuid, ScopeTemplate>,
+    /// Reusable OSC trigger destinations (per-show). Referenced by
+    /// `TriggerAction::Osc { target_id, .. }` and resolved at fire time by the
+    /// trigger dispatcher.
+    pub osc_targets: HashMap<Uuid, OscTarget>,
+    /// User-created trigger templates (per-show). Built-in templates live in
+    /// code ([`TriggerTemplate::builtins`]) and are not stored here.
+    pub trigger_templates: HashMap<Uuid, TriggerTemplate>,
     current_cue_index: Option<usize>,
     /// UUID of the most recently successfully recalled snapshot. Used by
     /// the auto-update-on-recall feature to know which snapshot to merge
@@ -31,6 +39,8 @@ impl CueManager {
             cue_list,
             snapshots: HashMap::new(),
             scope_templates: HashMap::new(),
+            osc_targets: HashMap::new(),
+            trigger_templates: HashMap::new(),
             current_cue_index: None,
             last_recalled_snapshot_id: None,
             model_gen: None,
@@ -50,6 +60,31 @@ impl CueManager {
         if let Some(cache) = &self.model_gen {
             cache.bump();
         }
+    }
+
+    /// Resolve an OSC target by id (for the trigger dispatcher).
+    pub fn osc_target(&self, id: &Uuid) -> Option<&OscTarget> {
+        self.osc_targets.get(id)
+    }
+
+    /// Add (or replace by id) an OSC target.
+    pub fn add_osc_target(&mut self, target: OscTarget) {
+        self.osc_targets.insert(target.id, target);
+    }
+
+    /// Remove an OSC target. Returns whether it existed.
+    pub fn remove_osc_target(&mut self, id: Uuid) -> bool {
+        self.osc_targets.remove(&id).is_some()
+    }
+
+    /// Add (or replace by id) a user trigger template.
+    pub fn add_trigger_template(&mut self, template: TriggerTemplate) {
+        self.trigger_templates.insert(template.id, template);
+    }
+
+    /// Remove a user trigger template. Returns whether it existed.
+    pub fn remove_trigger_template(&mut self, id: Uuid) -> bool {
+        self.trigger_templates.remove(&id).is_some()
     }
 
     /// Record that this snapshot was just recalled successfully.
@@ -344,6 +379,7 @@ impl CueManager {
         snapshot_id: Option<Uuid>,
         console_snapshot: Option<i32>,
         scope_override: Option<ScopeTemplate>,
+        triggers: Vec<crate::model::cue_trigger::CueTrigger>,
         notes: String,
     ) -> bool {
         let updated = if let Some(cue) = self.cue_list.cues.iter_mut().find(|c| c.id == cue_id) {
@@ -353,6 +389,7 @@ impl CueManager {
             cue.snapshot_id = snapshot_id;
             cue.console_snapshot = console_snapshot;
             cue.scope_override = scope_override;
+            cue.triggers = triggers;
             cue.notes = notes;
             info!(cue_number = cue.cue_number, name = %cue.name, "Updated cue");
             true
@@ -470,6 +507,7 @@ mod tests {
             mgr.cue_list.cues[0].snapshot_id,
             None,
             None,
+            Vec::new(),
             "Scene change".into(),
         ));
 
@@ -493,6 +531,7 @@ mod tests {
             mgr.cue_list.cues[1].snapshot_id,
             None,
             None,
+            Vec::new(),
             String::new(),
         ));
         assert_eq!(mgr.cue_list.cues[0].id, b_id);
@@ -502,7 +541,15 @@ mod tests {
     #[test]
     fn update_cue_nonexistent_returns_false() {
         let mut mgr = CueManager::new(CueList::default());
-        assert!(!mgr.update_cue(Uuid::new_v4(), None, None, None, None, String::new(),));
+        assert!(!mgr.update_cue(
+            Uuid::new_v4(),
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            String::new(),
+        ));
     }
 
     // ─── Phase E: resolve_snapshot ──────────────────────────────────

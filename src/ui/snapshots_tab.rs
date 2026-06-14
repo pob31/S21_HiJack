@@ -15,6 +15,9 @@ use super::theme;
 use crate::console::cue_manager::CueManager;
 use crate::console::palette_manager::PaletteManager;
 use crate::console::snapshot_engine::SnapshotEngine;
+use crate::model::cue_trigger::{
+    CueTrigger, MidiMessage, OscArg, OscTarget, TriggerAction, TriggerTemplate,
+};
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::parameter::{ParameterAddress, ParameterValue};
 use crate::model::snapshot::{Cue, Snapshot, SnapshotKind};
@@ -50,6 +53,9 @@ pub struct SnapshotsTabState {
     pub editing_scope_override_enabled: bool,
     pub editing_scope_template_id: Option<Uuid>,
     pub editing_cue_notes: String,
+    /// UI-side editor rows for the selected cue's external triggers. Built from
+    /// `cue.triggers` on selection change, converted back on save.
+    pub editing_triggers: Vec<TriggerEditRow>,
 
     // Snapshot management
     pub new_snapshot_name: String,
@@ -95,6 +101,7 @@ impl Default for SnapshotsTabState {
             editing_scope_override_enabled: false,
             editing_scope_template_id: None,
             editing_cue_notes: String::new(),
+            editing_triggers: Vec::new(),
             new_snapshot_name: String::new(),
             selected_snapshot_id: None,
             pending_kind: SnapshotKind::default(),
@@ -848,6 +855,8 @@ pub fn draw_snapshots_tab(
                                     snap_state.editing_scope_override_enabled = cue.scope_override.is_some();
                                     snap_state.editing_scope_template_id = cue.scope_override.as_ref().map(|s| s.id);
                                     snap_state.editing_cue_notes = cue.notes.clone();
+                                    snap_state.editing_triggers =
+                                        cue.triggers.iter().map(TriggerEditRow::from_trigger).collect();
                                     snap_state.last_edited_cue_id = Some(cue_id);
                                 }
                             }
@@ -871,6 +880,12 @@ pub fn draw_snapshots_tab(
                                     || snap_state.editing_scope_template_id
                                         != cue.scope_override.as_ref().map(|s| s.id)
                                     || snap_state.editing_cue_notes != cue.notes
+                                    || snap_state
+                                        .editing_triggers
+                                        .iter()
+                                        .map(TriggerEditRow::to_trigger)
+                                        .collect::<Vec<_>>()
+                                        != cue.triggers
                             })
                             .unwrap_or(false);
 
@@ -1014,6 +1029,25 @@ pub fn draw_snapshots_tab(
                                     .desired_rows(2)
                                     .desired_width(f32::INFINITY),
                             );
+
+                            // External triggers (QLab / LiveProfessor / MIDI).
+                            ui.add_space(6.0);
+                            let targets: Vec<OscTarget> =
+                                mgr.osc_targets.values().cloned().collect();
+                            let user_templates: Vec<TriggerTemplate> =
+                                mgr.trigger_templates.values().cloned().collect();
+                            if let Some(tmpl) = draw_external_triggers(
+                                ui,
+                                &mut snap_state.editing_triggers,
+                                &targets,
+                                &user_templates,
+                            ) {
+                                let cue_mgr = cue_manager.clone();
+                                runtime.spawn(async move {
+                                    cue_mgr.write().await.add_trigger_template(tmpl);
+                                });
+                                snap_state.status_message = Some("Saved trigger template".into());
+                            }
                         });
 
                         if save_clicked {
@@ -1032,9 +1066,14 @@ pub fn draw_snapshots_tab(
                                     None
                                 };
                                 let notes = snap_state.editing_cue_notes.clone();
-                                if local.is_none() && parsed_row.is_none() {
+                                let triggers: Vec<CueTrigger> = snap_state
+                                    .editing_triggers
+                                    .iter()
+                                    .map(TriggerEditRow::to_trigger)
+                                    .collect();
+                                if local.is_none() && parsed_row.is_none() && triggers.is_empty() {
                                     snap_state.status_message = Some(StatusMessage::with_help(
-                                        "Cue needs a Local snapshot, a Console snapshot, or both",
+                                        "Cue needs a Local snapshot, a Console snapshot, an external trigger, or a combination",
                                         HelpKey::CueWarnNeedsSnapshot,
                                     ));
                                 } else {
@@ -1046,6 +1085,7 @@ pub fn draw_snapshots_tab(
                                             local,
                                             parsed_row,
                                             scope_override,
+                                            triggers,
                                             notes,
                                         );
                                     });
@@ -1538,6 +1578,500 @@ fn sorted_snapshot_list(mgr: &CueManager) -> Vec<(Uuid, String)> {
         .collect();
     out.sort_by_key(|a| a.1.to_lowercase());
     out
+}
+
+// ─── External cue triggers (cue editor) ────────────────────────────────
+
+/// Which MIDI message a trigger row edits.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MidiKind {
+    Cc,
+    NoteOn,
+    NoteOff,
+    Pc,
+}
+
+impl MidiKind {
+    fn label(self) -> &'static str {
+        match self {
+            MidiKind::Cc => "Control Change",
+            MidiKind::NoteOn => "Note On",
+            MidiKind::NoteOff => "Note Off",
+            MidiKind::Pc => "Program Change",
+        }
+    }
+
+    /// Labels for the two data fields; the second is `None` for Program Change.
+    fn field_labels(self) -> (&'static str, Option<&'static str>) {
+        match self {
+            MidiKind::Cc => ("cc:", Some("val:")),
+            MidiKind::NoteOn | MidiKind::NoteOff => ("note:", Some("vel:")),
+            MidiKind::Pc => ("program:", None),
+        }
+    }
+}
+
+/// The action half of a [`TriggerEditRow`] — string-backed so text fields don't
+/// fight the user mid-edit (parsed back to typed values on save).
+pub enum TriggerEditKind {
+    Osc {
+        target_id: Option<Uuid>,
+        host: String,
+        port: String,
+        path: String,
+        args_text: String,
+    },
+    Midi {
+        msg_type: MidiKind,
+        channel: String,
+        d1: String,
+        d2: String,
+    },
+}
+
+/// UI-side editable representation of one [`CueTrigger`]. Converted from/to the
+/// stored trigger on selection change / save.
+pub struct TriggerEditRow {
+    pub id: Uuid,
+    pub label: String,
+    pub enabled: bool,
+    pub kind: TriggerEditKind,
+}
+
+impl TriggerEditRow {
+    fn new_osc() -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            label: "OSC /go".into(),
+            enabled: true,
+            kind: TriggerEditKind::Osc {
+                target_id: None,
+                host: "127.0.0.1".into(),
+                port: "53000".into(),
+                path: "/go".into(),
+                args_text: String::new(),
+            },
+        }
+    }
+
+    fn new_midi() -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            label: "MIDI Program Change".into(),
+            enabled: true,
+            kind: TriggerEditKind::Midi {
+                msg_type: MidiKind::Pc,
+                channel: "1".into(),
+                d1: "0".into(),
+                d2: "0".into(),
+            },
+        }
+    }
+
+    /// Build an editor row from a stored trigger.
+    pub fn from_trigger(t: &CueTrigger) -> Self {
+        let kind = match &t.action {
+            TriggerAction::Osc {
+                target_id,
+                host,
+                port,
+                path,
+                args,
+            } => TriggerEditKind::Osc {
+                target_id: *target_id,
+                host: host.clone().unwrap_or_default(),
+                port: port.map(|p| p.to_string()).unwrap_or_default(),
+                path: path.clone(),
+                args_text: osc_args_to_text(args),
+            },
+            TriggerAction::Midi { message } => {
+                let (msg_type, channel, d1, d2) = match *message {
+                    MidiMessage::ControlChange {
+                        channel,
+                        controller,
+                        value,
+                    } => (MidiKind::Cc, channel, controller, value),
+                    MidiMessage::NoteOn {
+                        channel,
+                        note,
+                        velocity,
+                    } => (MidiKind::NoteOn, channel, note, velocity),
+                    MidiMessage::NoteOff {
+                        channel,
+                        note,
+                        velocity,
+                    } => (MidiKind::NoteOff, channel, note, velocity),
+                    MidiMessage::ProgramChange { channel, program } => {
+                        (MidiKind::Pc, channel, program, 0)
+                    }
+                };
+                TriggerEditKind::Midi {
+                    msg_type,
+                    channel: channel.to_string(),
+                    d1: d1.to_string(),
+                    d2: d2.to_string(),
+                }
+            }
+        };
+        Self {
+            id: t.id,
+            label: t.label.clone(),
+            enabled: t.enabled,
+            kind,
+        }
+    }
+
+    /// Convert back to a stored trigger (parsing the string fields).
+    pub fn to_trigger(&self) -> CueTrigger {
+        let action = match &self.kind {
+            TriggerEditKind::Osc {
+                target_id,
+                host,
+                port,
+                path,
+                args_text,
+            } => TriggerAction::Osc {
+                target_id: *target_id,
+                host: if host.trim().is_empty() {
+                    None
+                } else {
+                    Some(host.trim().to_string())
+                },
+                port: port.trim().parse().ok(),
+                path: path.clone(),
+                args: parse_osc_args(args_text),
+            },
+            TriggerEditKind::Midi {
+                msg_type,
+                channel,
+                d1,
+                d2,
+            } => {
+                let ch = channel.trim().parse().unwrap_or(1);
+                let a = d1.trim().parse().unwrap_or(0);
+                let b = d2.trim().parse().unwrap_or(0);
+                let message = match msg_type {
+                    MidiKind::Cc => MidiMessage::ControlChange {
+                        channel: ch,
+                        controller: a,
+                        value: b,
+                    },
+                    MidiKind::NoteOn => MidiMessage::NoteOn {
+                        channel: ch,
+                        note: a,
+                        velocity: b,
+                    },
+                    MidiKind::NoteOff => MidiMessage::NoteOff {
+                        channel: ch,
+                        note: a,
+                        velocity: b,
+                    },
+                    MidiKind::Pc => MidiMessage::ProgramChange {
+                        channel: ch,
+                        program: a,
+                    },
+                };
+                TriggerAction::Midi { message }
+            }
+        };
+        CueTrigger {
+            id: self.id,
+            label: self.label.clone(),
+            enabled: self.enabled,
+            action,
+        }
+    }
+}
+
+/// Format OSC args for the editor text field. Floats always carry a decimal
+/// point so [`parse_osc_args`] re-reads them as floats (a stable round-trip),
+/// unlike [`format_osc_args`] which is tuned for friendly log display.
+fn osc_args_to_text(args: &[OscArg]) -> String {
+    args.iter()
+        .map(|a| match a {
+            OscArg::Int(i) => i.to_string(),
+            OscArg::Float(f) => {
+                let s = f.to_string();
+                if s.contains('.') || s.contains('e') || s.contains('E') {
+                    s
+                } else {
+                    format!("{s}.0")
+                }
+            }
+            OscArg::Str(s) => format!("\"{s}\""),
+            OscArg::Bool(b) => b.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Parse a space-separated args string into typed OSC args. `"quoted"` → string;
+/// `true`/`false` → bool; a bare integer (no `.`) → int; otherwise a float;
+/// anything else → string. Strings with spaces are not supported.
+fn parse_osc_args(s: &str) -> Vec<OscArg> {
+    s.split_whitespace()
+        .map(|tok| {
+            if tok.len() >= 2 && tok.starts_with('"') && tok.ends_with('"') {
+                return OscArg::Str(tok[1..tok.len() - 1].to_string());
+            }
+            if tok == "true" {
+                return OscArg::Bool(true);
+            }
+            if tok == "false" {
+                return OscArg::Bool(false);
+            }
+            if !tok.contains('.') {
+                if let Ok(i) = tok.parse::<i32>() {
+                    return OscArg::Int(i);
+                }
+            }
+            if let Ok(f) = tok.parse::<f32>() {
+                return OscArg::Float(f);
+            }
+            OscArg::Str(tok.to_string())
+        })
+        .collect()
+}
+
+/// Draw the cue editor's External Triggers sub-section, editing `rows` in place.
+/// Returns `Some(template)` when the operator clicked "save as template" on a
+/// row, so the caller can persist it to the cue manager.
+fn draw_external_triggers(
+    ui: &mut egui::Ui,
+    rows: &mut Vec<TriggerEditRow>,
+    targets: &[OscTarget],
+    user_templates: &[TriggerTemplate],
+) -> Option<TriggerTemplate> {
+    ui.add_space(6.0);
+    ui.separator();
+    ui.label(
+        egui::RichText::new("External Triggers")
+            .strong()
+            .color(theme::label_color()),
+    );
+
+    let mut delete_idx: Option<usize> = None;
+    let mut move_up: Option<usize> = None;
+    let mut move_down: Option<usize> = None;
+    let mut save_template: Option<TriggerTemplate> = None;
+    let len = rows.len();
+
+    for (i, row) in rows.iter_mut().enumerate() {
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut row.enabled, "")
+                    .on_hover_text("Enable/disable this trigger without deleting it");
+                ui.add(
+                    egui::TextEdit::singleline(&mut row.label)
+                        .desired_width(170.0)
+                        .hint_text("label"),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .small_button("✕")
+                        .on_hover_text("Remove trigger")
+                        .clicked()
+                    {
+                        delete_idx = Some(i);
+                    }
+                    if ui
+                        .add_enabled(i + 1 < len, egui::Button::new("▼").small())
+                        .clicked()
+                    {
+                        move_down = Some(i);
+                    }
+                    if ui
+                        .add_enabled(i > 0, egui::Button::new("▲").small())
+                        .clicked()
+                    {
+                        move_up = Some(i);
+                    }
+                    if ui
+                        .small_button("★")
+                        .on_hover_text("Save this trigger as a reusable template")
+                        .clicked()
+                    {
+                        let trig = row.to_trigger();
+                        save_template = Some(TriggerTemplate::user(row.label.clone(), trig.action));
+                    }
+                });
+            });
+
+            match &mut row.kind {
+                TriggerEditKind::Osc {
+                    target_id,
+                    host,
+                    port,
+                    path,
+                    args_text,
+                } => {
+                    ui.horizontal(|ui| {
+                        ui.label("OSC →");
+                        let sel_name = target_id
+                            .and_then(|id| targets.iter().find(|t| t.id == id))
+                            .map(|t| t.name.clone())
+                            .unwrap_or_else(|| "(inline host)".into());
+                        egui::ComboBox::from_id_salt(("trig_target", i))
+                            .selected_text(sel_name)
+                            .width(150.0)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(target_id.is_none(), "(inline host)")
+                                    .clicked()
+                                {
+                                    *target_id = None;
+                                }
+                                for t in targets {
+                                    if ui
+                                        .selectable_label(
+                                            *target_id == Some(t.id),
+                                            format!("{} ({}:{})", t.name, t.host, t.port),
+                                        )
+                                        .clicked()
+                                    {
+                                        *target_id = Some(t.id);
+                                    }
+                                }
+                            });
+                    });
+                    if target_id.is_none() {
+                        ui.horizontal(|ui| {
+                            ui.label("host:");
+                            ui.add(
+                                egui::TextEdit::singleline(host)
+                                    .desired_width(120.0)
+                                    .hint_text("127.0.0.1"),
+                            );
+                            ui.label("port:");
+                            ui.add(
+                                egui::TextEdit::singleline(port)
+                                    .desired_width(56.0)
+                                    .hint_text("53000"),
+                            );
+                        });
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("path:");
+                        ui.add(
+                            egui::TextEdit::singleline(path)
+                                .desired_width(200.0)
+                                .hint_text("/go"),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("args:");
+                        ui.add(
+                            egui::TextEdit::singleline(args_text)
+                                .desired_width(200.0)
+                                .hint_text("e.g. 12 \"Q3\" 0.5"),
+                        )
+                        .on_hover_text(
+                            "Space-separated. Bare integers → int, decimals → float, \
+                             true/false → bool, \"quoted\"/other → string.",
+                        );
+                    });
+                }
+                TriggerEditKind::Midi {
+                    msg_type,
+                    channel,
+                    d1,
+                    d2,
+                } => {
+                    ui.horizontal(|ui| {
+                        ui.label("MIDI:");
+                        egui::ComboBox::from_id_salt(("trig_midi", i))
+                            .selected_text(msg_type.label())
+                            .width(150.0)
+                            .show_ui(ui, |ui| {
+                                for k in [
+                                    MidiKind::Cc,
+                                    MidiKind::NoteOn,
+                                    MidiKind::NoteOff,
+                                    MidiKind::Pc,
+                                ] {
+                                    if ui.selectable_label(*msg_type == k, k.label()).clicked() {
+                                        *msg_type = k;
+                                    }
+                                }
+                            });
+                        ui.label("ch:");
+                        ui.add(egui::TextEdit::singleline(channel).desired_width(36.0));
+                    });
+                    ui.horizontal(|ui| {
+                        let (l1, l2) = msg_type.field_labels();
+                        ui.label(l1);
+                        ui.add(egui::TextEdit::singleline(d1).desired_width(44.0));
+                        if let Some(l2) = l2 {
+                            ui.label(l2);
+                            ui.add(egui::TextEdit::singleline(d2).desired_width(44.0));
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    if let Some(i) = delete_idx {
+        rows.remove(i);
+    }
+    if let Some(i) = move_up {
+        rows.swap(i, i - 1);
+    }
+    if let Some(i) = move_down {
+        rows.swap(i, i + 1);
+    }
+
+    // All three controls pinned to ROW_H (row_action_button / row_combo) so the
+    // Add row lines up instead of the combo towering over the buttons.
+    ui.horizontal(|ui| {
+        if theme::row_action_button(
+            ui,
+            "+ OSC",
+            theme::btn_neutral(),
+            80.0,
+            true,
+            "Add a custom OSC trigger",
+        ) {
+            rows.push(TriggerEditRow::new_osc());
+        }
+        if theme::row_action_button(
+            ui,
+            "+ MIDI",
+            theme::btn_neutral(),
+            84.0,
+            true,
+            "Add a custom MIDI trigger",
+        ) {
+            rows.push(TriggerEditRow::new_midi());
+        }
+        theme::row_combo(ui, 0, |ui| {
+            egui::ComboBox::from_id_salt("trig_add_template")
+                .selected_text("+ from template…")
+                .width(220.0)
+                .height(320.0)
+                .show_ui(ui, |ui| {
+                    for tmpl in TriggerTemplate::builtins() {
+                        if ui.selectable_label(false, &tmpl.name).clicked() {
+                            rows.push(TriggerEditRow::from_trigger(&CueTrigger::from_template(
+                                &tmpl,
+                            )));
+                        }
+                    }
+                    if !user_templates.is_empty() {
+                        ui.separator();
+                        for tmpl in user_templates {
+                            if ui.selectable_label(false, &tmpl.name).clicked() {
+                                rows.push(TriggerEditRow::from_trigger(
+                                    &CueTrigger::from_template(tmpl),
+                                ));
+                            }
+                        }
+                    }
+                });
+        });
+    });
+
+    save_template
 }
 
 fn capture_snapshot(

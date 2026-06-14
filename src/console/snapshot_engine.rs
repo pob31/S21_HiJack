@@ -221,6 +221,10 @@ pub struct SnapshotEngine {
     /// resolution on any staleness mismatch. `None` for engines built in
     /// contexts without the precompute loop (tests, trigger dispatch).
     recall_cache: Option<Arc<RecallCache>>,
+    /// Optional external-trigger dispatcher. When set, a cue's `triggers`
+    /// (OSC to QLab/LiveProfessor/custom, MIDI) fire at the end of `recall_cue`.
+    /// `None` in tests/contexts without external trigger support → no-op.
+    trigger_dispatcher: Option<Arc<crate::console::trigger_dispatcher::TriggerDispatcher>>,
 }
 
 impl SnapshotEngine {
@@ -246,6 +250,7 @@ impl SnapshotEngine {
             console_load_suppression: None,
             automation_override: None,
             recall_cache: None,
+            trigger_dispatcher: None,
         }
     }
 
@@ -253,6 +258,15 @@ impl SnapshotEngine {
     /// pre-resolved data instead of resolving synchronously.
     pub fn set_recall_cache(&mut self, cache: Arc<RecallCache>) {
         self.recall_cache = Some(cache);
+    }
+
+    /// Attach the external-trigger dispatcher so a cue's `triggers` fire after
+    /// its console row + overlay are applied.
+    pub fn set_trigger_dispatcher(
+        &mut self,
+        dispatcher: Arc<crate::console::trigger_dispatcher::TriggerDispatcher>,
+    ) {
+        self.trigger_dispatcher = Some(dispatcher);
     }
 
     /// Attach the shared snapshot sync-direction handle. When set to
@@ -801,6 +815,16 @@ impl SnapshotEngine {
         if let Some(snap) = snapshot {
             self.mark_last_recalled(snap.id).await;
         }
+
+        // Fire external triggers (QLab / LiveProfessor / MIDI) LAST — after the
+        // console row + overlay are applied and outside the dirty-suppression
+        // window. Best-effort: a failed send logs and never affects `result`.
+        if !cue.triggers.is_empty() {
+            if let Some(dispatcher) = &self.trigger_dispatcher {
+                dispatcher.fire(&cue.triggers).await;
+            }
+        }
+
         result
     }
 

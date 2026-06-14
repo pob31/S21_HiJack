@@ -257,6 +257,13 @@ pub struct HiJackApp {
     /// idle when no device is connected.
     pub stream_deck_engine: Arc<crate::console::streamdeck_engine::StreamDeckEngine>,
 
+    /// MIDI output engine (external cue triggers). App-lifetime; auto-connects
+    /// to the configured port on startup and stays up across console reconnects.
+    pub midi_engine: Arc<crate::console::midi_engine::MidiEngine>,
+    /// External-trigger dispatcher; attached to each freshly-built snapshot
+    /// engine so cue `triggers` fire on recall.
+    pub trigger_dispatcher: Arc<crate::console::trigger_dispatcher::TriggerDispatcher>,
+
     // OSC log (shared with network tasks)
     pub osc_log: OscLog,
 
@@ -394,9 +401,29 @@ impl HiJackApp {
         // result lands in `setup.update_status` via `UiEvent::UpdateCheckResult`.
         super::setup_tab::spawn_update_check(&mut setup, &runtime, &ui_tx);
 
+        // External cue triggers: the cue manager, OSC log, MIDI engine, and the
+        // dispatcher are app-lifetime. Build them here (not inline in the struct
+        // literal) so the dispatcher can hold clones of the first three.
+        let cue_manager = Arc::new(RwLock::new(CueManager::new(CueList::default())));
+        let osc_log = OscLog::new();
+        let midi_engine = crate::console::midi_engine::MidiEngine::new();
+        // Auto-connect MIDI per saved preferences (machine-bound).
+        if prefs.midi.enabled {
+            if prefs.midi.use_virtual_port {
+                midi_engine.create_virtual("S21_HiJack".into());
+            } else if let Some(name) = prefs.midi.output_port_name.clone() {
+                midi_engine.connect(name);
+            }
+        }
+        let trigger_dispatcher = crate::console::trigger_dispatcher::TriggerDispatcher::new(
+            midi_engine.clone(),
+            cue_manager.clone(),
+            Some(osc_log.clone()),
+        );
+
         Self {
             state: Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default()))),
-            cue_manager: Arc::new(RwLock::new(CueManager::new(CueList::default()))),
+            cue_manager,
             macro_manager: Arc::new(RwLock::new(MacroManager::new())),
             monitor_manager: Arc::new(RwLock::new(MonitorManager::new())),
             palette_manager: Arc::new(RwLock::new(PaletteManager::new())),
@@ -421,8 +448,10 @@ impl HiJackApp {
             stream_deck_engine: crate::console::streamdeck_engine::StreamDeckEngine::new(
                 ui_tx.clone(),
             ),
+            midi_engine,
+            trigger_dispatcher,
 
-            osc_log: OscLog::new(),
+            osc_log,
 
             runtime,
             egui_ctx: Arc::new(std::sync::OnceLock::new()),
@@ -1196,6 +1225,7 @@ impl HiJackApp {
                             window_size: self.setup.window_size,
                             window_pos: self.setup.window_pos,
                             last_open_dir: self.setup.last_open_dir.clone(),
+                            midi: self.setup.midi.clone(),
                         };
                         if let Err(e) = prefs.save() {
                             tracing::warn!(error = %e, "Failed to save app preferences after show load");
@@ -1319,6 +1349,7 @@ impl HiJackApp {
                         &self.dirty_tracker,
                         &self.last_received,
                         &self.pending_engines,
+                        &self.trigger_dispatcher,
                         &self.connected,
                         &mut self.cancel_token,
                         &self.osc_log,
@@ -2675,6 +2706,8 @@ impl eframe::App for HiJackApp {
                         &self.dirty_tracker,
                         &self.last_received,
                         &self.pending_engines,
+                        &self.trigger_dispatcher,
+                        &self.midi_engine,
                         &self.connected,
                         &mut self.cancel_token,
                         &self.osc_log,

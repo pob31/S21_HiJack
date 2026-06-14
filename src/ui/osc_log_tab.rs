@@ -116,6 +116,8 @@ pub fn draw_osc_log_tab(ui: &mut egui::Ui, tab: &mut OscLogTabState, log: &OscLo
                 (OscProtocol::GpOsc, OscDirection::Out) => tab.show_out,
                 (OscProtocol::Ipad, OscDirection::Out) => tab.show_ipad_to_console,
                 (OscProtocol::Ipad, OscDirection::In) => tab.show_ipad_from_console,
+                // External cue triggers are always outbound; follow the OUT toggle.
+                (OscProtocol::External, _) => tab.show_out,
             };
             if !dir_ok {
                 return false;
@@ -187,6 +189,8 @@ pub fn draw_osc_log_tab(ui: &mut egui::Ui, tab: &mut OscLogTabState, log: &OscLo
                                     (theme::ACCENT_ORANGE, "iP→Con")
                                 }
                                 (OscProtocol::Ipad, OscDirection::In) => (theme::CH_AUX, "Con→iP"),
+                                // External (QLab / LiveProfessor / MIDI) — amber "EXT".
+                                (OscProtocol::External, _) => (theme::ACCENT_AMBER, "EXT"),
                             };
                             ui.colored_label(color, label);
                         });

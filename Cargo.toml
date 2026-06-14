@@ -1,6 +1,6 @@
 [package]
 name = "s21_hijack"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.88"
 description = "DiGiCo S21/S31 snapshot manager daemon"
@@ -50,6 +50,12 @@ elgato-streamdeck = "0.9"
 imageproc = "0.25"
 ab_glyph = "0.2"
 hidapi = "2"
+
+# MIDI output for external cue triggers (Ableton scenes etc.). Cross-platform
+# via CoreMIDI (macOS), ALSA seq (Linux/Raspberry Pi), WinMM (Windows). The
+# API is blocking and not Send, so the engine isolates it on its own OS thread
+# (see `console::midi_engine`), mirroring the Stream Deck device thread.
+midir = "0.10"
 
 # Web monitor surface: axum HTTP + WebSocket server. `ws` adds the WebSocket
 # extractor for the browser monitor protocol; default features give
