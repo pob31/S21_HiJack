@@ -416,7 +416,7 @@ fn draw_external_triggers_settings(
         .try_read()
         .map(|m| {
             let mut v: Vec<OscTarget> = m.osc_targets.values().cloned().collect();
-            v.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            v.sort_by_key(|t| t.name.to_lowercase());
             v
         })
         .unwrap_or_default();
