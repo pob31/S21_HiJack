@@ -212,13 +212,21 @@ pub fn draw_cue_list_popup(
                                 // Script notes for the current + next cues,
                                 // shown inline so the operator can follow along.
                                 if (row.is_current || row.is_next) && !row.notes.trim().is_empty() {
-                                    ui.horizontal_wrapped(|ui| {
+                                    // Block indent: a non-wrapping row with a
+                                    // 62px spacer, then a wrapping label. Every
+                                    // wrapped line then starts at the same 62px
+                                    // left edge as the first (horizontal_wrapped
+                                    // + add_space only indented the first line).
+                                    ui.horizontal_top(|ui| {
                                         ui.add_space(62.0);
-                                        ui.label(
-                                            egui::RichText::new(row.notes.trim())
-                                                .color(theme::label_weak())
-                                                .small()
-                                                .italics(),
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(row.notes.trim())
+                                                    .color(theme::label_weak())
+                                                    .small()
+                                                    .italics(),
+                                            )
+                                            .wrap(),
                                         );
                                     });
                                 }

@@ -563,21 +563,33 @@ pub fn grids_min_width(inputs_cols: u8, aux_cols: u8) -> f32 {
     panel_width(TILE_W_MIN, inputs_cols) + TILE_COLUMN_GAP + panel_width(TILE_W_MIN, aux_cols)
 }
 
-/// Colored badge with text (number badge, channel type badge, etc.).
+/// Colored badge with text (number badge, channel type badge, etc.). The glyph
+/// colour is chosen automatically for contrast via [`on_fill_text`].
 pub fn colored_badge(ui: &mut egui::Ui, text: &str, bg_color: egui::Color32) {
+    colored_badge_with_text(ui, text, bg_color, on_fill_text(bg_color));
+}
+
+/// Like [`colored_badge`] but with an explicit glyph colour — used where the
+/// automatic contrast pick isn't wanted (e.g. the amber "CS" console-snapshot
+/// pill, which reads better with black text than the auto-chosen white).
+pub fn colored_badge_with_text(
+    ui: &mut egui::Ui,
+    text: &str,
+    bg_color: egui::Color32,
+    text_color: egui::Color32,
+) {
     let padding = egui::Vec2::new(8.0, 4.0);
     let text_galley = ui.painter().layout_no_wrap(
         text.to_string(),
         egui::FontId::proportional(FONT_SIZE_BADGE),
-        on_fill_text(bg_color),
+        text_color,
     );
     let desired_size = text_galley.size() + padding * 2.0;
     let (rect, _) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
 
     ui.painter().rect_filled(rect, 4.0, bg_color);
     let text_pos = rect.center() - text_galley.size() / 2.0;
-    ui.painter()
-        .galley(text_pos, text_galley, on_fill_text(bg_color));
+    ui.painter().galley(text_pos, text_galley, text_color);
 }
 
 /// Same as [`colored_badge`] but with an explicit width — useful for

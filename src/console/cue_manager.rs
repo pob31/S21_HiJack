@@ -389,13 +389,15 @@ impl CueManager {
 
     /// Update cue properties. `cue_number`, when provided, replaces the
     /// existing order key and the cue list is re-sorted so the display
-    /// reflects the new position. `snapshot_id` and `console_snapshot` are
-    /// passed through unchanged (Option == None clears the link).
+    /// reflects the new position. `name`, when provided, renames the cue.
+    /// `snapshot_id` and `console_snapshot` are passed through unchanged
+    /// (Option == None clears the link).
     #[allow(clippy::too_many_arguments)]
     pub fn update_cue(
         &mut self,
         cue_id: Uuid,
         cue_number: Option<f32>,
+        name: Option<String>,
         snapshot_id: Option<Uuid>,
         console_snapshot: Option<i32>,
         scope_override: Option<ScopeTemplate>,
@@ -405,6 +407,9 @@ impl CueManager {
         let updated = if let Some(cue) = self.cue_list.cues.iter_mut().find(|c| c.id == cue_id) {
             if let Some(n) = cue_number {
                 cue.cue_number = n;
+            }
+            if let Some(name) = name {
+                cue.name = name;
             }
             cue.snapshot_id = snapshot_id;
             cue.console_snapshot = console_snapshot;
@@ -524,6 +529,7 @@ mod tests {
         assert!(mgr.update_cue(
             cue_id,
             None,
+            Some("Renamed cue".into()),
             mgr.cue_list.cues[0].snapshot_id,
             None,
             None,
@@ -534,6 +540,7 @@ mod tests {
         let updated = mgr.cue_list.cues.iter().find(|c| c.id == cue_id).unwrap();
         assert!(updated.scope_override.is_none());
         assert_eq!(updated.notes, "Scene change");
+        assert_eq!(updated.name, "Renamed cue");
     }
 
     #[test]
@@ -548,6 +555,7 @@ mod tests {
         assert!(mgr.update_cue(
             b_id,
             Some(0.5),
+            None,
             mgr.cue_list.cues[1].snapshot_id,
             None,
             None,
@@ -563,6 +571,7 @@ mod tests {
         let mut mgr = CueManager::new(CueList::default());
         assert!(!mgr.update_cue(
             Uuid::new_v4(),
+            None,
             None,
             None,
             None,

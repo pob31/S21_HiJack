@@ -388,6 +388,7 @@ pub fn draw_palettes_section(
                         .inner_margin(egui::Margin::symmetric(8, 3))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
+                                // Name — left-justified.
                                 let r_name = ui.add(
                                     egui::Label::new(
                                         egui::RichText::new(&palette.name)
@@ -396,49 +397,59 @@ pub fn draw_palettes_section(
                                     )
                                     .sense(egui::Sense::click()),
                                 );
-                                let r_meta = ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(format!(
-                                            "{} · {} · {} params · {} refs",
-                                            palette.channel,
-                                            kinds_chip(palette),
-                                            palette.parameter_count(),
-                                            palette.referencing_snapshots.len(),
-                                        ))
-                                        .color(theme::label_weak())
-                                        .small(),
-                                    )
-                                    .sense(egui::Sense::click()),
-                                );
-                                // Un-stored in-session adjustments marker.
-                                let r_work = if palette.has_working_changes() {
-                                    Some(
-                                        ui.add(
-                                            egui::Label::new(
-                                                egui::RichText::new(format!(
-                                                    "● {} unsaved",
-                                                    palette.working_count()
-                                                ))
-                                                .color(theme::TEXT_WARNING)
-                                                .small(),
-                                            )
-                                            .sense(egui::Sense::click()),
-                                        ),
-                                    )
-                                } else {
-                                    None
-                                };
-                                // Fill the rest of the row with a click-sensing
-                                // strip so clicks to the right of the labels
-                                // also select the palette.
-                                let fill_w = ui.available_width().max(1.0);
-                                let (_, r_fill) = ui.allocate_exact_size(
-                                    egui::Vec2::new(fill_w, 1.0),
-                                    egui::Sense::click(),
+                                // Metadata + unsaved marker — right-justified,
+                                // like the cue list. A click-sensing strip fills
+                                // the gap so clicks anywhere on the row select.
+                                let mut r_meta: Option<egui::Response> = None;
+                                let mut r_work: Option<egui::Response> = None;
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if palette.has_working_changes() {
+                                            r_work = Some(
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        egui::RichText::new(format!(
+                                                            "● {} unsaved",
+                                                            palette.working_count()
+                                                        ))
+                                                        .color(theme::TEXT_WARNING)
+                                                        .small(),
+                                                    )
+                                                    .sense(egui::Sense::click()),
+                                                ),
+                                            );
+                                        }
+                                        r_meta = Some(
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(format!(
+                                                        "{} · {} · {} params · {} refs",
+                                                        palette.channel,
+                                                        kinds_chip(palette),
+                                                        palette.parameter_count(),
+                                                        palette.referencing_snapshots.len(),
+                                                    ))
+                                                    .color(theme::label_weak())
+                                                    .small(),
+                                                )
+                                                .sense(egui::Sense::click()),
+                                            ),
+                                        );
+                                        // Fill the gap between name and meta with
+                                        // a click-sensing strip.
+                                        let fill_w = ui.available_width().max(1.0);
+                                        let (_, r_fill) = ui.allocate_exact_size(
+                                            egui::Vec2::new(fill_w, 1.0),
+                                            egui::Sense::click(),
+                                        );
+                                        if r_fill.clicked() {
+                                            clicked = true;
+                                        }
+                                    },
                                 );
                                 if r_name.clicked()
-                                    || r_meta.clicked()
-                                    || r_fill.clicked()
+                                    || r_meta.is_some_and(|r| r.clicked())
                                     || r_work.is_some_and(|r| r.clicked())
                                 {
                                     clicked = true;
