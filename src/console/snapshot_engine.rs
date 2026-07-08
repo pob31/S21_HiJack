@@ -16,7 +16,7 @@ use crate::model::channel::ChannelId;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::palette::ChannelPalette;
 use crate::model::parameter::{
-    FADER_INF_DB, ParameterAddress, ParameterPath, ParameterValue, TimingCategory,
+    FADER_INF_DB, PaletteKind, ParameterAddress, ParameterPath, ParameterValue, TimingCategory,
 };
 use crate::model::recall_progress::{RecallKind, RecallProgress};
 use crate::model::snapshot::{Cue, ScopeTemplate, Snapshot};
@@ -140,6 +140,46 @@ fn effective_fade_start(
     }
 }
 
+/// The `(channel, kind)` palette slots that are safe to skip re-sending on this
+/// recall: the incoming snapshot links the SAME palette (UUID) at the SAME
+/// `content_rev` we last pushed there. Pure — takes the current `last_sent`
+/// record so it's trivially unit-testable. A slot whose palette is missing from
+/// the map is never skipped (we can't confirm its content, so re-send it).
+fn palette_skip_slots(
+    snapshot: &Snapshot,
+    palettes: &HashMap<Uuid, ChannelPalette>,
+    last_sent: &HashMap<(ChannelId, PaletteKind), (Uuid, u64)>,
+) -> std::collections::HashSet<(ChannelId, PaletteKind)> {
+    let mut out = std::collections::HashSet::new();
+    for ((channel, kind), pid) in &snapshot.palette_refs {
+        let Some(palette) = palettes.get(pid) else {
+            continue;
+        };
+        if last_sent.get(&(channel.clone(), *kind)) == Some(&(*pid, palette.content_rev())) {
+            out.insert((channel.clone(), *kind));
+        }
+    }
+    out
+}
+
+/// The `last_sent_palettes` record to store AFTER a recall: one entry per slot
+/// the recalled snapshot references whose palette exists, stamped with its
+/// current `content_rev`. Slots the snapshot does NOT reference are intentionally
+/// absent, so a later cue that re-links a palette (after an intervening cue
+/// overwrote that slot with its own stored values) correctly re-sends. Pure.
+fn next_last_sent(
+    snapshot: &Snapshot,
+    palettes: &HashMap<Uuid, ChannelPalette>,
+) -> HashMap<(ChannelId, PaletteKind), (Uuid, u64)> {
+    let mut out = HashMap::new();
+    for ((channel, kind), pid) in &snapshot.palette_refs {
+        if let Some(palette) = palettes.get(pid) {
+            out.insert((channel.clone(), *kind), (*pid, palette.content_rev()));
+        }
+    }
+    out
+}
+
 /// Map from "console memory row we just fired" → when we fired it. Used
 /// by follow mode to ignore echoes from our own writes. Shared between
 /// the snapshot engine and the follow-mode dispatcher.
@@ -225,6 +265,18 @@ pub struct SnapshotEngine {
     /// (OSC to QLab/LiveProfessor/custom, MIDI) fire at the end of `recall_cue`.
     /// `None` in tests/contexts without external trigger support → no-op.
     trigger_dispatcher: Option<Arc<crate::console::trigger_dispatcher::TriggerDispatcher>>,
+    /// Per-`(channel, kind)` record of the palette (UUID + content revision) we
+    /// last pushed to the desk this session. A normal recall skips re-sending a
+    /// linked palette slot when the incoming snapshot references the SAME palette
+    /// at the SAME `content_rev` already recorded here — the desk already holds
+    /// those values, so re-sending them just slows the recall. Rebuilt from the
+    /// recalled snapshot's `palette_refs` on every recall, and CLEARED whenever
+    /// the desk may have moved out from under us (console-memory fire, undo).
+    /// (Re)connect needs no explicit clear — a fresh engine is built per
+    /// connection; a show load swaps in new palette UUIDs that can't match a
+    /// stale entry, so it's implicitly safe. `std::sync::Mutex` — only ever
+    /// locked for a synchronous read/rebuild, never across an `.await`.
+    last_sent_palettes: std::sync::Mutex<HashMap<(ChannelId, PaletteKind), (Uuid, u64)>>,
 }
 
 impl SnapshotEngine {
@@ -251,6 +303,7 @@ impl SnapshotEngine {
             automation_override: None,
             recall_cache: None,
             trigger_dispatcher: None,
+            last_sent_palettes: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -462,6 +515,11 @@ impl SnapshotEngine {
             return;
         }
 
+        // The desk just loaded a coherent memory that can move EQ/Dyn (i.e.
+        // palette-controlled) params out from under us — forget what we believe
+        // is on each slot so the recall that follows force-reasserts palettes.
+        self.clear_last_sent_palettes();
+
         // Arm the console-load suppression window: the desk is about to flood
         // its snapshot-load echoes, and the app must NOT gang/pan-propagate
         // them back (that fights the desk and can stall outbound OSC).
@@ -561,6 +619,49 @@ impl SnapshotEngine {
         result
     }
 
+    /// Clear the "last-sent palette" record. Call whenever the desk state may
+    /// have moved out from under us so the next recall re-asserts palettes from
+    /// scratch (console-memory fire, undo, (re)connect / show load).
+    pub fn clear_last_sent_palettes(&self) {
+        self.last_sent_palettes.lock().unwrap().clear();
+    }
+
+    /// Drop from `resolved` every palette-derived param whose `(channel, kind)`
+    /// slot is unchanged since we last sent it, and refresh the `last_sent`
+    /// record for this recall. Non-palette params are never dropped (their
+    /// deliberate force-send behaviour is preserved). No-op filtering when
+    /// `ignore_scope` (Recall full / Recall-no-scope always force everything),
+    /// but the record is still refreshed so subsequent recalls can skip.
+    fn apply_palette_skip<'a>(
+        &self,
+        snapshot: &Snapshot,
+        palettes: &HashMap<Uuid, ChannelPalette>,
+        ignore_scope: bool,
+        resolved: &mut Vec<(&'a ParameterAddress, &'a ParameterValue)>,
+    ) {
+        let skip_slots = {
+            let mut last = self.last_sent_palettes.lock().unwrap();
+            let slots = if ignore_scope {
+                std::collections::HashSet::new()
+            } else {
+                palette_skip_slots(snapshot, palettes, &last)
+            };
+            // Rebuild for this recall (before the send loop — optimistic, like
+            // the live-mirror writes in `send_now`): every referenced slot ends
+            // up with `content_rev` on the desk whether we send it now or skip
+            // it because it's already there.
+            *last = next_last_sent(snapshot, palettes);
+            slots
+        };
+        if skip_slots.is_empty() {
+            return;
+        }
+        resolved.retain(|(addr, _)| match addr.parameter.section().palette_kind() {
+            Some(kind) => !skip_slots.contains(&(addr.channel.clone(), kind)),
+            None => true,
+        });
+    }
+
     /// Recall body without dirty-tracker suppression. Used by `recall` (which
     /// wraps it) and by `recall_cue`'s no-fade path (which is itself wrapped
     /// at the cue level so we don't double-suppress).
@@ -589,25 +690,29 @@ impl SnapshotEngine {
         // `fallback` keeps the synchronous resolution alive for the borrows
         // in `resolved` when there's no cache hit.
         let fallback: Vec<(ParameterAddress, &ParameterValue)>;
-        let (all_len, resolved): (usize, Vec<(&ParameterAddress, &ParameterValue)>) = match &cached
-        {
-            Some(c) => {
-                let src = if ignore_scope { &c.all } else { &c.scoped };
-                (c.all.len(), src.iter().map(|(a, v)| (a, v)).collect())
-            }
-            None => {
-                let all_len =
-                    crate::model::snapshot::resolve_recall_values(snapshot, scope, palettes, true)
-                        .len();
-                fallback = crate::model::snapshot::resolve_recall_values(
-                    snapshot,
-                    scope,
-                    palettes,
-                    ignore_scope,
-                );
-                (all_len, fallback.iter().map(|(a, v)| (a, *v)).collect())
-            }
-        };
+        let (all_len, mut resolved): (usize, Vec<(&ParameterAddress, &ParameterValue)>) =
+            match &cached {
+                Some(c) => {
+                    let src = if ignore_scope { &c.all } else { &c.scoped };
+                    (c.all.len(), src.iter().map(|(a, v)| (a, v)).collect())
+                }
+                None => {
+                    let all_len = crate::model::snapshot::resolve_recall_values(
+                        snapshot, scope, palettes, true,
+                    )
+                    .len();
+                    fallback = crate::model::snapshot::resolve_recall_values(
+                        snapshot,
+                        scope,
+                        palettes,
+                        ignore_scope,
+                    );
+                    (all_len, fallback.iter().map(|(a, v)| (a, *v)).collect())
+                }
+            };
+        // Skip re-sending linked palettes that are already on the desk unchanged
+        // (BEFORE the `skipped` accounting so they're counted as skipped too).
+        self.apply_palette_skip(snapshot, palettes, ignore_scope, &mut resolved);
         skipped += all_len - resolved.len();
 
         // Capture pre-recall live values for undo — best-effort, via TRY_read.
@@ -907,29 +1012,33 @@ impl SnapshotEngine {
 
         // Step 1: Resolve all values with palette overrides
         let fallback: Vec<(ParameterAddress, &ParameterValue)>;
-        let (all_len, resolved): (usize, Vec<(&ParameterAddress, &ParameterValue)>) = match &cached
-        {
-            Some(c) => {
-                let src = if ignore_scope { &c.all } else { &c.scoped };
-                (c.all.len(), src.iter().map(|(a, v)| (a, v)).collect())
-            }
-            None => {
-                let all_len = crate::model::snapshot::resolve_recall_values(
-                    snapshot,
-                    effective_scope,
-                    palettes,
-                    true,
-                )
-                .len();
-                fallback = crate::model::snapshot::resolve_recall_values(
-                    snapshot,
-                    effective_scope,
-                    palettes,
-                    ignore_scope,
-                );
-                (all_len, fallback.iter().map(|(a, v)| (a, *v)).collect())
-            }
-        };
+        let (all_len, mut resolved): (usize, Vec<(&ParameterAddress, &ParameterValue)>) =
+            match &cached {
+                Some(c) => {
+                    let src = if ignore_scope { &c.all } else { &c.scoped };
+                    (c.all.len(), src.iter().map(|(a, v)| (a, v)).collect())
+                }
+                None => {
+                    let all_len = crate::model::snapshot::resolve_recall_values(
+                        snapshot,
+                        effective_scope,
+                        palettes,
+                        true,
+                    )
+                    .len();
+                    fallback = crate::model::snapshot::resolve_recall_values(
+                        snapshot,
+                        effective_scope,
+                        palettes,
+                        ignore_scope,
+                    );
+                    (all_len, fallback.iter().map(|(a, v)| (a, *v)).collect())
+                }
+            };
+        // Skip re-sending linked palettes already on the desk unchanged. Filtered
+        // here (before grouping) so the `total_skipped = all_len - resolved.len()`
+        // accounting below counts them as skipped.
+        self.apply_palette_skip(snapshot, palettes, ignore_scope, &mut resolved);
 
         // Step 2: Diff against live state and group by (channel, category)
         //
@@ -1597,6 +1706,10 @@ impl SnapshotEngine {
         // Consume undo state
         let undo = self.undo.write().await.take()?;
 
+        // Undo restores arbitrary pre-recall values, so the desk no longer
+        // matches any palette we tracked — force palettes to re-send next recall.
+        self.clear_last_sent_palettes();
+
         let result = self
             .with_dirty_suppression(async {
                 let mut sent = 0usize;
@@ -1714,6 +1827,156 @@ mod tests {
         let pace = Arc::new(AtomicU64::new(0));
         let engine = SnapshotEngine::new(state.clone(), sender, pace);
         (engine, state)
+    }
+
+    fn eq_palette(channel: ChannelId) -> ChannelPalette {
+        let mut vals = HashMap::new();
+        vals.insert(ParameterPath::EqEnabled, ParameterValue::Bool(true));
+        vals.insert(ParameterPath::EqBandGain(1), ParameterValue::Float(3.0));
+        ChannelPalette::new("Vox EQ".into(), channel, &[PaletteKind::Eq], vals)
+    }
+
+    fn snap_linking(channel: &ChannelId, pid: Uuid) -> Snapshot {
+        let scope = ScopeTemplate::new("s".into(), vec![]);
+        let mut snap = Snapshot::new(
+            "Snap".into(),
+            scope,
+            SnapshotData::new(),
+            SnapshotKind::ApplyOnRecall,
+        );
+        snap.palette_refs
+            .insert((channel.clone(), PaletteKind::Eq), pid);
+        snap
+    }
+
+    #[test]
+    fn palette_skip_slots_matches_only_same_uuid_and_rev() {
+        let channel = ChannelId::Input(5);
+        let palette = eq_palette(channel.clone());
+        let pid = palette.id;
+        let rev = palette.content_rev();
+        let mut palettes = HashMap::new();
+        palettes.insert(pid, palette);
+        let snap = snap_linking(&channel, pid);
+
+        // Empty tracker → nothing to skip (first recall sends everything).
+        assert!(palette_skip_slots(&snap, &palettes, &HashMap::new()).is_empty());
+
+        // Same uuid + rev → skippable.
+        let mut last = HashMap::new();
+        last.insert((channel.clone(), PaletteKind::Eq), (pid, rev));
+        assert!(
+            palette_skip_slots(&snap, &palettes, &last)
+                .contains(&(channel.clone(), PaletteKind::Eq))
+        );
+
+        // Edited palette (rev moved) → not skippable.
+        let mut stale = HashMap::new();
+        stale.insert((channel.clone(), PaletteKind::Eq), (pid, rev + 1));
+        assert!(palette_skip_slots(&snap, &palettes, &stale).is_empty());
+
+        // Different palette on the slot → not skippable.
+        let mut other = HashMap::new();
+        other.insert((channel.clone(), PaletteKind::Eq), (Uuid::new_v4(), rev));
+        assert!(palette_skip_slots(&snap, &palettes, &other).is_empty());
+    }
+
+    #[test]
+    fn next_last_sent_records_only_existing_referenced_slots() {
+        let channel = ChannelId::Input(5);
+        let palette = eq_palette(channel.clone());
+        let pid = palette.id;
+        let rev = palette.content_rev();
+        let mut palettes = HashMap::new();
+        palettes.insert(pid, palette);
+
+        let mut snap = snap_linking(&channel, pid);
+        // A ref to a missing palette must be omitted from the record.
+        snap.palette_refs
+            .insert((ChannelId::Input(6), PaletteKind::Dyn1), Uuid::new_v4());
+
+        let next = next_last_sent(&snap, &palettes);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next.get(&(channel, PaletteKind::Eq)), Some(&(pid, rev)));
+    }
+
+    #[tokio::test]
+    async fn apply_palette_skip_drops_unchanged_palette_params_on_second_recall() {
+        let (engine, _state) = setup_test().await;
+        let channel = ChannelId::Input(5);
+        let palette = eq_palette(channel.clone());
+        let pid = palette.id;
+        let mut palettes = HashMap::new();
+        palettes.insert(pid, palette);
+        let snap = snap_linking(&channel, pid);
+
+        let owned =
+            crate::model::snapshot::resolve_recall_values(&snap, &snap.scope, &palettes, true);
+        let make = || -> Vec<(&ParameterAddress, &ParameterValue)> {
+            owned.iter().map(|(a, v)| (a, *v)).collect()
+        };
+        assert!(!make().is_empty(), "palette contributes params");
+
+        // First recall: tracker empty → everything sent, tracker now records slot.
+        let mut r1 = make();
+        engine.apply_palette_skip(&snap, &palettes, false, &mut r1);
+        assert_eq!(
+            r1.len(),
+            owned.len(),
+            "first recall sends every palette param"
+        );
+
+        // Second recall: same palette + rev → all EQ (palette) params dropped.
+        let mut r2 = make();
+        engine.apply_palette_skip(&snap, &palettes, false, &mut r2);
+        assert!(
+            r2.iter()
+                .all(|(a, _)| a.parameter.section().palette_kind() != Some(PaletteKind::Eq)),
+            "unchanged linked palette params are skipped on the second recall"
+        );
+
+        // ignore_scope (Recall full) always force-sends, even when unchanged.
+        let mut r3 = make();
+        engine.apply_palette_skip(&snap, &palettes, true, &mut r3);
+        assert_eq!(r3.len(), owned.len(), "Recall full force-sends palettes");
+    }
+
+    #[tokio::test]
+    async fn second_recall_of_same_palette_reports_it_skipped() {
+        // End-to-end through the real recall() path: two back-to-back recalls of
+        // the same snapshot linking the same (unchanged) palette. The first
+        // sends the palette; the second skips it entirely (the reported bug).
+        let (engine, _state) = setup_test().await;
+        let channel = ChannelId::Input(5);
+        let palette = eq_palette(channel.clone());
+        let pid = palette.id;
+        let mut palettes = HashMap::new();
+        palettes.insert(pid, palette);
+        let snap = snap_linking(&channel, pid);
+
+        // Scoped recall (ignore_scope = false) so the skip optimisation engages;
+        // the palette-only params are emitted regardless of the (empty) scope.
+        let r1 = engine.recall(&snap, &snap.scope, &palettes, false).await;
+        assert!(r1.parameters_sent > 0, "first recall sends the palette");
+        let sent1 = r1.parameters_sent;
+
+        let r2 = engine.recall(&snap, &snap.scope, &palettes, false).await;
+        assert_eq!(
+            r2.parameters_sent, 0,
+            "second recall of the same unchanged palette sends nothing"
+        );
+        assert!(
+            r2.parameters_skipped >= sent1,
+            "the palette params are counted as skipped on the second recall"
+        );
+
+        // Editing the palette (bumps content_rev) makes the next recall re-send.
+        palettes.get_mut(&pid).unwrap().touch();
+        let r3 = engine.recall(&snap, &snap.scope, &palettes, false).await;
+        assert!(
+            r3.parameters_sent > 0,
+            "an edited palette re-sends on next recall (ripple preserved)"
+        );
     }
 
     /// Phase C test helper: same as `setup_test` but with a dirty tracker

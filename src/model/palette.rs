@@ -55,6 +55,18 @@ pub struct ChannelPalette {
     /// (see [crate::console::palette_tracker]).
     #[serde(skip)]
     pub working_values: HashMap<ParameterPath, ParameterValue>,
+    /// Transient, in-memory content revision: a monotonic counter bumped by
+    /// every method that changes what recall would send (stored `values` via
+    /// `touch`, and the live `working_values` overlay via `set_working` /
+    /// `discard_working`). NOT persisted (`#[serde(skip)]`, resets to 0 on
+    /// load) and NOT part of a palette's identity — it exists only so the
+    /// recall engine can tell "same palette, same content as last sent" from
+    /// "same palette, edited since" and skip re-sending unchanged palettes on
+    /// recall (see `SnapshotEngine::last_sent_palettes`). Note `modified_at`
+    /// alone can't serve this: the working overlay must move the revision, but
+    /// the overlay is transient and must not dirty the persisted timestamp.
+    #[serde(skip)]
+    content_rev: u64,
 }
 
 impl ChannelPalette {
@@ -83,12 +95,23 @@ impl ChannelPalette {
             created_at: now,
             modified_at: now,
             working_values: HashMap::new(),
+            content_rev: 0,
         }
     }
 
-    /// Update the modified timestamp. Call after editing values.
+    /// Update the modified timestamp. Call after editing values. Also bumps the
+    /// transient content revision so recall knows the stored values changed.
     pub fn touch(&mut self) {
         self.modified_at = Utc::now();
+        self.content_rev = self.content_rev.wrapping_add(1);
+    }
+
+    /// The transient in-memory content revision — bumps whenever the effective
+    /// recall output changes (stored values via [`touch`](Self::touch), or the
+    /// live overlay via [`set_working`](Self::set_working) /
+    /// [`discard_working`](Self::discard_working)). See the field docs.
+    pub fn content_rev(&self) -> u64 {
+        self.content_rev
     }
 
     // ─── In-session working overlay (live ripple) ──────────────────
@@ -100,10 +123,16 @@ impl ChannelPalette {
     /// — the absorb loop re-sees the same live value, finds it equal to the now-
     /// stored value, and leaves the overlay empty.
     pub fn set_working(&mut self, path: ParameterPath, value: ParameterValue) {
-        if self.values.get(&path) == Some(&value) {
-            self.working_values.remove(&path);
+        let changed = if self.values.get(&path) == Some(&value) {
+            self.working_values.remove(&path).is_some()
         } else {
-            self.working_values.insert(path, value);
+            self.working_values.insert(path, value.clone()) != Some(value)
+        };
+        // Only bump the revision when the overlay actually moved, so a no-op
+        // re-absorb of an unchanged value (the 150 ms absorb loop) doesn't
+        // needlessly defeat the recall skip.
+        if changed {
+            self.content_rev = self.content_rev.wrapping_add(1);
         }
     }
 
@@ -155,7 +184,10 @@ impl ChannelPalette {
 
     /// Discard the in-session overlay without committing (revert to stored).
     pub fn discard_working(&mut self) {
-        self.working_values.clear();
+        if !self.working_values.is_empty() {
+            self.working_values.clear();
+            self.content_rev = self.content_rev.wrapping_add(1);
+        }
     }
 
     /// Total number of stored parameters across every kind.
@@ -421,6 +453,63 @@ mod tests {
         // what keeps "Store changes" from immediately re-flagging as modified.
         p.set_working(ParameterPath::EqBandGain(1), ParameterValue::Float(-6.0));
         assert!(!p.has_working_changes());
+    }
+
+    #[test]
+    fn content_rev_bumps_on_effective_content_changes() {
+        let mut p = ChannelPalette::new(
+            "Vocal EQ".into(),
+            ChannelId::Input(1),
+            &[PaletteKind::Eq],
+            sample_eq_values(),
+        );
+        let r0 = p.content_rev();
+
+        // touch (stored-value edit / rename / recapture) bumps.
+        p.touch();
+        let r1 = p.content_rev();
+        assert!(r1 > r0, "touch must bump content_rev");
+
+        // A real overlay change bumps.
+        p.set_working(ParameterPath::EqBandGain(1), ParameterValue::Float(-6.0));
+        let r2 = p.content_rev();
+        assert!(
+            r2 > r1,
+            "set_working with a new value must bump content_rev"
+        );
+
+        // Re-absorbing the SAME overlay value is a no-op (must NOT bump, else
+        // the 150 ms absorb loop would defeat the recall skip every tick).
+        p.set_working(ParameterPath::EqBandGain(1), ParameterValue::Float(-6.0));
+        assert_eq!(
+            p.content_rev(),
+            r2,
+            "re-absorbing an unchanged overlay value must not bump content_rev"
+        );
+
+        // Setting the overlay back to the stored value clears the diff → bump.
+        p.set_working(ParameterPath::EqBandGain(1), ParameterValue::Float(3.0));
+        let r3 = p.content_rev();
+        assert!(r3 > r2, "clearing a diff entry must bump content_rev");
+
+        // store_changes (folds overlay into values, via touch) bumps.
+        p.set_working(ParameterPath::EqBandGain(1), ParameterValue::Float(-6.0));
+        let r4 = p.content_rev();
+        assert_eq!(p.store_changes(), 1);
+        assert!(p.content_rev() > r4, "store_changes must bump content_rev");
+
+        // discard_working on a non-empty overlay bumps; on an empty one, no-op.
+        p.set_working(ParameterPath::EqBandGain(2), ParameterValue::Float(4.0));
+        let r5 = p.content_rev();
+        p.discard_working();
+        assert!(p.content_rev() > r5, "discard of a non-empty overlay bumps");
+        let r6 = p.content_rev();
+        p.discard_working();
+        assert_eq!(
+            p.content_rev(),
+            r6,
+            "discard of an empty overlay is a no-op"
+        );
     }
 
     #[test]
