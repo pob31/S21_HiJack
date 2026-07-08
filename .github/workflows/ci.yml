@@ -79,3 +79,11 @@ jobs:
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # RUSTSEC-2026-0194 / -0195: quick-xml DoS advisories (need >=0.41.0).
+          # Reached ONLY as a build-time, Linux-only transitive of
+          # `wayland-scanner` (locked to quick-xml ^0.39 via winit 0.30 / eframe
+          # 0.33), whose proc-macro parses the trusted, bundled Wayland protocol
+          # XML at compile time — never attacker-controlled input, so the DoS is
+          # unreachable here. The real fix is the winit/eframe 0.35 upgrade
+          # (a separate breaking change); drop these ignores once that lands.
+          ignore: RUSTSEC-2026-0194,RUSTSEC-2026-0195
