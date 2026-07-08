@@ -25,6 +25,11 @@ struct CueRow {
     console_snapshot: Option<i32>,
     snapshot_name: Option<String>,
     is_current: bool,
+    /// The cue after the current one — its notes are shown alongside the
+    /// current cue's so the operator can read ahead in the script.
+    is_next: bool,
+    /// Operator script notes; shown inline under the current and next rows.
+    notes: String,
 }
 
 /// Draw the cue-list popup if `open`. `open` is the standard egui pattern: the
@@ -49,6 +54,7 @@ pub fn draw_cue_list_popup(
         return; // lock busy this frame; redraw next frame
     };
     let current_id = mgr.current_cue().map(|c| c.id);
+    let next_id = mgr.next_cue().map(|c| c.id);
     let rows: Vec<CueRow> = mgr
         .cue_list
         .cues
@@ -63,6 +69,8 @@ pub fn draw_cue_list_popup(
                 .and_then(|sid| mgr.get_snapshot(&sid))
                 .map(|s| s.name.clone()),
             is_current: Some(c.id) == current_id,
+            is_next: Some(c.id) == next_id,
+            notes: c.notes.clone(),
         })
         .collect();
     drop(mgr);
@@ -200,6 +208,20 @@ pub fn draw_cue_list_popup(
                                         row_clicked = true;
                                     }
                                 });
+
+                                // Script notes for the current + next cues,
+                                // shown inline so the operator can follow along.
+                                if (row.is_current || row.is_next) && !row.notes.trim().is_empty() {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.add_space(62.0);
+                                        ui.label(
+                                            egui::RichText::new(row.notes.trim())
+                                                .color(theme::label_weak())
+                                                .small()
+                                                .italics(),
+                                        );
+                                    });
+                                }
                             });
                         if row_clicked {
                             select_id = Some(row.id);

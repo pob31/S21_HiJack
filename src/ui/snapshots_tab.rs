@@ -60,6 +60,12 @@ pub struct SnapshotsTabState {
     // Snapshot management
     pub new_snapshot_name: String,
     pub selected_snapshot_id: Option<Uuid>,
+    /// Which snapshot's name is currently mirrored into `new_snapshot_name` for
+    /// editing. When a snapshot is selected, its name loads into the capture
+    /// "Name:" field so the operator can edit it (Enter renames); cleared back
+    /// to `None` when the selection clears so the field returns to naming a NEW
+    /// capture. Tracks the loaded id so a re-render doesn't clobber edits.
+    pub name_field_snapshot: Option<Uuid>,
     /// Snapshot kind picked at capture time. Defaults to ApplyOnSave so the
     /// behaviour matches v7.
     pub pending_kind: SnapshotKind,
@@ -104,6 +110,7 @@ impl Default for SnapshotsTabState {
             editing_triggers: Vec::new(),
             new_snapshot_name: String::new(),
             selected_snapshot_id: None,
+            name_field_snapshot: None,
             pending_kind: SnapshotKind::default(),
             scope_editor: ScopeEditorState::default(),
             selected_scope_template_id: None,
@@ -298,9 +305,28 @@ pub fn draw_snapshots_tab(
                         // Capture controls. ApplyOnRecall doesn't need a
                         // populated scope (the whole state is captured) so
                         // the selection-count gate only applies to ApplyOnSave.
+                        // When a snapshot is selected, mirror its name into the
+                        // capture "Name:" field so it can be edited in place
+                        // (Enter renames). Cleared to a blank capture field when
+                        // the selection clears. Acts only on a change of the
+                        // selected id so it never clobbers an in-progress edit.
+                        if snap_state.selected_snapshot_id != snap_state.name_field_snapshot {
+                            if let Some(id) = snap_state.selected_snapshot_id {
+                                if let Ok(mgr) = cue_manager.try_read() {
+                                    if let Some(s) = mgr.snapshots.get(&id) {
+                                        snap_state.new_snapshot_name = s.name.clone();
+                                    }
+                                    snap_state.name_field_snapshot = Some(id);
+                                }
+                            } else {
+                                snap_state.new_snapshot_name.clear();
+                                snap_state.name_field_snapshot = None;
+                            }
+                        }
+
                         ui.horizontal(|ui| {
                             theme::row_label(ui, "Name:", theme::label_color());
-                            theme::padded_text_edit_sized(
+                            let name_resp = theme::padded_text_edit_sized(
                                 ui,
                                 &mut snap_state.new_snapshot_name,
                                 220.0,
@@ -308,6 +334,21 @@ pub fn draw_snapshots_tab(
                                 true,
                                 "",
                             );
+                            // Enter renames the selected snapshot (if one is
+                            // selected); "Capture Now" still creates a NEW
+                            // snapshot from the field text.
+                            if name_resp.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            {
+                                if let Some(id) = snap_state.selected_snapshot_id {
+                                    let name = snap_state.new_snapshot_name.clone();
+                                    let cue_mgr = cue_manager.clone();
+                                    runtime.spawn(async move {
+                                        cue_mgr.write().await.rename_snapshot(id, name);
+                                    });
+                                    snap_state.status_message = Some("Renamed snapshot".into());
+                                }
+                            }
 
                             let scope_required = matches!(
                                 snap_state.pending_kind,

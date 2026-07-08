@@ -101,6 +101,12 @@ pub enum UiEvent {
         palette_name: String,
         snapshot_name: String,
     },
+    /// A bulk assign/clear from an assign-overlay header / snapshot-name click.
+    PaletteBulkAssigned {
+        palette_name: String,
+        linked: bool,
+        count: usize,
+    },
     PaletteUpdated {
         name: String,
         affected_count: usize,

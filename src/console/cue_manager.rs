@@ -308,6 +308,26 @@ impl CueManager {
         removed
     }
 
+    /// Rename a snapshot in place, preserving its data / scope / palette refs.
+    /// Trims the new name and ignores empty / unchanged names. Bumps
+    /// `modified_at` and invalidates the look-ahead cache. Returns `false` when
+    /// no snapshot with that id exists or the name was empty / unchanged.
+    pub fn rename_snapshot(&mut self, id: Uuid, name: String) -> bool {
+        let trimmed = name.trim();
+        if let Some(snapshot) = self.snapshots.get_mut(&id) {
+            if trimmed.is_empty() || snapshot.name == trimmed {
+                return false;
+            }
+            snapshot.name = trimmed.to_string();
+            snapshot.modified_at = chrono::Utc::now();
+            info!(name = %snapshot.name, %id, "Renamed snapshot");
+            self.bump_model_gen();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Update a snapshot's data (re-capture with fresh values).
     pub fn update_snapshot(&mut self, id: Uuid, data: crate::model::snapshot::SnapshotData) {
         if let Some(snapshot) = self.snapshots.get_mut(&id) {
@@ -562,6 +582,28 @@ mod tests {
             SnapshotData::new(),
             SnapshotKind::ApplyOnSave,
         )
+    }
+
+    #[test]
+    fn rename_snapshot_sets_name_and_rejects_empty_or_unchanged() {
+        let mut mgr = CueManager::new(CueList::default());
+        let snap = make_snapshot("Verse 1");
+        let id = snap.id;
+        mgr.add_snapshot(snap);
+
+        // Rename succeeds, trimming whitespace.
+        assert!(mgr.rename_snapshot(id, "  Chorus  ".into()));
+        assert_eq!(mgr.get_snapshot(&id).unwrap().name, "Chorus");
+
+        // Empty / whitespace-only names are rejected.
+        assert!(!mgr.rename_snapshot(id, "   ".into()));
+        assert_eq!(mgr.get_snapshot(&id).unwrap().name, "Chorus");
+
+        // No-op when the name is unchanged.
+        assert!(!mgr.rename_snapshot(id, "Chorus".into()));
+
+        // Unknown id is a no-op.
+        assert!(!mgr.rename_snapshot(Uuid::new_v4(), "X".into()));
     }
 
     #[test]

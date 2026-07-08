@@ -63,6 +63,42 @@ impl ChannelTypeChoice {
             Self::Matrix => ChannelId::Matrix(num),
         }
     }
+
+    /// Whether `ch`'s type variant matches this choice (ignoring the number).
+    fn matches_channel(&self, ch: &ChannelId) -> bool {
+        matches!(
+            (self, ch),
+            (Self::Input, ChannelId::Input(_))
+                | (Self::Aux, ChannelId::Aux(_))
+                | (Self::Group, ChannelId::Group(_))
+                | (Self::Matrix, ChannelId::Matrix(_))
+        )
+    }
+}
+
+/// Whether a palette should appear in the list given the capture-form inputs.
+/// Cumulative AND: the channel TYPE always applies (the combo is never empty);
+/// a parsed channel NUMBER narrows to that exact channel; a non-empty NAME
+/// narrows by case-insensitive substring (independent of the number).
+fn palette_matches_filter(
+    p: &ChannelPalette,
+    type_choice: ChannelTypeChoice,
+    number: Option<u8>,
+    name_query: &str,
+) -> bool {
+    if !type_choice.matches_channel(&p.channel) {
+        return false;
+    }
+    if let Some(num) = number {
+        if p.channel != type_choice.to_channel_id(num) {
+            return false;
+        }
+    }
+    let q = name_query.trim().to_lowercase();
+    if !q.is_empty() && !p.name.to_lowercase().contains(&q) {
+        return false;
+    }
+    true
 }
 
 /// State for the Palettes UI section within the Snapshots tab.
@@ -78,6 +114,16 @@ pub struct PalettesUiState {
     /// palette's name. Cleared on commit (Enter / focus loss), cancel
     /// (Escape), or selection change.
     pub rename_draft: Option<(Uuid, String)>,
+    /// One-shot flag set when the channel-number commit just auto-filled the
+    /// palette name: on the next frame the name field grabs focus and selects
+    /// all its text so the operator can type over it or keep it. Cleared once
+    /// applied.
+    pub autofill_select: bool,
+    /// `(type, number, suggestion)` of the last name auto-fill. Used to avoid
+    /// re-firing on a plain re-focus of the same channel number, and — crucially
+    /// — to avoid clobbering a name the operator has since typed (we only
+    /// overwrite when the field is empty or still exactly our last suggestion).
+    pub last_autofill: Option<(ChannelTypeChoice, u8, String)>,
     pub status_message: Option<StatusMessage>,
 }
 
@@ -90,6 +136,8 @@ impl Default for PalettesUiState {
             capture_channel_number: "1".into(),
             capture_kinds: [true, true, true],
             rename_draft: None,
+            autofill_select: false,
+            last_autofill: None,
             status_message: None,
         }
     }
@@ -139,7 +187,7 @@ pub fn draw_palettes_section(
                 .response
                 .on_hover_text(help(HelpKey::PaletteChannelType));
         });
-        theme::padded_text_edit_sized(
+        let num_resp = theme::padded_text_edit_sized(
             ui,
             &mut state.capture_channel_number,
             40.0,
@@ -148,9 +196,43 @@ pub fn draw_palettes_section(
             "",
         )
         .on_hover_text(help(HelpKey::PaletteChannelNumber));
+        // On commit (Enter / focus-loss), auto-fill the name with
+        // "<number> <channel name>" and mark it for pre-selection so the
+        // operator can type over it or keep it. Only fires when this channel
+        // number wasn't just filled AND the name field is empty or still our
+        // last suggestion — so a typed custom name is never clobbered (e.g. when
+        // the number field loses focus to the Capture button).
+        if num_resp.lost_focus() {
+            if let Ok(num) = state.capture_channel_number.parse::<u8>() {
+                let already = matches!(
+                    &state.last_autofill,
+                    Some((t, n, _)) if *t == state.capture_channel_type && *n == num
+                );
+                let name_is_ours = state.new_palette_name.trim().is_empty()
+                    || state
+                        .last_autofill
+                        .as_ref()
+                        .is_some_and(|(_, _, s)| *s == state.new_palette_name);
+                if !already && name_is_ours {
+                    let channel = state.capture_channel_type.to_channel_id(num);
+                    let name = console_state.try_read().ok().and_then(|s| {
+                        s.channel_names_for(std::slice::from_ref(&channel))
+                            .get(&channel)
+                            .cloned()
+                    });
+                    let suggestion = match name {
+                        Some(n) if !n.trim().is_empty() => format!("{num} {n}"),
+                        _ => format!("{num}"),
+                    };
+                    state.new_palette_name = suggestion.clone();
+                    state.last_autofill = Some((state.capture_channel_type, num, suggestion));
+                    state.autofill_select = true;
+                }
+            }
+        }
 
         theme::row_label(ui, "Name:", theme::label_color());
-        theme::padded_text_edit_sized(
+        let name_resp = theme::padded_text_edit_sized(
             ui,
             &mut state.new_palette_name,
             140.0,
@@ -159,6 +241,20 @@ pub fn draw_palettes_section(
             "",
         )
         .on_hover_text(help(HelpKey::PaletteName));
+        // Apply the one-shot pre-selection: focus the name field and select all
+        // its text so the auto-filled suggestion is ready to type over.
+        if state.autofill_select {
+            state.autofill_select = false;
+            name_resp.request_focus();
+            let len = state.new_palette_name.chars().count();
+            let mut ts =
+                egui::text_edit::TextEditState::load(ui.ctx(), name_resp.id).unwrap_or_default();
+            ts.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(len),
+            )));
+            ts.store(ui.ctx(), name_resp.id);
+        }
     });
 
     ui.horizontal(|ui| {
@@ -251,13 +347,26 @@ pub fn draw_palettes_section(
         .max_height(list_height)
         .show(ui, |ui| {
             if let Ok(mgr) = palette_manager.try_read() {
-                let palettes = mgr.sorted_palettes();
+                // Filter the list to the capture form's channel type / number /
+                // name so the operator sees only palettes relevant to what they
+                // are building (see `palette_matches_filter`).
+                let number = state.capture_channel_number.parse::<u8>().ok();
+                let type_choice = state.capture_channel_type;
+                let name_query = state.new_palette_name.clone();
+                let total = mgr.palettes.len();
+                let palettes: Vec<&ChannelPalette> = mgr
+                    .sorted_palettes()
+                    .into_iter()
+                    .filter(|p| palette_matches_filter(p, type_choice, number, &name_query))
+                    .collect();
                 if palettes.is_empty() {
-                    ui.label(
-                        egui::RichText::new("No palettes yet. Capture one above.")
-                            .color(theme::label_weak()),
-                    )
-                    .on_hover_help_inline(HelpKey::PaletteInfoEmpty);
+                    let msg = if total == 0 {
+                        "No palettes yet. Capture one above."
+                    } else {
+                        "No palettes match the current channel / name."
+                    };
+                    ui.label(egui::RichText::new(msg).color(theme::label_weak()))
+                        .on_hover_help_inline(HelpKey::PaletteInfoEmpty);
                 }
                 for palette in palettes {
                     let selected = state.selected_palette_id == Some(palette.id);
@@ -575,6 +684,11 @@ fn draw_assign_overlay(
 ) {
     /// Overlay content width.
     const CONTENT_W: f32 = 300.0;
+    /// Fixed width of each kind (Eq/Dyn1/Dyn2) column, so its header label and
+    /// checkbox share one centred column.
+    const KIND_COL_W: f32 = 44.0;
+    /// Height of a centred grid cell (comfortable click target).
+    const CELL_H: f32 = 22.0;
 
     if info.kinds.is_empty() {
         return;
@@ -628,21 +742,89 @@ fn draw_assign_overlay(
                             .spacing([8.0, 4.0])
                             .striped(true)
                             .show(ui, |ui| {
-                                // Header row: one kind label per checkbox column,
-                                // then the "Snapshot" name column.
+                                // Header row: a clickable kind label per checkbox
+                                // column (click = toggle that column for every
+                                // snapshot), then a clickable "Snapshot" header
+                                // (click = toggle every checkbox). Header label
+                                // and checkboxes share a fixed-width centred cell
+                                // so they line up.
                                 for k in &info.kinds {
-                                    ui.label(
-                                        egui::RichText::new(k.label())
-                                            .small()
-                                            .strong()
-                                            .color(theme::label_weak()),
+                                    let resp = ui
+                                        .allocate_ui_with_layout(
+                                            egui::vec2(KIND_COL_W, CELL_H),
+                                            egui::Layout::top_down(egui::Align::Center),
+                                            |ui| {
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        egui::RichText::new(k.label())
+                                                            .small()
+                                                            .strong()
+                                                            .color(theme::label_weak()),
+                                                    )
+                                                    .sense(egui::Sense::click()),
+                                                )
+                                            },
+                                        )
+                                        .inner
+                                        .on_hover_text(
+                                            "Click to assign / clear this column for all snapshots",
+                                        );
+                                    if resp.clicked() {
+                                        let all_on = rows.iter().all(|r| {
+                                            r.cells.iter().any(|c| {
+                                                c.kind == *k
+                                                    && matches!(c.state, CellState::LinkedToThis)
+                                            })
+                                        });
+                                        let targets: Vec<(Uuid, PaletteKind)> =
+                                            rows.iter().map(|r| (r.snapshot_id, *k)).collect();
+                                        bulk_assign(
+                                            !all_on,
+                                            pid,
+                                            targets,
+                                            info.channel.clone(),
+                                            cue_manager,
+                                            palette_manager,
+                                            runtime,
+                                            ui_tx,
+                                        );
+                                    }
+                                }
+                                let snap_hdr = ui
+                                    .add(
+                                        egui::Label::new(
+                                            egui::RichText::new("Snapshot")
+                                                .small()
+                                                .color(theme::label_weak()),
+                                        )
+                                        .sense(egui::Sense::click()),
+                                    )
+                                    .on_hover_text(
+                                        "Click to assign / clear every checkbox for all snapshots",
+                                    );
+                                if snap_hdr.clicked() {
+                                    let all_on = rows.iter().all(|r| {
+                                        r.cells
+                                            .iter()
+                                            .all(|c| matches!(c.state, CellState::LinkedToThis))
+                                    });
+                                    let targets: Vec<(Uuid, PaletteKind)> = rows
+                                        .iter()
+                                        .flat_map(|r| {
+                                            info.kinds.iter().map(move |k| (r.snapshot_id, *k))
+                                        })
+                                        .collect();
+                                    bulk_assign(
+                                        !all_on,
+                                        pid,
+                                        targets,
+                                        info.channel.clone(),
+                                        cue_manager,
+                                        palette_manager,
+                                        runtime,
+                                        ui_tx,
                                     );
                                 }
-                                ui.label(
-                                    egui::RichText::new("Snapshot")
-                                        .small()
-                                        .color(theme::label_weak()),
-                                );
                                 ui.end_row();
 
                                 // One row per snapshot; `cells` is built 1:1 from
@@ -650,7 +832,15 @@ fn draw_assign_overlay(
                                 for row in &rows {
                                     for cell in &row.cells {
                                         let mut on = matches!(cell.state, CellState::LinkedToThis);
-                                        let resp = ui.checkbox(&mut on, "");
+                                        // Centre the checkbox under its column
+                                        // header (item 4).
+                                        let resp = ui
+                                            .allocate_ui_with_layout(
+                                                egui::vec2(KIND_COL_W, CELL_H),
+                                                egui::Layout::top_down(egui::Align::Center),
+                                                |ui| ui.checkbox(&mut on, ""),
+                                            )
+                                            .inner;
                                         if let CellState::LinkedToOther { other_name } = &cell.state
                                         {
                                             resp.clone().on_hover_text(
@@ -683,13 +873,41 @@ fn draw_assign_overlay(
                                             }
                                         }
                                     }
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(&row.snapshot_name)
-                                                .color(theme::label_color()),
+                                    // Clicking the snapshot name toggles all of
+                                    // that row's kinds (item 5).
+                                    let name_resp = ui
+                                        .add(
+                                            egui::Label::new(
+                                                egui::RichText::new(&row.snapshot_name)
+                                                    .color(theme::label_color()),
+                                            )
+                                            .truncate()
+                                            .sense(egui::Sense::click()),
                                         )
-                                        .truncate(),
-                                    );
+                                        .on_hover_text(
+                                            "Click to assign / clear all kinds for this snapshot",
+                                        );
+                                    if name_resp.clicked() {
+                                        let all_on = row
+                                            .cells
+                                            .iter()
+                                            .all(|c| matches!(c.state, CellState::LinkedToThis));
+                                        let targets: Vec<(Uuid, PaletteKind)> = info
+                                            .kinds
+                                            .iter()
+                                            .map(|k| (row.snapshot_id, *k))
+                                            .collect();
+                                        bulk_assign(
+                                            !all_on,
+                                            pid,
+                                            targets,
+                                            info.channel.clone(),
+                                            cue_manager,
+                                            palette_manager,
+                                            runtime,
+                                            ui_tx,
+                                        );
+                                    }
                                     ui.end_row();
                                 }
                             });
@@ -846,6 +1064,8 @@ fn capture_palette(
 
     state.status_message = Some(format!("Capturing '{}'...", state.new_palette_name).into());
     state.new_palette_name.clear();
+    // Allow the next commit of the same channel number to auto-fill again.
+    state.last_autofill = None;
 }
 
 fn recapture_palette(
@@ -1046,6 +1266,87 @@ fn unlink_palette(
             pmgr.write()
                 .await
                 .unlink_from_snapshot(palette_id, snapshot_id);
+        }
+    });
+}
+
+/// Bulk assign (`link = true`) or clear (`link = false`) `palette_id` across
+/// many `(snapshot, kind)` slots on `channel` in a single task — powers the
+/// assign-overlay header / snapshot-name click toggles (item 5). Assigning a
+/// slot replaces any other palette already there (same replace semantics as a
+/// single checkbox click); clearing only removes slots that currently point at
+/// this palette. All mutations happen under one cue-manager write with a single
+/// cache invalidation.
+#[allow(clippy::too_many_arguments)]
+fn bulk_assign(
+    link: bool,
+    palette_id: Uuid,
+    targets: Vec<(Uuid, PaletteKind)>,
+    channel: ChannelId,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
+    runtime: &tokio::runtime::Handle,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+) {
+    if targets.is_empty() {
+        return;
+    }
+    let cue_mgr = cue_manager.clone();
+    let pmgr = palette_manager.clone();
+    let tx = ui_tx.clone();
+
+    runtime.spawn(async move {
+        // Lock order (see auto_save_previous_snapshot): cue_manager before
+        // palette_manager. Both held across the loop so the bulk edit is atomic.
+        let mut mgr = cue_mgr.write().await;
+        let mut pal = pmgr.write().await;
+        let mut changed = 0usize;
+        for (snapshot_id, kind) in targets {
+            let Some(snapshot) = mgr.snapshots.get_mut(&snapshot_id) else {
+                continue;
+            };
+            let key = (channel.clone(), kind);
+            if link {
+                match snapshot.palette_refs.insert(key, palette_id) {
+                    // Already linked to this palette — nothing to do.
+                    Some(old) if old == palette_id => {}
+                    // Slot stolen from another palette: drop its back-ref if this
+                    // snapshot no longer references it anywhere, add ours.
+                    Some(old) => {
+                        if !snapshot.palette_refs.values().any(|p| *p == old) {
+                            pal.unlink_from_snapshot(old, snapshot_id);
+                        }
+                        pal.link_to_snapshot(palette_id, snapshot_id);
+                        changed += 1;
+                    }
+                    None => {
+                        pal.link_to_snapshot(palette_id, snapshot_id);
+                        changed += 1;
+                    }
+                }
+            } else if snapshot.palette_refs.get(&key) == Some(&palette_id) {
+                snapshot.palette_refs.remove(&key);
+                if !snapshot.palette_refs.values().any(|p| *p == palette_id) {
+                    pal.unlink_from_snapshot(palette_id, snapshot_id);
+                }
+                changed += 1;
+            }
+        }
+        // Direct `palette_refs` writes change what recalls resolve to.
+        mgr.bump_model_gen();
+        let palette_name = pal
+            .get_palette(&palette_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "?".into());
+        drop(pal);
+        drop(mgr);
+
+        if changed > 0 {
+            let _ = tx.send(UiEvent::PaletteBulkAssigned {
+                palette_name,
+                linked: link,
+                count: changed,
+            });
         }
     });
 }

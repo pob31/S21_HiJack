@@ -1093,6 +1093,15 @@ impl HiJackApp {
                     self.palettes_ui.status_message =
                         Some(format!("Linked '{palette_name}' to '{snapshot_name}'").into());
                 }
+                UiEvent::PaletteBulkAssigned {
+                    palette_name,
+                    linked,
+                    count,
+                } => {
+                    let verb = if linked { "Assigned" } else { "Cleared" };
+                    self.palettes_ui.status_message =
+                        Some(format!("{verb} '{palette_name}' on {count} slot(s)").into());
+                }
                 UiEvent::PaletteUpdated {
                     name,
                     affected_count,
