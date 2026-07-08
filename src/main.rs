@@ -5,6 +5,13 @@
 // triage is tracked under audit finding M3 in
 // `Documentation/AUDIT_2026-04-27.md` and `Documentation/todo.md` §7.
 #![allow(dead_code)]
+// On Windows, a Rust binary defaults to the "console" subsystem, so launching
+// the GUI also pops a terminal window. Mark RELEASE builds as the "windows"
+// (GUI) subsystem so no console appears — logs already go to a rotating file
+// (see `logging`), not the console, so nothing is lost. Debug builds keep the
+// console so `cargo run` still shows stdout/tracing during development. No-op on
+// macOS / Linux, which have no such subsystem concept.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod console;
 mod logging;
