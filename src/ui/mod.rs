@@ -77,6 +77,14 @@ pub enum UiEvent {
         name: String,
         params_sent: usize,
     },
+    /// Result of writing a scope into a snapshot (the scope editor's "Apply
+    /// Scope to Snapshot"). `ok == false` means no snapshot with that id was
+    /// found — it was deleted while the editor was open. Drives an honest
+    /// status message after the async write completes.
+    SnapshotScopeApplied {
+        name: String,
+        ok: bool,
+    },
     CueRecalled {
         cue_number: f32,
         params_sent: usize,

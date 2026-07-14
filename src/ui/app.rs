@@ -160,6 +160,30 @@ pub struct CaptureConfirm {
     pub seen_gen_base: Option<u64>,
 }
 
+/// In-flight "Apply Scope to Snapshot" from the scope editor.
+///
+/// The apply is deferred through this small state machine so the widen check —
+/// which needs uncontended reads of the snapshot and console config — can retry
+/// across frames, and so widening an apply-on-save snapshot past its captured
+/// data can raise a confirm modal before the async write is spawned. Runtime-only.
+enum PendingScopeApply {
+    /// Just requested — run the widen check (retries next frame on read
+    /// contention). Dispatches directly for apply-on-recall snapshots (which
+    /// captured everything) or when nothing is missing.
+    Evaluate {
+        snapshot_id: uuid::Uuid,
+        scope: crate::model::snapshot::ScopeTemplate,
+    },
+    /// An apply-on-save target whose new scope names `missing` un-captured
+    /// parameters — the confirm modal is showing.
+    Confirm {
+        snapshot_id: uuid::Uuid,
+        scope: crate::model::snapshot::ScopeTemplate,
+        name: String,
+        missing: usize,
+    },
+}
+
 /// Modal shown when a show file fails to load because it is truncated / has a
 /// bad header. Lists the recovery candidates (backups + autosaves) for that
 /// show so the operator can restore one and optionally repair the original.
@@ -307,6 +331,10 @@ pub struct HiJackApp {
     /// (and any later OS close) passes straight through instead of re-opening
     /// the confirmation modal. Runtime-only.
     pub close_confirmed: bool,
+
+    /// In-flight "Apply Scope to Snapshot" request from the scope editor, if
+    /// any. Driven each frame by `process_scope_apply`. Runtime-only.
+    scope_apply_pending: Option<PendingScopeApply>,
 
     // ─── Autosave scheduler (see persistence::backup) ────────────────
     /// When the last autosave was taken — throttles to `AUTOSAVE_INTERVAL`.
@@ -477,6 +505,7 @@ impl HiJackApp {
             show_cue_list_popup: false,
             confirm_close: false,
             close_confirmed: false,
+            scope_apply_pending: None,
 
             last_autosave_at: std::time::Instant::now(),
             last_autosaved_fingerprint: 0,
@@ -1054,6 +1083,13 @@ impl HiJackApp {
                 UiEvent::SnapshotRecalled { name, params_sent } => {
                     self.snapshots.status_message =
                         Some(format!("Recalled '{name}' ({params_sent} params sent)").into());
+                }
+                UiEvent::SnapshotScopeApplied { name, ok } => {
+                    self.snapshots.status_message = Some(if ok {
+                        format!("Applied scope to '{name}'").into()
+                    } else {
+                        format!("Scope not applied — snapshot '{name}' no longer exists").into()
+                    });
                 }
                 UiEvent::CueRecalled { .. } => {
                     // The Live tab used to surface a "Cue X.Y recalled
@@ -1917,6 +1953,173 @@ impl HiJackApp {
     /// re-issues the close — now allowed through by `close_confirmed` — and
     /// "Stay connected" simply dismisses the modal. The modal's backdrop blocks
     /// the rest of the UI until the operator chooses.
+    /// Drive the deferred "Apply Scope to Snapshot" state machine one frame.
+    ///
+    /// `Evaluate` runs the widen check on uncontended `try_read`s (retrying next
+    /// frame on lock contention). An apply-on-save snapshot whose new scope
+    /// names un-captured params transitions to `Confirm`; everything else
+    /// (apply-on-recall, or nothing missing) dispatches immediately. `Confirm`
+    /// renders the modal and dispatches or cancels on the operator's choice.
+    fn process_scope_apply(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.scope_apply_pending.take() else {
+            return;
+        };
+        match pending {
+            PendingScopeApply::Evaluate { snapshot_id, scope } => {
+                // Needs the snapshot (name, kind, data). On lock contention,
+                // keep the request and retry next frame.
+                let Ok(mgr) = self.cue_manager.try_read() else {
+                    self.scope_apply_pending =
+                        Some(PendingScopeApply::Evaluate { snapshot_id, scope });
+                    ctx.request_repaint();
+                    return;
+                };
+                let Some(snap) = mgr.get_snapshot(&snapshot_id) else {
+                    // Deleted while the editor was open — report honestly.
+                    drop(mgr);
+                    self.snapshots.status_message =
+                        Some("Scope not applied — snapshot no longer exists".into());
+                    return;
+                };
+                let name = snap.name.clone();
+                // ApplyOnRecall captured everything → no widen risk; apply now.
+                if snap.kind == crate::model::snapshot::SnapshotKind::ApplyOnRecall {
+                    drop(mgr);
+                    self.spawn_scope_apply(snapshot_id, scope, name);
+                    return;
+                }
+                // ApplyOnSave: count params the new scope names that neither the
+                // captured data nor a linked palette would supply at recall.
+                // Needs the console config counts and the palette map (both via
+                // try_read; retry next frame on contention). All guards here are
+                // non-blocking try_reads, so holding them together can't
+                // deadlock.
+                let Ok(state_guard) = self.state.try_read() else {
+                    drop(mgr);
+                    self.scope_apply_pending =
+                        Some(PendingScopeApply::Evaluate { snapshot_id, scope });
+                    ctx.request_repaint();
+                    return;
+                };
+                let Ok(palette_guard) = self.palette_manager.try_read() else {
+                    drop(state_guard);
+                    drop(mgr);
+                    self.scope_apply_pending =
+                        Some(PendingScopeApply::Evaluate { snapshot_id, scope });
+                    ctx.request_repaint();
+                    return;
+                };
+                let missing = snap.missing_scope_value_count(
+                    &scope,
+                    &palette_guard.palettes,
+                    state_guard.config.aux_output_count,
+                    state_guard.config.group_output_count,
+                    state_guard.config.matrix_input_count,
+                );
+                drop(palette_guard);
+                drop(state_guard);
+                drop(mgr);
+                if missing == 0 {
+                    self.spawn_scope_apply(snapshot_id, scope, name);
+                } else {
+                    self.scope_apply_pending = Some(PendingScopeApply::Confirm {
+                        snapshot_id,
+                        scope,
+                        name,
+                        missing,
+                    });
+                }
+            }
+            PendingScopeApply::Confirm {
+                snapshot_id,
+                scope,
+                name,
+                missing,
+            } => {
+                enum Choice {
+                    Waiting,
+                    Apply,
+                    Cancel,
+                }
+                let mut choice = Choice::Waiting;
+                egui::Modal::new(egui::Id::new("scope_widen_confirm_modal")).show(ctx, |ui| {
+                    ui.set_min_width(400.0);
+                    ui.label(
+                        egui::RichText::new("Apply scope with un-captured parameters?")
+                            .strong()
+                            .size(super::theme::FONT_SIZE_SECTION)
+                            .color(super::theme::ACCENT_AMBER),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(format!(
+                        "{missing} parameter(s) in this scope have no captured value \
+                         in '{name}' — they will be skipped at recall until you \
+                         re-capture to fill them. Apply anyway?"
+                    ));
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(super::theme::action_button(
+                                "Apply anyway",
+                                super::theme::ACCENT_AMBER,
+                                egui::Vec2::new(140.0, 28.0),
+                            ))
+                            .clicked()
+                        {
+                            choice = Choice::Apply;
+                        }
+                        if ui
+                            .add(super::theme::action_button(
+                                "Cancel",
+                                super::theme::btn_neutral(),
+                                egui::Vec2::new(120.0, 28.0),
+                            ))
+                            .clicked()
+                        {
+                            choice = Choice::Cancel;
+                        }
+                    });
+                });
+                match choice {
+                    Choice::Waiting => {
+                        // Modal still open — carry the request to the next frame.
+                        self.scope_apply_pending = Some(PendingScopeApply::Confirm {
+                            snapshot_id,
+                            scope,
+                            name,
+                            missing,
+                        });
+                    }
+                    Choice::Apply => self.spawn_scope_apply(snapshot_id, scope, name),
+                    Choice::Cancel => {
+                        self.snapshots.status_message =
+                            Some(format!("Scope not applied to '{name}'").into());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Spawn the async scope write and report the honest result back through the
+    /// UI event channel (so a vanished snapshot surfaces instead of a false
+    /// "applied" message).
+    fn spawn_scope_apply(
+        &self,
+        snapshot_id: uuid::Uuid,
+        scope: crate::model::snapshot::ScopeTemplate,
+        name: String,
+    ) {
+        let cue_mgr = self.cue_manager.clone();
+        let tx = self.ui_tx.clone();
+        self.runtime.spawn(async move {
+            let ok = cue_mgr
+                .write()
+                .await
+                .update_snapshot_scope(snapshot_id, scope);
+            let _ = tx.send(UiEvent::SnapshotScopeApplied { name, ok });
+        });
+    }
+
     fn draw_close_confirm(&mut self, ctx: &egui::Context) {
         if !self.confirm_close {
             return;
@@ -2829,18 +3032,24 @@ impl eframe::App for HiJackApp {
         // frame will redraw.
         if self.snapshots.scope_editor.window_open {
             // The editor always edits the WORKING scope (used by the next
-            // capture). OK never writes to a snapshot. Apply / Recapture
-            // deliberately target the currently-SELECTED snapshot, so the title
-            // shows that target.
-            let selected_name = self.snapshots.selected_snapshot_id.and_then(|id| {
-                self.cue_manager
-                    .try_read()
-                    .ok()
-                    .and_then(|m| m.get_snapshot(&id).map(|s| s.name.clone()))
+            // capture / re-capture). OK never writes to a snapshot — only the
+            // editor's "Apply Scope to Snapshot" action does, targeting the
+            // currently-SELECTED snapshot. Both the title and the footer group
+            // name that target, and the target carries the count of cues whose
+            // scope_override would mask a scope edit.
+            let apply_target = self.snapshots.selected_snapshot_id.and_then(|id| {
+                self.cue_manager.try_read().ok().and_then(|m| {
+                    m.get_snapshot(&id)
+                        .map(|s| super::scope_editor::ScopeApplyTarget {
+                            name: s.name.clone(),
+                            kind: s.kind,
+                            override_cue_count: m.cues_with_scope_override_for(id).len(),
+                        })
+                })
             });
-            let window_title = match &selected_name {
-                Some(name) => format!("Edit Scope  ·  selected: {name}"),
-                None => "Edit Scope".to_string(),
+            let window_title = match &apply_target {
+                Some(t) => format!("Edit Working Scope  ·  apply target: {}", t.name),
+                None => "Edit Working Scope".to_string(),
             };
             if let Ok(state_guard) = self.state.try_read() {
                 let dirty_guard = self.dirty_tracker.try_read().ok();
@@ -2852,7 +3061,7 @@ impl eframe::App for HiJackApp {
                     &self.cue_manager,
                     &self.runtime,
                     &window_title,
-                    selected_name.as_deref(),
+                    apply_target.as_ref(),
                 );
                 drop(dirty_guard);
                 drop(state_guard);
@@ -2867,23 +3076,32 @@ impl eframe::App for HiJackApp {
                     });
                 }
 
-                // "Apply to selected": write the current (working) scope into
-                // the selected snapshot's scope — data untouched. For editing a
-                // snapshot's scope offline, with no live desk to recapture from.
+                // "Apply Scope to Snapshot": write the current (working) scope
+                // into the selected snapshot's scope — captured data untouched.
+                // Deferred through `scope_apply_pending` so the widen check can
+                // run on uncontended reads (raising a confirm modal for an
+                // apply-on-save snapshot whose new scope names un-captured
+                // params) before the async write is spawned.
                 if outcome.apply_to_selected_requested
                     && let Some(id) = self.snapshots.selected_snapshot_id
                 {
-                    let name = selected_name.clone().unwrap_or_default();
-                    let scope = self.snapshots.scope_editor.to_scope_template(name.clone());
-                    let cue_mgr = self.cue_manager.clone();
-                    self.runtime.spawn(async move {
-                        cue_mgr.write().await.update_snapshot_scope(id, scope);
+                    let name = apply_target
+                        .as_ref()
+                        .map(|t| t.name.clone())
+                        .unwrap_or_default();
+                    let scope = self.snapshots.scope_editor.to_scope_template(name);
+                    self.scope_apply_pending = Some(PendingScopeApply::Evaluate {
+                        snapshot_id: id,
+                        scope,
                     });
-                    self.snapshots.status_message =
-                        Some(format!("Applied scope to '{name}'").into());
                 }
             }
         }
+
+        // Resolve any in-flight scope apply (widen check + confirm modal).
+        // Runs every frame — including after the editor window closes — so a
+        // request made on the last open frame still completes.
+        self.process_scope_apply(ctx);
 
         // Post-capture confirmation popup floats above everything.
         self.draw_capture_confirm(ctx);

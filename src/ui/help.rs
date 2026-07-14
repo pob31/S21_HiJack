@@ -266,6 +266,9 @@ pub enum HelpKey {
     CueConsoleRow,
     SnapshotScopeOverride,
     SnapshotScopeOverrideTemplate,
+    ScopeEditorOk,
+    ScopeEditorApplyToSnapshot,
+    ScopeOverrideMasksEdit,
     SnapshotPicker,
     ShiftApply,
     ShiftClose,
@@ -1100,8 +1103,11 @@ fn meta(key: HelpKey) -> HelpMeta {
         // ── Snapshots / cues (secondary) ──
         SnapshotEditScope => (
             "snapshot.edit_scope",
-            "Open the scope editor to choose which parameters this snapshot \
-             captures or recalls.",
+            "Open the scope editor, seeded from the selected snapshot's scope. \
+             OK sets the WORKING scope used by the next capture / re-capture — \
+             it never modifies a snapshot. To write a scope onto the selected \
+             snapshot, use 'Apply Scope to Snapshot' in the editor, or \
+             re-capture.",
         ),
         SnapshotEditExistingScope => (
             "snapshot.edit_existing_scope",
@@ -1128,6 +1134,24 @@ fn meta(key: HelpKey) -> HelpMeta {
         SnapshotScopeOverrideTemplate => (
             "snapshot.scope_override_template",
             "Scope template to apply when recalling this cue.",
+        ),
+        ScopeEditorOk => (
+            "scope.editor_ok",
+            "Set this as the WORKING scope used by the next capture or \
+             re-capture. Does not modify any snapshot — use 'Apply Scope to \
+             Snapshot' for that.",
+        ),
+        ScopeEditorApplyToSnapshot => (
+            "scope.editor_apply_to_snapshot",
+            "Write this scope into the selected snapshot (its captured data is \
+             unchanged). On an apply-on-save snapshot, parameters you add \
+             beyond what was captured recall nothing until you re-capture.",
+        ),
+        ScopeOverrideMasksEdit => (
+            "scope.override_masks_edit",
+            "One or more cues recall this snapshot with a scope override. Those \
+             cues use the override, not the snapshot's own scope, so scope \
+             edits here won't change what they recall.",
         ),
         SnapshotPicker => (
             "snapshot.picker",
@@ -1741,6 +1765,9 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::CueConsoleRow,
     HelpKey::SnapshotScopeOverride,
     HelpKey::SnapshotScopeOverrideTemplate,
+    HelpKey::ScopeEditorOk,
+    HelpKey::ScopeEditorApplyToSnapshot,
+    HelpKey::ScopeOverrideMasksEdit,
     HelpKey::SnapshotPicker,
     HelpKey::ShiftApply,
     HelpKey::ShiftClose,

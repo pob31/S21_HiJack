@@ -61,6 +61,34 @@ impl ScopeTemplate {
             .map(|cs| cs.timing_for(cat))
             .unwrap_or_default()
     }
+
+    /// Enumerate every concrete `ParameterAddress` this scope selects.
+    ///
+    /// Legacy `sections` entries are expanded on a clone (via
+    /// `migrate_sections_to_paths`) so v7 templates enumerate correctly
+    /// without mutating the source; aux/group/matrix counts come from the
+    /// show config so the path enumeration matches the configured sends.
+    /// Returned as a set — two `ChannelScope`s naming the same channel/path
+    /// never double-count.
+    pub fn enumerate_addresses(
+        &self,
+        aux_count: u8,
+        group_count: u8,
+        matrix_count: u8,
+    ) -> HashSet<ParameterAddress> {
+        let mut out = HashSet::new();
+        for cs in &self.channel_scopes {
+            let mut migrated = cs.clone();
+            migrated.migrate_sections_to_paths(aux_count, group_count, matrix_count);
+            for path in migrated.paths {
+                out.insert(ParameterAddress {
+                    channel: cs.channel.clone(),
+                    parameter: path,
+                });
+            }
+        }
+        out
+    }
 }
 
 /// Per-category pre-wait and fade timing for snapshot recalls.
@@ -230,6 +258,54 @@ impl Snapshot {
         self.palette_refs
             .get(&(addr.channel.clone(), kind))
             .copied()
+    }
+
+    /// Number of parameter addresses in `scope` that a recall would NOT send —
+    /// neither the captured data nor a linked palette supplies them.
+    ///
+    /// Meaningful for `ApplyOnSave` snapshots: their data was filtered at
+    /// capture, so a scope widened past the captured set names addresses that
+    /// are silently skipped at recall until a re-capture fills them. Palette-
+    /// linked sections are NOT counted: `resolve_recall_values` emits linked-
+    /// palette params regardless of scope (its phase 2), so widening into a
+    /// linked section does not actually drop them. The caller gates by `kind` —
+    /// for `ApplyOnRecall` snapshots (which captured everything) the count is
+    /// not a recall risk. Aux/group/matrix counts feed legacy-section expansion
+    /// in `enumerate_addresses`.
+    pub fn missing_scope_value_count(
+        &self,
+        scope: &ScopeTemplate,
+        palettes: &HashMap<Uuid, ChannelPalette>,
+        aux_count: u8,
+        group_count: u8,
+        matrix_count: u8,
+    ) -> usize {
+        scope
+            .enumerate_addresses(aux_count, group_count, matrix_count)
+            .iter()
+            .filter(|addr| !self.recall_supplies_value(addr, palettes))
+            .count()
+    }
+
+    /// Whether a recall would actually send a value for `addr` — either the
+    /// captured data holds it, or a linked palette supplies it. Mirrors the two
+    /// value sources in `resolve_recall_values` (stored data, plus linked-
+    /// palette params which apply regardless of scope).
+    fn recall_supplies_value(
+        &self,
+        addr: &ParameterAddress,
+        palettes: &HashMap<Uuid, ChannelPalette>,
+    ) -> bool {
+        if self.data.values.contains_key(addr) {
+            return true;
+        }
+        match self.palette_ref_for(addr) {
+            Some(palette_id) => palettes
+                .get(&palette_id)
+                .and_then(|p| p.effective_value(&addr.parameter))
+                .is_some(),
+            None => false,
+        }
     }
 }
 
@@ -1095,5 +1171,196 @@ mod tests {
         assert!(cs.sections.is_empty());
         assert_eq!(cs.paths.len(), 1);
         assert!(cs.paths.contains(&ParameterPath::EqBandGain(2)));
+    }
+
+    // ─── Scope enumeration + widen-check ───────────────────────────────
+
+    #[test]
+    fn enumerate_addresses_paths_only_scope() {
+        let scope = ScopeTemplate::new(
+            "S".into(),
+            vec![ChannelScope::new(
+                ChannelId::Input(1),
+                HashSet::from([ParameterPath::Fader, ParameterPath::Mute]),
+            )],
+        );
+        let addrs = scope.enumerate_addresses(0, 0, 0);
+        assert_eq!(addrs.len(), 2);
+        assert!(addrs.contains(&ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        }));
+        assert!(addrs.contains(&ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Mute,
+        }));
+    }
+
+    #[test]
+    fn enumerate_addresses_migrates_legacy_sections() {
+        let scope = ScopeTemplate::new(
+            "S".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+        let addrs = scope.enumerate_addresses(0, 0, 0);
+        // The legacy FaderMutePan section expands to at least Fader and Mute.
+        assert!(addrs.contains(&ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        }));
+        assert!(addrs.contains(&ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Mute,
+        }));
+        // Enumeration must not mutate the source scope.
+        assert!(scope.channel_scopes[0].paths.is_empty());
+        assert_eq!(scope.channel_scopes[0].sections.len(), 1);
+    }
+
+    #[test]
+    fn enumerate_addresses_dedups_duplicate_channel_scopes() {
+        let scope = ScopeTemplate::new(
+            "S".into(),
+            vec![
+                ChannelScope::new(ChannelId::Input(1), HashSet::from([ParameterPath::Fader])),
+                ChannelScope::new(ChannelId::Input(1), HashSet::from([ParameterPath::Fader])),
+            ],
+        );
+        assert_eq!(scope.enumerate_addresses(0, 0, 0).len(), 1);
+    }
+
+    #[test]
+    fn missing_scope_value_count_zero_when_data_covers_scope() {
+        let scope = ScopeTemplate::new(
+            "S".into(),
+            vec![ChannelScope::new(
+                ChannelId::Input(1),
+                HashSet::from([ParameterPath::Fader, ParameterPath::Mute]),
+            )],
+        );
+        let mut values = HashMap::new();
+        values.insert(
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Fader,
+            },
+            ParameterValue::Float(0.0),
+        );
+        values.insert(
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Mute,
+            },
+            ParameterValue::Bool(false),
+        );
+        let snap = Snapshot::new(
+            "Snap".into(),
+            scope.clone(),
+            SnapshotData { values },
+            SnapshotKind::ApplyOnSave,
+        );
+        assert_eq!(
+            snap.missing_scope_value_count(&scope, &HashMap::new(), 0, 0, 0),
+            0
+        );
+    }
+
+    #[test]
+    fn missing_scope_value_count_counts_widened_paths() {
+        // Scope names three addresses; data holds only one → two missing.
+        let scope = ScopeTemplate::new(
+            "S".into(),
+            vec![ChannelScope::new(
+                ChannelId::Input(1),
+                HashSet::from([
+                    ParameterPath::Fader,
+                    ParameterPath::Mute,
+                    ParameterPath::Solo,
+                ]),
+            )],
+        );
+        let mut values = HashMap::new();
+        values.insert(
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Fader,
+            },
+            ParameterValue::Float(0.0),
+        );
+        let snap = Snapshot::new(
+            "Snap".into(),
+            scope.clone(),
+            SnapshotData { values },
+            SnapshotKind::ApplyOnSave,
+        );
+        assert_eq!(
+            snap.missing_scope_value_count(&scope, &HashMap::new(), 0, 0, 0),
+            2
+        );
+    }
+
+    #[test]
+    fn missing_scope_value_count_excludes_palette_supplied_paths() {
+        use crate::model::palette::ChannelPalette;
+        use crate::model::parameter::PaletteKind;
+
+        // ApplyOnSave snapshot captured Fader-only on Input 1, but the scope is
+        // widened to also name two EQ band-gain paths.
+        let scope = ScopeTemplate::new(
+            "S".into(),
+            vec![ChannelScope::new(
+                ChannelId::Input(1),
+                HashSet::from([
+                    ParameterPath::Fader,
+                    ParameterPath::EqBandGain(1),
+                    ParameterPath::EqBandGain(2),
+                ]),
+            )],
+        );
+        let mut values = HashMap::new();
+        values.insert(
+            ParameterAddress {
+                channel: ChannelId::Input(1),
+                parameter: ParameterPath::Fader,
+            },
+            ParameterValue::Float(0.0),
+        );
+        let mut snap = Snapshot::new(
+            "Snap".into(),
+            scope.clone(),
+            SnapshotData { values },
+            SnapshotKind::ApplyOnSave,
+        );
+
+        // Link an EQ palette that holds band-1 gain but NOT band-2 gain.
+        let mut eq_vals = HashMap::new();
+        eq_vals.insert(ParameterPath::EqBandGain(1), ParameterValue::Float(3.0));
+        let palette = ChannelPalette::new(
+            "Vocal EQ".into(),
+            ChannelId::Input(1),
+            &[PaletteKind::Eq],
+            eq_vals,
+        );
+        let pid = palette.id;
+        snap.palette_refs
+            .insert((ChannelId::Input(1), PaletteKind::Eq), pid);
+        let mut palettes = HashMap::new();
+        palettes.insert(pid, palette);
+
+        // Fader is captured; EqBandGain(1) is palette-supplied; only
+        // EqBandGain(2) is genuinely skipped at recall.
+        assert_eq!(
+            snap.missing_scope_value_count(&scope, &palettes, 0, 0, 0),
+            1
+        );
+
+        // With no palettes available, both EQ paths count as missing.
+        assert_eq!(
+            snap.missing_scope_value_count(&scope, &HashMap::new(), 0, 0, 0),
+            2
+        );
     }
 }

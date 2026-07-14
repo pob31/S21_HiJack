@@ -355,6 +355,22 @@ impl CueManager {
         }
     }
 
+    /// Cues that recall `snapshot_id` with a `scope_override` set.
+    ///
+    /// Those cues use the override, not the snapshot's own scope, at recall
+    /// (see the recall paths in `snapshot_engine`), so editing the snapshot's
+    /// scope does NOT change what they recall. Callers surface this so an
+    /// operator can see why a scope edit appears to have no effect. Linear scan
+    /// — cue lists are small and callers run this inside their per-frame
+    /// `try_read` guards.
+    pub fn cues_with_scope_override_for(&self, snapshot_id: Uuid) -> Vec<&Cue> {
+        self.cue_list
+            .cues
+            .iter()
+            .filter(|c| c.snapshot_id == Some(snapshot_id) && c.scope_override.is_some())
+            .collect()
+    }
+
     /// Add a scope template.
     pub fn add_scope_template(&mut self, template: ScopeTemplate) {
         info!(name = %template.name, id = %template.id, "Added scope template");
@@ -667,6 +683,38 @@ mod tests {
 
         // Unknown id is a no-op that reports failure.
         assert!(!mgr.update_snapshot_scope(Uuid::new_v4(), ScopeTemplate::new("X".into(), vec![])));
+    }
+
+    #[test]
+    fn cues_with_scope_override_for_filters_by_snapshot_and_override() {
+        use crate::model::snapshot::ScopeTemplate;
+
+        let mut mgr = CueManager::new(CueList::default());
+        let snap_a = make_snapshot("A");
+        let snap_b = make_snapshot("B");
+        let a = snap_a.id;
+        let b = snap_b.id;
+        mgr.add_snapshot(snap_a);
+        mgr.add_snapshot(snap_b);
+
+        // (a) snapshot A with an override — should match.
+        let mut cue_a_override = Cue::new(1.0, "A+override".into()).with_snapshot_id(a);
+        cue_a_override.scope_override = Some(ScopeTemplate::new("ov".into(), vec![]));
+        let cue_a_override_id = cue_a_override.id;
+        mgr.add_cue(cue_a_override);
+        // (b) snapshot A without an override — should NOT match.
+        mgr.add_cue(Cue::new(2.0, "A".into()).with_snapshot_id(a));
+        // (c) snapshot B with an override — should NOT match a query for A.
+        let mut cue_b_override = Cue::new(3.0, "B+override".into()).with_snapshot_id(b);
+        cue_b_override.scope_override = Some(ScopeTemplate::new("ov".into(), vec![]));
+        mgr.add_cue(cue_b_override);
+
+        let matches = mgr.cues_with_scope_override_for(a);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, cue_a_override_id);
+
+        // Unknown snapshot id → no matches.
+        assert!(mgr.cues_with_scope_override_for(Uuid::new_v4()).is_empty());
     }
 
     #[test]

@@ -70,6 +70,11 @@ pub struct SnapshotsTabState {
     // Scope
     pub scope_editor: ScopeEditorState,
     pub selected_scope_template_id: Option<Uuid>,
+    /// Frames spent retrying a contended "Edit Scope…" open. `Some(n)` means
+    /// the seed read (the selected snapshot's scope) was locked when the button
+    /// was clicked; we retry for a few frames rather than open with a stale
+    /// working-scope fallback. `None` when idle. Runtime-only.
+    pub scope_edit_open_retries: Option<u8>,
 
     // Feedback
     pub status_message: Option<StatusMessage>,
@@ -105,6 +110,7 @@ impl Default for SnapshotsTabState {
             pending_kind: SnapshotKind::default(),
             scope_editor: ScopeEditorState::default(),
             selected_scope_template_id: None,
+            scope_edit_open_retries: None,
             status_message: None,
             shift_modal_open: false,
             shift_from_row: "1".into(),
@@ -127,6 +133,43 @@ fn clear_cue_editor(snap_state: &mut SnapshotsTabState) {
     snap_state.editing_cue_notes.clear();
     snap_state.editing_triggers.clear();
     snap_state.cue_editor_snap_filter.clear();
+}
+
+/// Try to open the scope editor, seeded from the selected snapshot's scope.
+///
+/// Returns `false` ONLY when the `cue_manager` read is contended — the caller
+/// should retry next frame rather than open with a stale seed. With no
+/// selection (or when the selected snapshot has vanished) it opens seeded from
+/// the current working scope. This is the seed-fallback fix: contention no
+/// longer silently degrades to the working scope, which previously made an
+/// "Edit Scope…" click look like it edited the snapshot when it didn't.
+fn try_open_scope_editor(
+    snap_state: &mut SnapshotsTabState,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    aux_count: u8,
+    group_count: u8,
+    matrix_count: u8,
+) -> bool {
+    let seed = match snap_state.selected_snapshot_id {
+        Some(id) => {
+            let Ok(mgr) = cue_manager.try_read() else {
+                return false; // contended — caller retries next frame
+            };
+            match mgr.get_snapshot(&id) {
+                Some(s) => s.scope.clone(),
+                None => {
+                    // Selected snapshot vanished — seed from the working scope.
+                    drop(mgr);
+                    snap_state.scope_editor.to_scope_template("Editing".into())
+                }
+            }
+        }
+        None => snap_state.scope_editor.to_scope_template("Editing".into()),
+    };
+    snap_state
+        .scope_editor
+        .open(&seed, aux_count, group_count, matrix_count);
+    true
 }
 
 /// Draw the Snapshots tab.
@@ -167,6 +210,29 @@ pub fn draw_snapshots_tab(
     } else {
         (8, 8, 10) // defaults
     };
+
+    // Retry a contended "Edit Scope…" open for a few frames, so the editor
+    // opens with the snapshot's real scope rather than a stale working-scope
+    // fallback. Gives up after ~30 frames with a status note.
+    if let Some(tries) = snap_state.scope_edit_open_retries {
+        if try_open_scope_editor(
+            snap_state,
+            cue_manager,
+            aux_count,
+            group_count,
+            matrix_count,
+        ) {
+            snap_state.scope_edit_open_retries = None;
+        } else if tries >= 30 {
+            snap_state.scope_edit_open_retries = None;
+            snap_state.status_message = Some(
+                "Console busy — couldn't read the snapshot's scope; try Edit Scope again".into(),
+            );
+        } else {
+            snap_state.scope_edit_open_retries = Some(tries + 1);
+            ui.ctx().request_repaint();
+        }
+    }
 
     // Read current cue ID for highlighting
     let current_cue_id = cue_manager
@@ -235,7 +301,7 @@ pub fn draw_snapshots_tab(
                             // tweak that snapshot's scope — otherwise from the
                             // current working scope. OK never writes to a
                             // snapshot; apply it deliberately via the editor's
-                            // "Apply to Selected" button or by recapturing.
+                            // "Apply Scope to Snapshot" button or by recapturing.
                             if theme::row_action_button(
                                 ui,
                                 "Edit Scope…",
@@ -243,20 +309,16 @@ pub fn draw_snapshots_tab(
                                 110.0,
                                 true,
                                 help(HelpKey::SnapshotEditScope),
+                            ) && !try_open_scope_editor(
+                                snap_state,
+                                cue_manager,
+                                aux_count,
+                                group_count,
+                                matrix_count,
                             ) {
-                                let seed = snap_state
-                                    .selected_snapshot_id
-                                    .and_then(|id| {
-                                        cue_manager.try_read().ok().and_then(|m| {
-                                            m.get_snapshot(&id).map(|s| s.scope.clone())
-                                        })
-                                    })
-                                    .unwrap_or_else(|| {
-                                        snap_state.scope_editor.to_scope_template("Editing".into())
-                                    });
-                                snap_state
-                                    .scope_editor
-                                    .open(&seed, aux_count, group_count, matrix_count);
+                                // Seed read was contended — retry next frames
+                                // rather than open with a stale working scope.
+                                snap_state.scope_edit_open_retries = Some(0);
                             }
                             ui.add_space(8.0);
                             theme::row_label(ui, "Apply scope:", theme::label_color());
@@ -373,14 +435,22 @@ pub fn draw_snapshots_tab(
                         // data IS the scope and there's nothing extra to
                         // recall. The button is greyed out (with a tooltip)
                         // when the selected snapshot is ApplyOnSave.
-                        let selected_kind: Option<SnapshotKind> = snap_state
+                        // Fetch the selected snapshot's kind AND the count of
+                        // cues that recall it with a scope override (which mask
+                        // snapshot scope edits) in one read.
+                        let selected_info: Option<(SnapshotKind, usize)> = snap_state
                             .selected_snapshot_id
                             .and_then(|id| {
-                                cue_manager
-                                    .try_read()
-                                    .ok()
-                                    .and_then(|mgr| mgr.snapshots.get(&id).map(|s| s.kind))
+                                cue_manager.try_read().ok().and_then(|mgr| {
+                                    mgr.snapshots.get(&id).map(|s| {
+                                        (s.kind, mgr.cues_with_scope_override_for(id).len())
+                                    })
+                                })
                             });
+                        let selected_kind: Option<SnapshotKind> =
+                            selected_info.map(|(kind, _)| kind);
+                        let override_cue_count: usize =
+                            selected_info.map(|(_, n)| n).unwrap_or(0);
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             let has_selection = snap_state.selected_snapshot_id.is_some();
@@ -469,6 +539,22 @@ pub fn draw_snapshots_tab(
                                 }
                             }
                         });
+
+                        // Warn when cues recall this snapshot with a scope
+                        // override — editing the snapshot's scope won't change
+                        // what those cues recall (the override wins).
+                        if override_cue_count > 0 {
+                            ui.add_space(2.0);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "⚠ {override_cue_count} cue(s) recall this snapshot with a \
+                                     scope override — snapshot scope edits won't affect them"
+                                ))
+                                .small()
+                                .color(theme::ACCENT_AMBER),
+                            )
+                            .on_hover_text(help(HelpKey::ScopeOverrideMasksEdit));
+                        }
 
                         // ── Undo + pacing ──
                         ui.add_space(2.0);

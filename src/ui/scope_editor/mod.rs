@@ -44,6 +44,7 @@ use crate::console::cue_manager::CueManager;
 use crate::model::channel::ChannelId;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::parameter::{ParameterPath, TimingCategory};
+use crate::model::snapshot::SnapshotKind;
 use crate::model::state::ConsoleState;
 use crate::ui::help::{HelpKey, help};
 use crate::ui::recall_scope_popup::{RecallPopupKind, draw_recall_popup};
@@ -69,6 +70,17 @@ pub struct ScopeWindowOutcome {
     /// write the current scope (`to_scope_template`) into the selected
     /// snapshot's scope (data untouched). The window stays open.
     pub apply_to_selected_requested: bool,
+}
+
+/// The snapshot the editor's "Apply Scope to Snapshot" action targets — the
+/// currently-selected snapshot. Assembled by the caller (app.rs) from one
+/// `cue_manager` read per frame so the editor closure never holds the guard.
+pub struct ScopeApplyTarget {
+    pub name: String,
+    pub kind: SnapshotKind,
+    /// How many cues recall this snapshot with a `scope_override` (which masks
+    /// snapshot-scope edits at recall). Zero when none — the warning is hidden.
+    pub override_cue_count: usize,
 }
 
 /// Result of a single `draw_scope_window` frame.
@@ -98,9 +110,10 @@ pub fn draw_scope_window(
     cue_manager: &Arc<RwLock<CueManager>>,
     runtime: &tokio::runtime::Handle,
     window_title: &str,
-    // Name of the currently-selected snapshot, if any. Enables the
-    // "Apply to selected" button (which writes this scope into that snapshot).
-    selected_snapshot_name: Option<&str>,
+    // The currently-selected snapshot, if any. Enables the "Apply Scope to
+    // Snapshot" action (which writes this scope into that snapshot) and drives
+    // its name/kind badge and scope-override warning.
+    apply_target: Option<&ScopeApplyTarget>,
 ) -> ScopeWindowOutcome {
     if !state.window_open {
         return ScopeWindowOutcome::default();
@@ -737,14 +750,21 @@ pub fn draw_scope_window(
                     }
                 }
 
-                // OK / Cancel (right side)
+                // OK / Cancel (right side). OK commits the WORKING scope used
+                // by the next capture — it never writes to a snapshot. The
+                // Apply-to-snapshot action lives in its own group below so the
+                // distinction is unmistakable.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let ok_btn = theme::action_button(
                         "OK",
                         theme::ACCENT_GREEN,
                         egui::Vec2::new(90.0, 28.0),
                     );
-                    if ui.add(ok_btn).clicked() {
+                    if ui
+                        .add(ok_btn)
+                        .on_hover_text(help(HelpKey::ScopeEditorOk))
+                        .clicked()
+                    {
                         state.commit();
                         outcome.status = ScopeWindowResult::Committed;
                     }
@@ -758,26 +778,70 @@ pub fn draw_scope_window(
                         state.cancel();
                         outcome.status = ScopeWindowResult::Cancelled;
                     }
+                });
+            });
 
-                    // Apply this scope to the currently-selected snapshot
-                    // (scope only; data untouched). For offline scope editing.
-                    // The window stays open. Disabled when nothing is selected.
-                    ui.add_space(8.0);
-                    let apply_btn = theme::action_button(
-                        "Apply to Selected",
-                        theme::ACCENT_BLUE,
-                        egui::Vec2::new(140.0, 28.0),
-                    );
-                    let apply_resp = ui.add_enabled(selected_snapshot_name.is_some(), apply_btn);
-                    let apply_resp = match selected_snapshot_name {
-                        Some(name) => apply_resp.on_hover_text(format!(
-                            "Write this scope into snapshot '{name}' (data unchanged)"
-                        )),
-                        None => apply_resp
-                            .on_hover_text("Select a snapshot first to apply this scope to it"),
-                    };
-                    if apply_resp.clicked() {
-                        outcome.apply_to_selected_requested = true;
+            // ─ Apply this (working) scope onto the selected snapshot ─
+            // Scope only; captured data untouched. For editing a snapshot's
+            // scope offline, with no live desk to re-capture from. The window
+            // stays open. Kept in its own framed group, distinct from OK/Cancel,
+            // because this is the ONLY footer action that changes a snapshot.
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| match apply_target {
+                    Some(target) => {
+                        ui.label(
+                            egui::RichText::new("Apply scope to snapshot:")
+                                .color(theme::label_weak())
+                                .size(theme::FONT_SIZE_TINY),
+                        );
+                        ui.label(
+                            egui::RichText::new(&target.name)
+                                .strong()
+                                .color(theme::label_color()),
+                        );
+                        let (kind_label, kind_color) = match target.kind {
+                            SnapshotKind::ApplyOnSave => ("scope: save", theme::btn_neutral()),
+                            SnapshotKind::ApplyOnRecall => ("scope: recall", theme::ACCENT_BLUE),
+                        };
+                        theme::colored_badge(ui, kind_label, kind_color);
+
+                        let apply_label = format!("Apply Scope to '{}'", target.name);
+                        let apply_btn = theme::action_button(
+                            &apply_label,
+                            theme::ACCENT_BLUE,
+                            egui::Vec2::new(190.0, 28.0),
+                        );
+                        if ui
+                            .add(apply_btn)
+                            .on_hover_text(help(HelpKey::ScopeEditorApplyToSnapshot))
+                            .clicked()
+                        {
+                            outcome.apply_to_selected_requested = true;
+                        }
+
+                        if target.override_cue_count > 0 {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "⚠ {} cue(s) recall this snapshot with a scope \
+                                     override — this scope won't affect those recalls",
+                                    target.override_cue_count
+                                ))
+                                .color(theme::ACCENT_AMBER)
+                                .size(theme::FONT_SIZE_TINY),
+                            )
+                            .on_hover_text(help(HelpKey::ScopeOverrideMasksEdit));
+                        }
+                    }
+                    None => {
+                        let apply_btn = theme::action_button(
+                            "Apply Scope to Snapshot",
+                            theme::ACCENT_BLUE,
+                            egui::Vec2::new(190.0, 28.0),
+                        );
+                        ui.add_enabled(false, apply_btn).on_hover_text(
+                            "Select a snapshot in the Snapshots tab first to apply \
+                             this scope to it",
+                        );
                     }
                 });
             });
