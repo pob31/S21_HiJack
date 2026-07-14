@@ -2125,6 +2125,13 @@ pub(crate) fn start_connection(
         // dropped when offline mode is on.
         osc_sender.set_offline_flag(offline.clone());
 
+        // Lock-free console-load suppression window, shared between the snapshot
+        // engine (arms it on fire), the connection loop (reads it to skip
+        // gang/pan propagation and dirty marks during the desk's load flood),
+        // and the palette absorb loop (skips absorbing that flood).
+        let console_load_suppression: crate::console::snapshot_engine::ConsoleLoadSuppression =
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
         // Live palette tracking: fold in-session operator EQ/Dyn tweaks into the
         // active snapshot's linked palettes so they ripple to every linked
         // snapshot without re-capture. Cancelled with the connection.
@@ -2133,6 +2140,7 @@ pub(crate) fn start_connection(
             cue_mgr.clone(),
             pmgr_arc.clone(),
             dirty.clone(),
+            console_load_suppression.clone(),
             token.clone(),
         ));
 
@@ -2169,12 +2177,6 @@ pub(crate) fn start_connection(
         // in every mode) and the iPad inbound dispatch when present.
         let (snap_event_tx, snap_event_rx) = tokio::sync::mpsc::channel::<i32>(16);
         let mut snap_event_rx = Some(snap_event_rx);
-
-        // Lock-free console-load suppression window, shared between the snapshot
-        // engine (arms it on fire) and the connection loop (reads it to skip
-        // gang/pan propagation of the desk's load flood).
-        let console_load_suppression: crate::console::snapshot_engine::ConsoleLoadSuppression =
-            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         // Live operator-override registry, shared between the snapshot engine
         // (registers addresses under timed recall) and the connection loop

@@ -34,6 +34,7 @@ pub async fn run_absorb_loop(
     cue_manager: Arc<RwLock<CueManager>>,
     palette_manager: Arc<RwLock<PaletteManager>>,
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
+    console_load: crate::console::snapshot_engine::ConsoleLoadSuppression,
     cancel: CancellationToken,
 ) {
     let mut ticker = tokio::time::interval(ABSORB_INTERVAL);
@@ -55,7 +56,7 @@ pub async fn run_absorb_loop(
                 // lets the overlay track the latest position. `has_any()` keeps
                 // idle ticks cheap.
                 if dirty_tracker.read().await.has_any() {
-                    absorb_once(&state, &cue_manager, &palette_manager, &dirty_tracker).await;
+                    absorb_once(&state, &cue_manager, &palette_manager, &dirty_tracker, &console_load).await;
                 }
             }
         }
@@ -69,7 +70,22 @@ async fn absorb_once(
     cue_manager: &Arc<RwLock<CueManager>>,
     palette_manager: &Arc<RwLock<PaletteManager>>,
     dirty_tracker: &Arc<RwLock<DirtyTracker>>,
+    console_load: &crate::console::snapshot_engine::ConsoleLoadSuppression,
 ) {
+    // Never absorb while a recall is writing (dirty suppression active) or
+    // while a console memory load is flooding echoes — mid-recall mirror
+    // values belong to the INCOMING cue and must not be folded into the
+    // still-pointed-at snapshot's palettes (the "palette bleed"). Operator
+    // tweaks made between cues still mark dirty and absorb on a later tick:
+    // the dirty set survives this early-return; only recall completion
+    // clears it.
+    if dirty_tracker.read().await.is_suppressed() {
+        return;
+    }
+    if crate::console::snapshot_engine::console_load_active(console_load) {
+        return;
+    }
+
     // Which snapshot is live, and what does it link? Clone the small refs map so
     // we don't hold the cue lock across the state/palette locks.
     let palette_refs = {
@@ -129,5 +145,126 @@ async fn absorb_once(
         if let Some(palette) = pmgr.get_palette_mut(&pid) {
             palette.set_working(path, value);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::console::snapshot_engine::arm_console_load;
+    use crate::model::channel::ChannelId;
+    use crate::model::config::ConsoleConfig;
+    use crate::model::palette::ChannelPalette;
+    use crate::model::parameter::{PaletteKind, ParameterPath, ParameterValue};
+    use crate::model::snapshot::{
+        CueList, ScopeTemplate, Snapshot, SnapshotData, SnapshotKind,
+    };
+
+    /// Harness: one EQ palette linked by one snapshot marked last-recalled,
+    /// a live mirror value of +6 dB on EQ band-1 gain, and that cell dirty.
+    /// An unguarded absorb pass folds +6 into the palette's working overlay.
+    async fn setup() -> (
+        Arc<RwLock<ConsoleState>>,
+        Arc<RwLock<crate::console::cue_manager::CueManager>>,
+        Arc<RwLock<PaletteManager>>,
+        Arc<RwLock<DirtyTracker>>,
+        crate::console::snapshot_engine::ConsoleLoadSuppression,
+        uuid::Uuid,
+        ParameterAddress,
+    ) {
+        let channel = ChannelId::Input(3);
+        let mut vals = HashMap::new();
+        vals.insert(ParameterPath::EqBandGain(1), ParameterValue::Float(3.0));
+        let palette = ChannelPalette::new("Vox EQ".into(), channel.clone(), &[PaletteKind::Eq], vals);
+        let pid = palette.id;
+
+        let scope = ScopeTemplate::new("s".into(), vec![]);
+        let mut snap = Snapshot::new(
+            "Snap".into(),
+            scope,
+            SnapshotData::new(),
+            SnapshotKind::ApplyOnRecall,
+        );
+        snap.palette_refs
+            .insert((channel.clone(), PaletteKind::Eq), pid);
+        let snap_id = snap.id;
+
+        let mut cue_mgr = crate::console::cue_manager::CueManager::new(CueList::default());
+        cue_mgr.add_snapshot(snap);
+        cue_mgr.set_last_recalled(snap_id);
+
+        let mut pmgr = PaletteManager::new();
+        pmgr.palettes.insert(pid, palette);
+
+        let addr = ParameterAddress {
+            channel,
+            parameter: ParameterPath::EqBandGain(1),
+        };
+        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
+        state
+            .write()
+            .await
+            .update(addr.clone(), ParameterValue::Float(6.0));
+
+        let dirty = Arc::new(RwLock::new(DirtyTracker::new()));
+        dirty.write().await.mark(&addr);
+
+        let console_load: crate::console::snapshot_engine::ConsoleLoadSuppression =
+            Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        (
+            state,
+            Arc::new(RwLock::new(cue_mgr)),
+            Arc::new(RwLock::new(pmgr)),
+            dirty,
+            console_load,
+            pid,
+            addr,
+        )
+    }
+
+    async fn working_count(pmgr: &Arc<RwLock<PaletteManager>>, pid: &uuid::Uuid) -> usize {
+        pmgr.read().await.palettes.get(pid).unwrap().working_count()
+    }
+
+    #[tokio::test]
+    async fn absorbs_dirty_eq_param_into_linked_palette() {
+        let (state, cues, pmgr, dirty, load, pid, _addr) = setup().await;
+        absorb_once(&state, &cues, &pmgr, &dirty, &load).await;
+        assert_eq!(
+            working_count(&pmgr, &pid).await,
+            1,
+            "an operator EQ tweak absorbs into the live palette's overlay"
+        );
+    }
+
+    #[tokio::test]
+    async fn does_not_absorb_while_recall_suppression_active() {
+        let (state, cues, pmgr, dirty, load, pid, _addr) = setup().await;
+        dirty.write().await.begin_suppression();
+        absorb_once(&state, &cues, &pmgr, &dirty, &load).await;
+        assert_eq!(
+            working_count(&pmgr, &pid).await,
+            0,
+            "mid-recall mirror values must not be folded into palettes (bleed)"
+        );
+        // Once the recall bracket closes, a later tick absorbs normally.
+        dirty.write().await.end_suppression();
+        absorb_once(&state, &cues, &pmgr, &dirty, &load).await;
+        assert_eq!(working_count(&pmgr, &pid).await, 1);
+    }
+
+    #[tokio::test]
+    async fn does_not_absorb_during_console_load_window() {
+        let (state, cues, pmgr, dirty, load, pid, _addr) = setup().await;
+        arm_console_load(&load);
+        absorb_once(&state, &cues, &pmgr, &dirty, &load).await;
+        assert_eq!(
+            working_count(&pmgr, &pid).await,
+            0,
+            "a console memory-load flood must not be absorbed as operator edits"
+        );
     }
 }

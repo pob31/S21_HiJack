@@ -5,12 +5,13 @@ use std::time::Instant;
 
 use tokio::sync::RwLock;
 use tokio::time::{Duration, sleep};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::console::automation_registry::AutomationOverride;
 use crate::console::cue_manager::CueManager;
-use crate::console::fade_engine::{FadeController, FadeTarget, MultiFadeController};
+use crate::console::fade_engine::FadeTarget;
 use crate::console::recall_cache::RecallCache;
 use crate::model::channel::ChannelId;
 use crate::model::dirty_tracker::DirtyTracker;
@@ -91,27 +92,36 @@ pub fn console_load_active(handle: &AtomicU64) -> bool {
 const PRE_WAIT_POLL: Duration = Duration::from_millis(25);
 
 /// Sleep up to `pre_wait`, but return EARLY the moment none of `addrs` remain
-/// under automation (the operator grabbed them all during the pre-wait). A
-/// single-parameter group's pre-wait ends instantly when that parameter is
-/// grabbed; a multi-parameter group waits for its still-active members, which
-/// then fade normally. With no registry (legacy path) this is a plain sleep.
+/// under automation for THIS recall's `gen_id` (the operator grabbed them all,
+/// or a newer recall took them over), or the moment `cancel` fires (this
+/// recall was superseded — "latest cue wins"). A single-parameter group's
+/// pre-wait ends instantly when that parameter is grabbed; a multi-parameter
+/// group waits for its still-active members, which then fade normally. With
+/// no registry (legacy path) this is a plain cancellable sleep.
 async fn cancellable_pre_wait(
     pre_wait: Duration,
     addrs: &[ParameterAddress],
     reg: &Option<AutomationOverride>,
+    gen_id: u64,
+    cancel: &tokio_util::sync::CancellationToken,
 ) {
-    if pre_wait.is_zero() {
+    if pre_wait.is_zero() || cancel.is_cancelled() {
         return;
     }
     let Some(r) = reg else {
-        // Legacy path / no registry: can't observe overrides — plain sleep.
-        sleep(pre_wait).await;
+        // Legacy path / no registry: can't observe overrides — plain sleep,
+        // still cut short if the recall is superseded.
+        tokio::select! {
+            () = cancel.cancelled() => {}
+            () = sleep(pre_wait) => {}
+        }
         return;
     };
     let deadline = Instant::now() + pre_wait;
     loop {
-        // Early-out: every address has been overridden (removed from registry).
-        if !addrs.iter().any(|a| r.is_active(a)) {
+        // Early-out: every address has been overridden or re-claimed by a
+        // newer recall (removed / re-registered under a newer generation).
+        if !addrs.iter().any(|a| r.is_active_for(a, gen_id)) {
             return;
         }
         let now = Instant::now();
@@ -119,7 +129,10 @@ async fn cancellable_pre_wait(
             return;
         }
         // `.min` keeps the final partial slice exact so we never overshoot.
-        sleep((deadline - now).min(PRE_WAIT_POLL)).await;
+        tokio::select! {
+            () = cancel.cancelled() => return,
+            () = sleep((deadline - now).min(PRE_WAIT_POLL)) => {}
+        }
     }
 }
 
@@ -192,6 +205,11 @@ pub struct RecallResult {
     pub parameters_sent: usize,
     /// Number of parameters skipped (no change, iPad-only, etc.).
     pub parameters_skipped: usize,
+    /// True when this recall was superseded by a newer one ("latest cue
+    /// wins") and stopped early — its remaining end-values are snapped by
+    /// the superseding recall, so nothing is lost, but counts above only
+    /// cover what THIS recall sent before being cut short.
+    pub cancelled: bool,
 }
 
 /// Pre-recall live values for one-level undo.
@@ -207,8 +225,36 @@ pub struct SnapshotEngine {
     state: Arc<RwLock<ConsoleState>>,
     sender: OscSender,
     ipad_sender: Option<IpadSender>,
-    fade_controller: FadeController,
-    multi_fade: MultiFadeController,
+    /// Serializes the recall BRACKET phase (console-memory fire + settle +
+    /// resolve + snap-through + discrete sends + fade spawn). NOT held for
+    /// the fade duration — the timed path drops its owned guard right after
+    /// spawning its fade tasks, so a GO during a 10 s fade never waits 10 s.
+    /// `Arc` so the guard can be `lock_owned()` and dropped mid-function.
+    recall_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Monotonic recall epoch. Each recall claims the next value; used to
+    /// stamp the in-flight marker and the superseded plan so late writers
+    /// can't clobber a newer recall's bookkeeping.
+    recall_epoch: AtomicU64,
+    /// Root cancellation token of the CURRENT recall. A new recall cancels
+    /// and replaces it ("latest cue wins"), which stops the previous
+    /// recall's settle wait, send loops, pre-waits and fades within one
+    /// tick. `std::sync::Mutex` — locked only to swap/clone, never across
+    /// an `.await`.
+    recall_cancel: std::sync::Mutex<CancellationToken>,
+    /// Epoch of the recall currently inside its bracket/fades (0 = none).
+    /// A superseding recall reads this to learn the previous one hasn't
+    /// finished cleanly — the desk may hold half-applied palette values, so
+    /// `last_sent_palettes` must be forgotten (cleared) rather than trusted.
+    recall_in_flight: AtomicU64,
+    /// Snap-through handoff: the most recent (possibly superseded) recall's
+    /// fully-resolved `(address, end-value)` plan, stamped with its epoch.
+    /// A superseding recall drains this under the gate, drops every address
+    /// it re-asserts itself (redundancy elision), and sends the remainder as
+    /// instant discrete snaps BEFORE its own values — so the desk ends up as
+    /// if the cues had played in order, just faster. Cleared by the recall
+    /// that owns it on clean completion. `std::sync::Mutex` — locked only
+    /// for a synchronous take/store, never across an `.await`.
+    superseded_plan: std::sync::Mutex<Option<(u64, Vec<(ParameterAddress, ParameterValue)>)>>,
     /// Phase C: optional dirty tracker. When present, recall() and
     /// recall_cue() bracket their writes with begin_suppression /
     /// end_suppression so console echoes from the recall don't pollute the
@@ -289,8 +335,11 @@ impl SnapshotEngine {
             state,
             sender,
             ipad_sender: None,
-            fade_controller: FadeController::new(),
-            multi_fade: MultiFadeController::new(),
+            recall_gate: Arc::new(tokio::sync::Mutex::new(())),
+            recall_epoch: AtomicU64::new(0),
+            recall_cancel: std::sync::Mutex::new(CancellationToken::new()),
+            recall_in_flight: AtomicU64::new(0),
+            superseded_plan: std::sync::Mutex::new(None),
             dirty_tracker: None,
             pace_us,
             undo: RwLock::new(None),
@@ -476,7 +525,7 @@ impl SnapshotEngine {
     /// Waits for a settling period after firing so the console's echo flood
     /// lands before we start writing the parameter overlay. Records the fired
     /// row in the suppression set so Console→App follow ignores the echo.
-    async fn fire_console_memory_if_needed(&self, row: Option<i32>) {
+    async fn fire_console_memory_if_needed(&self, row: Option<i32>, cancel: &CancellationToken) {
         let Some(row) = row else {
             return;
         };
@@ -532,8 +581,15 @@ impl SnapshotEngine {
         // console echoes back.
         self.state.write().await.current_console_snapshot = Some(row);
 
-        // Wait for the console to settle after the memory load.
-        tokio::time::sleep(Duration::from_millis(CONSOLE_MEMORY_SETTLE_MS)).await;
+        // Wait for the console to settle after the memory load — cut short
+        // if this recall is superseded (the successor fires its own memory
+        // and does its own settling; ours is moot).
+        tokio::select! {
+            () = cancel.cancelled() => {
+                debug!(row, "Console-memory settle cut short — recall superseded");
+            }
+            () = tokio::time::sleep(Duration::from_millis(CONSOLE_MEMORY_SETTLE_MS)) => {}
+        }
     }
 
     /// Update the cue manager's "last recalled" pointer after a successful
@@ -601,6 +657,35 @@ impl SnapshotEngine {
         palettes: &HashMap<Uuid, ChannelPalette>,
         ignore_scope: bool,
     ) -> RecallResult {
+        // Latest-wins: cancel any in-flight recall, then serialize the send
+        // phase behind the gate. Cancelling first means the previous
+        // holder's settle/sends/fades cut short, so the wait here is brief.
+        let (epoch, cancel) = self.begin_recall_epoch();
+        let gate = self.recall_gate.clone().lock_owned().await;
+        if cancel.is_cancelled() {
+            // Superseded while queued (rapid GO-GO-GO): send nothing, but
+            // contribute our end-values to the successor's snap-through plan
+            // so params only THIS recall touches still land.
+            let own: Vec<(ParameterAddress, ParameterValue)> =
+                crate::model::snapshot::resolve_recall_values(
+                    snapshot,
+                    scope,
+                    palettes,
+                    ignore_scope,
+                )
+                .into_iter()
+                .map(|(a, v)| (a, v.clone()))
+                .collect();
+            self.merge_superseded_plan(epoch, own);
+            debug!(epoch, snapshot = %snapshot.name, "Recall superseded while queued — merged into snap plan");
+            return RecallResult {
+                parameters_sent: 0,
+                parameters_skipped: 0,
+                cancelled: true,
+            };
+        }
+        self.recall_in_flight.store(epoch, Ordering::Relaxed);
+
         // Auto-update: must run BEFORE dirty suppression bracket clears
         // the tracker. Filtered by the previous snapshot's scope template.
         self.auto_save_previous_snapshot(snapshot.id).await;
@@ -609,68 +694,194 @@ impl SnapshotEngine {
             .with_dirty_suppression(async {
                 // Fire console memory inside the suppression bracket so
                 // its echo flood doesn't pollute the dirty tracker.
-                self.fire_console_memory_if_needed(None).await;
-                self.recall_inner(snapshot, scope, palettes, ignore_scope)
-                    .await
+                self.fire_console_memory_if_needed(None, &cancel).await;
+                let result = self
+                    .recall_inner(snapshot, scope, palettes, ignore_scope, epoch, &cancel)
+                    .await;
+                // Inside the bracket, and only for a completed recall: the
+                // absorb loop must never see the new pointer while foreign
+                // echoes can still mark dirty (that mis-attribution is the
+                // palette bleed). A superseded recall leaves the pointer to
+                // its successor.
+                if !result.cancelled {
+                    self.mark_last_recalled(snapshot.id).await;
+                }
+                result
             })
             .await;
 
-        self.mark_last_recalled(snapshot.id).await;
+        let _ = self.recall_in_flight.compare_exchange(
+            epoch,
+            0,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+        drop(gate);
         result
     }
 
     /// Clear the "last-sent palette" record. Call whenever the desk state may
     /// have moved out from under us so the next recall re-asserts palettes from
-    /// scratch (console-memory fire, undo, (re)connect / show load).
+    /// scratch (console-memory fire, undo, superseded recall, (re)connect /
+    /// show load).
     pub fn clear_last_sent_palettes(&self) {
         self.last_sent_palettes.lock().unwrap().clear();
     }
 
-    /// Drop from `resolved` every palette-derived param whose `(channel, kind)`
-    /// slot is unchanged since we last sent it, and refresh the `last_sent`
-    /// record for this recall. Non-palette params are never dropped (their
-    /// deliberate force-send behaviour is preserved). No-op filtering when
-    /// `ignore_scope` (Recall full / Recall-no-scope always force everything),
-    /// but the record is still refreshed so subsequent recalls can skip.
-    fn apply_palette_skip<'a>(
+    /// Cancel any in-flight recall and claim a fresh epoch + root token.
+    /// "Latest cue wins": called FIRST by every recall/undo entry point,
+    /// before awaiting the gate, so a long fade dies immediately even while
+    /// the new recall is still queued.
+    fn begin_recall_epoch(&self) -> (u64, CancellationToken) {
+        // Everything under one lock so epoch order == token-swap order: the
+        // last caller always ends holding the highest epoch and the only
+        // uncancelled token.
+        let mut guard = self.recall_cancel.lock().unwrap();
+        guard.cancel();
+        // Superseding an unfinished recall: the desk may hold its
+        // half-applied palette sends — forget the record so the next recall
+        // force-resends rather than wrongly skipping a slot that never
+        // actually landed.
+        if self.recall_in_flight.load(Ordering::Relaxed) != 0 {
+            self.clear_last_sent_palettes();
+        }
+        let epoch = self.recall_epoch.fetch_add(1, Ordering::Relaxed) + 1;
+        let fresh = CancellationToken::new();
+        *guard = fresh.clone();
+        (epoch, fresh)
+    }
+
+    /// Register this recall's fully-resolved end-state as the current plan,
+    /// prepending any predecessor entries for addresses this plan does not
+    /// cover (chained supersede: a rapid triple-GO must not lose the middle
+    /// cue's unique params). Returns the snap set — predecessor entries NOT
+    /// covered by `own` — which the caller sends as instant discrete snaps
+    /// before its own values ("snap-through with redundancy elision").
+    fn register_recall_plan(
+        &self,
+        epoch: u64,
+        own: &[(ParameterAddress, ParameterValue)],
+    ) -> Vec<(ParameterAddress, ParameterValue)> {
+        let own_addrs: std::collections::HashSet<&ParameterAddress> =
+            own.iter().map(|(a, _)| a).collect();
+        let mut plan = self.superseded_plan.lock().unwrap();
+        let snap: Vec<(ParameterAddress, ParameterValue)> = plan
+            .take()
+            .map(|(_, entries)| {
+                entries
+                    .into_iter()
+                    .filter(|(a, _)| !own_addrs.contains(a))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Full plan = leftover snaps + our own values: if a THIRD recall
+        // supersedes us mid-flight it inherits both.
+        let mut full = snap.clone();
+        full.extend_from_slice(own);
+        *plan = Some((epoch, full));
+        snap
+    }
+
+    /// Merge this (already superseded, never-sent) recall's resolved values
+    /// into the pending plan so the successor snaps them. Used by a recall
+    /// that lost the race while queued on the gate: it sends nothing itself,
+    /// but its unique end-values must still land ("as if played in order").
+    fn merge_superseded_plan(&self, epoch: u64, own: Vec<(ParameterAddress, ParameterValue)>) {
+        let own_addrs: std::collections::HashSet<ParameterAddress> =
+            own.iter().map(|(a, _)| a.clone()).collect();
+        let mut plan = self.superseded_plan.lock().unwrap();
+        let mut merged: Vec<(ParameterAddress, ParameterValue)> = plan
+            .take()
+            .map(|(_, entries)| {
+                entries
+                    .into_iter()
+                    .filter(|(a, _)| !own_addrs.contains(a))
+                    .collect()
+            })
+            .unwrap_or_default();
+        merged.extend(own);
+        *plan = Some((epoch, merged));
+    }
+
+    /// Drop this recall's plan on clean completion — everything in it landed
+    /// on the desk, so there is nothing for a successor to snap. Keyed by
+    /// epoch so a slow finisher can't discard a NEWER recall's plan.
+    fn clear_recall_plan(&self, epoch: u64) {
+        let mut plan = self.superseded_plan.lock().unwrap();
+        if plan.as_ref().is_some_and(|(e, _)| *e == epoch) {
+            *plan = None;
+        }
+    }
+
+    /// Compute the palette skip set for this recall and drop the skippable
+    /// palette-derived params from `resolved`, WITHOUT touching the
+    /// `last_sent_palettes` record. Returns the next-map the caller must
+    /// commit via [`finish_last_sent_palettes`] only after its sends actually
+    /// complete — stamping optimistically here is what let cancelled recalls
+    /// claim palettes had landed when they hadn't (palette bleed by omission).
+    /// Non-palette params are never dropped. No-op filtering when
+    /// `ignore_scope` (Recall full always force-sends everything).
+    fn palette_skip_and_next<'a>(
         &self,
         snapshot: &Snapshot,
         palettes: &HashMap<Uuid, ChannelPalette>,
         ignore_scope: bool,
         resolved: &mut Vec<(&'a ParameterAddress, &'a ParameterValue)>,
-    ) {
+    ) -> HashMap<(ChannelId, PaletteKind), (Uuid, u64)> {
         let skip_slots = {
-            let mut last = self.last_sent_palettes.lock().unwrap();
-            let slots = if ignore_scope {
+            let last = self.last_sent_palettes.lock().unwrap();
+            if ignore_scope {
                 std::collections::HashSet::new()
             } else {
                 palette_skip_slots(snapshot, palettes, &last)
-            };
-            // Rebuild for this recall (before the send loop — optimistic, like
-            // the live-mirror writes in `send_now`): every referenced slot ends
-            // up with `content_rev` on the desk whether we send it now or skip
-            // it because it's already there.
-            *last = next_last_sent(snapshot, palettes);
-            slots
+            }
         };
-        if skip_slots.is_empty() {
+        if !skip_slots.is_empty() {
+            resolved.retain(|(addr, _)| match addr.parameter.section().palette_kind() {
+                Some(kind) => !skip_slots.contains(&(addr.channel.clone(), kind)),
+                None => true,
+            });
+        }
+        next_last_sent(snapshot, palettes)
+    }
+
+    /// Commit or invalidate the palette record depending on how the recall
+    /// ended. A cancelled recall's palette sends may be half-applied on the
+    /// desk — never claim them; clearing errs toward one redundant re-send,
+    /// which is always safe. Epoch-guarded: a recall whose epoch is no longer
+    /// the newest must not touch the record at all — a slow finisher's stamp
+    /// (or clear) landing after its successor committed would replace the
+    /// successor's truthful record with stale data, re-creating the very
+    /// stale-skip bleed this exists to prevent.
+    fn finish_last_sent_palettes(
+        &self,
+        epoch: u64,
+        cancel: &CancellationToken,
+        next: HashMap<(ChannelId, PaletteKind), (Uuid, u64)>,
+    ) {
+        if self.recall_epoch.load(Ordering::Relaxed) != epoch {
             return;
         }
-        resolved.retain(|(addr, _)| match addr.parameter.section().palette_kind() {
-            Some(kind) => !skip_slots.contains(&(addr.channel.clone(), kind)),
-            None => true,
-        });
+        if cancel.is_cancelled() {
+            self.clear_last_sent_palettes();
+        } else {
+            *self.last_sent_palettes.lock().unwrap() = next;
+        }
     }
 
     /// Recall body without dirty-tracker suppression. Used by `recall` (which
     /// wraps it) and by `recall_cue`'s no-fade path (which is itself wrapped
-    /// at the cue level so we don't double-suppress).
+    /// at the cue level so we don't double-suppress). The caller owns the
+    /// recall epoch/token (see `begin_recall_epoch`) and MUST hold the recall
+    /// gate for the duration of this call.
     async fn recall_inner(
         &self,
         snapshot: &Snapshot,
         scope: &ScopeTemplate,
         palettes: &HashMap<Uuid, ChannelPalette>,
         ignore_scope: bool,
+        epoch: u64,
+        cancel: &CancellationToken,
     ) -> RecallResult {
         let mut sent = 0usize;
         let mut skipped = 0usize;
@@ -710,10 +921,22 @@ impl SnapshotEngine {
                     (all_len, fallback.iter().map(|(a, v)| (a, *v)).collect())
                 }
             };
-        // Skip re-sending linked palettes that are already on the desk unchanged
-        // (BEFORE the `skipped` accounting so they're counted as skipped too).
-        self.apply_palette_skip(snapshot, palettes, ignore_scope, &mut resolved);
+        // Skip re-sending linked palettes that are already on the desk
+        // unchanged (BEFORE the `skipped` accounting so they're counted as
+        // skipped too). The refreshed record is committed only after the send
+        // loop actually completes — see `finish_last_sent_palettes`.
+        let next_palettes =
+            self.palette_skip_and_next(snapshot, palettes, ignore_scope, &mut resolved);
         skipped += all_len - resolved.len();
+
+        // Snap-through handoff: register this recall's end-state as the
+        // current plan and collect the predecessor's leftover end-values
+        // (minus everything we re-assert ourselves — redundancy elision).
+        let own_plan: Vec<(ParameterAddress, ParameterValue)> = resolved
+            .iter()
+            .map(|&(a, v)| (a.clone(), v.clone()))
+            .collect();
+        let snap_set = self.register_recall_plan(epoch, &own_plan);
 
         // Capture pre-recall live values for undo — best-effort, via TRY_read.
         // This recall runs right after firing a console memory, while the desk
@@ -732,15 +955,37 @@ impl SnapshotEngine {
             }
         }
 
-        // Drive the shared progress line: one op spanning every resolved
-        // parameter, bumped per iteration so the bar reaches 100% (sent +
-        // skipped) and finishes when the loop ends.
+        // Drive the shared progress line: one op spanning every snap +
+        // resolved parameter, bumped per iteration so the bar reaches 100%
+        // (sent + skipped) and finishes when the loop ends.
         if let Some(p) = &self.recall_progress {
-            p.begin(RecallKind::Recall, resolved.len());
+            p.begin(RecallKind::Recall, snap_set.len() + resolved.len());
         }
 
         let pace = self.pace_us.load(Ordering::Relaxed);
+
+        // Snap-through: land the superseded recall's remaining end-values
+        // first (instant, no fades) so the desk ends up as if the cues had
+        // played in order. Runs under the gate + suppression bracket like
+        // every other recall send.
+        for (addr, value) in &snap_set {
+            if cancel.is_cancelled() {
+                break;
+            }
+            let did_send = self.send_now(addr, value, &mut sent, &mut skipped).await;
+            if let Some(p) = &self.recall_progress {
+                p.bump();
+            }
+            if did_send && pace > 0 {
+                tokio::time::sleep(Duration::from_micros(pace)).await;
+            }
+        }
+
         for &(addr, effective_value) in &resolved {
+            // Superseded mid-loop: stop — the successor snaps our remainder.
+            if cancel.is_cancelled() {
+                break;
+            }
             let did_send = self
                 .send_now(addr, effective_value, &mut sent, &mut skipped)
                 .await;
@@ -756,18 +1001,31 @@ impl SnapshotEngine {
             p.finish();
         }
 
-        // Store undo state (overwrites any previous — one level only)
-        if !undo_map.is_empty() {
+        let cancelled = cancel.is_cancelled();
+        // Commit the palette record only for a completed recall; a cancelled
+        // one clears it (its sends may be half-applied on the desk).
+        self.finish_last_sent_palettes(epoch, cancel, next_palettes);
+        if !cancelled {
+            // Everything landed — nothing left for a successor to snap.
+            self.clear_recall_plan(epoch);
+        }
+
+        // Store undo state (overwrites any previous — one level only). A
+        // cancelled recall stores nothing: its capture describes a state the
+        // desk was never fully moved away from, and the superseding recall
+        // records its own.
+        if !cancelled && !undo_map.is_empty() {
             *self.undo.write().await = Some(UndoState {
                 previous_values: undo_map,
                 label: format!("Undo '{}'", snapshot.name),
             });
         }
 
-        info!(sent, skipped, "Snapshot recall complete");
+        info!(sent, skipped, cancelled, "Snapshot recall complete");
         RecallResult {
             parameters_sent: sent,
             parameters_skipped: skipped,
+            cancelled,
         }
     }
 
@@ -854,6 +1112,10 @@ impl SnapshotEngine {
     /// in-session working overlay, which the caller clears separately) so the
     /// desk returns to the captured state. Returns the number of params sent.
     pub async fn reload_palette(&self, palette: &ChannelPalette) -> usize {
+        // Serialize behind the recall gate so a revert can't interleave with
+        // a recall's send phase. No epoch claim — a revert is subordinate and
+        // must not cancel a running recall; it just waits its turn.
+        let _gate = self.recall_gate.clone().lock_owned().await;
         let mut sent = 0usize;
         let mut skipped = 0usize;
         for (path, value) in &palette.values {
@@ -887,6 +1149,47 @@ impl SnapshotEngine {
         palettes: &HashMap<Uuid, ChannelPalette>,
         ignore_scope: bool,
     ) -> RecallResult {
+        // Latest-wins: cancel any in-flight recall FIRST (its fades die
+        // within a tick), then serialize the bracket phase behind the gate.
+        let (epoch, cancel) = self.begin_recall_epoch();
+        let gate = self.recall_gate.clone().lock_owned().await;
+        if cancel.is_cancelled() {
+            // Superseded while queued (rapid GO-GO-GO): send nothing, but
+            // contribute this cue's end-values to the successor's snap plan
+            // so params only THIS cue touches still land ("as if played in
+            // order"). Note the cue's console-memory row is deliberately NOT
+            // fired — the successor's row supersedes it on the desk.
+            if let Some(snap) = snapshot {
+                let effective_scope = cue.scope_override.as_ref().unwrap_or(&snap.scope);
+                let own: Vec<(ParameterAddress, ParameterValue)> =
+                    crate::model::snapshot::resolve_recall_values(
+                        snap,
+                        effective_scope,
+                        palettes,
+                        ignore_scope,
+                    )
+                    .into_iter()
+                    .map(|(a, v)| (a, v.clone()))
+                    .collect();
+                self.merge_superseded_plan(epoch, own);
+            }
+            debug!(epoch, cue_number = cue.cue_number, "Cue recall superseded while queued — merged into snap plan");
+            let result = RecallResult {
+                parameters_sent: 0,
+                parameters_skipped: 0,
+                cancelled: true,
+            };
+            // External triggers still fire — the operator DID fire this cue,
+            // and QLab/MIDI chases must not silently drop it.
+            if !cue.triggers.is_empty() {
+                if let Some(dispatcher) = &self.trigger_dispatcher {
+                    dispatcher.fire(&cue.triggers).await;
+                }
+            }
+            return result;
+        }
+        self.recall_in_flight.store(epoch, Ordering::Relaxed);
+
         // Auto-update only applies when there's a snapshot overlay — there's
         // nothing to compare a "previous snapshot's scope" against otherwise.
         if let Some(snap) = snapshot {
@@ -902,24 +1205,49 @@ impl SnapshotEngine {
                 // Fire the cue's console memory row (if any) inside the
                 // suppression bracket so its echo flood doesn't pollute
                 // the dirty tracker.
-                self.fire_console_memory_if_needed(cue.console_snapshot)
+                self.fire_console_memory_if_needed(cue.console_snapshot, &cancel)
                     .await;
-                match snapshot {
+                let result = match snapshot {
                     Some(snap) => {
-                        self.recall_cue_inner(cue, snap, palettes, ignore_scope)
-                            .await
+                        self.recall_cue_inner(
+                            cue,
+                            snap,
+                            palettes,
+                            ignore_scope,
+                            epoch,
+                            &cancel,
+                            gate,
+                        )
+                        .await
                     }
-                    None => RecallResult {
-                        parameters_sent: 0,
-                        parameters_skipped: 0,
-                    },
+                    None => {
+                        drop(gate);
+                        RecallResult {
+                            parameters_sent: 0,
+                            parameters_skipped: 0,
+                            cancelled: cancel.is_cancelled(),
+                        }
+                    }
+                };
+                // Point the absorb loop at this snapshot only for a COMPLETED
+                // recall, and inside the suppression bracket — after the
+                // bracket there'd be a window where foreign echoes can mark
+                // dirty while the pointer already moved (the palette bleed).
+                if !result.cancelled {
+                    if let Some(snap) = snapshot {
+                        self.mark_last_recalled(snap.id).await;
+                    }
                 }
+                result
             })
             .await;
 
-        if let Some(snap) = snapshot {
-            self.mark_last_recalled(snap.id).await;
-        }
+        let _ = self.recall_in_flight.compare_exchange(
+            epoch,
+            0,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
 
         // Fire external triggers (QLab / LiveProfessor / MIDI) LAST — after the
         // console row + overlay are applied and outside the dirty-suppression
@@ -933,12 +1261,16 @@ impl SnapshotEngine {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn recall_cue_inner(
         &self,
         cue: &Cue,
         snapshot: &Snapshot,
         palettes: &HashMap<Uuid, ChannelPalette>,
         ignore_scope: bool,
+        epoch: u64,
+        cancel: &CancellationToken,
+        gate: tokio::sync::OwnedMutexGuard<()>,
     ) -> RecallResult {
         let effective_scope = cue.scope_override.as_ref().unwrap_or(&snapshot.scope);
         info!(
@@ -951,18 +1283,23 @@ impl SnapshotEngine {
 
         // Per-category timed recall: if the scope has any category timings,
         // use the orchestrated path with mute ordering and per-group fades.
+        // It drops the gate itself once its fade tasks are spawned.
         if effective_scope.has_any_category_timing() {
             return self
-                .recall_cue_timed(snapshot, effective_scope, palettes, ignore_scope)
+                .recall_cue_timed(snapshot, effective_scope, palettes, ignore_scope, epoch, cancel, gate)
                 .await;
         }
 
         // Otherwise an instant recall. Fades live in the scope's per-category
         // timing (see `recall_cue_timed`), not on the cue itself, so there is
-        // no single-fade path. Cancel any fade still running from a prior cue.
-        self.fade_controller.cancel_active().await;
-        self.recall_inner(snapshot, effective_scope, palettes, ignore_scope)
-            .await
+        // no single-fade path. A prior cue's fades were already cancelled by
+        // `begin_recall_epoch` ("latest cue wins"). The gate stays held for
+        // the whole instant send loop (it IS the bracket phase), then drops.
+        let result = self
+            .recall_inner(snapshot, effective_scope, palettes, ignore_scope, epoch, cancel)
+            .await;
+        drop(gate);
+        result
     }
 
     /// Per-category timed recall with mute ordering and send enable ordering.
@@ -972,19 +1309,22 @@ impl SnapshotEngine {
     /// - Mute ON before non-mute params, mute OFF after all others complete
     /// - Send disable before level change, send enable after level change (per-send)
     /// - Discrete params in fade categories sent after pre-wait, before fade starts
+    #[allow(clippy::too_many_arguments)]
     async fn recall_cue_timed(
         &self,
         snapshot: &Snapshot,
         effective_scope: &ScopeTemplate,
         palettes: &HashMap<Uuid, ChannelPalette>,
         ignore_scope: bool,
+        epoch: u64,
+        cancel: &CancellationToken,
+        gate: tokio::sync::OwnedMutexGuard<()>,
     ) -> RecallResult {
         use tokio::time::{Duration, sleep};
-        use tokio_util::sync::CancellationToken;
 
-        // Cancel all in-progress fades from previous recall
-        self.multi_fade.cancel_all().await;
-        self.fade_controller.cancel_active().await;
+        // A prior recall's fades/pre-waits were already cancelled by
+        // `begin_recall_epoch` — every spawned task below takes a child of
+        // OUR root token, so the NEXT recall kills them the same way.
 
         // Begin a fresh live-override generation: clears any prior cue's
         // automation entries so overrides can't leak across cues. `gen_id` stamps
@@ -1037,8 +1377,20 @@ impl SnapshotEngine {
             };
         // Skip re-sending linked palettes already on the desk unchanged. Filtered
         // here (before grouping) so the `total_skipped = all_len - resolved.len()`
-        // accounting below counts them as skipped.
-        self.apply_palette_skip(snapshot, palettes, ignore_scope, &mut resolved);
+        // accounting below counts them as skipped. The refreshed record is
+        // committed only after the fades complete — see the tail of this fn.
+        let next_palettes =
+            self.palette_skip_and_next(snapshot, palettes, ignore_scope, &mut resolved);
+
+        // Snap-through handoff: register this recall's end-state as the
+        // current plan; collect the superseded predecessor's leftover
+        // end-values (minus everything we re-assert — redundancy elision) to
+        // send as instant snaps before our own groups start.
+        let own_plan: Vec<(ParameterAddress, ParameterValue)> = resolved
+            .iter()
+            .map(|&(a, v)| (a.clone(), v.clone()))
+            .collect();
+        let snap_set = self.register_recall_plan(epoch, &own_plan);
 
         // Step 2: Diff against live state and group by (channel, category)
         //
@@ -1080,6 +1432,26 @@ impl SnapshotEngine {
         total_skipped += all_len - resolved.len();
 
         drop(state);
+
+        // Snap-through: land the superseded recall's remaining end-values
+        // first (instant, no fades, paced) so the desk ends up as if the
+        // cues had played in order. Runs under the gate + suppression
+        // bracket, before any of our own groups start.
+        let mut total_sent = 0usize;
+        {
+            let pace = self.pace_us.load(Ordering::Relaxed);
+            for (addr, value) in &snap_set {
+                if cancel.is_cancelled() {
+                    break;
+                }
+                let did_send = self
+                    .send_now(addr, value, &mut total_sent, &mut total_skipped)
+                    .await;
+                if did_send && pace > 0 {
+                    sleep(Duration::from_micros(pace)).await;
+                }
+            }
+        }
 
         // Step 3: For each channel, determine mute direction
         let mut mute_directions: HashMap<ChannelId, bool> = HashMap::new(); // true=ON, false=OFF
@@ -1196,9 +1568,13 @@ impl SnapshotEngine {
             // position at fade-start (after its pre-wait) instead of using the
             // value captured at recall time — see exec_group's re-read below.
             let state_for_channel = self.state.clone();
+            // This recall's root token — a newer recall cancels it and every
+            // pre-wait/send/fade below stops within one tick.
+            let cancel_for_channel = cancel.clone();
 
             // Spawn the channel's execution
             let handle = tokio::spawn(async move {
+                let cancel = cancel_for_channel;
                 let mut sent = 0usize;
 
                 // Helper to send one param
@@ -1211,12 +1587,19 @@ impl SnapshotEngine {
                     value: &ParameterValue,
                     reg: &Option<AutomationOverride>,
                     gen_id: u64,
+                    cancel: &tokio_util::sync::CancellationToken,
                 ) -> bool {
+                    // Superseded recall ("latest cue wins"): stop sending —
+                    // the successor snaps our remaining end-values itself.
+                    if cancel.is_cancelled() {
+                        return false;
+                    }
                     // Operator override: if the operator grabbed this param
                     // (e.g. during its pre-wait), it's no longer registered —
-                    // don't clobber the hands-on value.
+                    // don't clobber the hands-on value. Generation-aware so a
+                    // newer recall re-registering it doesn't revive our send.
                     if let Some(r) = reg {
-                        if !r.is_active(addr) {
+                        if !r.is_active_for(addr, gen_id) {
                             return false;
                         }
                     }
@@ -1257,14 +1640,19 @@ impl SnapshotEngine {
                     pace_us: u64,
                     reg: &Option<AutomationOverride>,
                     gen_id: u64,
+                    cancel: &tokio_util::sync::CancellationToken,
                 ) -> usize {
                     let mut sent = 0usize;
 
                     // Cancellable pre-wait: abort our upcoming send/fade for any
-                    // param the operator grabs during the wait; the rest still run.
+                    // param the operator grabs during the wait; the rest still
+                    // run. Also cut short when this recall is superseded.
                     let addrs: Vec<ParameterAddress> =
                         changes.iter().map(|c| c.addr.clone()).collect();
-                    cancellable_pre_wait(pre_wait, &addrs, reg).await;
+                    cancellable_pre_wait(pre_wait, &addrs, reg, gen_id, cancel).await;
+                    if cancel.is_cancelled() {
+                        return sent;
+                    }
 
                     // Separate discrete from continuous
                     let mut discrete = Vec::new();
@@ -1306,7 +1694,12 @@ impl SnapshotEngine {
 
                     // Send discrete params first (with pacing)
                     for d in &discrete {
-                        if send_one(sender, ipad, state, &d.addr, &d.value, reg, gen_id).await {
+                        if cancel.is_cancelled() {
+                            return sent;
+                        }
+                        if send_one(sender, ipad, state, &d.addr, &d.value, reg, gen_id, cancel)
+                            .await
+                        {
                             sent += 1;
                             if pace_us > 0 {
                                 sleep(Duration::from_micros(pace_us)).await;
@@ -1314,16 +1707,19 @@ impl SnapshotEngine {
                         }
                     }
 
-                    // Fade continuous params
+                    // Fade continuous params. The fade takes a CHILD of this
+                    // recall's root token — when a newer recall cancels the
+                    // root ("latest cue wins"), the fade dies within one tick
+                    // instead of ramping stale values for its full duration.
+                    // (This used to be a fresh local token nobody could ever
+                    // cancel — the primary palette-bleed mechanism.)
                     if !continuous_targets.is_empty() {
-                        let token = CancellationToken::new();
-                        let child = token.child_token();
                         let result = crate::console::fade_engine::run_fade_inline(
                             fade_time.as_secs_f32(),
                             continuous_targets,
                             sender.clone(),
                             ipad.clone(),
-                            child,
+                            cancel.child_token(),
                             reg.clone(),
                             gen_id,
                             Some(state.clone()),
@@ -1347,6 +1743,7 @@ impl SnapshotEngine {
                     pace_us: u64,
                     reg: &Option<AutomationOverride>,
                     gen_id: u64,
+                    cancel: &tokio_util::sync::CancellationToken,
                 ) -> usize {
                     let mut sent = 0usize;
 
@@ -1355,7 +1752,10 @@ impl SnapshotEngine {
                     // there is no second pre-wait.
                     let addrs: Vec<ParameterAddress> =
                         changes.iter().map(|c| c.addr.clone()).collect();
-                    cancellable_pre_wait(pre_wait, &addrs, reg).await;
+                    cancellable_pre_wait(pre_wait, &addrs, reg, gen_id, cancel).await;
+                    if cancel.is_cancelled() {
+                        return sent;
+                    }
 
                     // Sub-group by send index
                     let mut by_send: HashMap<u8, Vec<ParamChange>> = HashMap::new();
@@ -1374,7 +1774,9 @@ impl SnapshotEngine {
 
                     // Handle non-send params (shouldn't happen but be safe)
                     for c in &non_send_changes {
-                        if send_one(sender, ipad, state, &c.addr, &c.value, reg, gen_id).await {
+                        if send_one(sender, ipad, state, &c.addr, &c.value, reg, gen_id, cancel)
+                            .await
+                        {
                             sent += 1;
                             if pace_us > 0 {
                                 sleep(Duration::from_micros(pace_us)).await;
@@ -1392,6 +1794,7 @@ impl SnapshotEngine {
                         let pu = pace_us;
                         let r = reg.clone();
                         let g = gen_id;
+                        let cancel = cancel.clone();
                         per_send_handles.push(tokio::spawn(async move {
                             let mut sent = 0usize;
 
@@ -1428,10 +1831,13 @@ impl SnapshotEngine {
                                         pu,
                                         &r,
                                         g,
+                                        &cancel,
                                     )
                                     .await;
                                     if let Some(ec) = &enable_change {
-                                        if send_one(&s, &i, &st, &ec.addr, &ec.value, &r, g).await {
+                                        if send_one(&s, &i, &st, &ec.addr, &ec.value, &r, g, &cancel)
+                                            .await
+                                        {
                                             sent += 1;
                                         }
                                     }
@@ -1439,7 +1845,9 @@ impl SnapshotEngine {
                                 Some(false) => {
                                     // Enable OFF: disable first, then fade level/pan
                                     if let Some(ec) = &enable_change {
-                                        if send_one(&s, &i, &st, &ec.addr, &ec.value, &r, g).await {
+                                        if send_one(&s, &i, &st, &ec.addr, &ec.value, &r, g, &cancel)
+                                            .await
+                                        {
                                             sent += 1;
                                         }
                                     }
@@ -1453,6 +1861,7 @@ impl SnapshotEngine {
                                         pu,
                                         &r,
                                         g,
+                                        &cancel,
                                     )
                                     .await;
                                 }
@@ -1468,6 +1877,7 @@ impl SnapshotEngine {
                                         pu,
                                         &r,
                                         g,
+                                        &cancel,
                                     )
                                     .await;
                                 }
@@ -1496,6 +1906,8 @@ impl SnapshotEngine {
                             Duration::from_secs_f32(mute_timing.pre_wait_secs),
                             &mute_addrs,
                             &reg,
+                            gen_id,
+                            &cancel,
                         )
                         .await;
                         if let Some(mc) = &mute_change {
@@ -1507,6 +1919,7 @@ impl SnapshotEngine {
                                 &mc.value,
                                 &reg,
                                 gen_id,
+                                &cancel,
                             )
                             .await
                             {
@@ -1522,17 +1935,20 @@ impl SnapshotEngine {
                             let pu = pace;
                             let r = reg.clone();
                             let g = gen_id;
+                            let c = cancel.clone();
                             if cat == Some(TimingCategory::Sends) {
                                 handles.push(tokio::spawn(async move {
                                     exec_sends_group(
-                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g,
+                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
                                     )
                                     .await
                                 }));
                             } else {
                                 handles.push(tokio::spawn(async move {
-                                    exec_group(&s, &i, &st, pre_wait, fade_time, changes, pu, &r, g)
-                                        .await
+                                    exec_group(
+                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
+                                    )
+                                    .await
                                 }));
                             }
                         }
@@ -1552,17 +1968,20 @@ impl SnapshotEngine {
                             let pu = pace;
                             let r = reg.clone();
                             let g = gen_id;
+                            let c = cancel.clone();
                             if cat == Some(TimingCategory::Sends) {
                                 handles.push(tokio::spawn(async move {
                                     exec_sends_group(
-                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g,
+                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
                                     )
                                     .await
                                 }));
                             } else {
                                 handles.push(tokio::spawn(async move {
-                                    exec_group(&s, &i, &st, pre_wait, fade_time, changes, pu, &r, g)
-                                        .await
+                                    exec_group(
+                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
+                                    )
+                                    .await
                                 }));
                             }
                         }
@@ -1571,28 +1990,36 @@ impl SnapshotEngine {
                                 sent += n;
                             }
                         }
-                        // All non-mute complete, now unmute
-                        let mute_addrs: Vec<ParameterAddress> =
-                            mute_change.iter().map(|mc| mc.addr.clone()).collect();
-                        cancellable_pre_wait(
-                            Duration::from_secs_f32(mute_timing.pre_wait_secs),
-                            &mute_addrs,
-                            &reg,
-                        )
-                        .await;
-                        if let Some(mc) = &mute_change {
-                            if send_one(
-                                &sender_for_channel,
-                                &ipad_for_channel,
-                                &state_for_channel,
-                                &mc.addr,
-                                &mc.value,
+                        // All non-mute complete, now unmute. Skipped when the
+                        // recall was superseded mid-flight: un-muting now would
+                        // fight the successor (its plan carries our mute's
+                        // end-value, so nothing is lost).
+                        if !cancel.is_cancelled() {
+                            let mute_addrs: Vec<ParameterAddress> =
+                                mute_change.iter().map(|mc| mc.addr.clone()).collect();
+                            cancellable_pre_wait(
+                                Duration::from_secs_f32(mute_timing.pre_wait_secs),
+                                &mute_addrs,
                                 &reg,
                                 gen_id,
+                                &cancel,
                             )
-                            .await
-                            {
-                                sent += 1;
+                            .await;
+                            if let Some(mc) = &mute_change {
+                                if send_one(
+                                    &sender_for_channel,
+                                    &ipad_for_channel,
+                                    &state_for_channel,
+                                    &mc.addr,
+                                    &mc.value,
+                                    &reg,
+                                    gen_id,
+                                    &cancel,
+                                )
+                                .await
+                                {
+                                    sent += 1;
+                                }
                             }
                         }
                     }
@@ -1606,17 +2033,20 @@ impl SnapshotEngine {
                             let pu = pace;
                             let r = reg.clone();
                             let g = gen_id;
+                            let c = cancel.clone();
                             if cat == Some(TimingCategory::Sends) {
                                 handles.push(tokio::spawn(async move {
                                     exec_sends_group(
-                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g,
+                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
                                     )
                                     .await
                                 }));
                             } else {
                                 handles.push(tokio::spawn(async move {
-                                    exec_group(&s, &i, &st, pre_wait, fade_time, changes, pu, &r, g)
-                                        .await
+                                    exec_group(
+                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
+                                    )
+                                    .await
                                 }));
                             }
                         }
@@ -1673,35 +2103,63 @@ impl SnapshotEngine {
             });
         }
 
+        // Spawn phase done: everything below is just waiting on fades.
+        // Release the gate so the NEXT GO can start its bracket immediately
+        // (it cancels our root token first, so our tasks exit within a
+        // tick). Holding the gate here would make a GO during a 10 s fade
+        // wait the full 10 s.
+        drop(gate);
+
         // Wait for all channels to complete
-        let mut total_sent = 0usize;
         for h in all_handles {
             if let Ok(n) = h.await {
                 total_sent += n;
             }
         }
 
-        // Store undo state
-        if !undo_map.is_empty() {
+        let cancelled = cancel.is_cancelled();
+        // Commit the palette record only for a completed recall; a cancelled
+        // one clears it (its palette sends may be half-applied on the desk).
+        self.finish_last_sent_palettes(epoch, cancel, next_palettes);
+        if !cancelled {
+            // Everything landed — nothing left for a successor to snap.
+            self.clear_recall_plan(epoch);
+        }
+
+        // Store undo state. A superseded recall stores nothing — its capture
+        // describes a state the desk never fully left, and the superseding
+        // recall records its own.
+        if !cancelled && !undo_map.is_empty() {
             *self.undo.write().await = Some(UndoState {
                 previous_values: undo_map,
                 label: format!("Undo '{}'", snapshot.name),
             });
         }
 
-        info!(total_sent, total_skipped, "Timed recall complete");
+        info!(total_sent, total_skipped, cancelled, "Timed recall complete");
         RecallResult {
             parameters_sent: total_sent,
             parameters_skipped: total_skipped,
+            cancelled,
         }
     }
 
     /// Undo the last recall: cancel any active fades and send the pre-recall
     /// values back to the console. Consumes the undo state (can't undo an undo).
     pub async fn undo_recall(&self) -> Option<RecallResult> {
-        // Cancel any in-progress fades first
-        self.fade_controller.cancel_active().await;
-        self.multi_fade.cancel_all().await;
+        // Latest-wins, undo included: cancel any in-flight recall (its fades
+        // die within a tick) and serialize behind the gate like a recall.
+        let (_epoch, cancel) = self.begin_recall_epoch();
+        let gate = self.recall_gate.clone().lock_owned().await;
+        if cancel.is_cancelled() {
+            // A recall raced in after this undo — the operator's newest
+            // intent wins; leave the undo state for a later attempt.
+            return None;
+        }
+
+        // Undo REVERTS — it must not complete a superseded recall's plan, so
+        // drop any pending snap-through values outright.
+        *self.superseded_plan.lock().unwrap() = None;
 
         // Consume undo state
         let undo = self.undo.write().await.take()?;
@@ -1717,6 +2175,9 @@ impl SnapshotEngine {
                 let pace = self.pace_us.load(Ordering::Relaxed);
 
                 for (addr, value) in &undo.previous_values {
+                    if cancel.is_cancelled() {
+                        break;
+                    }
                     // Force-send (no live read): like recall, undo must not trust
                     // the lossy live mirror. `send_now` sends unconditionally, so
                     // we hold no state lock across the loop — avoiding the same
@@ -1730,10 +2191,12 @@ impl SnapshotEngine {
                 RecallResult {
                     parameters_sent: sent,
                     parameters_skipped: skipped,
+                    cancelled: cancel.is_cancelled(),
                 }
             })
             .await;
 
+        drop(gate);
         info!(sent = result.parameters_sent, "Undo recall complete");
         Some(result)
     }
@@ -1901,7 +2364,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_palette_skip_drops_unchanged_palette_params_on_second_recall() {
+    async fn palette_skip_drops_unchanged_palette_params_only_after_commit() {
         let (engine, _state) = setup_test().await;
         let channel = ChannelId::Input(5);
         let palette = eq_palette(channel.clone());
@@ -1916,29 +2379,55 @@ mod tests {
             owned.iter().map(|(a, v)| (a, *v)).collect()
         };
         assert!(!make().is_empty(), "palette contributes params");
+        let done = CancellationToken::new(); // never cancelled — a clean finish
 
-        // First recall: tracker empty → everything sent, tracker now records slot.
+        // First recall: tracker empty → everything sent.
         let mut r1 = make();
-        engine.apply_palette_skip(&snap, &palettes, false, &mut r1);
+        let next1 = engine.palette_skip_and_next(&snap, &palettes, false, &mut r1);
         assert_eq!(
             r1.len(),
             owned.len(),
             "first recall sends every palette param"
         );
 
-        // Second recall: same palette + rev → all EQ (palette) params dropped.
+        // NOT yet committed (recall still in flight): a second computation
+        // must still send everything — the optimistic pre-send stamp was the
+        // palette-bleed-by-omission bug.
+        let mut r1b = make();
+        let _ = engine.palette_skip_and_next(&snap, &palettes, false, &mut r1b);
+        assert_eq!(
+            r1b.len(),
+            owned.len(),
+            "uncommitted recall must not mark the slot as on-desk"
+        );
+
+        // Commit as a completed recall, then the skip kicks in.
+        engine.finish_last_sent_palettes(0, &done, next1);
         let mut r2 = make();
-        engine.apply_palette_skip(&snap, &palettes, false, &mut r2);
+        let next2 = engine.palette_skip_and_next(&snap, &palettes, false, &mut r2);
         assert!(
             r2.iter()
                 .all(|(a, _)| a.parameter.section().palette_kind() != Some(PaletteKind::Eq)),
-            "unchanged linked palette params are skipped on the second recall"
+            "unchanged linked palette params are skipped after a committed recall"
         );
 
-        // ignore_scope (Recall full) always force-sends, even when unchanged.
+        // A CANCELLED recall clears the record → next recall re-sends.
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        engine.finish_last_sent_palettes(0, &cancelled, next2);
         let mut r3 = make();
-        engine.apply_palette_skip(&snap, &palettes, true, &mut r3);
-        assert_eq!(r3.len(), owned.len(), "Recall full force-sends palettes");
+        let next3 = engine.palette_skip_and_next(&snap, &palettes, false, &mut r3);
+        assert_eq!(
+            r3.len(),
+            owned.len(),
+            "a cancelled recall must clear the record so the palette re-sends"
+        );
+        engine.finish_last_sent_palettes(0, &done, next3);
+
+        // ignore_scope (Recall full) always force-sends, even when unchanged.
+        let mut r4 = make();
+        let _ = engine.palette_skip_and_next(&snap, &palettes, true, &mut r4);
+        assert_eq!(r4.len(), owned.len(), "Recall full force-sends palettes");
     }
 
     #[tokio::test]
@@ -1976,6 +2465,132 @@ mod tests {
         assert!(
             r3.parameters_sent > 0,
             "an edited palette re-sends on next recall (ripple preserved)"
+        );
+    }
+
+    /// Snapshot holding a single fader value on `ch`, scoped to that channel.
+    fn fader_snap(ch: u8, db: f32) -> Snapshot {
+        let scope = ScopeTemplate::new(
+            "s".into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(ch),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+        let mut values = HashMap::new();
+        values.insert(
+            ParameterAddress {
+                channel: ChannelId::Input(ch),
+                parameter: ParameterPath::Fader,
+            },
+            ParameterValue::Float(db),
+        );
+        Snapshot::new(
+            format!("Snap ch{ch}"),
+            scope,
+            SnapshotData { values },
+            SnapshotKind::ApplyOnSave,
+        )
+    }
+
+    #[tokio::test]
+    async fn superseded_recall_is_cancelled_and_successor_snaps_its_values() {
+        // Deterministic supersede: hold the recall gate so recall A queues,
+        // then fire recall B (which cancels A's epoch while A still waits),
+        // then release the gate. Latest-wins + snap-through says: A sends
+        // NOTHING itself, B sends its own params AND A's unique end-values.
+        let (engine, state) = setup_test().await;
+        let engine = Arc::new(engine);
+
+        let snap_a = fader_snap(1, -5.0); // param only A touches
+        let snap_b = fader_snap(2, -7.0); // param only B touches
+
+        // Block the gate so both recalls queue behind it.
+        let gate_guard = engine.recall_gate.clone().lock_owned().await;
+
+        let e1 = engine.clone();
+        let sa = snap_a.clone();
+        let h1 = tokio::spawn(async move {
+            e1.recall(&sa, &sa.scope, &no_palettes(), false).await
+        });
+        // Let A claim its epoch and start waiting on the gate…
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        let e2 = engine.clone();
+        let sb = snap_b.clone();
+        let h2 = tokio::spawn(async move {
+            e2.recall(&sb, &sb.scope, &no_palettes(), false).await
+        });
+        // …then let B cancel A's token and queue too.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        drop(gate_guard);
+        let r1 = h1.await.unwrap();
+        let r2 = h2.await.unwrap();
+
+        assert!(r1.cancelled, "the superseded recall reports cancelled");
+        assert_eq!(r1.parameters_sent, 0, "a superseded recall sends nothing");
+        assert!(!r2.cancelled, "the latest recall completes");
+        assert_eq!(
+            r2.parameters_sent, 2,
+            "the successor sends its own param plus the superseded one's snap"
+        );
+
+        // The desk ends up as if A then B had played in order.
+        let st = state.read().await;
+        let a_addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        let b_addr = ParameterAddress {
+            channel: ChannelId::Input(2),
+            parameter: ParameterPath::Fader,
+        };
+        assert_eq!(st.get(&a_addr), Some(&ParameterValue::Float(-5.0)));
+        assert_eq!(st.get(&b_addr), Some(&ParameterValue::Float(-7.0)));
+    }
+
+    #[tokio::test]
+    async fn snap_through_elides_params_the_successor_reasserts() {
+        // A and B both set the SAME param (different values): the successor
+        // must NOT snap A's value (elision) — only B's lands, sent once.
+        let (engine, state) = setup_test().await;
+        let engine = Arc::new(engine);
+
+        let snap_a = fader_snap(1, -5.0);
+        let snap_b = fader_snap(1, -9.0); // same address, B's value
+
+        let gate_guard = engine.recall_gate.clone().lock_owned().await;
+        let e1 = engine.clone();
+        let sa = snap_a.clone();
+        let h1 = tokio::spawn(async move {
+            e1.recall(&sa, &sa.scope, &no_palettes(), false).await
+        });
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let e2 = engine.clone();
+        let sb = snap_b.clone();
+        let h2 = tokio::spawn(async move {
+            e2.recall(&sb, &sb.scope, &no_palettes(), false).await
+        });
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        drop(gate_guard);
+
+        let r1 = h1.await.unwrap();
+        let r2 = h2.await.unwrap();
+        assert!(r1.cancelled);
+        assert_eq!(
+            r2.parameters_sent, 1,
+            "the shared param is sent exactly once (A's value elided)"
+        );
+        let st = state.read().await;
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        assert_eq!(
+            st.get(&addr),
+            Some(&ParameterValue::Float(-9.0)),
+            "the LATEST cue's value wins on the shared param"
         );
     }
 
@@ -3128,9 +3743,10 @@ mod tests {
             reg2.maybe_override(&a2, &ParameterValue::Float(0.0));
         });
 
+        let never = CancellationToken::new();
         let r = tokio::time::timeout(
             Duration::from_millis(500),
-            cancellable_pre_wait(Duration::from_secs(5), &[a], &Some(reg)),
+            cancellable_pre_wait(Duration::from_secs(5), &[a], &Some(reg), g, &never),
         )
         .await;
         assert!(r.is_ok(), "pre-wait should return early after override");
@@ -3147,6 +3763,7 @@ mod tests {
 
         // Override only one address: the group still has an active member, so
         // the pre-wait must NOT return early.
+        let never = CancellationToken::new();
         reg.maybe_override(&a1, &ParameterValue::Float(0.0));
         let early = tokio::time::timeout(
             Duration::from_millis(120),
@@ -3154,6 +3771,8 @@ mod tests {
                 Duration::from_secs(5),
                 &[a1.clone(), a2.clone()],
                 &Some(reg.clone()),
+                g,
+                &never,
             ),
         )
         .await;
@@ -3166,7 +3785,7 @@ mod tests {
         reg.maybe_override(&a2, &ParameterValue::Float(0.0));
         let done = tokio::time::timeout(
             Duration::from_millis(200),
-            cancellable_pre_wait(Duration::from_secs(5), &[a1, a2], &Some(reg)),
+            cancellable_pre_wait(Duration::from_secs(5), &[a1, a2], &Some(reg), g, &never),
         )
         .await;
         assert!(done.is_ok(), "should return once all addrs are overridden");
@@ -3175,7 +3794,8 @@ mod tests {
     #[tokio::test]
     async fn cancellable_pre_wait_no_registry_is_plain_sleep() {
         let start = Instant::now();
-        cancellable_pre_wait(Duration::from_millis(60), &[fader_addr(1)], &None).await;
+        let never = CancellationToken::new();
+        cancellable_pre_wait(Duration::from_millis(60), &[fader_addr(1)], &None, 0, &never).await;
         assert!(
             start.elapsed() >= Duration::from_millis(55),
             "should sleep ~full pre-wait"
@@ -3185,10 +3805,64 @@ mod tests {
     #[tokio::test]
     async fn cancellable_pre_wait_zero_is_noop() {
         let start = Instant::now();
-        cancellable_pre_wait(Duration::ZERO, &[fader_addr(1)], &None).await;
+        let never = CancellationToken::new();
+        cancellable_pre_wait(Duration::ZERO, &[fader_addr(1)], &None, 0, &never).await;
         assert!(
             start.elapsed() < Duration::from_millis(20),
             "zero pre-wait returns immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellable_pre_wait_superseded_recall_returns_early() {
+        // A newer recall cancelling the root token must cut the pre-wait
+        // short even while every address is still registered ("latest wins").
+        let reg: AutomationOverride = Arc::new(AutomationRegistry::new());
+        let g = reg.begin_recall();
+        let a = fader_addr(1);
+        reg.register(&a, g, Duration::from_secs(5));
+
+        let token = CancellationToken::new();
+        let t2 = token.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(30)).await;
+            t2.cancel();
+        });
+
+        let r = tokio::time::timeout(
+            Duration::from_millis(500),
+            cancellable_pre_wait(Duration::from_secs(5), &[a], &Some(reg), g, &token),
+        )
+        .await;
+        assert!(r.is_ok(), "pre-wait should return early once superseded");
+    }
+
+    #[tokio::test]
+    async fn cancellable_pre_wait_newer_generation_returns_early() {
+        // A successor re-registering the same address under a NEWER generation
+        // must release the old recall's pre-wait (it no longer owns the addr).
+        let reg: AutomationOverride = Arc::new(AutomationRegistry::new());
+        let g1 = reg.begin_recall();
+        let a = fader_addr(1);
+        reg.register(&a, g1, Duration::from_secs(5));
+
+        let reg2 = reg.clone();
+        let a2 = a.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(30)).await;
+            let g2 = reg2.begin_recall();
+            reg2.register(&a2, g2, Duration::from_secs(5));
+        });
+
+        let never = CancellationToken::new();
+        let r = tokio::time::timeout(
+            Duration::from_millis(500),
+            cancellable_pre_wait(Duration::from_secs(5), &[a], &Some(reg), g1, &never),
+        )
+        .await;
+        assert!(
+            r.is_ok(),
+            "pre-wait must end when the address belongs to a newer generation"
         );
     }
 

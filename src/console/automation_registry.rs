@@ -141,6 +141,20 @@ impl AutomationRegistry {
         self.inner.lock().unwrap().contains_key(addr)
     }
 
+    /// Like [`is_active`](Self::is_active), but only true when the entry
+    /// belongs to `gen_id`. Recall/fade tasks must use this, not `is_active`:
+    /// a zombie fade from a superseded recall would otherwise resume sending
+    /// its stale trajectory as soon as the NEW recall re-registers the same
+    /// address (`begin_recall` clears the map, so a bare `contains_key` flips
+    /// back to true the moment the successor registers).
+    pub fn is_active_for(&self, addr: &ParameterAddress, gen_id: u64) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .get(addr)
+            .is_some_and(|e| e.generation == gen_id)
+    }
+
     /// Remove an address (a group/fade finished normally). Keeps the registry
     /// from shadowing the operator after automation ends.
     pub fn deregister(&self, addr: &ParameterAddress) {
@@ -281,6 +295,27 @@ mod tests {
         // A stale task from g1 trying to record a send must not resurrect state.
         r.note_sent(&addr(), &ParameterValue::Float(-20.0), g1);
         assert!(!r.is_active(&addr()));
+    }
+
+    #[test]
+    fn is_active_for_rejects_stale_generation_after_reregister() {
+        // The zombie-fade case: cue N registers an address, cue N+1 begins a
+        // new recall and re-registers the SAME address. `is_active` (bare
+        // contains_key) flips back to true — which used to revive N's fade —
+        // but `is_active_for(N's gen)` must stay false.
+        let r = AutomationRegistry::new();
+        let g1 = r.begin_recall();
+        r.register(&addr(), g1, Duration::from_secs(3));
+        assert!(r.is_active_for(&addr(), g1));
+
+        let g2 = r.begin_recall();
+        r.register(&addr(), g2, Duration::from_secs(3));
+        assert!(r.is_active(&addr()), "address is under (new) automation");
+        assert!(
+            !r.is_active_for(&addr(), g1),
+            "the superseded recall must not see the re-registered address as its own"
+        );
+        assert!(r.is_active_for(&addr(), g2));
     }
 
     #[test]

@@ -32,10 +32,13 @@ use super::parameter::{ParameterAddress, ParameterPath, ParameterSection};
 #[derive(Debug, Default)]
 pub struct DirtyTracker {
     dirty: HashMap<ChannelId, HashSet<ParameterPath>>,
-    /// While true, `mark()` is a no-op. Bracket suppression around any
-    /// daemon-initiated writes (snapshot recall, cue fire, …) so console
-    /// echoes don't pollute the dirty set.
-    suppressed: bool,
+    /// While non-zero, `mark()` is a no-op. Bracket suppression around any
+    /// daemon-initiated writes (snapshot recall, cue fire, macro playback, …)
+    /// so console echoes don't pollute the dirty set. A depth counter — not a
+    /// bool — so overlapping brackets (e.g. a macro running while a cue
+    /// recalls) can nest safely: suppression only lifts when the LAST bracket
+    /// closes.
+    suppress_depth: u32,
     /// Bumps on every state change (mark, clear, suppression toggle that
     /// affects content). The scope editor caches the last-seen generation so
     /// it knows when to re-pull the dirty set into its selections in
@@ -51,7 +54,7 @@ impl DirtyTracker {
     /// Mark a single (channel, parameter) cell dirty. No-op when
     /// suppression is active.
     pub fn mark(&mut self, addr: &ParameterAddress) {
-        if self.suppressed {
+        if self.is_suppressed() {
             return;
         }
         let inserted = self
@@ -105,24 +108,27 @@ impl DirtyTracker {
         &self.dirty
     }
 
-    /// Begin suppression — every subsequent `mark` is a no-op until
-    /// `end_suppression` is called. Calls nest by simply staying suppressed
-    /// (no counter), so the engine should never call `begin_suppression`
-    /// reentrantly without a matching `end_suppression`.
+    /// Begin suppression — every subsequent `mark` is a no-op until the
+    /// matching `end_suppression` closes this bracket. Brackets nest: each
+    /// `begin` increments a depth counter and each `end` decrements it, so
+    /// overlapping suppressors (cue recall + macro playback) can't turn
+    /// marks back on while the other is still writing.
     pub fn begin_suppression(&mut self) {
-        self.suppressed = true;
+        self.suppress_depth += 1;
     }
 
-    /// End suppression. Subsequent `mark` calls take effect again.
+    /// End one suppression bracket. Marks take effect again only once every
+    /// open bracket has ended. Saturates at zero so an unbalanced `end`
+    /// can't underflow.
     pub fn end_suppression(&mut self) {
-        self.suppressed = false;
+        self.suppress_depth = self.suppress_depth.saturating_sub(1);
     }
 
     /// True while the tracker is suppressing marks. The pan link engine
     /// uses this as a "recall in progress" guard so it doesn't fight
     /// snapshot/cue/macro recalls.
     pub fn is_suppressed(&self) -> bool {
-        self.suppressed
+        self.suppress_depth > 0
     }
 
     /// True if any cell is currently dirty.
@@ -215,6 +221,34 @@ mod tests {
         t.mark(&addr(1, ParameterPath::Fader));
         assert!(t.has_any());
         assert_eq!(t.generation(), 1);
+    }
+
+    #[test]
+    fn suppression_nests_and_lifts_only_on_last_end() {
+        let mut t = DirtyTracker::new();
+        // Two overlapping brackets (e.g. macro playback + cue recall).
+        t.begin_suppression();
+        t.begin_suppression();
+        t.end_suppression(); // first bracket closes — still suppressed
+        assert!(t.is_suppressed());
+        t.mark(&addr(1, ParameterPath::Fader));
+        assert!(!t.has_any());
+
+        t.end_suppression(); // last bracket closes — marks work again
+        assert!(!t.is_suppressed());
+        t.mark(&addr(1, ParameterPath::Fader));
+        assert!(t.has_any());
+    }
+
+    #[test]
+    fn unbalanced_end_suppression_saturates() {
+        let mut t = DirtyTracker::new();
+        t.end_suppression(); // no open bracket — must not underflow
+        assert!(!t.is_suppressed());
+        t.begin_suppression();
+        assert!(t.is_suppressed());
+        t.end_suppression();
+        assert!(!t.is_suppressed());
     }
 
     #[test]

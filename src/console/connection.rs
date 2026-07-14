@@ -482,12 +482,27 @@ async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender
             // tab's "track latest OSC" affordance.
             *daemon.last_received.write().await = Some(addr.clone());
 
+            // While a console snapshot is loading, treat the desk's echo flood
+            // as the desk applying a coherent snapshot — not operator input.
+            // Computed BEFORE the dirty mark below so the flood can't pollute
+            // the dirty set either.
+            let in_console_load = crate::console::snapshot_engine::console_load_active(
+                &daemon.console_load_suppression,
+            );
+
             // Mark this cell dirty IF the value actually changed. The dirty
             // tracker is suppression-aware, so echoes from snapshot recall
             // (which set begin_suppression before sending) are ignored. The
             // first sample after a connection comes through old_value=None,
             // which we treat as "this is the baseline" — not a change.
-            if let Some(prev) = &old_value
+            // Also gated on the console-load window: a memory load floods
+            // genuinely-different values for up to CONSOLE_LOAD_SUPPRESSION_MS
+            // — well past the recall's settle — and those are the DESK's
+            // changes, not the operator's. Without this gate the flood tail
+            // lands in the dirty set and the palette absorb loop folds it
+            // into whichever palette is live (the "palette bleed").
+            if !in_console_load
+                && let Some(prev) = &old_value
                 && is_meaningful_change(&addr.parameter, prev, value)
             {
                 daemon.dirty_tracker.write().await.mark(addr);
@@ -497,9 +512,6 @@ async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender
             // desk's echo flood: the desk already applied the snapshot
             // coherently, and re-propagating it back fights the desk and can
             // saturate the outbound path into a stall (the App→Console hang).
-            let in_console_load = crate::console::snapshot_engine::console_load_active(
-                &daemon.console_load_suppression,
-            );
 
             // Operator live-override: if this inbound change is the operator
             // (hands on the desk) grabbing a parameter that a timed recall is

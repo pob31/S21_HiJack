@@ -107,15 +107,22 @@ pub async fn handle_trigger_event(
             // (avoids the palette<->state ABBA deadlock; see palette_tracker.rs).
             let palettes = palette_manager.read().await.palettes.clone();
             let scope = snapshot.scope.clone();
-            let result = snapshot_engine
-                .recall(&snapshot, &scope, &palettes, ignore_scope)
-                .await;
-            info!(
-                identifier,
-                ignore_scope,
-                sent = result.parameters_sent,
-                "Trigger SnapshotRecall complete"
-            );
+            // Spawn the recall so the trigger event loop never blocks behind a
+            // long fade — otherwise a MIDI/OSC GO arriving mid-fade would
+            // queue instead of superseding it ("latest cue wins").
+            let engine = snapshot_engine.clone();
+            tokio::spawn(async move {
+                let result = engine
+                    .recall(&snapshot, &scope, &palettes, ignore_scope)
+                    .await;
+                info!(
+                    identifier,
+                    ignore_scope,
+                    sent = result.parameters_sent,
+                    cancelled = result.cancelled,
+                    "Trigger SnapshotRecall complete"
+                );
+            });
         }
     }
 }
@@ -147,14 +154,22 @@ async fn recall_cue_with_label<F>(
     // Clone palettes and drop the read guard before the recall await (avoids the
     // palette<->state ABBA deadlock; see palette_tracker.rs).
     let palettes = palette_manager.read().await.palettes.clone();
-    let result = snapshot_engine
-        .recall_cue(&cue, snapshot.as_ref(), &palettes, false)
-        .await;
-    info!(
-        label,
-        sent = result.parameters_sent,
-        "Trigger {label} recall complete"
-    );
+    // Spawn the recall (mirrors cue_transport.rs): cue-pointer moves above
+    // stay strictly ordered under the write lock, but the engine await must
+    // not block this event loop — a rapid second trigger has to be able to
+    // supersede an in-flight fade, not queue behind it.
+    let engine = snapshot_engine.clone();
+    tokio::spawn(async move {
+        let result = engine
+            .recall_cue(&cue, snapshot.as_ref(), &palettes, false)
+            .await;
+        info!(
+            label,
+            sent = result.parameters_sent,
+            cancelled = result.cancelled,
+            "Trigger {label} recall complete"
+        );
+    });
 }
 
 #[cfg(test)]

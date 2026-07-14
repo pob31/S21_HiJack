@@ -37,6 +37,12 @@ pub struct FadeResult {
 /// Manages active fades with cancellation support.
 ///
 /// Only one fade runs at a time. Starting a new fade cancels any in-progress one.
+///
+/// NOTE: not used by the production recall path. Cue recalls run fades via
+/// [`run_fade_inline`] with a child of the snapshot engine's per-recall root
+/// `CancellationToken` — a new recall cancels that root ("latest cue wins").
+/// This controller (and [`MultiFadeController`]) remain as the test harness
+/// around [`run_fade`].
 pub struct FadeController {
     active_token: Mutex<Option<CancellationToken>>,
 }
@@ -249,9 +255,11 @@ async fn run_fade(
         for target in &targets {
             // Operator override: if the operator grabbed this exact parameter,
             // it's no longer in the registry — stop fading it (the rest keep
-            // going) so the hands-on console value always wins.
+            // going) so the hands-on console value always wins. Generation-
+            // aware: a superseding recall re-registering this address under a
+            // NEW generation must not revive this (older) fade for it.
             if let Some(reg) = &registry {
-                if !reg.is_active(&target.address) {
+                if !reg.is_active_for(&target.address, gen_id) {
                     continue;
                 }
             }
