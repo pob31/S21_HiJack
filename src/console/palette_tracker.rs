@@ -158,9 +158,7 @@ mod tests {
     use crate::model::config::ConsoleConfig;
     use crate::model::palette::ChannelPalette;
     use crate::model::parameter::{PaletteKind, ParameterPath, ParameterValue};
-    use crate::model::snapshot::{
-        CueList, ScopeTemplate, Snapshot, SnapshotData, SnapshotKind,
-    };
+    use crate::model::snapshot::{CueList, ScopeTemplate, Snapshot, SnapshotData, SnapshotKind};
 
     /// Harness: one EQ palette linked by one snapshot marked last-recalled,
     /// a live mirror value of +6 dB on EQ band-1 gain, and that cell dirty.
@@ -177,7 +175,8 @@ mod tests {
         let channel = ChannelId::Input(3);
         let mut vals = HashMap::new();
         vals.insert(ParameterPath::EqBandGain(1), ParameterValue::Float(3.0));
-        let palette = ChannelPalette::new("Vox EQ".into(), channel.clone(), &[PaletteKind::Eq], vals);
+        let palette =
+            ChannelPalette::new("Vox EQ".into(), channel.clone(), &[PaletteKind::Eq], vals);
         let pid = palette.id;
 
         let scope = ScopeTemplate::new("s".into(), vec![]);

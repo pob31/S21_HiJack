@@ -710,12 +710,9 @@ impl SnapshotEngine {
             })
             .await;
 
-        let _ = self.recall_in_flight.compare_exchange(
-            epoch,
-            0,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        );
+        let _ =
+            self.recall_in_flight
+                .compare_exchange(epoch, 0, Ordering::Relaxed, Ordering::Relaxed);
         drop(gate);
         result
     }
@@ -1173,7 +1170,11 @@ impl SnapshotEngine {
                     .collect();
                 self.merge_superseded_plan(epoch, own);
             }
-            debug!(epoch, cue_number = cue.cue_number, "Cue recall superseded while queued — merged into snap plan");
+            debug!(
+                epoch,
+                cue_number = cue.cue_number,
+                "Cue recall superseded while queued — merged into snap plan"
+            );
             let result = RecallResult {
                 parameters_sent: 0,
                 parameters_skipped: 0,
@@ -1242,12 +1243,9 @@ impl SnapshotEngine {
             })
             .await;
 
-        let _ = self.recall_in_flight.compare_exchange(
-            epoch,
-            0,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        );
+        let _ =
+            self.recall_in_flight
+                .compare_exchange(epoch, 0, Ordering::Relaxed, Ordering::Relaxed);
 
         // Fire external triggers (QLab / LiveProfessor / MIDI) LAST — after the
         // console row + overlay are applied and outside the dirty-suppression
@@ -1286,7 +1284,15 @@ impl SnapshotEngine {
         // It drops the gate itself once its fade tasks are spawned.
         if effective_scope.has_any_category_timing() {
             return self
-                .recall_cue_timed(snapshot, effective_scope, palettes, ignore_scope, epoch, cancel, gate)
+                .recall_cue_timed(
+                    snapshot,
+                    effective_scope,
+                    palettes,
+                    ignore_scope,
+                    epoch,
+                    cancel,
+                    gate,
+                )
                 .await;
         }
 
@@ -1296,7 +1302,14 @@ impl SnapshotEngine {
         // `begin_recall_epoch` ("latest cue wins"). The gate stays held for
         // the whole instant send loop (it IS the bracket phase), then drops.
         let result = self
-            .recall_inner(snapshot, effective_scope, palettes, ignore_scope, epoch, cancel)
+            .recall_inner(
+                snapshot,
+                effective_scope,
+                palettes,
+                ignore_scope,
+                epoch,
+                cancel,
+            )
             .await;
         drop(gate);
         result
@@ -1835,8 +1848,10 @@ impl SnapshotEngine {
                                     )
                                     .await;
                                     if let Some(ec) = &enable_change {
-                                        if send_one(&s, &i, &st, &ec.addr, &ec.value, &r, g, &cancel)
-                                            .await
+                                        if send_one(
+                                            &s, &i, &st, &ec.addr, &ec.value, &r, g, &cancel,
+                                        )
+                                        .await
                                         {
                                             sent += 1;
                                         }
@@ -1845,8 +1860,10 @@ impl SnapshotEngine {
                                 Some(false) => {
                                     // Enable OFF: disable first, then fade level/pan
                                     if let Some(ec) = &enable_change {
-                                        if send_one(&s, &i, &st, &ec.addr, &ec.value, &r, g, &cancel)
-                                            .await
+                                        if send_one(
+                                            &s, &i, &st, &ec.addr, &ec.value, &r, g, &cancel,
+                                        )
+                                        .await
                                         {
                                             sent += 1;
                                         }
@@ -2136,7 +2153,10 @@ impl SnapshotEngine {
             });
         }
 
-        info!(total_sent, total_skipped, cancelled, "Timed recall complete");
+        info!(
+            total_sent,
+            total_skipped, cancelled, "Timed recall complete"
+        );
         RecallResult {
             parameters_sent: total_sent,
             parameters_skipped: total_skipped,
@@ -2510,17 +2530,15 @@ mod tests {
 
         let e1 = engine.clone();
         let sa = snap_a.clone();
-        let h1 = tokio::spawn(async move {
-            e1.recall(&sa, &sa.scope, &no_palettes(), false).await
-        });
+        let h1 =
+            tokio::spawn(async move { e1.recall(&sa, &sa.scope, &no_palettes(), false).await });
         // Let A claim its epoch and start waiting on the gate…
         tokio::time::sleep(Duration::from_millis(80)).await;
 
         let e2 = engine.clone();
         let sb = snap_b.clone();
-        let h2 = tokio::spawn(async move {
-            e2.recall(&sb, &sb.scope, &no_palettes(), false).await
-        });
+        let h2 =
+            tokio::spawn(async move { e2.recall(&sb, &sb.scope, &no_palettes(), false).await });
         // …then let B cancel A's token and queue too.
         tokio::time::sleep(Duration::from_millis(80)).await;
 
@@ -2563,15 +2581,13 @@ mod tests {
         let gate_guard = engine.recall_gate.clone().lock_owned().await;
         let e1 = engine.clone();
         let sa = snap_a.clone();
-        let h1 = tokio::spawn(async move {
-            e1.recall(&sa, &sa.scope, &no_palettes(), false).await
-        });
+        let h1 =
+            tokio::spawn(async move { e1.recall(&sa, &sa.scope, &no_palettes(), false).await });
         tokio::time::sleep(Duration::from_millis(80)).await;
         let e2 = engine.clone();
         let sb = snap_b.clone();
-        let h2 = tokio::spawn(async move {
-            e2.recall(&sb, &sb.scope, &no_palettes(), false).await
-        });
+        let h2 =
+            tokio::spawn(async move { e2.recall(&sb, &sb.scope, &no_palettes(), false).await });
         tokio::time::sleep(Duration::from_millis(80)).await;
         drop(gate_guard);
 
@@ -3795,7 +3811,14 @@ mod tests {
     async fn cancellable_pre_wait_no_registry_is_plain_sleep() {
         let start = Instant::now();
         let never = CancellationToken::new();
-        cancellable_pre_wait(Duration::from_millis(60), &[fader_addr(1)], &None, 0, &never).await;
+        cancellable_pre_wait(
+            Duration::from_millis(60),
+            &[fader_addr(1)],
+            &None,
+            0,
+            &never,
+        )
+        .await;
         assert!(
             start.elapsed() >= Duration::from_millis(55),
             "should sleep ~full pre-wait"
