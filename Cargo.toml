@@ -23,6 +23,16 @@ field_reassign_with_default = "allow"
 # them buys nothing and churns unrelated code. Kept as a style choice.
 collapsible_if = "allow"
 
+[lints.rust]
+# `float-literal-f32-fallback` (rustc 1.97, rust-lang/rust#154024): an untyped
+# float literal passed to egui's `Stroke::new(impl Into<f32>, …)` (and kin)
+# falls back to f32 because f64 doesn't satisfy the `Into<f32>` bound. Benign —
+# the literals ARE f32 — but it fires ~55× across the egui UI code and is
+# `-D warnings`-fatal on 1.97. Allow until the egui 0.35 upgrade reworks these
+# call sites (the same upgrade tracked for the quick-xml advisories in
+# release.yml); suffixing every literal with `_f32` is the alternative.
+float_literal_f32_fallback = "allow"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 rosc = "0.10"

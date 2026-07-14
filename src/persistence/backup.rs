@@ -152,14 +152,12 @@ pub fn backup_target(show_path: &Path, kind: BackupKind) -> Option<PathBuf> {
 fn parse_name(file_name: &str) -> Option<(BackupKind, String, DateTime<Utc>)> {
     let stem_part = file_name.strip_suffix(&format!(".{SHOW_EXT}"))?;
 
-    let kind = if let Some(rest) = stem_part.strip_prefix("autosave__") {
+    // Not autosave → must be a backup; neither prefix → not one of ours (`?`).
+    let (kind, rest) = if let Some(rest) = stem_part.strip_prefix("autosave__") {
         (BackupKind::Autosave, rest)
-    } else if let Some(rest) = stem_part.strip_prefix("backup__") {
-        (BackupKind::Backup, rest)
     } else {
-        return None;
+        (BackupKind::Backup, stem_part.strip_prefix("backup__")?)
     };
-    let (kind, rest) = kind;
 
     // rest == "<stem>__<timestamp>" — split on the LAST "__".
     let (stem, ts_str) = rest.rsplit_once("__")?;
