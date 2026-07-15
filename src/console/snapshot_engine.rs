@@ -456,6 +456,18 @@ impl SnapshotEngine {
             return 0;
         };
 
+        // Bail if a predecessor recall's suppression bracket is still open —
+        // i.e. its fades are still running (the timed path releases the gate
+        // but holds the bracket across the whole fade). Merging now would be
+        // the auto-save analogue of the palette bleed: (a) that predecessor
+        // already auto-saved this same dirty set at ITS GO, with the
+        // operator's real values, and (b) the live mirror we read below is
+        // currently full of mid-fade ramp samples and any console memory-load
+        // flood, not settled values. Skip — the tweaks are already saved.
+        if dirty_arc.read().await.is_suppressed() {
+            return 0;
+        }
+
         // Snapshot the previous-recalled UUID without holding a write lock.
         let prev_id = {
             let mgr = cue_arc.read().await;
@@ -510,6 +522,14 @@ impl SnapshotEngine {
                 "Auto-saved dirty params into previous snapshot"
             );
         }
+        drop(mgr);
+        drop(state);
+
+        // Drain the tweaks we just consumed so they can't be merged a second
+        // time — neither by this recall's bracket-exit clear nor by a
+        // superseding recall's auto-save. Taken after releasing the state/cue
+        // guards, per the canonical lock order (state → cue → palette → dirty).
+        dirty_arc.write().await.clear();
         count
     }
 
@@ -2634,6 +2654,174 @@ mod tests {
 
     fn no_palettes() -> HashMap<Uuid, ChannelPalette> {
         HashMap::new()
+    }
+
+    // ── "Auto-save previous on recall" guards (fast cue switching) ──────────
+
+    /// Engine wired with a dirty tracker + cue manager + an ON auto-update
+    /// flag, plus the pieces the auto-save tests poke directly.
+    async fn setup_auto_save() -> (
+        SnapshotEngine,
+        Arc<RwLock<ConsoleState>>,
+        Arc<RwLock<DirtyTracker>>,
+        Arc<RwLock<CueManager>>,
+        Arc<AtomicBool>,
+    ) {
+        let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let remote: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let client = OscClient::new(local, remote, None).await.unwrap();
+        let (sender, _rx) = client.into_parts();
+
+        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
+        let dirty = Arc::new(RwLock::new(DirtyTracker::new()));
+        let cue_mgr = Arc::new(RwLock::new(CueManager::new(CueList::default())));
+        let auto = Arc::new(AtomicBool::new(true));
+        let pace = Arc::new(AtomicU64::new(0));
+        let mut engine = SnapshotEngine::new(state.clone(), sender, pace);
+        engine.set_dirty_tracker(dirty.clone());
+        engine.set_cue_manager(cue_mgr.clone());
+        engine.set_auto_update_flag(auto.clone());
+        (engine, state, dirty, cue_mgr, auto)
+    }
+
+    /// A snapshot whose scope covers Input(1) FaderMutePan, with empty data,
+    /// plus the in-scope fader address the tests mark dirty.
+    fn scoped_snap(name: &str) -> (Snapshot, ParameterAddress) {
+        let scope = ScopeTemplate::new(
+            name.into(),
+            vec![ChannelScope::from_sections(
+                ChannelId::Input(1),
+                HashSet::from([ParameterSection::FaderMutePan]),
+            )],
+        );
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        let snap = Snapshot::new(
+            name.into(),
+            scope,
+            SnapshotData::new(),
+            SnapshotKind::ApplyOnSave,
+        );
+        (snap, addr)
+    }
+
+    /// While a predecessor recall's suppression bracket is still open (its
+    /// fades running), auto-save must NOT merge — the live mirror holds
+    /// mid-fade / flood transients and the tweaks were already saved at the
+    /// predecessor's GO. The dirty set is left intact for the real save.
+    #[tokio::test]
+    async fn auto_save_skips_while_suppressed() {
+        let (engine, state, dirty, cue_mgr, _auto) = setup_auto_save().await;
+        let (prev, addr) = scoped_snap("Z");
+        let (next, _) = scoped_snap("A");
+        let (prev_id, next_id) = (prev.id, next.id);
+        {
+            let mut mgr = cue_mgr.write().await;
+            mgr.add_snapshot(prev);
+            mgr.add_snapshot(next);
+            mgr.set_last_recalled(prev_id);
+        }
+        state
+            .write()
+            .await
+            .update(addr.clone(), ParameterValue::Float(-5.0));
+        {
+            let mut d = dirty.write().await;
+            d.mark(&addr);
+            d.begin_suppression(); // a predecessor recall's bracket is open
+        }
+
+        let count = engine.auto_save_previous_snapshot(next_id).await;
+
+        assert_eq!(count, 0, "must not merge while a recall bracket is open");
+        assert!(
+            !cue_mgr.read().await.snapshots[&prev_id]
+                .data
+                .values
+                .contains_key(&addr),
+            "the outgoing snapshot must be untouched"
+        );
+        assert!(
+            dirty
+                .read()
+                .await
+                .is_dirty(&ChannelId::Input(1), &ParameterPath::Fader),
+            "the dirty set must survive so the real save still sees it"
+        );
+    }
+
+    /// A normal (unsuppressed) auto-save merges the operator's live value into
+    /// the outgoing snapshot AND drains the consumed dirty set, so a
+    /// superseding recall can't merge the same tweaks a second time.
+    #[tokio::test]
+    async fn auto_save_merges_then_drains_dirty_set() {
+        let (engine, state, dirty, cue_mgr, _auto) = setup_auto_save().await;
+        let (prev, addr) = scoped_snap("Z");
+        let (next, _) = scoped_snap("A");
+        let (prev_id, next_id) = (prev.id, next.id);
+        {
+            let mut mgr = cue_mgr.write().await;
+            mgr.add_snapshot(prev);
+            mgr.add_snapshot(next);
+            mgr.set_last_recalled(prev_id);
+        }
+        state
+            .write()
+            .await
+            .update(addr.clone(), ParameterValue::Float(-5.0));
+        dirty.write().await.mark(&addr);
+
+        let count = engine.auto_save_previous_snapshot(next_id).await;
+
+        assert_eq!(count, 1);
+        assert_eq!(
+            cue_mgr.read().await.snapshots[&prev_id]
+                .data
+                .values
+                .get(&addr),
+            Some(&ParameterValue::Float(-5.0)),
+            "operator's tweak is merged into the outgoing snapshot"
+        );
+        assert!(
+            !dirty.read().await.has_any(),
+            "consumed tweaks are drained so a successor can't re-merge them"
+        );
+
+        // Second immediate call has nothing left to merge (no double-merge).
+        let count2 = engine.auto_save_previous_snapshot(next_id).await;
+        assert_eq!(count2, 0);
+    }
+
+    /// With the feature OFF, auto-save is a pure no-op — it neither merges nor
+    /// drains; the recall bracket clears the dirty set as before.
+    #[tokio::test]
+    async fn auto_save_off_does_not_drain() {
+        let (engine, state, dirty, cue_mgr, auto) = setup_auto_save().await;
+        auto.store(false, Ordering::Relaxed);
+        let (prev, addr) = scoped_snap("Z");
+        let (next, _) = scoped_snap("A");
+        let (prev_id, next_id) = (prev.id, next.id);
+        {
+            let mut mgr = cue_mgr.write().await;
+            mgr.add_snapshot(prev);
+            mgr.add_snapshot(next);
+            mgr.set_last_recalled(prev_id);
+        }
+        state
+            .write()
+            .await
+            .update(addr.clone(), ParameterValue::Float(-5.0));
+        dirty.write().await.mark(&addr);
+
+        let count = engine.auto_save_previous_snapshot(next_id).await;
+
+        assert_eq!(count, 0);
+        assert!(
+            dirty.read().await.has_any(),
+            "feature off: the dirty set is left for the bracket to clear"
+        );
     }
 
     #[tokio::test]
