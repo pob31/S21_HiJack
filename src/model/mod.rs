@@ -13,6 +13,7 @@ pub mod pan_link;
 pub mod parameter;
 pub mod recall_progress;
 pub mod recall_scope;
+pub mod sidecar;
 pub mod snapshot;
 pub mod state;
 pub mod streamdeck;
