@@ -1536,6 +1536,20 @@ impl HiJackApp {
                     tracing::warn!("Stream Deck error: {message}");
                     self.macros.status_message = Some(format!("Stream Deck: {message}").into());
                 }
+                UiEvent::SidecarMidiConnected { input, output } => {
+                    tracing::info!(input = %input, output = ?output, "Sidecar MIDI connected");
+                    // Console wins on connect: the surface may sit at
+                    // stale positions — push mirror values to the
+                    // motors rather than trusting the hardware.
+                    // (Sync request is wired to the sidecar service in
+                    // the service handoff below once it exists.)
+                }
+                UiEvent::SidecarMidiDisconnected => {
+                    tracing::info!("Sidecar MIDI disconnected");
+                }
+                UiEvent::SidecarError { message } => {
+                    tracing::warn!("Sidecar MIDI error: {message}");
+                }
                 UiEvent::UpdateCheckResult(status) => {
                     self.setup.update_status = status;
                 }

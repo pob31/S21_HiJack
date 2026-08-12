@@ -236,6 +236,27 @@ pub enum UiEvent {
         message: String,
     },
 
+    // ─── Fader sidecar ───────────────────────────────────────────────
+    //
+    // The sidecar MIDI engine runs on a dedicated background thread
+    // (midir handles are !Send). Connection-state changes arrive here;
+    // the app thread updates the Sidecar tab status and triggers a
+    // console-wins surface sync on (re)connect. Hardware *events*
+    // don't pass through here — they flow straight to the sidecar
+    // service over its own channel.
+    //
+    /// Sidecar MIDI input (+ optional feedback output) connected.
+    SidecarMidiConnected {
+        input: String,
+        output: Option<String>,
+    },
+    /// Sidecar MIDI device dropped (unplugged or operator disconnect).
+    SidecarMidiDisconnected,
+    /// Driver-level error, surfaced as a status string for the UI.
+    SidecarError {
+        message: String,
+    },
+
     // ─── App update check ────────────────────────────────────────────
     /// Result of a GitHub "latest release" lookup (auto on launch or the
     /// Setup-tab "Check for updates" button). Drained on the UI thread into
