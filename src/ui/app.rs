@@ -275,6 +275,10 @@ pub struct HiJackApp {
     /// Macros tab UI (operator edits) and by `drain_events` when a
     /// physical button press advances the playback cursor.
     pub stream_deck_config: Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
+    /// Fader sidecar: hardware control → parameter binding table +
+    /// master enable. Loaded from / saved to the show file; mutated by
+    /// the Sidecar tab UI and read by the sidecar service.
+    pub sidecar_config: Arc<RwLock<crate::model::sidecar::SidecarConfig>>,
     /// Stream Deck driver engine — owns the device-thread + LCD
     /// rendering. Eagerly constructed at app startup so the UI can
     /// see freshly-plugged devices without an explicit "scan" step;
@@ -473,6 +477,7 @@ impl HiJackApp {
             stream_deck_config: Arc::new(RwLock::new(
                 crate::model::streamdeck::StreamDeckConfig::default(),
             )),
+            sidecar_config: Arc::new(RwLock::new(crate::model::sidecar::SidecarConfig::default())),
             stream_deck_engine: crate::console::streamdeck_engine::StreamDeckEngine::new(
                 ui_tx.clone(),
             ),
@@ -1271,6 +1276,7 @@ impl HiJackApp {
                             window_pos: self.setup.window_pos,
                             last_open_dir: self.setup.last_open_dir.clone(),
                             midi: self.setup.midi.clone(),
+                            sidecar_midi: self.setup.sidecar_midi.clone(),
                         };
                         if let Err(e) = prefs.save() {
                             tracing::warn!(error = %e, "Failed to save app preferences after show load");
@@ -1739,6 +1745,7 @@ impl HiJackApp {
         let gang_mgr = self.gang_manager.clone();
         let pl = self.pan_link_bindings.clone();
         let sd = self.stream_deck_config.clone();
+        let sc = self.sidecar_config.clone();
         let dirty = self.dirty_tracker.clone();
         let prev_fp = self.last_autosaved_fingerprint;
         let tx = self.ui_tx.clone();
@@ -1768,6 +1775,7 @@ impl HiJackApp {
                 &gang_mgr,
                 &pl,
                 &sd,
+                &sc,
                 conn,
                 console_recall,
             )
@@ -1912,6 +1920,7 @@ impl HiJackApp {
                     &self.gang_manager,
                     &self.pan_link_bindings,
                     &self.stream_deck_config,
+                    &self.sidecar_config,
                     &self.connected,
                     &self.runtime,
                     &self.ui_tx,
@@ -1934,6 +1943,7 @@ impl HiJackApp {
                     &self.gang_manager,
                     &self.pan_link_bindings,
                     &self.stream_deck_config,
+                    &self.sidecar_config,
                     self.auto_update_on_recall.load(Ordering::Relaxed),
                     self.snapshot_sync_direction.get(),
                     self.snapshots.scope_editor.console_recall.clone(),
@@ -2911,6 +2921,7 @@ impl eframe::App for HiJackApp {
                         &self.gang_manager,
                         &self.pan_link_bindings,
                         &self.stream_deck_config,
+                        &self.sidecar_config,
                         &self.offline_mode,
                         &self.auto_update_on_recall,
                         &self.snapshot_sync_direction,

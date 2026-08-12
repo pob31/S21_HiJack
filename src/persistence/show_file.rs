@@ -11,6 +11,7 @@ use crate::model::operating_mode::OperatingMode;
 use crate::model::palette::ChannelPalette;
 use crate::model::pan_link::PanLinkBindings;
 use crate::model::recall_scope::ConsoleRecallConfig;
+use crate::model::sidecar::SidecarConfig;
 use crate::model::snapshot::{CueList, ScopeTemplate, Snapshot};
 use crate::model::streamdeck::StreamDeckConfig;
 use crate::model::sync_direction::SnapshotSyncDirection;
@@ -253,12 +254,18 @@ pub struct ShowFile {
     /// code, so only user templates persist here. New in v17.
     #[serde(default)]
     pub trigger_templates: Vec<TriggerTemplate>,
+    /// Fader sidecar: hardware control → parameter binding table. The
+    /// MIDI port choice is machine-bound and lives in app preferences,
+    /// not here. New in v18; older show files load with the sidecar
+    /// disabled and no bindings.
+    #[serde(default)]
+    pub sidecar: SidecarConfig,
 }
 
 impl ShowFile {
     pub fn new(config: ConsoleConfig) -> Self {
         Self {
-            version: 17,
+            version: 18,
             app_version: crate::version::APP_VERSION.to_string(),
             console_config: config,
             connection: ConnectionSettings::default(),
@@ -274,6 +281,7 @@ impl ShowFile {
             stream_deck: StreamDeckConfig::default(),
             osc_targets: Vec::new(),
             trigger_templates: Vec::new(),
+            sidecar: SidecarConfig::default(),
         }
     }
 
@@ -365,6 +373,15 @@ impl ShowFile {
                     .unwrap_or(true)
             });
         }
+
+        // Sidecar bindings targeting TotalGain (hand-edited files only —
+        // the learn flow refuses to create them).
+        self.sidecar.bindings.retain(|b| {
+            b.target
+                .console_address()
+                .map(|a| a.parameter != ParameterPath::TotalGain)
+                .unwrap_or(true)
+        });
     }
 }
 
@@ -384,7 +401,7 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 17);
+        assert_eq!(loaded.version, 18);
         // A freshly-written show stamps the running app version.
         assert_eq!(loaded.app_version, crate::version::APP_VERSION);
         assert_eq!(loaded.console_config.input_channel_count, 48);
@@ -471,7 +488,7 @@ mod tests {
         let path = dir.join("test_show_streamdeck.json");
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
-        assert_eq!(loaded.version, 17);
+        assert_eq!(loaded.version, 18);
         assert_eq!(loaded.stream_deck, show.stream_deck);
         let _ = tokio::fs::remove_file(&path).await;
     }
@@ -870,7 +887,7 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 17);
+        assert_eq!(loaded.version, 18);
         assert_eq!(loaded.osc_targets, show.osc_targets);
         assert_eq!(loaded.trigger_templates, show.trigger_templates);
         assert_eq!(
@@ -927,5 +944,121 @@ mod tests {
         assert!(parsed.trigger_templates.is_empty());
         assert_eq!(parsed.cue_list.cues.len(), 1);
         assert!(parsed.cue_list.cues[0].triggers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sidecar_config_round_trips() {
+        use crate::model::channel::ChannelId;
+        use crate::model::parameter::{ParameterAddress, ParameterPath};
+        use crate::model::sidecar::{
+            BindingTarget, ControlMode, ControlSelector, SidecarBinding, SidecarConfig, Taper,
+            mcu_default_touch_note,
+        };
+        use uuid::Uuid;
+
+        let mut show = ShowFile::new(ConsoleConfig::default());
+        show.sidecar = SidecarConfig {
+            enabled: true,
+            bindings: vec![SidecarBinding {
+                id: Uuid::from_bytes([9; 16]),
+                label: "CH 12 Fader".into(),
+                control: ControlSelector::PitchBend { channel: 1 },
+                mode: ControlMode::PitchBend14,
+                target: BindingTarget::ConsoleParameter {
+                    address: ParameterAddress {
+                        channel: ChannelId::Input(12),
+                        parameter: ParameterPath::Fader,
+                    },
+                },
+                taper: Taper::FaderDb { max_db: 10.0 },
+                motor_feedback: true,
+                touch: mcu_default_touch_note(1),
+                relative_step: 1.0 / 300.0,
+                enabled: true,
+            }],
+        };
+
+        let dir = std::env::temp_dir().join("s21_hijack_test");
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let path = dir.join("test_show_sidecar.json");
+        show.save(&path).await.unwrap();
+        let loaded = ShowFile::load(&path).await.unwrap();
+        assert_eq!(loaded.version, 18);
+        assert_eq!(loaded.sidecar, show.sidecar);
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[test]
+    fn legacy_v17_show_loads_with_default_sidecar() {
+        // A v17 show (no `sidecar` field) loads with the sidecar disabled
+        // and an empty binding table — zero-migration backward compat.
+        let json = r#"{
+            "version": 17,
+            "console_config": {
+                "console_name": "",
+                "console_serial": "",
+                "session_filename": null,
+                "input_channel_count": 48,
+                "aux_output_count": 8,
+                "group_output_count": 8,
+                "matrix_output_count": 8,
+                "matrix_input_count": 10,
+                "control_group_count": 10,
+                "graphic_eq_count": 16,
+                "talkback_output_count": 0,
+                "mix_output_types": [],
+                "mix_output_modes": [],
+                "input_modes": [],
+                "group_modes": []
+            }
+        }"#;
+        let parsed: ShowFile = serde_json::from_str(json).expect("v17 JSON parses");
+        assert_eq!(parsed.version, 17);
+        assert_eq!(
+            parsed.sidecar,
+            crate::model::sidecar::SidecarConfig::default()
+        );
+        assert!(!parsed.sidecar.enabled);
+        assert!(parsed.sidecar.bindings.is_empty());
+    }
+
+    #[test]
+    fn strip_total_gain_removes_sidecar_bindings() {
+        use crate::model::channel::ChannelId;
+        use crate::model::parameter::{ParameterAddress, ParameterPath};
+        use crate::model::sidecar::{
+            BindingTarget, ControlMode, ControlSelector, SidecarBinding, Taper,
+        };
+        use uuid::Uuid;
+
+        let mk = |n: u8, parameter: ParameterPath| SidecarBinding {
+            id: Uuid::from_bytes([n; 16]),
+            label: String::new(),
+            control: ControlSelector::Cc { channel: 1, cc: n },
+            mode: ControlMode::Absolute7,
+            target: BindingTarget::ConsoleParameter {
+                address: ParameterAddress {
+                    channel: ChannelId::Input(1),
+                    parameter,
+                },
+            },
+            taper: Taper::Linear { min: 0.0, max: 1.0 },
+            motor_feedback: false,
+            touch: None,
+            relative_step: 1.0 / 300.0,
+            enabled: true,
+        };
+        let mut show = ShowFile::new(ConsoleConfig::default());
+        show.sidecar.bindings = vec![mk(1, ParameterPath::TotalGain), mk(2, ParameterPath::Fader)];
+        show.strip_total_gain();
+        assert_eq!(show.sidecar.bindings.len(), 1);
+        assert_eq!(
+            show.sidecar.bindings[0]
+                .target
+                .console_address()
+                .unwrap()
+                .parameter,
+            ParameterPath::Fader
+        );
     }
 }

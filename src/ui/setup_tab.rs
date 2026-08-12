@@ -108,6 +108,10 @@ pub struct SetupTabState {
     /// seeded at startup, edited in the Setup MIDI panel, applied to the
     /// [`MidiEngine`](crate::console::midi_engine) and persisted in prefs.
     pub midi: crate::persistence::preferences::MidiSettings,
+    /// Fader sidecar MIDI port choice (machine-bound). Mirrors
+    /// `AppPreferences::sidecar_midi`; seeded at startup, edited in the
+    /// Sidecar tab's device card, persisted in prefs.
+    pub sidecar_midi: crate::persistence::preferences::SidecarMidiSettings,
     /// Scratch fields for the "add OSC target" form in Advanced Settings.
     pub new_osc_target_name: String,
     pub new_osc_target_host: String,
@@ -215,6 +219,7 @@ impl SetupTabState {
             window_pos: prefs.window_pos,
             last_open_dir: prefs.last_open_dir.clone(),
             midi: prefs.midi.clone(),
+            sidecar_midi: prefs.sidecar_midi.clone(),
             new_osc_target_name: String::new(),
             new_osc_target_host: String::new(),
             new_osc_target_port: "53000".to_string(),
@@ -598,6 +603,7 @@ pub fn draw_setup_tab(
     gang_manager: &Arc<RwLock<GangManager>>,
     pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
     stream_deck_config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
+    sidecar_config: &Arc<RwLock<crate::model::sidecar::SidecarConfig>>,
     offline_mode: &Arc<AtomicBool>,
     auto_update_on_recall: &Arc<AtomicBool>,
     sync_direction: &SharedSyncDirection,
@@ -635,6 +641,7 @@ pub fn draw_setup_tab(
             gang_manager,
             pan_link_bindings,
             stream_deck_config,
+            sidecar_config,
             connected,
             runtime,
             ui_tx,
@@ -1315,8 +1322,8 @@ pub fn draw_setup_tab(
                             load_show_file(
                                 setup, state, cue_manager, macro_manager,
                                 monitor_manager, palette_manager, gang_manager,
-                                pan_link_bindings, stream_deck_config, connected,
-                                runtime, ui_tx,
+                                pan_link_bindings, stream_deck_config, sidecar_config,
+                                connected, runtime, ui_tx,
                             );
                         }
                     }
@@ -1359,7 +1366,7 @@ pub fn draw_setup_tab(
                                 save_show_file(
                                     setup, state, cue_manager, macro_manager, monitor_manager,
                                     palette_manager, gang_manager, pan_link_bindings,
-                                    stream_deck_config,
+                                    stream_deck_config, sidecar_config,
                                     auto_update_on_recall.load(Ordering::Relaxed),
                                     sync_direction.get(),
                                     console_recall.clone(),
@@ -1403,7 +1410,7 @@ pub fn draw_setup_tab(
                                 save_show_file(
                                     setup, state, cue_manager, macro_manager, monitor_manager,
                                     palette_manager, gang_manager, pan_link_bindings,
-                                    stream_deck_config,
+                                    stream_deck_config, sidecar_config,
                                     auto_update_on_recall.load(Ordering::Relaxed),
                                     sync_direction.get(),
                                     console_recall.clone(),
@@ -2705,6 +2712,7 @@ pub(crate) async fn build_show_file(
     gang_manager: &Arc<RwLock<GangManager>>,
     pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
     stream_deck_config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
+    sidecar_config: &Arc<RwLock<crate::model::sidecar::SidecarConfig>>,
     connection: ConnectionSettings,
     console_recall: ConsoleRecallConfig,
 ) -> ShowFile {
@@ -2716,9 +2724,10 @@ pub(crate) async fn build_show_file(
     let gmgr = gang_manager.read().await;
     let pl = pan_link_bindings.read().await;
     let sd = stream_deck_config.read().await;
+    let sc = sidecar_config.read().await;
 
     ShowFile {
-        version: 17,
+        version: 18,
         app_version: crate::version::APP_VERSION.to_string(),
         console_config: state_guard.config.clone(),
         connection,
@@ -2734,6 +2743,7 @@ pub(crate) async fn build_show_file(
         stream_deck: sd.clone(),
         osc_targets: mgr.osc_targets.values().cloned().collect(),
         trigger_templates: mgr.trigger_templates.values().cloned().collect(),
+        sidecar: sc.clone(),
     }
 }
 
@@ -2748,6 +2758,7 @@ pub(crate) fn load_show_file(
     gang_manager: &Arc<RwLock<GangManager>>,
     pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
     stream_deck_config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
+    sidecar_config: &Arc<RwLock<crate::model::sidecar::SidecarConfig>>,
     connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -2777,6 +2788,7 @@ pub(crate) fn load_show_file(
     let gang_mgr = gang_manager.clone();
     let pl_bindings = pan_link_bindings.clone();
     let sd_config = stream_deck_config.clone();
+    let sc_config = sidecar_config.clone();
     let conn_flag = connected.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
@@ -2855,6 +2867,14 @@ pub(crate) fn load_show_file(
                     *sd = show.stream_deck;
                 }
 
+                // Restore fader sidecar bindings + master enable. The
+                // sidecar service reads this shared config each event,
+                // so the new table takes effect immediately.
+                {
+                    let mut sc = sc_config.write().await;
+                    *sc = show.sidecar;
+                }
+
                 // Restore console config (channel counts, plus_mode, bus
                 // split) so offline editing works. Skip if already
                 // connected — the live console is authoritative.
@@ -2921,6 +2941,7 @@ pub(crate) fn save_show_file(
     gang_manager: &Arc<RwLock<GangManager>>,
     pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
     stream_deck_config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
+    sidecar_config: &Arc<RwLock<crate::model::sidecar::SidecarConfig>>,
     auto_update_on_recall: bool,
     sync_direction: SnapshotSyncDirection,
     console_recall: ConsoleRecallConfig,
@@ -2944,6 +2965,7 @@ pub(crate) fn save_show_file(
     let gang_mgr = gang_manager.clone();
     let pl_bindings = pan_link_bindings.clone();
     let sd_config = stream_deck_config.clone();
+    let sc_config = sidecar_config.clone();
     let tx = ui_tx.clone();
     let path_str = setup.show_file_path.clone();
 
@@ -2961,6 +2983,7 @@ pub(crate) fn save_show_file(
             &gang_mgr,
             &pl_bindings,
             &sd_config,
+            &sc_config,
             conn_settings,
             console_recall,
         )
@@ -3140,6 +3163,7 @@ pub(crate) fn save_app_preferences(setup: &SetupTabState) {
         window_pos: setup.window_pos,
         last_open_dir: setup.last_open_dir.clone(),
         midi: setup.midi.clone(),
+        sidecar_midi: setup.sidecar_midi.clone(),
     };
     if let Err(e) = prefs.save() {
         tracing::warn!(error = %e, "Failed to save app preferences");

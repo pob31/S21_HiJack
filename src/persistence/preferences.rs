@@ -26,6 +26,23 @@ pub struct MidiSettings {
     pub use_virtual_port: bool,
 }
 
+/// Fader sidecar MIDI port settings. **Machine-bound** for the same reason as
+/// [`MidiSettings`]: which physical MIDI ports the sidecar surface hangs off
+/// is a property of this computer, while the control→parameter binding table
+/// travels with the show. The sidecar engine auto-connects to the configured
+/// input on launch. Note this is a separate device from the [`MidiSettings`]
+/// trigger-output port — the sidecar owns an input+output *pair*.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SidecarMidiSettings {
+    /// MIDI input port to auto-connect to. `None` = not configured.
+    #[serde(default)]
+    pub input_port_name: Option<String>,
+    /// Output port for motor feedback. `None` = auto: use the output port
+    /// whose name matches the input (MCU surfaces expose matching names).
+    #[serde(default)]
+    pub output_port_name: Option<String>,
+}
+
 /// Application-wide UI preferences. Lives outside any show file: tracks
 /// the operator's last-used display mode and whether the diagnostic tabs
 /// should be shown. Loaded once at startup and rewritten whenever the
@@ -82,6 +99,11 @@ pub struct AppPreferences {
     /// v0.1.2; older preference files load with MIDI disabled.
     #[serde(default)]
     pub midi: MidiSettings,
+    /// Fader sidecar MIDI port choice (machine-bound; see
+    /// [`SidecarMidiSettings`]). New in v0.1.6; older preference files
+    /// load with no sidecar ports configured.
+    #[serde(default)]
+    pub sidecar_midi: SidecarMidiSettings,
 }
 
 /// Default UI scale multiplier — `1.0` means "use the automatic scaling
@@ -105,6 +127,7 @@ impl Default for AppPreferences {
             window_pos: None,
             last_open_dir: None,
             midi: MidiSettings::default(),
+            sidecar_midi: SidecarMidiSettings::default(),
         }
     }
 }
@@ -198,6 +221,8 @@ mod tests {
         assert!(prefs.window_pos.is_none());
         // Missing last-open dir defaults to None — dialogs use the OS default.
         assert!(prefs.last_open_dir.is_none());
+        // Missing sidecar_midi defaults to unconfigured ports.
+        assert_eq!(prefs.sidecar_midi, SidecarMidiSettings::default());
     }
 
     #[test]
@@ -231,10 +256,15 @@ mod tests {
                 output_port_name: Some("IAC Driver Bus 1".into()),
                 use_virtual_port: false,
             },
+            sidecar_midi: SidecarMidiSettings {
+                input_port_name: Some("X-Touch".into()),
+                output_port_name: None,
+            },
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: AppPreferences = serde_json::from_str(&json).unwrap();
         assert_eq!(prefs.midi, back.midi);
+        assert_eq!(prefs.sidecar_midi, back.sidecar_midi);
         assert_eq!(prefs.send_pace_us, back.send_pace_us);
         assert_eq!(prefs.show_diagnostics, back.show_diagnostics);
         assert_eq!(prefs.ui_scale, back.ui_scale);
