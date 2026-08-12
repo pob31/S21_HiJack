@@ -19,6 +19,7 @@ pub mod pan_link_engine;
 pub mod recall_cache;
 pub mod send_util;
 pub mod sidecar_decode;
+pub mod sidecar_learn;
 pub mod snapshot_engine;
 pub mod streamdeck_engine;
 pub mod trigger_dispatch;
