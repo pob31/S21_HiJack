@@ -9,13 +9,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::console::automation_registry::AutomationOverride;
+use crate::console::send_util::send_parameter;
 use crate::model::channel::ChannelId;
 use crate::model::parameter::{ParameterAddress, ParameterValue, TimingCategory, floored_db_lerp};
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
-use crate::osc::encode;
 use crate::osc::ipad_client::IpadSender;
-use crate::osc::ipad_encode;
 
 /// Update interval for fade interpolation (~20 updates/sec).
 const FADE_INTERVAL: Duration = Duration::from_millis(50);
@@ -337,28 +336,6 @@ async fn run_fade(
     FadeResult {
         total_steps_sent: steps_sent,
         cancelled: false,
-    }
-}
-
-/// Send a parameter via GP OSC, falling back to iPad protocol.
-async fn send_parameter(
-    sender: &OscSender,
-    ipad_sender: &Option<IpadSender>,
-    addr: &ParameterAddress,
-    value: &ParameterValue,
-) -> bool {
-    match encode::encode_parameter(addr, value) {
-        Some((path, args)) => sender.send(&path, args).await.is_ok(),
-        None => {
-            if let Some(ipad) = ipad_sender {
-                match ipad_encode::encode_ipad_parameter(addr, value) {
-                    Some((path, args)) => ipad.send(&path, args).await.is_ok(),
-                    None => false,
-                }
-            } else {
-                false
-            }
-        }
     }
 }
 
