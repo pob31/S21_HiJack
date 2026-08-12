@@ -217,15 +217,14 @@ impl LearnAccumulator {
     /// the operator, not here.
     fn guess_relative_mode(&self, st: &CandStats) -> ControlMode {
         let has_low = st.min <= 8 && st.min >= 1;
-        let has_high = st.max >= 120;
         let around_64 = st.min >= 56 && st.max <= 72;
         if around_64 {
             ControlMode::Relative(RelativeMode::BinaryOffset)
         } else if has_low && st.max >= 65 && st.max <= 72 {
             ControlMode::Relative(RelativeMode::SignMagnitude)
-        } else if has_low || has_high {
-            ControlMode::Relative(RelativeMode::TwosComplement)
         } else {
+            // Wrap-around negatives (or low-only positives): the common
+            // two's-complement encoding — also the default guess.
             ControlMode::Relative(RelativeMode::TwosComplement)
         }
     }

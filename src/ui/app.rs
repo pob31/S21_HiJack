@@ -279,6 +279,23 @@ pub struct HiJackApp {
     /// master enable. Loaded from / saved to the show file; mutated by
     /// the Sidecar tab UI and read by the sidecar service.
     pub sidecar_config: Arc<RwLock<crate::model::sidecar::SidecarConfig>>,
+    /// Sidecar MIDI device engine (input+output pair on its own thread).
+    /// App-lifetime; auto-connects to the preferred port on startup.
+    pub sidecar_midi: Arc<crate::console::sidecar_engine::SidecarMidiEngine>,
+    /// Commands into the sidecar service (sync sweeps).
+    pub sidecar_svc_tx: tokio::sync::mpsc::UnboundedSender<crate::console::sidecar_service::SvcCmd>,
+    /// Live console senders for the sidecar service — `Some` after each
+    /// (re)connect, `None` on disconnect. Fed from `pickup_pending_engines`.
+    pub sidecar_senders_tx: tokio::sync::watch::Sender<
+        Option<(
+            crate::osc::client::OscSender,
+            Option<crate::osc::ipad_client::IpadSender>,
+        )>,
+    >,
+    /// Learn capture shared between the Sidecar tab and the service.
+    pub sidecar_learn: Arc<std::sync::Mutex<crate::console::sidecar_learn::LearnShared>>,
+    /// Sidecar tab UI state.
+    pub sidecar_tab: super::sidecar_tab::SidecarTabState,
     /// Stream Deck driver engine — owns the device-thread + LCD
     /// rendering. Eagerly constructed at app startup so the UI can
     /// see freshly-plugged devices without an explicit "scan" step;
@@ -453,8 +470,40 @@ impl HiJackApp {
             Some(osc_log.clone()),
         );
 
+        // ── Fader sidecar: device engine + service, both app-lifetime ──
+        // The service idles until a console connect delivers senders via
+        // the watch channel (see pickup_pending_engines).
+        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
+        let sidecar_config = Arc::new(RwLock::new(crate::model::sidecar::SidecarConfig::default()));
+        let (sidecar_hw_tx, sidecar_hw_rx) = tokio::sync::mpsc::unbounded_channel();
+        let sidecar_midi =
+            crate::console::sidecar_engine::SidecarMidiEngine::new(sidecar_hw_tx, ui_tx.clone());
+        if let Some(input) = prefs.sidecar_midi.input_port_name.clone() {
+            sidecar_midi.connect(input, prefs.sidecar_midi.output_port_name.clone());
+        }
+        let (sidecar_svc_tx, sidecar_svc_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (sidecar_senders_tx, sidecar_senders_rx) = tokio::sync::watch::channel(None);
+        let sidecar_learn = Arc::new(std::sync::Mutex::new(
+            crate::console::sidecar_learn::LearnShared::default(),
+        ));
+        {
+            let midi_for_motor = sidecar_midi.clone();
+            runtime.spawn(crate::console::sidecar_service::run(
+                crate::console::sidecar_service::SidecarDeps {
+                    config: sidecar_config.clone(),
+                    state: state.clone(),
+                    hw_rx: sidecar_hw_rx,
+                    svc_rx: sidecar_svc_rx,
+                    senders: sidecar_senders_rx,
+                    cue_manager: cue_manager.clone(),
+                    learn: sidecar_learn.clone(),
+                    motor: Arc::new(move |c, m, v| midi_for_motor.motor_move(c, m, v)),
+                },
+            ));
+        }
+
         Self {
-            state: Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default()))),
+            state,
             cue_manager,
             macro_manager: Arc::new(RwLock::new(MacroManager::new())),
             monitor_manager: Arc::new(RwLock::new(MonitorManager::new())),
@@ -477,7 +526,12 @@ impl HiJackApp {
             stream_deck_config: Arc::new(RwLock::new(
                 crate::model::streamdeck::StreamDeckConfig::default(),
             )),
-            sidecar_config: Arc::new(RwLock::new(crate::model::sidecar::SidecarConfig::default())),
+            sidecar_config,
+            sidecar_midi,
+            sidecar_svc_tx,
+            sidecar_senders_tx,
+            sidecar_learn,
+            sidecar_tab: super::sidecar_tab::SidecarTabState::default(),
             stream_deck_engine: crate::console::streamdeck_engine::StreamDeckEngine::new(
                 ui_tx.clone(),
             ),
@@ -896,6 +950,13 @@ impl HiJackApp {
             if p.ipad_sender.is_some() {
                 self.ipad_sender = p.ipad_sender;
             }
+            // Hand the fresh senders to the sidecar service — its watch
+            // sees the change and runs a console-wins sync sweep.
+            if let Some(sender) = self.sender.clone() {
+                let _ = self
+                    .sidecar_senders_tx
+                    .send(Some((sender, self.ipad_sender.clone())));
+            }
         }
     }
 
@@ -1057,6 +1118,8 @@ impl HiJackApp {
                     self.snapshot_engine = None;
                     self.macro_engine = None;
                     self.cancel_token = None;
+                    // Sidecar service: no console link → no sends.
+                    let _ = self.sidecar_senders_tx.send(None);
                     if let Ok(mut slot) = self.pending_engines.lock() {
                         slot.take();
                     }
@@ -1185,6 +1248,11 @@ impl HiJackApp {
                     if let Some(rd) = &mut self.recovery_dialog {
                         rd.recovered = true;
                     }
+                    // The show brought a (possibly different) sidecar
+                    // binding table — console wins over the motors.
+                    let _ = self
+                        .sidecar_svc_tx
+                        .send(crate::console::sidecar_service::SvcCmd::SyncSurface);
                     self.snapshots.scope_editor.console_recall = recall;
                     if let Some(c) = &conn {
                         self.auto_update_on_recall
@@ -1541,14 +1609,18 @@ impl HiJackApp {
                     // Console wins on connect: the surface may sit at
                     // stale positions — push mirror values to the
                     // motors rather than trusting the hardware.
-                    // (Sync request is wired to the sidecar service in
-                    // the service handoff below once it exists.)
+                    let _ = self
+                        .sidecar_svc_tx
+                        .send(crate::console::sidecar_service::SvcCmd::SyncSurface);
+                    self.sidecar_tab.status_message = Some(format!("Connected: {input}"));
                 }
                 UiEvent::SidecarMidiDisconnected => {
                     tracing::info!("Sidecar MIDI disconnected");
+                    self.sidecar_tab.status_message = Some("Sidecar MIDI disconnected".into());
                 }
                 UiEvent::SidecarError { message } => {
                     tracing::warn!("Sidecar MIDI error: {message}");
+                    self.sidecar_tab.status_message = Some(format!("Sidecar: {message}"));
                 }
                 UiEvent::UpdateCheckResult(status) => {
                     self.setup.update_status = status;
@@ -2322,6 +2394,7 @@ impl eframe::App for HiJackApp {
                         (Tab::Macros, "Macros"),
                         (Tab::Gangs, "Gangs"),
                         (Tab::PanLink, "Pan Link"),
+                        (Tab::Sidecar, "Sidecar"),
                         (Tab::Snapshots, "Snapshots"),
                         (Tab::Monitor, "Monitor"),
                         (Tab::OscLog, "OSC Log"),
@@ -2359,6 +2432,7 @@ impl eframe::App for HiJackApp {
                             Tab::Macros => HelpKey::TabMacros,
                             Tab::Gangs => HelpKey::TabGangs,
                             Tab::PanLink => HelpKey::TabPanLink,
+                            Tab::Sidecar => HelpKey::TabSidecar,
                             Tab::Snapshots => HelpKey::TabSnapshots,
                             Tab::Monitor => HelpKey::TabMonitor,
                             Tab::OscLog => HelpKey::TabOscLog,
@@ -3022,6 +3096,22 @@ impl eframe::App for HiJackApp {
                         &self.connected,
                         &self.runtime,
                         self.setup.operating_mode.uses_ipad_protocol(),
+                    );
+                }
+                Tab::Sidecar => {
+                    let is_connected = self.connected.load(Ordering::Relaxed);
+                    super::sidecar_tab::draw_sidecar_tab(
+                        ui,
+                        &mut self.sidecar_tab,
+                        &mut self.setup,
+                        &self.sidecar_config,
+                        &self.sidecar_midi,
+                        &self.state,
+                        &self.last_received,
+                        &self.sidecar_learn,
+                        &self.sidecar_svc_tx,
+                        is_connected,
+                        &self.runtime,
                     );
                 }
                 Tab::Monitor => {

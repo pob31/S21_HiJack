@@ -18,6 +18,7 @@ pub mod pan_link_tab;
 pub mod recall_scope_popup;
 pub mod scope_editor;
 pub mod setup_tab;
+pub mod sidecar_tab;
 pub mod snapshots_tab;
 pub mod status;
 pub mod theme;
@@ -31,6 +32,7 @@ pub enum Tab {
     Macros,
     Gangs,
     PanLink,
+    Sidecar,
     Monitor,
     OscLog,
     Inspector,

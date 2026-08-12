@@ -22,7 +22,7 @@ impl UiMode {
     /// setting).
     pub fn tab_visible(self, tab: Tab, show_diagnostics: bool) -> bool {
         match tab {
-            Tab::Setup | Tab::Macros | Tab::Gangs | Tab::PanLink => true,
+            Tab::Setup | Tab::Macros | Tab::Gangs | Tab::PanLink | Tab::Sidecar => true,
             Tab::Snapshots => self != UiMode::LiveMusic,
             Tab::Monitor => self != UiMode::Theatre,
             Tab::OscLog | Tab::Inspector => show_diagnostics,
@@ -80,7 +80,17 @@ mod tests {
         assert!(m.tab_visible(Tab::Macros, false));
         assert!(m.tab_visible(Tab::Gangs, false));
         assert!(m.tab_visible(Tab::PanLink, false));
+        assert!(m.tab_visible(Tab::Sidecar, false));
         assert!(m.tab_visible(Tab::Monitor, false));
+    }
+
+    #[test]
+    fn sidecar_visible_in_every_mode() {
+        // The sidecar is an operator surface like Macros — never hidden
+        // by a display mode.
+        for m in UiMode::ALL {
+            assert!(m.tab_visible(Tab::Sidecar, false));
+        }
     }
 
     #[test]

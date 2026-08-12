@@ -253,7 +253,7 @@ fn run_sidecar_thread(
             // scan. WinMM connections to unplugged devices go silent
             // rather than erroring, so this is the reliable signal.
             if let Some(c) = &conns
-                && !inputs.iter().any(|n| *n == c.input_name)
+                && !inputs.contains(&c.input_name)
             {
                 warn!(port = %c.input_name, "Sidecar MIDI input vanished — disconnecting");
                 conns = None;

@@ -107,8 +107,9 @@ pub struct SidecarDeps {
     pub motor: Arc<dyn Fn(ControlSelector, ControlMode, u16) + Send + Sync>,
 }
 
-/// Spawn the service. Runs until the hardware channel closes (i.e. the
-/// MIDI engine is dropped at app shutdown).
+/// Spawn the service on the ambient tokio runtime. Runs until the
+/// hardware channel closes (i.e. the MIDI engine is dropped at app
+/// shutdown). Callers outside a runtime context can `handle.spawn(run(deps))`.
 pub fn spawn(deps: SidecarDeps) -> tokio::task::JoinHandle<()> {
     tokio::spawn(run(deps))
 }
@@ -131,7 +132,7 @@ struct Runtime {
     last_generation: u64,
 }
 
-async fn run(mut deps: SidecarDeps) {
+pub async fn run(mut deps: SidecarDeps) {
     let mut rt = Runtime::default();
     let mut raw_osc_socket: Option<tokio::net::UdpSocket> = None;
     let mut tick = tokio::time::interval(TICK);

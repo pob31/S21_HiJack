@@ -62,6 +62,7 @@ pub enum HelpKey {
     TabMacros,
     TabGangs,
     TabPanLink,
+    TabSidecar,
     TabSnapshots,
     TabMonitor,
     TabOscLog,
@@ -90,6 +91,29 @@ pub enum HelpKey {
     StreamDeckEnable,
     StreamDeckDisable,
     StreamDeckOpenPanel,
+
+    // ── Fader sidecar ──
+    SidecarEnable,
+    SidecarDisable,
+    SidecarInputPort,
+    SidecarOutputPort,
+    SidecarMidiDisconnect,
+    SidecarLearnStart,
+    SidecarLearnNeedsConn,
+    SidecarLearnConsole,
+    SidecarLearnHardware,
+    SidecarLearnConfirm,
+    SidecarLearnReplace,
+    SidecarLearnCancel,
+    SidecarLearnRawOsc,
+    SidecarBindingEnabled,
+    SidecarBindingFeedback,
+    SidecarBindingMode,
+    SidecarBindingTaper,
+    SidecarBindingStep,
+    SidecarBindingRelearn,
+    SidecarBindingDelete,
+    SidecarSyncNow,
 
     // ── Pan Link ──
     PanLinkRevert,
@@ -481,6 +505,11 @@ fn meta(key: HelpKey) -> HelpMeta {
             "tab.pan_link",
             "Link an input channel's pan to its aux send pans.",
         ),
+        TabSidecar => (
+            "tab.sidecar",
+            "Map hardware MIDI faders and encoders to console parameters \
+             or external OSC targets.",
+        ),
         TabSnapshots => (
             "tab.snapshots",
             "Capture and recall console state as snapshots and cues.",
@@ -566,6 +595,109 @@ fn meta(key: HelpKey) -> HelpMeta {
             "streamdeck.open_panel",
             "Open the Stream Deck panel — device selection, \
              button grid, per-button macro sequences.",
+        ),
+
+        // ── Fader sidecar ──
+        SidecarEnable => (
+            "sidecar.enable",
+            "Enable the sidecar. Starts by pushing the console's current \
+             values out to the motors — the hardware never overwrites the \
+             console on enable.",
+        ),
+        SidecarDisable => (
+            "sidecar.disable",
+            "Temporarily disable the sidecar in both directions. The MIDI \
+             connection and all bindings are kept; re-enable is instant.",
+        ),
+        SidecarInputPort => (
+            "sidecar.input_port",
+            "MIDI input the sidecar surface sends on. Remembered on this \
+             computer and auto-reconnected at launch and after replugs.",
+        ),
+        SidecarOutputPort => (
+            "sidecar.output_port",
+            "MIDI output for motor-fader feedback. Auto matches the \
+             input's port name (right for most surfaces); override if \
+             your device exposes differently-named ports.",
+        ),
+        SidecarMidiDisconnect => (
+            "sidecar.midi_disconnect",
+            "Disconnect the sidecar MIDI device and stop auto-reconnecting.",
+        ),
+        SidecarLearnStart => (
+            "sidecar.learn_start",
+            "Create a binding: first move a fader or knob on the console, \
+             then move the sidecar control that should drive it.",
+        ),
+        SidecarLearnNeedsConn => (
+            "sidecar.learn_needs_conn",
+            "Connect to the console first — Learn captures the parameter \
+             from inbound console traffic. (External OSC targets can be \
+             entered without a console.)",
+        ),
+        SidecarLearnConsole => (
+            "sidecar.learn_console",
+            "Move the target on the console itself (or in this app). Only \
+             continuous parameters (faders, sends, pans, gains) can be \
+             bound to a fader or encoder.",
+        ),
+        SidecarLearnHardware => (
+            "sidecar.learn_hardware",
+            "Now move the sidecar control. A deliberate move is required — \
+             brushing a fader won't bind it. 14-bit pairs, relative \
+             encoders and pitch-bend faders are detected automatically.",
+        ),
+        SidecarLearnConfirm => (
+            "sidecar.learn_confirm",
+            "Save this binding. Motor feedback and a sensible value curve \
+             are preset from the target; everything is editable afterwards.",
+        ),
+        SidecarLearnReplace => (
+            "sidecar.learn_replace",
+            "This hardware control already drives another binding — \
+             confirming replaces that binding.",
+        ),
+        SidecarLearnCancel => ("sidecar.learn_cancel", "Abandon this learn without saving."),
+        SidecarLearnRawOsc => (
+            "sidecar.learn_raw_osc",
+            "Bind to an external OSC target (host, port, path) instead of \
+             a console parameter. The scaled value is appended as a float \
+             argument. No motor feedback for external targets.",
+        ),
+        SidecarBindingEnabled => (
+            "sidecar.binding_enabled",
+            "Enable or park this one binding (the big ON/OFF switch \
+             pauses the whole sidecar).",
+        ),
+        SidecarBindingFeedback => (
+            "sidecar.binding_feedback",
+            "Push console changes back to this motorized control.",
+        ),
+        SidecarBindingMode => (
+            "sidecar.binding_mode",
+            "How this control's MIDI messages are interpreted. Fix this \
+             if auto-detection guessed the wrong relative encoding.",
+        ),
+        SidecarBindingTaper => (
+            "sidecar.binding_taper",
+            "Value curve between hardware travel and the target. The \
+             fader law puts unity at about 3/4 travel like the console; \
+             linear maps travel straight onto a min–max range.",
+        ),
+        SidecarBindingStep => (
+            "sidecar.binding_step",
+            "Encoder sensitivity — how many ticks cover the full range.",
+        ),
+        SidecarBindingRelearn => (
+            "sidecar.binding_relearn",
+            "Re-capture the hardware control for this binding (keeps the \
+             target).",
+        ),
+        SidecarBindingDelete => ("sidecar.binding_delete", "Delete this binding."),
+        SidecarSyncNow => (
+            "sidecar.sync_now",
+            "Push the console's current values to all motorized controls \
+             now (\"console wins\").",
         ),
 
         // ── Pan Link ──
@@ -1611,6 +1743,7 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::TabMacros,
     HelpKey::TabGangs,
     HelpKey::TabPanLink,
+    HelpKey::TabSidecar,
     HelpKey::TabSnapshots,
     HelpKey::TabMonitor,
     HelpKey::TabOscLog,
@@ -1633,6 +1766,27 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::StreamDeckEnable,
     HelpKey::StreamDeckDisable,
     HelpKey::StreamDeckOpenPanel,
+    HelpKey::SidecarEnable,
+    HelpKey::SidecarDisable,
+    HelpKey::SidecarInputPort,
+    HelpKey::SidecarOutputPort,
+    HelpKey::SidecarMidiDisconnect,
+    HelpKey::SidecarLearnStart,
+    HelpKey::SidecarLearnNeedsConn,
+    HelpKey::SidecarLearnConsole,
+    HelpKey::SidecarLearnHardware,
+    HelpKey::SidecarLearnConfirm,
+    HelpKey::SidecarLearnReplace,
+    HelpKey::SidecarLearnCancel,
+    HelpKey::SidecarLearnRawOsc,
+    HelpKey::SidecarBindingEnabled,
+    HelpKey::SidecarBindingFeedback,
+    HelpKey::SidecarBindingMode,
+    HelpKey::SidecarBindingTaper,
+    HelpKey::SidecarBindingStep,
+    HelpKey::SidecarBindingRelearn,
+    HelpKey::SidecarBindingDelete,
+    HelpKey::SidecarSyncNow,
     HelpKey::PanLinkRevert,
     HelpKey::PanLinkApply,
     HelpKey::SetupConsoleIp,
