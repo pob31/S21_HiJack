@@ -21,6 +21,7 @@ pub mod send_util;
 pub mod sidecar_decode;
 pub mod sidecar_engine;
 pub mod sidecar_learn;
+pub mod sidecar_service;
 pub mod snapshot_engine;
 pub mod streamdeck_engine;
 pub mod trigger_dispatch;
