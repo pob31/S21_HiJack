@@ -34,9 +34,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PanLinkBindings {
     #[serde(default)]
-    pub active: HashSet<(u8, u8)>,
+    pub active: HashSet<(u16, u16)>,
     #[serde(default)]
-    pub mono_overrides: HashSet<u8>,
+    pub mono_overrides: HashSet<u16>,
 }
 
 impl PanLinkBindings {
@@ -44,11 +44,11 @@ impl PanLinkBindings {
         Self::default()
     }
 
-    pub fn is_active(&self, input: u8, aux: u8) -> bool {
+    pub fn is_active(&self, input: u16, aux: u16) -> bool {
         self.active.contains(&(input, aux))
     }
 
-    pub fn set_active(&mut self, input: u8, aux: u8, on: bool) {
+    pub fn set_active(&mut self, input: u16, aux: u16, on: bool) {
         if on {
             self.active.insert((input, aux));
         } else {
@@ -57,8 +57,8 @@ impl PanLinkBindings {
     }
 
     /// Aux bus indices linked for the given input, sorted ascending.
-    pub fn auxes_for(&self, input: u8) -> Vec<u8> {
-        let mut v: BTreeSet<u8> = self
+    pub fn auxes_for(&self, input: u16) -> Vec<u16> {
+        let mut v: BTreeSet<u16> = self
             .active
             .iter()
             .filter_map(|(i, a)| (*i == input).then_some(*a))
@@ -67,21 +67,21 @@ impl PanLinkBindings {
     }
 
     /// Inputs that have at least one active binding, sorted ascending.
-    pub fn linked_inputs(&self) -> Vec<u8> {
-        let set: BTreeSet<u8> = self.active.iter().map(|(i, _)| *i).collect();
+    pub fn linked_inputs(&self) -> Vec<u16> {
+        let set: BTreeSet<u16> = self.active.iter().map(|(i, _)| *i).collect();
         set.into_iter().collect()
     }
 
     /// Whether the operator has manually marked this aux as mono. When
     /// true, the engine and UI both refuse to pan-link to this aux
     /// regardless of any console-reported mode.
-    pub fn is_aux_mono_override(&self, aux: u8) -> bool {
+    pub fn is_aux_mono_override(&self, aux: u16) -> bool {
         self.mono_overrides.contains(&aux)
     }
 
     /// Toggle the mono override for the given aux. Returns the new
     /// state (true = mono, false = stereo).
-    pub fn toggle_mono_override(&mut self, aux: u8) -> bool {
+    pub fn toggle_mono_override(&mut self, aux: u16) -> bool {
         if !self.mono_overrides.insert(aux) {
             self.mono_overrides.remove(&aux);
             false

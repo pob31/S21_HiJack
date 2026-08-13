@@ -284,14 +284,10 @@ pub struct HiJackApp {
     pub sidecar_midi: Arc<crate::console::sidecar_engine::SidecarMidiEngine>,
     /// Commands into the sidecar service (sync sweeps).
     pub sidecar_svc_tx: tokio::sync::mpsc::UnboundedSender<crate::console::sidecar_service::SvcCmd>,
-    /// Live console senders for the sidecar service — `Some` after each
+    /// Live console write path for the sidecar service — `Some` after each
     /// (re)connect, `None` on disconnect. Fed from `pickup_pending_engines`.
-    pub sidecar_senders_tx: tokio::sync::watch::Sender<
-        Option<(
-            crate::osc::client::OscSender,
-            Option<crate::osc::ipad_client::IpadSender>,
-        )>,
-    >,
+    pub sidecar_senders_tx:
+        tokio::sync::watch::Sender<Option<crate::console::console_tx::ConsoleTx>>,
     /// Learn capture shared between the Sidecar tab and the service.
     pub sidecar_learn: Arc<std::sync::Mutex<crate::console::sidecar_learn::LearnShared>>,
     /// Sidecar tab UI state.
@@ -473,7 +469,13 @@ impl HiJackApp {
         // ── Fader sidecar: device engine + service, both app-lifetime ──
         // The service idles until a console connect delivers senders via
         // the watch channel (see pickup_pending_engines).
-        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
+        // Seed the starting config's console family from preferences — a show
+        // file loaded later carries its own and overwrites this wholesale.
+        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig {
+            family: prefs.console_family.unwrap_or_default(),
+            pad_quirk_overrides: prefs.pad_quirk_overrides,
+            ..ConsoleConfig::default()
+        })));
         let sidecar_config = Arc::new(RwLock::new(crate::model::sidecar::SidecarConfig::default()));
         let (sidecar_hw_tx, sidecar_hw_rx) = tokio::sync::mpsc::unbounded_channel();
         let sidecar_midi =
@@ -950,12 +952,18 @@ impl HiJackApp {
             if p.ipad_sender.is_some() {
                 self.ipad_sender = p.ipad_sender;
             }
-            // Hand the fresh senders to the sidecar service — its watch
-            // sees the change and runs a console-wins sync sweep.
+            // Hand the fresh write path to the sidecar service — its watch
+            // sees the change and runs a console-wins sync sweep. Shares the
+            // connection's sent-value log so sidecar writes are screened
+            // from gang/pan propagation when the iPad link echoes them.
             if let Some(sender) = self.sender.clone() {
-                let _ = self
-                    .sidecar_senders_tx
-                    .send(Some((sender, self.ipad_sender.clone())));
+                let mut tx = crate::console::console_tx::ConsoleTx::with_pad(
+                    sender,
+                    self.ipad_sender.clone(),
+                );
+                tx.set_sent_log(p.sent_log);
+                tx.set_profile(p.profile);
+                let _ = self.sidecar_senders_tx.send(Some(tx));
             }
         }
     }
@@ -1345,6 +1353,10 @@ impl HiJackApp {
                             last_open_dir: self.setup.last_open_dir.clone(),
                             midi: self.setup.midi.clone(),
                             sidecar_midi: self.setup.sidecar_midi.clone(),
+                            // Console family / quirk overrides have no UI yet
+                            // (Phase 1) — carry the on-disk values through so a
+                            // hand-edited override survives this save.
+                            ..AppPreferences::load()
                         };
                         if let Err(e) = prefs.save() {
                             tracing::warn!(error = %e, "Failed to save app preferences after show load");

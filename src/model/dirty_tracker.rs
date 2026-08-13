@@ -146,7 +146,7 @@ impl DirtyTracker {
 mod tests {
     use super::*;
 
-    fn addr(ch: u8, path: ParameterPath) -> ParameterAddress {
+    fn addr(ch: u16, path: ParameterPath) -> ParameterAddress {
         ParameterAddress {
             channel: ChannelId::Input(ch),
             parameter: path,

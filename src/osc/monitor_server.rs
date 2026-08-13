@@ -26,38 +26,38 @@ pub enum MonitorCommand {
     /// Set a send level: `/monitor/{name}/send/{input}/{aux}/level {value}`
     SetSendLevel {
         client_name: String,
-        input_ch: u8,
-        aux_ch: u8,
+        input_ch: u16,
+        aux_ch: u16,
         value: f32,
         endpoint: ClientEndpoint,
     },
     /// Set a send pan: `/monitor/{name}/send/{input}/{aux}/pan {value}`
     SetSendPan {
         client_name: String,
-        input_ch: u8,
-        aux_ch: u8,
+        input_ch: u16,
+        aux_ch: u16,
         value: f32,
         endpoint: ClientEndpoint,
     },
     /// Set a send on/off: `/monitor/{name}/send/{input}/{aux}/on {0|1}`
     SetSendOn {
         client_name: String,
-        input_ch: u8,
-        aux_ch: u8,
+        input_ch: u16,
+        aux_ch: u16,
         on: bool,
         endpoint: ClientEndpoint,
     },
     /// Set aux output fader: `/monitor/{name}/aux/{aux}/fader {value}`
     SetAuxFader {
         client_name: String,
-        aux_ch: u8,
+        aux_ch: u16,
         value: f32,
         endpoint: ClientEndpoint,
     },
     /// Set aux output mute: `/monitor/{name}/aux/{aux}/mute {0|1}`
     SetAuxMute {
         client_name: String,
-        aux_ch: u8,
+        aux_ch: u16,
         mute: bool,
         endpoint: ClientEndpoint,
     },
@@ -167,7 +167,7 @@ impl MonitorSender {
     pub async fn send_client_state(
         &self,
         addr: SocketAddr,
-        sends: &[(u8, u8, f32, f32, bool)],
+        sends: &[(u16, u16, f32, f32, bool)],
     ) -> std::io::Result<()> {
         for &(input, aux, level, pan, on) in sends {
             self.send_to(
@@ -309,7 +309,7 @@ pub fn parse_monitor_message(
             // Try aux path: aux/{aux}/{param}
             if let Some(aux_rest) = action.strip_prefix("aux/") {
                 let (aux_str, param) = aux_rest.split_once('/')?;
-                let aux_ch: u8 = aux_str.parse().ok()?;
+                let aux_ch: u16 = aux_str.parse().ok()?;
                 return match param {
                     "fader" => {
                         let value = match args.first() {
@@ -348,8 +348,8 @@ pub fn parse_monitor_message(
             if parts.len() != 3 {
                 return None;
             }
-            let input_ch: u8 = parts[0].parse().ok()?;
-            let aux_ch: u8 = parts[1].parse().ok()?;
+            let input_ch: u16 = parts[0].parse().ok()?;
+            let aux_ch: u16 = parts[1].parse().ok()?;
             let param = parts[2];
 
             match param {

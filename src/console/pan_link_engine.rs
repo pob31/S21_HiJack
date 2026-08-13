@@ -33,9 +33,10 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use super::gang_manager::GangManager;
+use crate::console::console_tx::ConsoleTx;
 use crate::model::channel::ChannelId;
 use crate::model::config::ChannelMode;
 use crate::model::dirty_tracker::DirtyTracker;
@@ -43,16 +44,13 @@ use crate::model::pan_link::PanLinkBindings;
 use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterSection, ParameterValue};
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
-use crate::osc::encode;
 use crate::osc::ipad_client::IpadSender;
-use crate::osc::ipad_encode;
 
 /// Engine that turns input-channel pan moves into aux send pan moves
 /// for every active `(input, aux)` binding.
 pub struct PanLinkEngine {
     state: Arc<RwLock<ConsoleState>>,
-    sender: OscSender,
-    ipad_sender: Option<IpadSender>,
+    tx: ConsoleTx,
     bindings: Arc<RwLock<PanLinkBindings>>,
     dirty_tracker: Arc<RwLock<DirtyTracker>>,
     gang_manager: Arc<RwLock<GangManager>>,
@@ -68,8 +66,7 @@ impl PanLinkEngine {
     ) -> Self {
         Self {
             state,
-            sender,
-            ipad_sender: None,
+            tx: ConsoleTx::new(sender),
             bindings,
             dirty_tracker,
             gang_manager,
@@ -77,7 +74,17 @@ impl PanLinkEngine {
     }
 
     pub fn set_ipad_sender(&mut self, sender: Option<IpadSender>) {
-        self.ipad_sender = sender;
+        self.tx.set_pad_sender(sender);
+    }
+
+    /// Attach the shared sent-value log (echo screening on the iPad link).
+    pub fn set_sent_log(&mut self, log: crate::console::console_tx::SentLog) {
+        self.tx.set_sent_log(log);
+    }
+
+    /// Point the write path at the connected console's profile (Pad wire quirks).
+    pub fn set_profile(&mut self, profile: Arc<crate::model::family::ConsoleProfile>) {
+        self.tx.set_profile(profile);
     }
 
     /// Process an inbound parameter update. Only main pan on input
@@ -164,8 +171,8 @@ impl PanLinkEngine {
         // in both a FaderMutePan gang AND a Sends gang only generates
         // one write — FaderMutePan wins because its rule is processed
         // first (and in Absolute mode the two rules agree anyway).
-        let mut targets: Vec<(u8, ParameterValue)> = vec![(input_n, new_value.clone())];
-        let mut seen: HashSet<u8> = HashSet::new();
+        let mut targets: Vec<(u16, ParameterValue)> = vec![(input_n, new_value.clone())];
+        let mut seen: HashSet<u16> = HashSet::new();
         seen.insert(input_n);
         {
             let gm = self.gang_manager.read().await;
@@ -234,7 +241,7 @@ impl PanLinkEngine {
         // mono from stereo — assume stereo and let the operator decide
         // by binding (or not) in the Pan Link tab. Mode 2 / Mode 3
         // (iPad protocol active) still enforces the stereo filter.
-        let assume_all_stereo = self.ipad_sender.is_none();
+        let assume_all_stereo = !self.tx.has_pad();
 
         let mut writes: Vec<(ParameterAddress, ParameterValue)> = Vec::new();
         for (ch_n, pan_value) in targets {
@@ -276,37 +283,9 @@ impl PanLinkEngine {
     }
 
     async fn send_to_console(&self, addr: &ParameterAddress, value: &ParameterValue) {
-        // Whether the send actually went out — gate the optimistic mirror update
-        // on success so a failed send doesn't leave the mirror ahead of the desk.
-        let sent = match encode::encode_parameter(addr, value) {
-            Some((path, args)) => match self.sender.send(&path, args).await {
-                Ok(()) => true,
-                Err(e) => {
-                    warn!(%addr, "PanLink: failed to send: {e}");
-                    false
-                }
-            },
-            None => {
-                if let Some(ref ipad) = self.ipad_sender {
-                    match ipad_encode::encode_ipad_parameter(addr, value) {
-                        Some((path, args)) => match ipad.send(&path, args).await {
-                            Ok(()) => true,
-                            Err(e) => {
-                                warn!(%addr, "PanLink: iPad send failed: {e}");
-                                false
-                            }
-                        },
-                        None => {
-                            warn!(%addr, "PanLink: cannot encode for either protocol");
-                            false
-                        }
-                    }
-                } else {
-                    warn!(%addr, "PanLink: no sender available for iPad-only parameter");
-                    false
-                }
-            }
-        };
+        // Gate the optimistic mirror update on success so a failed send
+        // doesn't leave the mirror ahead of the desk.
+        let sent = self.tx.send_parameter_logged("PanLink", addr, value).await;
         // Optimistically reflect our own send into the mirror — the desk doesn't
         // echo OSC-set values back (mirrors the gang engine's mirror update).
         if sent {
@@ -342,14 +321,14 @@ mod tests {
         PanLinkEngine::new(state, sender, bindings, dirty, gang_mgr)
     }
 
-    fn pan_addr(ch: u8) -> ParameterAddress {
+    fn pan_addr(ch: u16) -> ParameterAddress {
         ParameterAddress {
             channel: ChannelId::Input(ch),
             parameter: ParameterPath::Pan,
         }
     }
 
-    fn send_pan_addr(ch: u8, aux: u8) -> ParameterAddress {
+    fn send_pan_addr(ch: u16, aux: u16) -> ParameterAddress {
         ParameterAddress {
             channel: ChannelId::Input(ch),
             parameter: ParameterPath::SendPan(aux),

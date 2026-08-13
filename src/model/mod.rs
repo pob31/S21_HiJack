@@ -3,6 +3,7 @@ pub mod cidr;
 pub mod config;
 pub mod cue_trigger;
 pub mod dirty_tracker;
+pub mod family;
 pub mod gang;
 pub mod macro_def;
 pub mod monitor;

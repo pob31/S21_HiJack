@@ -25,9 +25,9 @@ pub struct MonitorClient {
     /// Display name used in OSC paths (e.g., "Drummer", "Keys").
     pub name: String,
     /// Aux numbers this client may control (1-based).
-    pub permitted_auxes: Vec<u8>,
+    pub permitted_auxes: Vec<u16>,
     /// Input numbers visible to this client (1-based). Empty = all inputs.
-    pub visible_inputs: Vec<u8>,
+    pub visible_inputs: Vec<u16>,
     /// Optional per-profile PIN. When `Some`, the web (WebSocket) login must
     /// present a matching PIN; `None` means name-only login (today's behaviour,
     /// and always the case for the native UDP path). Persisted in the show file;
@@ -46,7 +46,7 @@ pub struct MonitorClient {
 
 impl MonitorClient {
     /// Create a new client profile with a generated UUID.
-    pub fn new(name: String, permitted_auxes: Vec<u8>, visible_inputs: Vec<u8>) -> Self {
+    pub fn new(name: String, permitted_auxes: Vec<u16>, visible_inputs: Vec<u16>) -> Self {
         Self {
             id: Uuid::new_v4(),
             name,
@@ -61,7 +61,7 @@ impl MonitorClient {
     /// Check whether this client is allowed to control a given send.
     /// Returns true if the aux is in `permitted_auxes` AND the input is
     /// in `visible_inputs` (or `visible_inputs` is empty, meaning all).
-    pub fn is_permitted(&self, input_ch: u8, aux_ch: u8) -> bool {
+    pub fn is_permitted(&self, input_ch: u16, aux_ch: u16) -> bool {
         let aux_ok = self.permitted_auxes.contains(&aux_ch);
         let input_ok = self.visible_inputs.is_empty() || self.visible_inputs.contains(&input_ch);
         aux_ok && input_ok

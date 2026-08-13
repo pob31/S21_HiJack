@@ -320,7 +320,7 @@ mod tests {
     use crate::model::channel::ChannelId;
     use crate::model::parameter::ParameterPath;
 
-    fn make_addr(ch: u8, param: ParameterPath) -> ParameterAddress {
+    fn make_addr(ch: u16, param: ParameterPath) -> ParameterAddress {
         ParameterAddress {
             channel: ChannelId::Input(ch),
             parameter: param,

@@ -51,6 +51,12 @@ pub struct PendingEngines {
     pub snapshot_engine: std::sync::Arc<crate::console::snapshot_engine::SnapshotEngine>,
     pub macro_engine: std::sync::Arc<crate::console::macro_engine::MacroEngine>,
     pub ipad_sender: Option<crate::osc::ipad_client::IpadSender>,
+    /// This connection's shared sent-value log (echo screening) — attached
+    /// to the sidecar service's `ConsoleTx` so its writes are screened too.
+    pub sent_log: crate::console::console_tx::SentLog,
+    /// The connected console's profile, so the sidecar's own write path
+    /// encodes with the same Pad wire quirks as the engines.
+    pub profile: std::sync::Arc<crate::model::family::ConsoleProfile>,
 }
 
 /// Events sent from async tasks back to the UI thread.

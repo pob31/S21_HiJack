@@ -198,9 +198,9 @@ impl ScopeEditorState {
     pub fn open(
         &mut self,
         template: &ScopeTemplate,
-        aux_count: u8,
-        group_count: u8,
-        matrix_count: u8,
+        aux_count: u16,
+        group_count: u16,
+        matrix_count: u16,
     ) {
         // Load selections from the template (with migration).
         let mut channel_paths: HashMap<ChannelId, HashSet<ParameterPath>> = HashMap::new();
@@ -297,9 +297,9 @@ impl ScopeEditorState {
     pub fn load_template(
         &mut self,
         template: &ScopeTemplate,
-        aux_count: u8,
-        group_count: u8,
-        matrix_count: u8,
+        aux_count: u16,
+        group_count: u16,
+        matrix_count: u16,
     ) {
         let mut channel_paths: HashMap<ChannelId, HashSet<ParameterPath>> = HashMap::new();
         for cs in &template.channel_scopes {

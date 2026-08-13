@@ -38,8 +38,8 @@ impl MonitorManager {
         &mut self,
         id: Uuid,
         name: String,
-        permitted_auxes: Vec<u8>,
-        visible_inputs: Vec<u8>,
+        permitted_auxes: Vec<u16>,
+        visible_inputs: Vec<u16>,
         pin: Option<String>,
     ) -> bool {
         if let Some(client) = self.clients.get_mut(&id) {

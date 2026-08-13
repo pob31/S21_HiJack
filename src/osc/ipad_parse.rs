@@ -3,6 +3,7 @@ use rosc::OscType;
 use super::ipad_values;
 use crate::model::channel::ChannelId;
 use crate::model::config::ChannelMode;
+use crate::model::family::{PadQuirks, PanWire};
 use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
 
 /// Result of parsing an iPad protocol OSC message.
@@ -32,7 +33,7 @@ pub enum IpadConfigMessage {
     SessionFilename(Option<String>),
     ChannelCount {
         channel_type: String,
-        count: u8,
+        count: u16,
     },
     OutputModes {
         channel_type: String,
@@ -72,6 +73,12 @@ pub fn parse_ipad_message_with_config(
     args: &[OscType],
     config: Option<&crate::model::config::ConsoleConfig>,
 ) -> ParsedIpadMessage {
+    // Wire quirks come from the live console config when we have one;
+    // pre-discovery callers (handshake) get the S21 defaults.
+    let quirks = config
+        .map(|c| c.profile().pad_quirks)
+        .unwrap_or(PadQuirks::S21);
+
     // Snapshot info
     if path == "/Snapshots/Current_Snapshot"
         && let Some(n) = args.first().and_then(extract_i32)
@@ -86,7 +93,7 @@ pub fn parse_ipad_message_with_config(
 
     // Layout banks
     if path == "/Layout/Layout/Banks"
-        && let Some(bank) = try_parse_layout_bank(args)
+        && let Some(bank) = try_parse_layout_bank(args, &quirks)
     {
         return ParsedIpadMessage::LayoutBank(bank);
     }
@@ -98,8 +105,8 @@ pub fn parse_ipad_message_with_config(
 
     // Channel parameter: /{ChannelType}/{number}/{suffix}
     if let Some((channel, suffix)) = ChannelId::from_ipad_path_with_config(path, config)
-        && let Some(parameter) = ParameterPath::from_ipad_suffix(suffix)
-        && let Some(value) = extract_value(&parameter, args)
+        && let Some(parameter) = ParameterPath::from_pad_suffix(suffix, &quirks)
+        && let Some(value) = extract_value(&parameter, args, &quirks)
     {
         let addr = ParameterAddress { channel, parameter };
         return ParsedIpadMessage::ParameterUpdate(addr, value);
@@ -131,7 +138,7 @@ fn try_parse_config(path: &str, args: &[OscType]) -> Option<IpadConfigMessage> {
         p if p.starts_with("/Console/") && !p.contains("/modes") && !p.contains("/types") => {
             // Channel count: /Console/{ChannelType}  INT
             let channel_type = p.strip_prefix("/Console/")?;
-            let count = args.first().and_then(extract_u8)?;
+            let count = args.first().and_then(extract_u16)?;
             Some(IpadConfigMessage::ChannelCount {
                 channel_type: channel_type.to_string(),
                 count,
@@ -169,7 +176,7 @@ fn try_parse_config(path: &str, args: &[OscType]) -> Option<IpadConfigMessage> {
     }
 }
 
-fn try_parse_layout_bank(args: &[OscType]) -> Option<BankData> {
+fn try_parse_layout_bank(args: &[OscType], q: &PadQuirks) -> Option<BankData> {
     // Args: Side BankNumber Label Unknown1 Unknown2 [ChannelType Number] * 10
     if args.len() < 5 {
         return None;
@@ -186,13 +193,22 @@ fn try_parse_layout_bank(args: &[OscType]) -> Option<BankData> {
                 channels.push(None);
                 i += 1;
             } else if i + 1 < args.len() {
-                if let Some(num) = extract_u8(&args[i + 1]) {
+                if let Some(num) = extract_u16(&args[i + 1]) {
                     let channel = match ch_type.as_str() {
                         "Input_Channels" => Some(ChannelId::Input(num)),
                         "Aux_Outputs" => Some(ChannelId::Aux(num)),
                         "Group_Outputs" => Some(ChannelId::Group(num)),
                         "Matrix_Outputs" => Some(ChannelId::Matrix(num)),
-                        "Control_Groups" => Some(ChannelId::ControlGroup(num + 1)), // 0-based
+                        // Same CG numbering quirk as the parameter path (see
+                        // `ChannelId::from_ipad_path_with_config`); `checked_add`
+                        // keeps a malformed max-value index from overflowing.
+                        "Control_Groups" => {
+                            if q.control_groups_zero_based {
+                                num.checked_add(1).map(ChannelId::ControlGroup)
+                            } else {
+                                Some(ChannelId::ControlGroup(num))
+                            }
+                        }
                         "Graphic_EQ" => Some(ChannelId::GraphicEq(num)),
                         "Solo_Outputs" => None, // Not tracked
                         _ => None,
@@ -239,7 +255,11 @@ fn parse_meter_values(args: &[OscType]) -> ParsedIpadMessage {
 }
 
 /// Extract a typed value from OSC args, applying pan conversion for iPad protocol.
-fn extract_value(parameter: &ParameterPath, args: &[OscType]) -> Option<ParameterValue> {
+fn extract_value(
+    parameter: &ParameterPath,
+    args: &[OscType],
+    q: &PadQuirks,
+) -> Option<ParameterValue> {
     let arg = args.first()?;
 
     let value = match parameter {
@@ -283,9 +303,10 @@ fn extract_value(parameter: &ParameterPath, args: &[OscType]) -> Option<Paramete
         _ => extract_float(arg),
     }?;
 
-    // Apply pan conversion for iPad → internal
-    match parameter {
-        ParameterPath::Pan | ParameterPath::SendPan(_) => {
+    // Apply pan conversion, wire → internal. `SignedUnit` already matches the
+    // internal representation, so only `ZeroToOne` converts.
+    match (parameter, q.pan_wire) {
+        (ParameterPath::Pan | ParameterPath::SendPan(_), PanWire::ZeroToOne) => {
             if let ParameterValue::Float(f) = &value {
                 Some(ParameterValue::Float(ipad_values::ipad_pan_to_internal(*f)))
             } else {
@@ -307,6 +328,14 @@ fn extract_u8(arg: &OscType) -> Option<u8> {
     match arg {
         OscType::Int(i) => u8::try_from(*i).ok(),
         OscType::Float(f) => u8::try_from(*f as i32).ok(),
+        _ => None,
+    }
+}
+
+fn extract_u16(arg: &OscType) -> Option<u16> {
+    match arg {
+        OscType::Int(i) => u16::try_from(*i).ok(),
+        OscType::Float(f) => u16::try_from(*f as i32).ok(),
         _ => None,
     }
 }
@@ -625,6 +654,153 @@ mod tests {
         ) {
             let path = format!("/{channel_type}/{num}/{suffix}");
             let _ = parse_ipad_message(&path, &args);
+        }
+    }
+}
+
+/// End-to-end wire round-trip across **every** quirk combination.
+///
+/// The golden tests elsewhere pin the S21 byte strings; this proves the
+/// encoder and parser stay mutual inverses for any family's quirks — which is
+/// what protects a console whose hardware probe disproves one of the
+/// SD/Quantum hypotheses.
+#[cfg(test)]
+mod quirk_round_trip_tests {
+    use super::*;
+    use crate::model::family::{BoolWire, PadQuirks};
+    use crate::osc::ipad_encode::encode_pad_parameter;
+
+    /// All 48 combinations of the five quirk flags.
+    fn all_quirk_combos() -> Vec<PadQuirks> {
+        let mut out = Vec::new();
+        for eq_bands_reversed in [true, false] {
+            for dyn1_mid_high_swapped in [true, false] {
+                for bool_wire in [BoolWire::Float01, BoolWire::OscBool, BoolWire::Int01] {
+                    for pan_wire in [PanWire::ZeroToOne, PanWire::SignedUnit] {
+                        for control_groups_zero_based in [true, false] {
+                            out.push(PadQuirks {
+                                eq_bands_reversed,
+                                dyn1_mid_high_swapped,
+                                bool_wire,
+                                pan_wire,
+                                control_groups_zero_based,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn config_with(q: PadQuirks) -> crate::model::config::ConsoleConfig {
+        crate::model::config::ConsoleConfig {
+            // Generous counts so no fixture address trips the bounds check.
+            input_channel_count: 64,
+            aux_output_count: 16,
+            group_output_count: 16,
+            matrix_output_count: 16,
+            matrix_input_count: 16,
+            control_group_count: 16,
+            graphic_eq_count: 16,
+            pad_quirk_overrides: Some(q),
+            ..Default::default()
+        }
+    }
+
+    /// Representative addresses spanning every quirk-sensitive dimension:
+    /// EQ bands, multiband dynamics, Control Groups, pan, and booleans.
+    fn fixtures() -> Vec<(ParameterAddress, ParameterValue)> {
+        let mut v: Vec<(ParameterAddress, ParameterValue)> = Vec::new();
+        let input = |p: ParameterPath| ParameterAddress {
+            channel: ChannelId::Input(3),
+            parameter: p,
+        };
+        for b in 1..=4u8 {
+            v.push((
+                input(ParameterPath::EqBandGain(b)),
+                ParameterValue::Float(-4.5),
+            ));
+            v.push((
+                input(ParameterPath::EqBandFrequency(b)),
+                ParameterValue::Float(1000.0),
+            ));
+        }
+        for b in 1..=3u8 {
+            v.push((
+                input(ParameterPath::Dyn1Threshold(b)),
+                ParameterValue::Float(-18.0),
+            ));
+            v.push((
+                input(ParameterPath::Dyn1Listen(b)),
+                ParameterValue::Bool(true),
+            ));
+        }
+        v.push((input(ParameterPath::Fader), ParameterValue::Float(-10.0)));
+        v.push((input(ParameterPath::Mute), ParameterValue::Bool(true)));
+        v.push((input(ParameterPath::Mute), ParameterValue::Bool(false)));
+        v.push((input(ParameterPath::Pan), ParameterValue::Float(-1.0)));
+        v.push((input(ParameterPath::Pan), ParameterValue::Float(0.0)));
+        v.push((input(ParameterPath::Pan), ParameterValue::Float(0.75)));
+        v.push((
+            input(ParameterPath::SendPan(2)),
+            ParameterValue::Float(-0.5),
+        ));
+        v.push((
+            input(ParameterPath::SendLevel(2)),
+            ParameterValue::Float(-6.0),
+        ));
+        v.push((
+            input(ParameterPath::SendEnabled(2)),
+            ParameterValue::Bool(true),
+        ));
+        // Control Groups exercise the CG numbering quirk.
+        v.push((
+            ParameterAddress {
+                channel: ChannelId::ControlGroup(1),
+                parameter: ParameterPath::Fader,
+            },
+            ParameterValue::Float(-3.0),
+        ));
+        v.push((
+            ParameterAddress {
+                channel: ChannelId::ControlGroup(4),
+                parameter: ParameterPath::Mute,
+            },
+            ParameterValue::Bool(true),
+        ));
+        v
+    }
+
+    #[test]
+    fn encode_then_parse_round_trips_under_every_quirk_combo() {
+        for q in all_quirk_combos() {
+            let cfg = config_with(q);
+            for (addr, value) in fixtures() {
+                let (path, args) = encode_pad_parameter(&addr, &value, &q)
+                    .unwrap_or_else(|| panic!("encode returned None for {addr} under {q:?}"));
+                let parsed = parse_ipad_message_with_config(&path, &args, Some(&cfg));
+                match parsed {
+                    ParsedIpadMessage::ParameterUpdate(got_addr, got_value) => {
+                        assert_eq!(
+                            got_addr, addr,
+                            "address round-trip failed for {path} under {q:?}"
+                        );
+                        match (&value, &got_value) {
+                            (ParameterValue::Float(a), ParameterValue::Float(b)) => assert!(
+                                (a - b).abs() < 1e-5,
+                                "value round-trip failed for {path} under {q:?}: {a} != {b}"
+                            ),
+                            (a, b) => {
+                                assert_eq!(a, b, "value round-trip failed for {path} under {q:?}")
+                            }
+                        }
+                    }
+                    other => {
+                        panic!("expected ParameterUpdate for {path} under {q:?}, got {other:?}")
+                    }
+                }
+            }
         }
     }
 }

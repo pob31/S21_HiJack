@@ -1,29 +1,44 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use crate::model::family::PadQuirks;
+
 /// Logical channel identifier (protocol-agnostic).
 /// All channel numbers are 1-based internally.
+///
+/// Numbers are `u16`: the S-series tops out well below 255, but the SD and
+/// Quantum ranges go past it (a Quantum7 has 256 input channels), so the
+/// internal model is sized for the largest console, not the first one.
+/// The GP OSC *wire* number space stays `u8` (it only spans 1–127).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ChannelId {
-    Input(u8),        // 1–60
-    Aux(u8),          // 1–n (depends on aux/group split)
-    Group(u8),        // 1–n
-    Matrix(u8),       // 1–8
-    ControlGroup(u8), // 1–10
-    GraphicEq(u8),    // 1–16
-    MatrixInput(u8),  // 1–10
+    Input(u16),        // 1–60 (S series)
+    Aux(u16),          // 1–n (depends on aux/group split)
+    Group(u16),        // 1–n
+    Matrix(u16),       // 1–8
+    ControlGroup(u16), // 1–10
+    GraphicEq(u16),    // 1–16
+    MatrixInput(u16),  // 1–10
 }
 
 impl ChannelId {
     /// Convert to the GP OSC unified channel number.
-    /// Returns None for channel types not in the GP OSC number space.
+    /// Returns None for channel types not in the GP OSC number space, or for
+    /// channel numbers past its `u8` range (SD/Quantum-sized channels have no
+    /// GP OSC representation — the S series never exceeds it).
     pub fn to_gp_osc_number(&self) -> Option<u8> {
+        // `checked_add` before the narrowing: the offset addition is done in
+        // u16, and a channel number near u16::MAX (reachable from the Macros
+        // tab's free-text channel field) would otherwise overflow — panicking
+        // in debug builds and wrapping into a *valid-looking* GP number in
+        // release, which would address the wrong channel on the desk.
+        let offset = |base: u16, n: &u16| n.checked_add(base).and_then(|v| u8::try_from(v).ok());
         match self {
-            ChannelId::Input(n) => Some(*n),             // 1–60
-            ChannelId::Aux(n) => Some(69 + n),           // Aux 1 → 70
-            ChannelId::Group(n) => Some(77 + n),         // Group 1 → 78
-            ChannelId::Matrix(n) => Some(119 + n),       // Matrix 1 → 120
-            ChannelId::ControlGroup(n) => Some(109 + n), // CG 1 → 110
+            ChannelId::Input(n) => u8::try_from(*n).ok(), // 1–60
+            ChannelId::Aux(n) => offset(69, n),           // Aux 1 → 70
+            ChannelId::Group(n) => offset(77, n),         // Group 1 → 78
+            ChannelId::Matrix(n) => offset(119, n),       // Matrix 1 → 120
+            ChannelId::ControlGroup(n) => offset(109, n), // CG 1 → 110
             // GraphicEq and MatrixInput are not in the GP OSC number space
             ChannelId::GraphicEq(_) | ChannelId::MatrixInput(_) => None,
         }
@@ -46,7 +61,7 @@ impl ChannelId {
         mix_output_types: Option<&[bool]>,
     ) -> Option<Self> {
         match n {
-            1..=60 => Some(ChannelId::Input(n)),
+            1..=60 => Some(ChannelId::Input(n as u16)),
             70..=93 => {
                 let bus_index_0 = (n - 70) as usize; // 0-based bus index
                 if let Some(types) = mix_output_types {
@@ -54,11 +69,11 @@ impl ChannelId {
                         if is_aux {
                             // Count how many auxes come before this bus
                             let aux_num =
-                                types[..=bus_index_0].iter().filter(|&&t| t).count() as u8;
+                                types[..=bus_index_0].iter().filter(|&&t| t).count() as u16;
                             Some(ChannelId::Aux(aux_num))
                         } else {
                             let group_num =
-                                types[..=bus_index_0].iter().filter(|&&t| !t).count() as u8;
+                                types[..=bus_index_0].iter().filter(|&&t| !t).count() as u16;
                             Some(ChannelId::Group(group_num))
                         }
                     } else {
@@ -68,29 +83,46 @@ impl ChannelId {
                 } else {
                     // No config: fallback — first 8 are aux, rest are group
                     if n <= 77 {
-                        Some(ChannelId::Aux(n - 69))
+                        Some(ChannelId::Aux((n - 69) as u16))
                     } else {
-                        Some(ChannelId::Group(n - 77))
+                        Some(ChannelId::Group((n - 77) as u16))
                     }
                 }
             }
-            110..=119 => Some(ChannelId::ControlGroup(n - 109)),
-            120..=127 => Some(ChannelId::Matrix(n - 119)),
+            110..=119 => Some(ChannelId::ControlGroup((n - 109) as u16)),
+            120..=127 => Some(ChannelId::Matrix((n - 119) as u16)),
             _ => None,
         }
     }
 
-    /// Convert to the iPad protocol path prefix.
-    pub fn to_ipad_path_prefix(&self) -> String {
+    /// Convert to the Pad-protocol path prefix under the given wire quirks.
+    /// Use [`Self::to_ipad_path_prefix`] for the S21 quirks.
+    pub fn to_pad_path_prefix(&self, q: &PadQuirks) -> String {
         match self {
             ChannelId::Input(n) => format!("/Input_Channels/{n}"),
             ChannelId::Aux(n) => format!("/Aux_Outputs/{n}"),
             ChannelId::Group(n) => format!("/Group_Outputs/{n}"),
             ChannelId::Matrix(n) => format!("/Matrix_Outputs/{n}"),
-            ChannelId::ControlGroup(n) => format!("/Control_Groups/{}", n - 1), // iPad is 0-based
+            ChannelId::ControlGroup(n) => {
+                // Control Groups are the one channel type the S21 numbers from
+                // zero. `saturating_sub` keeps a malformed CG 0 (which
+                // `is_within_bounds` rejects anyway) from underflowing here.
+                let wire = if q.control_groups_zero_based {
+                    n.saturating_sub(1)
+                } else {
+                    *n
+                };
+                format!("/Control_Groups/{wire}")
+            }
             ChannelId::GraphicEq(n) => format!("/Graphic_EQ/{n}"),
             ChannelId::MatrixInput(n) => format!("/Matrix_Inputs/{n}"),
         }
+    }
+
+    /// [`Self::to_pad_path_prefix`] under the hardware-verified S21 quirks.
+    #[inline]
+    pub fn to_ipad_path_prefix(&self) -> String {
+        self.to_pad_path_prefix(&PadQuirks::S21)
     }
 
     /// Parse from an iPad protocol path.
@@ -116,18 +148,30 @@ impl ChannelId {
         let (type_and_num, rest) = split_ipad_prefix(path)?;
         let (channel_type, num_str) = type_and_num;
 
-        let num: u8 = num_str.parse().ok()?;
+        // Wire quirks come from the live console config when we have one;
+        // pre-discovery callers (handshake) get the S21 defaults.
+        let quirks = config
+            .map(|c| c.profile().pad_quirks)
+            .unwrap_or(PadQuirks::S21);
+
+        let num: u16 = num_str.parse().ok()?;
 
         let channel = match channel_type {
             "Input_Channels" => ChannelId::Input(num),
             "Aux_Outputs" => ChannelId::Aux(num),
             "Group_Outputs" => ChannelId::Group(num),
             "Matrix_Outputs" => ChannelId::Matrix(num),
-            // iPad is 0-based; we store 1-based. `checked_add` rejects num=255
-            // gracefully (would overflow `u8`); `is_within_bounds` below
-            // catches the rest of the out-of-range cases. Found by audit M6
-            // proptest fuzz.
-            "Control_Groups" => ChannelId::ControlGroup(num.checked_add(1)?),
+            // The S21 numbers Control Groups from 0 on the wire; we store
+            // 1-based. `checked_add` rejects the max value gracefully (would
+            // overflow); `is_within_bounds` below catches the rest of the
+            // out-of-range cases. Found by audit M6 proptest fuzz.
+            "Control_Groups" => {
+                if quirks.control_groups_zero_based {
+                    ChannelId::ControlGroup(num.checked_add(1)?)
+                } else {
+                    ChannelId::ControlGroup(num)
+                }
+            }
             "Graphic_EQ" => ChannelId::GraphicEq(num),
             "Matrix_Inputs" => ChannelId::MatrixInput(num),
             _ => return None,
@@ -197,38 +241,66 @@ mod tests {
     #[test]
     fn gp_osc_round_trip() {
         // Input channels
-        for n in 1..=60u8 {
+        for n in 1..=60u16 {
             let ch = ChannelId::Input(n);
             let osc = ch.to_gp_osc_number().unwrap();
             assert_eq!(ChannelId::from_gp_osc_number(osc), Some(ch));
         }
         // Aux
-        for n in 1..=8u8 {
+        for n in 1..=8u16 {
             let ch = ChannelId::Aux(n);
             let osc = ch.to_gp_osc_number().unwrap();
-            assert_eq!(osc, 69 + n);
+            assert_eq!(osc as u16, 69 + n);
             assert_eq!(ChannelId::from_gp_osc_number(osc), Some(ch));
         }
         // Group
-        for n in 1..=16u8 {
+        for n in 1..=16u16 {
             let ch = ChannelId::Group(n);
             let osc = ch.to_gp_osc_number().unwrap();
-            assert_eq!(osc, 77 + n);
+            assert_eq!(osc as u16, 77 + n);
             assert_eq!(ChannelId::from_gp_osc_number(osc), Some(ch));
         }
         // Matrix
-        for n in 1..=8u8 {
+        for n in 1..=8u16 {
             let ch = ChannelId::Matrix(n);
             let osc = ch.to_gp_osc_number().unwrap();
-            assert_eq!(osc, 119 + n);
+            assert_eq!(osc as u16, 119 + n);
             assert_eq!(ChannelId::from_gp_osc_number(osc), Some(ch));
         }
         // Control Groups
-        for n in 1..=10u8 {
+        for n in 1..=10u16 {
             let ch = ChannelId::ControlGroup(n);
             let osc = ch.to_gp_osc_number().unwrap();
-            assert_eq!(osc, 109 + n);
+            assert_eq!(osc as u16, 109 + n);
             assert_eq!(ChannelId::from_gp_osc_number(osc), Some(ch));
+        }
+    }
+
+    #[test]
+    fn gp_osc_number_rejects_out_of_u8_range_channels() {
+        // SD/Quantum-sized channel numbers have no GP OSC representation.
+        assert_eq!(ChannelId::Input(256).to_gp_osc_number(), None);
+        assert_eq!(ChannelId::Aux(200).to_gp_osc_number(), None);
+    }
+
+    #[test]
+    fn gp_osc_number_does_not_overflow_on_absurd_channel_numbers() {
+        // The Macros tab parses a free-text channel number with no upper
+        // bound. Adding the bus offset must not panic in debug nor wrap into
+        // a plausible-looking channel in release.
+        for ch in [
+            ChannelId::Aux(u16::MAX),
+            ChannelId::Group(u16::MAX),
+            ChannelId::Matrix(u16::MAX),
+            ChannelId::ControlGroup(u16::MAX),
+            ChannelId::Aux(65_500),
+            ChannelId::Input(u16::MAX),
+        ] {
+            assert_eq!(
+                ch.to_gp_osc_number(),
+                None,
+                "{ch:?} must have no GP OSC number"
+            );
         }
     }
 
@@ -291,6 +363,8 @@ mod tests {
             input_modes: vec![],
             group_modes: vec![],
             plus_mode: crate::model::config::PlusMode::S21,
+            family: crate::model::family::ConsoleFamily::SSeries,
+            pad_quirk_overrides: None,
         }
     }
 
@@ -352,6 +426,51 @@ mod tests {
         // populated, and in tests.
         let parsed = ChannelId::from_ipad_path_with_config("/Input_Channels/255/fader", None);
         assert_eq!(parsed, Some((ChannelId::Input(255), "/fader")));
+    }
+
+    #[test]
+    fn pad_path_prefix_without_cg_zero_base_quirk_is_one_based() {
+        let q = PadQuirks {
+            control_groups_zero_based: false,
+            ..PadQuirks::S21
+        };
+        assert_eq!(
+            ChannelId::ControlGroup(1).to_pad_path_prefix(&q),
+            "/Control_Groups/1"
+        );
+        // Other channel types are unaffected by the CG quirk.
+        assert_eq!(
+            ChannelId::Input(7).to_pad_path_prefix(&q),
+            "/Input_Channels/7"
+        );
+    }
+
+    #[test]
+    fn pad_path_parse_without_cg_zero_base_quirk_is_one_based() {
+        let mut cfg = s21_default_config();
+        cfg.pad_quirk_overrides = Some(PadQuirks {
+            control_groups_zero_based: false,
+            ..PadQuirks::S21
+        });
+        // Wire 1 is now CG 1 (not CG 2).
+        assert_eq!(
+            ChannelId::from_ipad_path_with_config("/Control_Groups/1/fader", Some(&cfg)),
+            Some((ChannelId::ControlGroup(1), "/fader")),
+        );
+        // Wire 0 is out of range for 1-based numbering.
+        assert!(
+            ChannelId::from_ipad_path_with_config("/Control_Groups/0/fader", Some(&cfg)).is_none()
+        );
+    }
+
+    #[test]
+    fn control_group_zero_does_not_underflow() {
+        // CG 0 is never valid (`is_within_bounds` rejects it), but encoding
+        // one must not panic in debug builds.
+        assert_eq!(
+            ChannelId::ControlGroup(0).to_ipad_path_prefix(),
+            "/Control_Groups/0"
+        );
     }
 
     #[test]

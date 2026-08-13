@@ -41,7 +41,7 @@ pub struct MonitorTabState {
     pub last_health: ConnectionHealth,
     /// Last-good aux reference rows `(aux_number, name)`. Same rationale: the
     /// table renders from this snapshot, refreshed only when the lock is free.
-    pub aux_ref_cache: Vec<(u8, String)>,
+    pub aux_ref_cache: Vec<(u16, String)>,
 }
 
 /// Draw the Monitor tab.
@@ -399,7 +399,7 @@ pub fn draw_monitor_tab(
                                 let mut to_edit: Option<MonitorClient> = None;
                                 // Per-row reorder result staged for after the loop, so we
                                 // can release the read lock before calling update_client.
-                                let mut to_update_order: Option<(Uuid, Vec<u8>, Vec<u8>)> = None;
+                                let mut to_update_order: Option<(Uuid, Vec<u16>, Vec<u16>)> = None;
 
                                 for client in &clients {
                                     let in_reorder = tab.reorder_for == Some(client.id);
@@ -438,7 +438,7 @@ pub fn draw_monitor_tab(
                                             ui.add_space(8.0);
 
                                             // Aux badges (magenta) — drag-reorderable in reorder mode.
-                                            let mut new_aux_order: Option<Vec<u8>> = None;
+                                            let mut new_aux_order: Option<Vec<u16>> = None;
                                             if in_reorder {
                                                 if let Some(reordered) = draw_reorderable_badges(
                                                     ui,
@@ -464,7 +464,7 @@ pub fn draw_monitor_tab(
                                             // Input badges (blue) — drag-reorderable when visible_inputs
                                             // is a specific list. The "All Inputs" sentinel is shown as
                                             // a single non-draggable badge.
-                                            let mut new_input_order: Option<Vec<u8>> = None;
+                                            let mut new_input_order: Option<Vec<u16>> = None;
                                             if client.visible_inputs.is_empty() {
                                                 theme::colored_badge(
                                                     ui,
@@ -839,11 +839,11 @@ fn build_qr_image(data: &str) -> Option<egui::ColorImage> {
 /// profiles) don't collide.
 fn draw_reorderable_badges(
     ui: &mut egui::Ui,
-    items: &[u8],
-    label_fn: impl Fn(u8) -> String,
+    items: &[u16],
+    label_fn: impl Fn(u16) -> String,
     color: egui::Color32,
     id_prefix: (Uuid, &'static str),
-) -> Option<Vec<u8>> {
+) -> Option<Vec<u16>> {
     let mut reorder: Option<(usize, usize)> = None;
 
     for (i, &v) in items.iter().enumerate() {
@@ -871,8 +871,8 @@ fn draw_reorderable_badges(
 /// Move the item at `src` to position `dst`, returning the new order.
 /// "Drop on dst" means the dragged item lands at the dst's current visual
 /// position — items between src and dst shift to make room.
-fn reorder_vec(items: &[u8], src: usize, dst: usize) -> Vec<u8> {
-    let mut out: Vec<u8> = items.to_vec();
+fn reorder_vec(items: &[u16], src: usize, dst: usize) -> Vec<u16> {
+    let mut out: Vec<u16> = items.to_vec();
     if src >= out.len() || dst >= out.len() || src == dst {
         return out;
     }

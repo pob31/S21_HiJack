@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::model::family::{ConsoleFamily, PadQuirks};
 use crate::model::ui_mode::{ColorTheme, UiMode};
 
 const APP_DIR: &str = "s21_hijack";
@@ -104,6 +105,16 @@ pub struct AppPreferences {
     /// load with no sidecar ports configured.
     #[serde(default)]
     pub sidecar_midi: SidecarMidiSettings,
+    /// Console family to assume for a NEW show, when no show file has said
+    /// otherwise. A loaded show always wins — its `console_config` carries its
+    /// own family. `None` means S-series.
+    #[serde(default)]
+    pub console_family: Option<ConsoleFamily>,
+    /// Machine-level corrections to the family's stock wire quirks, seeded
+    /// into new shows. Set this after a hardware probe disproves one of the
+    /// SD/Quantum hypotheses so every new show on this machine starts right.
+    #[serde(default)]
+    pub pad_quirk_overrides: Option<PadQuirks>,
 }
 
 /// Default UI scale multiplier — `1.0` means "use the automatic scaling
@@ -128,6 +139,8 @@ impl Default for AppPreferences {
             last_open_dir: None,
             midi: MidiSettings::default(),
             sidecar_midi: SidecarMidiSettings::default(),
+            console_family: None,
+            pad_quirk_overrides: None,
         }
     }
 }
@@ -223,6 +236,9 @@ mod tests {
         assert!(prefs.last_open_dir.is_none());
         // Missing sidecar_midi defaults to unconfigured ports.
         assert_eq!(prefs.sidecar_midi, SidecarMidiSettings::default());
+        // Missing console family means "let the show decide" (S-series).
+        assert!(prefs.console_family.is_none());
+        assert!(prefs.pad_quirk_overrides.is_none());
     }
 
     #[test]
@@ -237,6 +253,8 @@ mod tests {
         assert!(prefs.window_size.is_none());
         assert!(prefs.window_pos.is_none());
         assert!(prefs.last_open_dir.is_none());
+        assert!(prefs.console_family.is_none());
+        assert!(prefs.pad_quirk_overrides.is_none());
     }
 
     #[test]
@@ -260,10 +278,17 @@ mod tests {
                 input_port_name: Some("X-Touch".into()),
                 output_port_name: None,
             },
+            console_family: Some(ConsoleFamily::Quantum),
+            pad_quirk_overrides: Some(PadQuirks {
+                eq_bands_reversed: true,
+                ..PadQuirks::SD_HYPOTHESIS
+            }),
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: AppPreferences = serde_json::from_str(&json).unwrap();
         assert_eq!(prefs.midi, back.midi);
+        assert_eq!(prefs.console_family, back.console_family);
+        assert_eq!(prefs.pad_quirk_overrides, back.pad_quirk_overrides);
         assert_eq!(prefs.sidecar_midi, back.sidecar_midi);
         assert_eq!(prefs.send_pace_us, back.send_pace_us);
         assert_eq!(prefs.show_diagnostics, back.show_diagnostics);

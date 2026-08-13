@@ -544,7 +544,7 @@ pub const TILE_COLUMN_GAP: f32 = 20.0;
 /// `aux_cols`-wide grid together fill `avail_w`, clamped to
 /// `[TILE_W_MIN, TILE_W_MAX]`. Callers derive each panel's width with
 /// [`panel_width`].
-pub fn channel_tile_width(avail_w: f32, inputs_cols: u8, aux_cols: u8) -> f32 {
+pub fn channel_tile_width(avail_w: f32, inputs_cols: u16, aux_cols: u16) -> f32 {
     let cols = (inputs_cols as f32 + aux_cols as f32).max(1.0);
     let inner_gaps = TILE_GAP * (inputs_cols.saturating_sub(1) + aux_cols.saturating_sub(1)) as f32;
     ((avail_w - inner_gaps - TILE_COLUMN_GAP) / cols).clamp(TILE_W_MIN, TILE_W_MAX)
@@ -552,14 +552,14 @@ pub fn channel_tile_width(avail_w: f32, inputs_cols: u8, aux_cols: u8) -> f32 {
 
 /// Width of a grid panel holding `cols` tiles of width `tile_w` (with `TILE_GAP`
 /// between them). Used to size the panel and its header so they line up.
-pub fn panel_width(tile_w: f32, cols: u8) -> f32 {
+pub fn panel_width(tile_w: f32, cols: u16) -> f32 {
     tile_w * cols as f32 + TILE_GAP * cols.saturating_sub(1) as f32
 }
 
 /// Minimum sensible content width for an inputs+auxes grid pair (tiles at
 /// `TILE_W_MIN`). Windows hosting the grids use this as their `min_width` so the
 /// tiles never shrink below legibility or scroll horizontally.
-pub fn grids_min_width(inputs_cols: u8, aux_cols: u8) -> f32 {
+pub fn grids_min_width(inputs_cols: u16, aux_cols: u16) -> f32 {
     panel_width(TILE_W_MIN, inputs_cols) + TILE_COLUMN_GAP + panel_width(TILE_W_MIN, aux_cols)
 }
 

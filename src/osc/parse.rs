@@ -13,17 +13,17 @@ pub enum ParsedOscMessage {
     /// Console pong (keepalive response).
     Pong,
     /// Discovery response: channel count for a specific type (per-type sub-path form).
-    DiscoveryCount { channel_type: String, count: u8 },
+    DiscoveryCount { channel_type: String, count: u16 },
     /// Discovery response: positional channel counts reply.
     /// `/console/channel/counts <inputs> <aux> <groups> <control_groups> <matrices> <master>`
     /// This is the canonical GP OSC reply form on the real S21+.
     ChannelCounts {
-        inputs: u8,
-        aux: u8,
-        groups: u8,
-        control_groups: u8,
-        matrices: u8,
-        master: u8,
+        inputs: u16,
+        aux: u16,
+        groups: u16,
+        control_groups: u16,
+        matrices: u16,
+        master: u16,
     },
     /// The console's current snapshot row, for Console→App follow. Parsed from
     /// an inbound `/digico/snapshots/fire <n>` — the desk echoing its own
@@ -65,12 +65,12 @@ pub fn parse_gp_osc_with_config(
     // /console/channel/counts <inputs> <aux> <groups> <control_groups> <matrices> <master>
     if path == "/console/channel/counts" && args.len() >= 6 {
         if let (Some(inputs), Some(aux), Some(groups), Some(cgs), Some(matrices), Some(master)) = (
-            extract_u8(&args[0]),
-            extract_u8(&args[1]),
-            extract_u8(&args[2]),
-            extract_u8(&args[3]),
-            extract_u8(&args[4]),
-            extract_u8(&args[5]),
+            extract_u16(&args[0]),
+            extract_u16(&args[1]),
+            extract_u16(&args[2]),
+            extract_u16(&args[3]),
+            extract_u16(&args[4]),
+            extract_u16(&args[5]),
         ) {
             return ParsedOscMessage::ChannelCounts {
                 inputs,
@@ -86,7 +86,7 @@ pub fn parse_gp_osc_with_config(
     // Per-type discovery responses (kept for back-compat with mock/iPad sources):
     // /console/channel/counts/{type} INT
     if let Some(type_name) = path.strip_prefix("/console/channel/counts/") {
-        if let Some(count) = args.first().and_then(extract_u8) {
+        if let Some(count) = args.first().and_then(extract_u16) {
             return ParsedOscMessage::DiscoveryCount {
                 channel_type: type_name.to_string(),
                 count,
@@ -104,10 +104,10 @@ pub fn parse_gp_osc_with_config(
     ParsedOscMessage::Unknown(path.to_string())
 }
 
-fn extract_u8(arg: &OscType) -> Option<u8> {
+fn extract_u16(arg: &OscType) -> Option<u16> {
     match arg {
-        OscType::Int(i) => u8::try_from(*i).ok(),
-        OscType::Float(f) => u8::try_from(*f as i32).ok(),
+        OscType::Int(i) => u16::try_from(*i).ok(),
+        OscType::Float(f) => u16::try_from(*f as i32).ok(),
         _ => None,
     }
 }

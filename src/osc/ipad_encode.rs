@@ -2,57 +2,89 @@ use rosc::OscType;
 
 use super::ipad_values;
 use crate::model::channel::ChannelId;
+use crate::model::family::{BoolWire, PadQuirks, PanWire};
 use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
 
-/// Encode a parameter address and value into an iPad protocol OSC path and args.
-/// Returns None for parameters with no iPad representation (GP OSC-only).
+/// Encode a parameter address and value into a Pad-protocol OSC path and args
+/// under the given wire quirks.
 ///
-/// Applies pan value conversion: internal -1..+1 → iPad 0..1.
+/// Returns None for parameters with no Pad representation (GP OSC-only).
+/// Applies the family's pan and boolean wire conventions.
+pub fn encode_pad_parameter(
+    addr: &ParameterAddress,
+    value: &ParameterValue,
+    q: &PadQuirks,
+) -> Option<(String, Vec<OscType>)> {
+    let prefix = addr.channel.to_pad_path_prefix(q);
+    let suffix = addr.parameter.to_pad_suffix(q)?;
+    let path = format!("{prefix}/{suffix}");
+
+    // Apply pan conversion for Pan and SendPan
+    let effective_value = convert_value_for_pad(&addr.parameter, value, q.pan_wire);
+    let args = vec![value_to_osc_type(&effective_value, q.bool_wire)];
+    Some((path, args))
+}
+
+/// [`encode_pad_parameter`] under the hardware-verified S21 quirks.
+#[inline]
 pub fn encode_ipad_parameter(
     addr: &ParameterAddress,
     value: &ParameterValue,
 ) -> Option<(String, Vec<OscType>)> {
-    let prefix = addr.channel.to_ipad_path_prefix();
-    let suffix = addr.parameter.to_ipad_suffix()?;
-    let path = format!("{prefix}/{suffix}");
-
-    // Apply pan conversion for Pan and SendPan
-    let effective_value = convert_value_for_ipad(&addr.parameter, value);
-    let args = vec![value_to_osc_type(&effective_value)];
-    Some((path, args))
+    encode_pad_parameter(addr, value, &PadQuirks::S21)
 }
 
-/// Encode an iPad protocol query message (append /? to parameter path).
-pub fn encode_ipad_query(channel: &ChannelId, parameter: &ParameterPath) -> Option<String> {
-    let prefix = channel.to_ipad_path_prefix();
-    let suffix = parameter.to_ipad_suffix()?;
+/// Encode a Pad-protocol query message (append /? to the parameter path).
+pub fn encode_pad_query(
+    channel: &ChannelId,
+    parameter: &ParameterPath,
+    q: &PadQuirks,
+) -> Option<String> {
+    let prefix = channel.to_pad_path_prefix(q);
+    let suffix = parameter.to_pad_suffix(q)?;
     Some(format!("{prefix}/{suffix}/?"))
 }
 
-/// Convert internal value to iPad protocol value (e.g., pan conversion).
-fn convert_value_for_ipad(parameter: &ParameterPath, value: &ParameterValue) -> ParameterValue {
+/// [`encode_pad_query`] under the hardware-verified S21 quirks.
+#[inline]
+pub fn encode_ipad_query(channel: &ChannelId, parameter: &ParameterPath) -> Option<String> {
+    encode_pad_query(channel, parameter, &PadQuirks::S21)
+}
+
+/// Convert an internal value to its on-the-wire form (pan range only).
+fn convert_value_for_pad(
+    parameter: &ParameterPath,
+    value: &ParameterValue,
+    pan_wire: PanWire,
+) -> ParameterValue {
     match parameter {
-        ParameterPath::Pan | ParameterPath::SendPan(_) => {
-            if let ParameterValue::Float(f) = value {
+        ParameterPath::Pan | ParameterPath::SendPan(_) => match (value, pan_wire) {
+            (ParameterValue::Float(f), PanWire::ZeroToOne) => {
                 ParameterValue::Float(ipad_values::internal_pan_to_ipad(*f))
-            } else {
-                value.clone()
             }
-        }
+            // SignedUnit matches the internal representation — no conversion.
+            _ => value.clone(),
+        },
         _ => value.clone(),
     }
 }
 
-fn value_to_osc_type(value: &ParameterValue) -> OscType {
+fn value_to_osc_type(value: &ParameterValue, bool_wire: BoolWire) -> OscType {
     match value {
         ParameterValue::Float(f) => OscType::Float(*f),
         ParameterValue::Int(i) => OscType::Int(*i),
-        // The iPad protocol sends toggles (mute, solo, *_enabled, …) as a
-        // FLOAT 0.0/1.0 — confirmed in the live OSC log ("0f"/"1f"). This is a
-        // different convention from GP OSC (OSC booleans); only genuinely
-        // boolean params reach this arm, so enum-ish iPad ints (stereo_mode,
-        // main_alt_in) — which are `ParameterValue::Int` — are unaffected.
-        ParameterValue::Bool(b) => OscType::Float(if *b { 1.0 } else { 0.0 }),
+        // The S21 sends toggles (mute, solo, *_enabled, …) as a FLOAT 0.0/1.0
+        // — confirmed in the live OSC log ("0f"/"1f"). This is a different
+        // convention from GP OSC (OSC booleans); only genuinely boolean params
+        // reach this arm, so enum-ish Pad ints (stereo_mode, main_alt_in) —
+        // which are `ParameterValue::Int` — are unaffected. Inbound parsing
+        // accepts all three encodings regardless (`ipad_parse::extract_bool`),
+        // so this choice only governs what we send.
+        ParameterValue::Bool(b) => match bool_wire {
+            BoolWire::Float01 => OscType::Float(if *b { 1.0 } else { 0.0 }),
+            BoolWire::OscBool => OscType::Bool(*b),
+            BoolWire::Int01 => OscType::Int(if *b { 1 } else { 0 }),
+        },
         ParameterValue::String(s) => OscType::String(s.clone()),
     }
 }

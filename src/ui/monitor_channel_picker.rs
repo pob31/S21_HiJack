@@ -32,20 +32,20 @@ pub struct ChannelPickerState {
     /// Optional per-profile PIN (web login). Empty string = no PIN (name-only).
     pub pin: String,
 
-    pub input_count: u8,
-    pub aux_count: u8,
+    pub input_count: u16,
+    pub aux_count: u16,
     /// Selected channels in the order the operator clicked them. Used as the
     /// channel order saved into the profile. A small order badge (1, 2, 3, …)
     /// is rendered on each selected tile to make this order visible.
-    pub selected_inputs: Vec<u8>,
-    pub selected_auxes: Vec<u8>,
+    pub selected_inputs: Vec<u16>,
+    pub selected_auxes: Vec<u16>,
 
     /// Operator-given names for each channel. Empty entries fall back to the
     /// numeric label at render time.
-    pub input_names: HashMap<u8, String>,
-    pub aux_names: HashMap<u8, String>,
+    pub input_names: HashMap<u16, String>,
+    pub aux_names: HashMap<u16, String>,
     /// Stereo aux numbers (1-based). Mono auxes are simply absent from the set.
-    pub stereo_auxes: HashSet<u8>,
+    pub stereo_auxes: HashSet<u16>,
 
     /// Ripple-select state machine for the Inputs grid. While ripple is
     /// armed, tile clicks pick range endpoints instead of toggling the
@@ -68,10 +68,10 @@ pub enum RippleState {
     /// Operator armed Ripple — next tile click sets the first endpoint.
     Pending,
     /// First endpoint chosen — next tile click sets the last endpoint.
-    GotFirst { first: u8 },
+    GotFirst { first: u16 },
     /// Both endpoints chosen — operator must confirm or cancel before the
     /// range is committed.
-    Confirming { first: u8, last: u8 },
+    Confirming { first: u16, last: u16 },
 }
 
 /// Result of one frame of the picker window.
@@ -82,8 +82,8 @@ pub enum PickerOutcome {
         name: String,
         /// `None` when the PIN field is blank (name-only login).
         pin: Option<String>,
-        permitted_auxes: Vec<u8>,
-        visible_inputs: Vec<u8>,
+        permitted_auxes: Vec<u16>,
+        visible_inputs: Vec<u16>,
     },
     /// User cancelled (X, Cancel button, or escape).
     Cancel,
@@ -101,8 +101,8 @@ impl ChannelPickerState {
         // Default ordering = ascending. If the operator never deselects an
         // input, save will collapse this back to an empty `Vec` to preserve
         // the "all (and any future inputs)" sentinel.
-        let selected_inputs: Vec<u8> = (1..=input_count).collect();
-        let selected_auxes: Vec<u8> = Vec::new();
+        let selected_inputs: Vec<u16> = (1..=input_count).collect();
+        let selected_auxes: Vec<u16> = Vec::new();
 
         let input_names = collect_input_names(state, input_count);
         let aux_names = collect_aux_names(state, aux_count);
@@ -135,12 +135,12 @@ impl ChannelPickerState {
         // Preserve the saved order. Empty `visible_inputs` (the "all inputs"
         // sentinel) is rendered as the canonical 1..=N order so toggling /
         // reordering works the same way as for a new profile.
-        let selected_inputs: Vec<u8> = if client.visible_inputs.is_empty() {
+        let selected_inputs: Vec<u16> = if client.visible_inputs.is_empty() {
             (1..=input_count).collect()
         } else {
             client.visible_inputs.clone()
         };
-        let selected_auxes: Vec<u8> = client.permitted_auxes.clone();
+        let selected_auxes: Vec<u16> = client.permitted_auxes.clone();
 
         Self {
             editing: Some(client.id),
@@ -161,8 +161,8 @@ impl ChannelPickerState {
     /// appended in click direction (`first`→`last` ascending, or in reverse
     /// when `first > last`), skipping any channel already in the selection
     /// to preserve its existing position in the order list.
-    fn apply_ripple(&mut self, first: u8, last: u8) {
-        let range: Vec<u8> = if first <= last {
+    fn apply_ripple(&mut self, first: u16, last: u16) {
+        let range: Vec<u16> = if first <= last {
             (first..=last).collect()
         } else {
             (last..=first).rev().collect()
@@ -177,7 +177,7 @@ impl ChannelPickerState {
     /// Toggle a channel in `selected_inputs`. Removing preserves the order of
     /// the remaining items; adding pushes to the end so the click order is
     /// visible in the order badges.
-    fn toggle_input(&mut self, ch: u8) {
+    fn toggle_input(&mut self, ch: u16) {
         if let Some(pos) = self.selected_inputs.iter().position(|&v| v == ch) {
             self.selected_inputs.remove(pos);
         } else {
@@ -185,7 +185,7 @@ impl ChannelPickerState {
         }
     }
 
-    fn toggle_aux(&mut self, ch: u8) {
+    fn toggle_aux(&mut self, ch: u16) {
         if let Some(pos) = self.selected_auxes.iter().position(|&v| v == ch) {
             self.selected_auxes.remove(pos);
         } else {
@@ -198,7 +198,7 @@ impl ChannelPickerState {
         // empty Vec so the profile keeps the future-proof "any input is
         // permitted" semantic. Any reordering away from canonical means the
         // operator cares about order — save the explicit list.
-        let inputs_canonical = self.selected_inputs.len() as u8 == self.input_count
+        let inputs_canonical = self.selected_inputs.len() as u16 == self.input_count
             && self
                 .selected_inputs
                 .iter()
@@ -233,7 +233,7 @@ impl ChannelPickerState {
     }
 }
 
-fn collect_input_names(state: &ConsoleState, input_count: u8) -> HashMap<u8, String> {
+fn collect_input_names(state: &ConsoleState, input_count: u16) -> HashMap<u16, String> {
     let mut out = HashMap::new();
     for n in 1..=input_count {
         let name = state
@@ -252,7 +252,7 @@ fn collect_input_names(state: &ConsoleState, input_count: u8) -> HashMap<u8, Str
     out
 }
 
-fn collect_aux_names(state: &ConsoleState, aux_count: u8) -> HashMap<u8, String> {
+fn collect_aux_names(state: &ConsoleState, aux_count: u16) -> HashMap<u16, String> {
     let mut out = HashMap::new();
     for n in 1..=aux_count {
         let name = state
@@ -271,7 +271,7 @@ fn collect_aux_names(state: &ConsoleState, aux_count: u8) -> HashMap<u8, String>
     out
 }
 
-fn collect_stereo_auxes(cfg: &ConsoleConfig, aux_count: u8) -> HashSet<u8> {
+fn collect_stereo_auxes(cfg: &ConsoleConfig, aux_count: u16) -> HashSet<u16> {
     let mut out = HashSet::new();
     for n in 1..=aux_count {
         if matches!(cfg.aux_mode(n), Some(ChannelMode::Stereo)) {
@@ -281,8 +281,8 @@ fn collect_stereo_auxes(cfg: &ConsoleConfig, aux_count: u8) -> HashSet<u8> {
     out
 }
 
-const TILES_PER_INPUT_ROW: u8 = 10;
-const TILES_PER_AUX_ROW: u8 = 4;
+const TILES_PER_INPUT_ROW: u16 = 10;
+const TILES_PER_AUX_ROW: u16 = 4;
 /// Gap between controls inside a panel header (labels / buttons). The grid rows
 /// force `item_spacing.x = 0` for exact tile math, so the headers reset it to
 /// this. Tile sizing itself is responsive — see [`theme::channel_tile_width`].
@@ -626,7 +626,7 @@ fn draw_inputs_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState, tile_w: f
         // get an orange outline overlay; tiles between endpoints during
         // Confirming get a translucent orange tint to preview the range.
         let mut next_ripple: Option<RippleState> = None;
-        let mut n: u8 = 1;
+        let mut n: u16 = 1;
         while n <= state.input_count {
             ui.horizontal(|ui| {
                 let row_end = (n + TILES_PER_INPUT_ROW - 1).min(state.input_count);
@@ -675,7 +675,7 @@ fn draw_inputs_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState, tile_w: f
 }
 
 /// Decide what kind of ripple-mode highlight (if any) a tile should get.
-fn ripple_highlight_for(ripple: RippleState, ch: u8) -> RippleHighlight {
+fn ripple_highlight_for(ripple: RippleState, ch: u16) -> RippleHighlight {
     match ripple {
         RippleState::Off | RippleState::Pending => RippleHighlight::None,
         RippleState::GotFirst { first } => {
@@ -740,7 +740,7 @@ fn draw_auxes_grid(ui: &mut egui::Ui, state: &mut ChannelPickerState, tile_w: f3
             return;
         }
 
-        let mut n: u8 = 1;
+        let mut n: u16 = 1;
         while n <= state.aux_count {
             ui.horizontal(|ui| {
                 let row_end = (n + TILES_PER_AUX_ROW - 1).min(state.aux_count);
@@ -780,7 +780,7 @@ mod tests {
     use crate::model::config::{ChannelMode, ConsoleConfig};
     use crate::model::state::ConsoleState;
 
-    fn config_with_inputs_and_auxes(input_count: u8, aux_count: u8) -> ConsoleConfig {
+    fn config_with_inputs_and_auxes(input_count: u16, aux_count: u16) -> ConsoleConfig {
         let mut c = ConsoleConfig::default();
         c.input_channel_count = input_count;
         c.aux_output_count = aux_count;

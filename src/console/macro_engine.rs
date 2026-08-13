@@ -7,15 +7,14 @@ use tokio::time;
 use tracing::{debug, info, warn};
 
 use super::macro_manager::MacroManager;
+use crate::console::console_tx::ConsoleTx;
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::macro_def::{MacroDef, MacroStepKind, MacroStepMode};
 use crate::model::parameter::{ParameterAddress, ParameterValue};
 use crate::model::recall_progress::{RecallKind, RecallProgress};
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
-use crate::osc::encode;
 use crate::osc::ipad_client::IpadSender;
-use crate::osc::ipad_encode;
 use crate::ui::UiEvent;
 
 /// Maximum recursion depth for `FireMacro` steps. A macro that calls
@@ -37,12 +36,11 @@ pub struct MacroExecutionResult {
 /// and sending the resulting values to the console.
 pub struct MacroEngine {
     state: Arc<RwLock<ConsoleState>>,
-    sender: OscSender,
-    /// iPad-protocol sender for parameters that have no GP OSC encoding
-    /// (analog gain, phantom, GEQ bands, …). Mirrors the gang/snapshot
-    /// engines so recorded iPad-only steps actually play back. `None` until
-    /// an iPad-protocol session (Mode 2/3) wires it in.
-    ipad_sender: Option<IpadSender>,
+    /// Console write path: GP OSC with iPad fallback for parameters that
+    /// have no GP OSC encoding (analog gain, phantom, GEQ bands, …), so
+    /// recorded iPad-only steps actually play back. The iPad half is `None`
+    /// until an iPad-protocol session (Mode 2/3) wires it in.
+    tx: ConsoleTx,
     dirty_tracker: Option<Arc<RwLock<DirtyTracker>>>,
     /// Used to look up macros by ID for the `FireMacro` step kind.
     macro_manager: Arc<RwLock<MacroManager>>,
@@ -74,8 +72,7 @@ impl MacroEngine {
     ) -> Self {
         Self {
             state,
-            sender,
-            ipad_sender: None,
+            tx: ConsoleTx::new(sender),
             dirty_tracker: None,
             macro_manager,
             ui_tx,
@@ -98,43 +95,24 @@ impl MacroEngine {
     /// Wire in the iPad-protocol sender so macro steps for iPad-only
     /// parameters fall back to it instead of being skipped.
     pub fn set_ipad_sender(&mut self, sender: Option<IpadSender>) {
-        self.ipad_sender = sender;
+        self.tx.set_pad_sender(sender);
+    }
+
+    /// Attach the shared sent-value log (echo screening on the iPad link).
+    pub fn set_sent_log(&mut self, log: crate::console::console_tx::SentLog) {
+        self.tx.set_sent_log(log);
+    }
+
+    /// Point the write path at the connected console's profile (Pad wire quirks).
+    pub fn set_profile(&mut self, profile: Arc<crate::model::family::ConsoleProfile>) {
+        self.tx.set_profile(profile);
     }
 
     /// Send one resolved parameter to the console: GP OSC first, then the
     /// iPad protocol as a fallback for iPad-only parameters (mirrors
     /// `GangEngine::send_to_console`). Returns true on a successful send.
     async fn send_parameter(&self, addr: &ParameterAddress, value: &ParameterValue) -> bool {
-        let sent = match encode::encode_parameter(addr, value) {
-            Some((path, args)) => match self.sender.send(&path, args).await {
-                Ok(()) => true,
-                Err(e) => {
-                    warn!(%addr, "Macro: GP OSC send failed: {e}");
-                    false
-                }
-            },
-            None => {
-                // GP OSC can't encode it — try the iPad protocol.
-                if let Some(ref ipad) = self.ipad_sender {
-                    match ipad_encode::encode_ipad_parameter(addr, value) {
-                        Some((path, args)) => match ipad.send(&path, args).await {
-                            Ok(()) => true,
-                            Err(e) => {
-                                warn!(%addr, "Macro: iPad send failed: {e}");
-                                false
-                            }
-                        },
-                        None => {
-                            warn!(%addr, "Macro: cannot encode parameter for either protocol");
-                            false
-                        }
-                    }
-                } else {
-                    debug!(%addr, "Macro step skipped: iPad-only parameter, no iPad sender");
-                    false
-                }
-            }
-        };
+        let sent = self.tx.send_parameter_logged("Macro", addr, value).await;
         // Optimistically reflect our own send into the mirror — the desk doesn't
         // echo OSC-set values back (mirrors the gang engine's mirror update).
         if sent {

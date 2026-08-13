@@ -222,7 +222,7 @@ impl ChannelTypeChoice {
     }
 
     #[allow(clippy::wrong_self_convention)] // Copy enum; &self/self equivalent here.
-    fn to_channel_id(&self, num: u8) -> ChannelId {
+    fn to_channel_id(&self, num: u16) -> ChannelId {
         match self {
             Self::Input => ChannelId::Input(num),
             Self::Aux => ChannelId::Aux(num),
@@ -236,7 +236,7 @@ impl ChannelTypeChoice {
     /// pair. GraphicEq / MatrixInput don't have a corresponding choice
     /// and fall through to `Input` — the caller should then re-enter
     /// the section/parameter cascade fresh.
-    fn from_channel_id(channel: &ChannelId) -> (Self, u8) {
+    fn from_channel_id(channel: &ChannelId) -> (Self, u16) {
         match channel {
             ChannelId::Input(n) => (Self::Input, *n),
             ChannelId::Aux(n) => (Self::Aux, *n),
@@ -1869,7 +1869,7 @@ fn draw_parameter_wizard(
     .on_hover_text(help(HelpKey::MacroWizardChannelNumber));
 
     // Section
-    let ch_num: u8 = macros_state
+    let ch_num: u16 = macros_state
         .add_step_channel_number
         .parse()
         .unwrap_or(1)
@@ -2167,7 +2167,7 @@ fn build_step_kind(
 ) -> Option<MacroStepKind> {
     match macros_state.add_step_kind {
         AddStepKindChoice::Parameter => {
-            let ch_num: u8 = macros_state
+            let ch_num: u16 = macros_state
                 .add_step_channel_number
                 .parse()
                 .unwrap_or(1)
@@ -2212,7 +2212,7 @@ fn build_step_kind(
             .map(|id| MacroStepKind::RecallSnapshot { id }),
         AddStepKindChoice::RecallPalette => {
             let id = macros_state.add_step_target_palette?;
-            let ch_num: u8 = macros_state
+            let ch_num: u16 = macros_state
                 .add_step_palette_channel_number
                 .parse()
                 .unwrap_or(1)

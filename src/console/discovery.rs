@@ -11,12 +11,12 @@ use crate::model::config::{ChannelMode, ConsoleConfig, PlusMode};
 /// exactly one master and the config has no field for it.
 pub fn apply_channel_counts(
     config: &mut ConsoleConfig,
-    inputs: u8,
-    aux: u8,
-    groups: u8,
-    control_groups: u8,
-    matrices: u8,
-    _master: u8,
+    inputs: u16,
+    aux: u16,
+    groups: u16,
+    control_groups: u16,
+    matrices: u16,
+    _master: u16,
 ) {
     config.input_channel_count = inputs;
     config.aux_output_count = aux;
@@ -36,7 +36,7 @@ pub fn apply_channel_counts(
 
 /// Map a channel type name (from /console/channel/counts/{type}) to a config update.
 /// Returns true if the type was recognized and applied.
-pub fn apply_channel_count(config: &mut ConsoleConfig, channel_type: &str, count: u8) -> bool {
+pub fn apply_channel_count(config: &mut ConsoleConfig, channel_type: &str, count: u16) -> bool {
     match channel_type {
         "input" => {
             config.input_channel_count = count;

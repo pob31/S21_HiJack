@@ -7,9 +7,11 @@ use tokio::time;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use crate::console::console_tx::SentLog;
 use crate::console::discovery::apply_channel_counts;
 use crate::console::gang_engine::GangEngine;
 use crate::console::gang_manager::GangManager;
+use crate::console::inbound::{self, InboundSource};
 use crate::console::macro_manager::MacroManager;
 use crate::console::pan_link_engine::PanLinkEngine;
 use crate::model::dirty_tracker::DirtyTracker;
@@ -72,6 +74,11 @@ pub struct DaemonState {
     /// pre-wait or fade cancels the automation for exactly that
     /// `(channel, parameter)`. `None` when no recall engine is attached.
     pub automation_override: Option<crate::console::automation_registry::AutomationOverride>,
+    /// Shared recently-sent log: every engine `ConsoleTx` records successful
+    /// writes here, and the inbound chain consults it so the iPad/Pad link's
+    /// echo of our own write isn't mistaken for an operator move (GP OSC
+    /// doesn't echo, so it's inert for GP-only sessions).
+    pub sent_log: SentLog,
 }
 
 /// Connection manager handles the lifecycle of the console connection.
@@ -381,52 +388,6 @@ async fn set_health(state: &Arc<RwLock<ConsoleState>>, health: ConnectionHealth)
     }
 }
 
-// ── Fader change-screening deadbands ───────────────────────────────────
-// Motorized faders don't always return to a bit-exact dB after a recall or a
-// console layer change (rotary-encoder params do). These dB deadbands let the
-// auto-preselect "dirty" screening ignore that mechanical jitter. Bands widen
-// as the level drops — the physical track compresses a large dB range into a
-// sliver down low, mirroring the `FADER_GANG_FLOOR_DB` reasoning in `parameter`.
-const FADER_DEADBAND_HI_DB: f32 = 0.2; //  value >= -10 dB
-const FADER_DEADBAND_MID_DB: f32 = 0.3; // -40 <= value < -10 dB
-const FADER_DEADBAND_LO_DB: f32 = 0.4; //  value <  -40 dB
-
-/// True when an inbound value is a *meaningful* change vs the stored previous
-/// value — i.e. it should mark the cell dirty for the self-actualising scope.
-///
-/// Fader-controllable level params (see [`ParameterPath::is_fader_level`]) get a
-/// dB deadband, banded by the new (settled) value, so post-recall / layer-change
-/// fader jitter doesn't auto-preselect. Every other parameter keeps exact
-/// equality, matching the original `prev != value` behaviour.
-///
-/// Note: the comparison is against the immediately-preceding stored value
-/// (`ConsoleState::update` overwrites on every message). A very slow continuous
-/// fader ride in sub-deadband steps could therefore ride a long way without ever
-/// marking dirty — accepted, because this screens recall/layer-change jitter,
-/// not live rides (a real ride moves faster than the band per message). True
-/// hysteresis would need a separate "last-marked value" map, not a change to the
-/// live mirror.
-fn is_meaningful_change(
-    path: &crate::model::parameter::ParameterPath,
-    prev: &crate::model::parameter::ParameterValue,
-    new: &crate::model::parameter::ParameterValue,
-) -> bool {
-    use crate::model::parameter::ParameterValue::Float;
-    if path.is_fader_level()
-        && let (Float(a), Float(b)) = (prev, new)
-    {
-        let band = if *b >= -10.0 {
-            FADER_DEADBAND_HI_DB
-        } else if *b >= -40.0 {
-            FADER_DEADBAND_MID_DB
-        } else {
-            FADER_DEADBAND_LO_DB
-        };
-        return (a - b).abs() > band;
-    }
-    prev != new
-}
-
 /// Expected GP-OSC parameter count for the connection dump — the denominator
 /// for the progress line. Sums, per channel type, the channel count × the number
 /// of *GP-OSC-reachable* applicable paths (those with a `to_gp_osc_suffix`),
@@ -460,99 +421,10 @@ fn estimate_expected_param_count(config: &crate::model::config::ConsoleConfig) -
 async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender: &OscSender) {
     match parsed {
         ParsedOscMessage::ParameterUpdate(addr, value) => {
-            // TotalGain (GP OSC `total/gain`) is a console-derived, read-only
-            // monitor value (post-fader + CG sum). It can't be written back or
-            // meaningfully recalled, so drop it on receipt before it pollutes
-            // the state mirror, dirty tracker, override registry, gangs,
-            // pan-link, or macro recording. Mirrors macro_manager::record_change.
-            if matches!(
-                addr.parameter,
-                crate::model::parameter::ParameterPath::TotalGain
-            ) {
-                return;
-            }
-            debug!(%addr, %value, "Parameter update");
-            let old_value = daemon
-                .state
-                .write()
-                .await
-                .update(addr.clone(), value.clone());
-
-            // Mirror the most recent parameter address for the Macros
-            // tab's "track latest OSC" affordance.
-            *daemon.last_received.write().await = Some(addr.clone());
-
-            // While a console snapshot is loading, treat the desk's echo flood
-            // as the desk applying a coherent snapshot — not operator input.
-            // Computed BEFORE the dirty mark below so the flood can't pollute
-            // the dirty set either.
-            let in_console_load = crate::console::snapshot_engine::console_load_active(
-                &daemon.console_load_suppression,
-            );
-
-            // Mark this cell dirty IF the value actually changed. The dirty
-            // tracker is suppression-aware, so echoes from snapshot recall
-            // (which set begin_suppression before sending) are ignored. The
-            // first sample after a connection comes through old_value=None,
-            // which we treat as "this is the baseline" — not a change.
-            // Also gated on the console-load window: a memory load floods
-            // genuinely-different values for up to CONSOLE_LOAD_SUPPRESSION_MS
-            // — well past the recall's settle — and those are the DESK's
-            // changes, not the operator's. Without this gate the flood tail
-            // lands in the dirty set and the palette absorb loop folds it
-            // into whichever palette is live (the "palette bleed").
-            if !in_console_load
-                && let Some(prev) = &old_value
-                && is_meaningful_change(&addr.parameter, prev, value)
-            {
-                daemon.dirty_tracker.write().await.mark(addr);
-            }
-
-            // While a console snapshot is loading, DON'T gang/pan-propagate the
-            // desk's echo flood: the desk already applied the snapshot
-            // coherently, and re-propagating it back fights the desk and can
-            // saturate the outbound path into a stall (the App→Console hang).
-
-            // Operator live-override: if this inbound change is the operator
-            // (hands on the desk) grabbing a parameter that a timed recall is
-            // currently pre-waiting or fading, the registry drops that one so the
-            // running fade/pre-wait stops sending it and the hands-on value wins.
-            // Gated on `!in_console_load`: the desk's own snapshot-load flood
-            // overlaps the first seconds of a memory-backed recall and would
-            // otherwise look like a storm of operator moves, spuriously
-            // cancelling the very recall it belongs to.
-            if !in_console_load
-                && let Some(reg) = &daemon.automation_override
-                && matches!(
-                    reg.maybe_override(addr, value),
-                    crate::console::automation_registry::Override::Operator
-                )
-            {
-                debug!(%addr, "Operator override — automation cancelled for this parameter");
-            }
-
-            // Gang propagation — before macro recording so the engineer's
-            // original change is what gets recorded, not ganged echoes.
-            if !in_console_load {
-                let mut engine = daemon.gang_engine.write().await;
-                let manager = daemon.gang_manager.read().await;
-                engine
-                    .process_gang_update(addr, value, old_value.as_ref(), &manager)
-                    .await;
-            }
-
-            // Pan link propagation — runs after gangs so a gang-driven
-            // pan change on an input also pushes to its linked aux sends.
-            if !in_console_load {
-                let engine = daemon.pan_link_engine.read().await;
-                engine.process_pan_update(addr, value).await;
-            }
-
-            // Feed into macro learn mode if recording
-            let mut mgr = daemon.macro_manager.write().await;
-            if mgr.is_recording() {
-                mgr.record_change(addr.clone(), value.clone());
-            }
+            // Full shared side-effect chain: mirror update, dirty screening,
+            // operator-override detection, gang + pan-link propagation,
+            // macro-learn capture. See `console::inbound`.
+            inbound::apply_inbound_parameter(daemon, addr, value, InboundSource::GpOsc).await;
         }
         ParsedOscMessage::Pong => {
             debug!("Received /console/pong");
@@ -637,147 +509,6 @@ async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::parameter::{ParameterPath, ParameterValue};
-
-    fn f(v: f32) -> ParameterValue {
-        ParameterValue::Float(v)
-    }
-
-    #[test]
-    fn fader_hi_band_ignores_small_jitter_marks_real_change() {
-        // value >= -10 dB → 0.2 dB deadband.
-        assert!(!is_meaningful_change(
-            &ParameterPath::Fader,
-            &f(-5.0),
-            &f(-4.85)
-        )); // 0.15 ≤ 0.2
-        assert!(is_meaningful_change(
-            &ParameterPath::Fader,
-            &f(-5.0),
-            &f(-4.75)
-        )); // 0.25 > 0.2
-    }
-
-    #[test]
-    fn fader_mid_band() {
-        // -40 <= value < -10 dB → 0.3 dB deadband.
-        assert!(!is_meaningful_change(
-            &ParameterPath::Fader,
-            &f(-25.0),
-            &f(-25.25)
-        )); // 0.25 ≤ 0.3
-        assert!(is_meaningful_change(
-            &ParameterPath::Fader,
-            &f(-25.0),
-            &f(-25.35)
-        )); // 0.35 > 0.3
-    }
-
-    #[test]
-    fn fader_lo_band() {
-        // value < -40 dB → 0.4 dB deadband.
-        assert!(!is_meaningful_change(
-            &ParameterPath::Fader,
-            &f(-60.0),
-            &f(-60.35)
-        )); // 0.35 ≤ 0.4
-        assert!(is_meaningful_change(
-            &ParameterPath::Fader,
-            &f(-60.0),
-            &f(-60.45)
-        )); // 0.45 > 0.4
-    }
-
-    #[test]
-    fn band_boundaries_use_new_value() {
-        // Exactly -10.0 → HI band (>= -10). 0.25 dB is a change at HI(0.2)…
-        assert!(is_meaningful_change(
-            &ParameterPath::Fader,
-            &f(-10.25),
-            &f(-10.0)
-        ));
-        // …but the same 0.25 dB landing at -40.0 → MID band (>= -40) is ignored.
-        assert!(!is_meaningful_change(
-            &ParameterPath::Fader,
-            &f(-40.25),
-            &f(-40.0)
-        ));
-    }
-
-    #[test]
-    fn send_levels_share_the_fader_deadband() {
-        assert!(!is_meaningful_change(
-            &ParameterPath::SendLevel(3),
-            &f(-5.0),
-            &f(-4.85)
-        ));
-        assert!(is_meaningful_change(
-            &ParameterPath::SendLevel(3),
-            &f(-5.0),
-            &f(-4.5)
-        ));
-        assert!(!is_meaningful_change(
-            &ParameterPath::CgLevel,
-            &f(-5.0),
-            &f(-4.85)
-        ));
-        assert!(!is_meaningful_change(
-            &ParameterPath::MatrixSendLevel(1),
-            &f(-5.0),
-            &f(-4.85)
-        ));
-    }
-
-    #[test]
-    fn encoder_params_keep_exact_equality() {
-        // A 0.5 dB EQ-gain move is a real change — no deadband for encoder params.
-        assert!(is_meaningful_change(
-            &ParameterPath::EqBandGain(1),
-            &f(0.0),
-            &f(0.5)
-        ));
-        assert!(is_meaningful_change(
-            &ParameterPath::TotalGain,
-            &f(0.0),
-            &f(0.1)
-        ));
-        // Identical values are never a change, for any param.
-        assert!(!is_meaningful_change(
-            &ParameterPath::EqBandGain(1),
-            &f(0.0),
-            &f(0.0)
-        ));
-        assert!(!is_meaningful_change(
-            &ParameterPath::Fader,
-            &f(-5.0),
-            &f(-5.0)
-        ));
-    }
-
-    #[test]
-    fn non_float_params_use_exact_equality() {
-        assert!(is_meaningful_change(
-            &ParameterPath::Mute,
-            &ParameterValue::Bool(true),
-            &ParameterValue::Bool(false),
-        ));
-        assert!(!is_meaningful_change(
-            &ParameterPath::Mute,
-            &ParameterValue::Bool(true),
-            &ParameterValue::Bool(true),
-        ));
-    }
-
-    #[test]
-    fn is_fader_level_classification() {
-        assert!(ParameterPath::Fader.is_fader_level());
-        assert!(ParameterPath::SendLevel(0).is_fader_level());
-        assert!(ParameterPath::MatrixSendLevel(0).is_fader_level());
-        assert!(ParameterPath::CgLevel.is_fader_level());
-        assert!(!ParameterPath::EqBandGain(1).is_fader_level());
-        assert!(!ParameterPath::TotalGain.is_fader_level());
-        assert!(!ParameterPath::Pan.is_fader_level());
-    }
 
     #[test]
     fn dump_estimate_counts_only_gp_osc_paths_and_is_realistic() {

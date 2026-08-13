@@ -4,14 +4,13 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, info, warn};
 
+use crate::console::console_tx::ConsoleTx;
 use crate::model::channel::ChannelId;
 use crate::model::monitor::MonitorClient;
 use crate::model::parameter::{FADER_INF_DB, ParameterAddress, ParameterPath, ParameterValue};
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
-use crate::osc::encode;
 use crate::osc::ipad_client::IpadSender;
-use crate::osc::ipad_encode;
 use crate::osc::monitor_server::MonitorCommand;
 
 use super::monitor_event::{ClientStateSnapshot, MonitorStateEvent};
@@ -30,8 +29,7 @@ pub enum SendParam {
 /// client-facing transports (the UDP fan-out today, WebSocket later) to deliver.
 pub struct MonitorEngine {
     state: Arc<RwLock<ConsoleState>>,
-    sender: OscSender,
-    ipad_sender: Option<IpadSender>,
+    tx: ConsoleTx,
     /// Publishes server→client output; subscribed by the UDP fan-out task and
     /// (later) each WebSocket connection. See [`super::monitor_event`].
     events: broadcast::Sender<MonitorStateEvent>,
@@ -45,14 +43,23 @@ impl MonitorEngine {
     ) -> Self {
         Self {
             state,
-            sender,
-            ipad_sender: None,
+            tx: ConsoleTx::new(sender),
             events,
         }
     }
 
     pub fn set_ipad_sender(&mut self, sender: Option<IpadSender>) {
-        self.ipad_sender = sender;
+        self.tx.set_pad_sender(sender);
+    }
+
+    /// Attach the shared sent-value log (echo screening on the iPad link).
+    pub fn set_sent_log(&mut self, log: crate::console::console_tx::SentLog) {
+        self.tx.set_sent_log(log);
+    }
+
+    /// Point the write path at the connected console's profile (Pad wire quirks).
+    pub fn set_profile(&mut self, profile: Arc<crate::model::family::ConsoleProfile>) {
+        self.tx.set_profile(profile);
     }
 
     /// Publish a server→client event to all transports. Best-effort: a send
@@ -215,7 +222,7 @@ impl MonitorEngine {
     async fn handle_aux_change(
         &self,
         client_name: &str,
-        aux_ch: u8,
+        aux_ch: u16,
         param: &str,
         value: ParameterValue,
         manager: &MonitorManager,
@@ -255,28 +262,17 @@ impl MonitorEngine {
         self.state.write().await.update(addr.clone(), value.clone());
 
         // Forward to console via GP OSC (with iPad fallback)
-        match encode::encode_parameter(&addr, &value) {
-            Some((path, args)) => {
-                if let Err(e) = self.sender.send(&path, args).await {
-                    warn!(%addr, "Monitor aux: send failed: {e}");
-                }
-            }
-            None => {
-                if let Some(ref ipad) = self.ipad_sender
-                    && let Some((path, args)) = ipad_encode::encode_ipad_parameter(&addr, &value)
-                {
-                    let _ = ipad.send(&path, args).await;
-                }
-            }
-        }
+        self.tx
+            .send_parameter_logged("Monitor aux", &addr, &value)
+            .await;
     }
 
     /// Process a send parameter change: validate, forward, echo.
     async fn handle_send_change(
         &self,
         client_name: &str,
-        input_ch: u8,
-        aux_ch: u8,
+        input_ch: u16,
+        aux_ch: u16,
         param: SendParam,
         value: ParameterValue,
         manager: &MonitorManager,
@@ -338,7 +334,7 @@ impl MonitorEngine {
         let state = self.state.read().await;
 
         // Determine input range
-        let inputs: Vec<u8> = if client.visible_inputs.is_empty() {
+        let inputs: Vec<u16> = if client.visible_inputs.is_empty() {
             (1..=60).collect() // All inputs
         } else {
             client.visible_inputs.clone()
@@ -444,8 +440,8 @@ impl MonitorEngine {
     /// poll-and-push within 50 ms, even if the immediate echo is skipped).
     async fn forward_send_change(
         &self,
-        input_ch: u8,
-        aux_ch: u8,
+        input_ch: u16,
+        aux_ch: u16,
         param: SendParam,
         value: &ParameterValue,
     ) -> bool {
@@ -462,37 +458,8 @@ impl MonitorEngine {
         // Optimistic mirror update — see contract comment above.
         self.state.write().await.update(addr.clone(), value.clone());
 
-        // Try GP OSC first
-        match encode::encode_parameter(&addr, value) {
-            Some((path, args)) => {
-                if let Err(e) = self.sender.send(&path, args).await {
-                    warn!(%addr, "Monitor: failed to send to console: {e}");
-                    return false;
-                }
-                true
-            }
-            None => {
-                // Try iPad protocol fallback
-                if let Some(ref ipad) = self.ipad_sender {
-                    match ipad_encode::encode_ipad_parameter(&addr, value) {
-                        Some((path, args)) => {
-                            if let Err(e) = ipad.send(&path, args).await {
-                                warn!(%addr, "Monitor: iPad send failed: {e}");
-                                return false;
-                            }
-                            true
-                        }
-                        None => {
-                            warn!(%addr, "Monitor: cannot encode send parameter");
-                            false
-                        }
-                    }
-                } else {
-                    warn!(%addr, "Monitor: no sender available for parameter");
-                    false
-                }
-            }
-        }
+        // GP OSC first, iPad fallback
+        self.tx.send_parameter_logged("Monitor", &addr, value).await
     }
 
     /// PRD 5.7 step 5: Poll ConsoleState for send + aux parameter changes and push updates.
@@ -500,11 +467,11 @@ impl MonitorEngine {
     /// Per-parameter rate limited to 20Hz via `last_push_times`.
     pub async fn poll_and_push_state_changes(
         &self,
-        last_send_state: &mut HashMap<(u8, u8), (f32, f32, bool)>,
-        last_aux_state: &mut HashMap<u8, (f32, bool)>,
+        last_send_state: &mut HashMap<(u16, u16), (f32, f32, bool)>,
+        last_aux_state: &mut HashMap<u16, (f32, bool)>,
         last_generation: &mut u64,
-        last_push_times: &mut HashMap<(u8, u8), std::time::Instant>,
-        last_aux_push_times: &mut HashMap<u8, std::time::Instant>,
+        last_push_times: &mut HashMap<(u16, u16), std::time::Instant>,
+        last_aux_push_times: &mut HashMap<u16, std::time::Instant>,
         manager: &MonitorManager,
     ) {
         let state = self.state.read().await;
@@ -544,7 +511,7 @@ impl MonitorEngine {
             return;
         }
 
-        let inputs: Vec<u8> = if has_all_inputs {
+        let inputs: Vec<u16> = if has_all_inputs {
             (1..=60).collect()
         } else {
             inputs_of_interest.into_iter().collect()
@@ -648,6 +615,7 @@ mod tests {
     use super::*;
     use crate::model::config::ConsoleConfig;
     use crate::model::monitor::{ClientEndpoint, MonitorClient};
+    use crate::osc::encode;
     use std::net::SocketAddr;
     use std::time::Instant;
 

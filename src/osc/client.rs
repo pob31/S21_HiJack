@@ -233,8 +233,8 @@ async fn receive_loop(
             result = socket.recv_from(&mut buf) => {
                 match result {
                     Ok((size, _src)) => {
-                        match rosc::decoder::decode_udp(&buf[..size]) {
-                            Ok((_, packet)) => {
+                        match crate::osc::decode_udp_tolerant(&buf[..size]) {
+                            Some(packet) => {
                                 // Forward under cancellation: if the consumer
                                 // (run_loop) stalls and the channel fills,
                                 // `tx.send().await` would block here inside the
@@ -251,8 +251,8 @@ async fn receive_loop(
                                     _ = process_packet(packet, &tx, &log) => {}
                                 }
                             }
-                            Err(e) => {
-                                warn!("Failed to decode OSC packet: {e}");
+                            None => {
+                                warn!("Failed to decode OSC packet");
                             }
                         }
                     }

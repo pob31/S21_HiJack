@@ -150,11 +150,11 @@ async fn receive_loop(socket: std::sync::Arc<UdpSocket>, tx: mpsc::Sender<Receiv
                     tracing::info!(%src, size, "iPad: first packet received from {src} ({size} bytes)");
                     first_message = false;
                 }
-                match rosc::decoder::decode_udp(&buf[..size]) {
-                    Ok((_, packet)) => {
+                match crate::osc::decode_udp_tolerant(&buf[..size]) {
+                    Some(packet) => {
                         process_packet(packet, &tx).await;
                     }
-                    Err(_) => {
+                    None => {
                         // DiGiCo iPad protocol may use non-standard encoding:
                         // bare path + null (no type tag) for queries.
                         // Try to parse as bare path with optional inline args.

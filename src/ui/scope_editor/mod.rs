@@ -707,46 +707,55 @@ pub fn draw_scope_window(
             // ─ Footer: Console Recall + OK/Cancel ─
             ui.separator();
             ui.horizontal(|ui| {
-                // Console Recall buttons (left side)
-                ui.label(
-                    // Match the buttons' tiny font (not the slightly-smaller
-                    // `.small()`), so the label baseline sits with the button
-                    // text to its right rather than reading high.
-                    egui::RichText::new("Console Recall:")
-                        .color(theme::label_weak())
-                        .size(theme::FONT_SIZE_TINY),
-                );
-                let btn_size = egui::Vec2::new(100.0, 24.0);
-                let scope_btn = egui::Button::new(
-                    egui::RichText::new("Session Scope")
-                        .size(theme::FONT_SIZE_TINY)
-                        .color(
-                            if state.console_recall.session_scope.active_blocks.is_empty() {
-                                theme::TEXT_SECONDARY
-                            } else {
-                                egui::Color32::from_rgb(0, 180, 0)
-                            },
-                        ),
-                )
-                .fill(theme::btn_neutral())
-                .min_size(btn_size);
-                if ui.add(scope_btn).clicked() {
-                    state.recall_popup.open = Some(RecallPopupKind::SessionScope);
-                }
-                for (label, kind) in [
-                    ("Input Safe", RecallPopupKind::InputSafe),
-                    ("Aux Safe", RecallPopupKind::AuxSafe),
-                    ("Group Safe", RecallPopupKind::GroupSafe),
-                    ("Matrix Safe", RecallPopupKind::MatrixSafe),
-                    ("CG Safe", RecallPopupKind::CgSafe),
-                ] {
-                    let btn =
-                        egui::Button::new(egui::RichText::new(label).size(theme::FONT_SIZE_TINY))
-                            .fill(theme::btn_neutral())
-                            .min_size(egui::Vec2::new(72.0, 24.0));
-                    if ui.add(btn).clicked() {
-                        state.recall_popup.open = Some(kind);
-                        state.recall_popup.selected_channel = 1;
+                // Console Recall buttons (left side). The block layout mirrors
+                // the S-series console's own recall-scope screen, so the whole
+                // group is hidden on families that don't have it.
+                if console_state
+                    .config
+                    .profile()
+                    .supports(crate::model::family::AppFeature::RecallScopeUi)
+                {
+                    ui.label(
+                        // Match the buttons' tiny font (not the slightly-smaller
+                        // `.small()`), so the label baseline sits with the button
+                        // text to its right rather than reading high.
+                        egui::RichText::new("Console Recall:")
+                            .color(theme::label_weak())
+                            .size(theme::FONT_SIZE_TINY),
+                    );
+                    let btn_size = egui::Vec2::new(100.0, 24.0);
+                    let scope_btn = egui::Button::new(
+                        egui::RichText::new("Session Scope")
+                            .size(theme::FONT_SIZE_TINY)
+                            .color(
+                                if state.console_recall.session_scope.active_blocks.is_empty() {
+                                    theme::TEXT_SECONDARY
+                                } else {
+                                    egui::Color32::from_rgb(0, 180, 0)
+                                },
+                            ),
+                    )
+                    .fill(theme::btn_neutral())
+                    .min_size(btn_size);
+                    if ui.add(scope_btn).clicked() {
+                        state.recall_popup.open = Some(RecallPopupKind::SessionScope);
+                    }
+                    for (label, kind) in [
+                        ("Input Safe", RecallPopupKind::InputSafe),
+                        ("Aux Safe", RecallPopupKind::AuxSafe),
+                        ("Group Safe", RecallPopupKind::GroupSafe),
+                        ("Matrix Safe", RecallPopupKind::MatrixSafe),
+                        ("CG Safe", RecallPopupKind::CgSafe),
+                    ] {
+                        let btn = egui::Button::new(
+                            egui::RichText::new(label).size(theme::FONT_SIZE_TINY),
+                        )
+                        .fill(theme::btn_neutral())
+                        .min_size(egui::Vec2::new(72.0, 24.0));
+                        if ui.add(btn).clicked() {
+                            state.recall_popup.open = Some(kind);
+                            state.recall_popup.selected_channel = 1;
+                        }
                     }
                 }
 

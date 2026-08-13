@@ -146,9 +146,9 @@ fn clear_cue_editor(snap_state: &mut SnapshotsTabState) {
 fn try_open_scope_editor(
     snap_state: &mut SnapshotsTabState,
     cue_manager: &Arc<RwLock<CueManager>>,
-    aux_count: u8,
-    group_count: u8,
-    matrix_count: u8,
+    aux_count: u16,
+    group_count: u16,
+    matrix_count: u16,
 ) -> bool {
     let seed = match snap_state.selected_snapshot_id {
         Some(id) => {

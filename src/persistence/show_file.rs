@@ -265,7 +265,7 @@ pub struct ShowFile {
 impl ShowFile {
     pub fn new(config: ConsoleConfig) -> Self {
         Self {
-            version: 18,
+            version: 19,
             app_version: crate::version::APP_VERSION.to_string(),
             console_config: config,
             connection: ConnectionSettings::default(),
@@ -401,7 +401,7 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 18);
+        assert_eq!(loaded.version, 19);
         // A freshly-written show stamps the running app version.
         assert_eq!(loaded.app_version, crate::version::APP_VERSION);
         assert_eq!(loaded.console_config.input_channel_count, 48);
@@ -488,7 +488,7 @@ mod tests {
         let path = dir.join("test_show_streamdeck.json");
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
-        assert_eq!(loaded.version, 18);
+        assert_eq!(loaded.version, 19);
         assert_eq!(loaded.stream_deck, show.stream_deck);
         let _ = tokio::fs::remove_file(&path).await;
     }
@@ -887,7 +887,7 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 18);
+        assert_eq!(loaded.version, 19);
         assert_eq!(loaded.osc_targets, show.osc_targets);
         assert_eq!(loaded.trigger_templates, show.trigger_templates);
         assert_eq!(
@@ -983,9 +983,84 @@ mod tests {
         let path = dir.join("test_show_sidecar.json");
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
-        assert_eq!(loaded.version, 18);
+        assert_eq!(loaded.version, 19);
         assert_eq!(loaded.sidecar, show.sidecar);
         let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[test]
+    fn legacy_v18_show_loads_as_s_series_family() {
+        // A v18 show (no `family` / `pad_quirk_overrides` on the console
+        // config) loads as an S-series desk with the hardware-verified S21
+        // wire quirks — zero-migration backward compat.
+        let json = r#"{
+            "version": 18,
+            "console_config": {
+                "console_name": "",
+                "console_serial": "",
+                "session_filename": null,
+                "input_channel_count": 48,
+                "aux_output_count": 8,
+                "group_output_count": 8,
+                "matrix_output_count": 8,
+                "matrix_input_count": 10,
+                "control_group_count": 10,
+                "graphic_eq_count": 16,
+                "talkback_output_count": 0,
+                "mix_output_types": [],
+                "mix_output_modes": [],
+                "input_modes": [],
+                "group_modes": []
+            }
+        }"#;
+        let parsed: ShowFile = serde_json::from_str(json).expect("v18 JSON parses");
+        assert_eq!(parsed.version, 18);
+        assert_eq!(
+            parsed.console_config.family,
+            crate::model::family::ConsoleFamily::SSeries
+        );
+        assert!(parsed.console_config.pad_quirk_overrides.is_none());
+        assert_eq!(
+            parsed.console_config.profile().pad_quirks,
+            crate::model::family::PadQuirks::S21
+        );
+    }
+
+    #[test]
+    fn show_naming_a_pad_only_family_loads_and_gates_s_series_features() {
+        // End-to-end: a show that names a Pad-only family must come back with
+        // that family, the family's wire quirks, and the S-series-only recall
+        // scope UI gated off.
+        use crate::model::family::{AppFeature, ConsoleFamily, PadQuirks};
+        let json = r#"{
+            "version": 19,
+            "console_config": {
+                "console_name": "Quantum 338",
+                "console_serial": "",
+                "session_filename": null,
+                "input_channel_count": 128,
+                "aux_output_count": 16,
+                "group_output_count": 16,
+                "matrix_output_count": 16,
+                "matrix_input_count": 16,
+                "control_group_count": 16,
+                "graphic_eq_count": 16,
+                "talkback_output_count": 0,
+                "mix_output_types": [],
+                "mix_output_modes": [],
+                "input_modes": [],
+                "group_modes": [],
+                "family": "Quantum"
+            }
+        }"#;
+        let parsed: ShowFile = serde_json::from_str(json).expect("v19 Quantum show parses");
+        assert_eq!(parsed.console_config.family, ConsoleFamily::Quantum);
+        let profile = parsed.console_config.profile();
+        assert_eq!(profile.pad_quirks, PadQuirks::SD_HYPOTHESIS);
+        assert!(!profile.has_gp_osc);
+        assert!(!profile.supports(AppFeature::RecallScopeUi));
+        // Channel counts beyond the S-series range survive the u16 widening.
+        assert_eq!(parsed.console_config.input_channel_count, 128);
     }
 
     #[test]

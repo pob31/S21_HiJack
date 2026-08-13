@@ -9,12 +9,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::console::automation_registry::AutomationOverride;
-use crate::console::send_util::send_parameter;
+use crate::console::console_tx::ConsoleTx;
 use crate::model::channel::ChannelId;
 use crate::model::parameter::{ParameterAddress, ParameterValue, TimingCategory, floored_db_lerp};
 use crate::model::state::ConsoleState;
-use crate::osc::client::OscSender;
-use crate::osc::ipad_client::IpadSender;
 
 /// Update interval for fade interpolation (~20 updates/sec).
 const FADE_INTERVAL: Duration = Duration::from_millis(50);
@@ -67,8 +65,7 @@ impl FadeController {
         cue_number: f32,
         fade_time_secs: f32,
         targets: Vec<FadeTarget>,
-        sender: OscSender,
-        ipad_sender: Option<IpadSender>,
+        tx: ConsoleTx,
     ) -> tokio::task::JoinHandle<FadeResult> {
         // Cancel existing fade
         self.cancel_active().await;
@@ -86,8 +83,7 @@ impl FadeController {
             cue_number,
             fade_time_secs,
             targets,
-            sender,
-            ipad_sender,
+            tx,
             child,
             None,
             0,
@@ -136,8 +132,7 @@ impl MultiFadeController {
         key: FadeGroupKey,
         fade_time_secs: f32,
         targets: Vec<FadeTarget>,
-        sender: OscSender,
-        ipad_sender: Option<IpadSender>,
+        tx: ConsoleTx,
     ) -> tokio::task::JoinHandle<FadeResult> {
         let mut guard = self.active_groups.lock().await;
 
@@ -155,8 +150,7 @@ impl MultiFadeController {
             0.0, // cue_number not meaningful for group fades
             fade_time_secs,
             targets,
-            sender,
-            ipad_sender,
+            tx,
             child,
             None,
             0,
@@ -177,8 +171,7 @@ impl MultiFadeController {
 pub async fn run_fade_inline(
     fade_time_secs: f32,
     targets: Vec<FadeTarget>,
-    sender: OscSender,
-    ipad_sender: Option<IpadSender>,
+    tx: ConsoleTx,
     cancel: CancellationToken,
     registry: Option<AutomationOverride>,
     gen_id: u64,
@@ -188,8 +181,7 @@ pub async fn run_fade_inline(
         0.0,
         fade_time_secs,
         targets,
-        sender,
-        ipad_sender,
+        tx,
         cancel,
         registry,
         gen_id,
@@ -204,8 +196,7 @@ async fn run_fade(
     cue_number: f32,
     fade_time_secs: f32,
     targets: Vec<FadeTarget>,
-    sender: OscSender,
-    ipad_sender: Option<IpadSender>,
+    tx: ConsoleTx,
     cancel: CancellationToken,
     registry: Option<AutomationOverride>,
     gen_id: u64,
@@ -281,8 +272,10 @@ async fn run_fade(
                     .map(|v| target.address.parameter.clamp_value(v)),
             };
             if let Some(interpolated) = interpolated {
-                let sent =
-                    send_parameter(&sender, &ipad_sender, &target.address, &interpolated).await;
+                let sent = tx
+                    .send_parameter(&target.address, &interpolated)
+                    .await
+                    .is_sent();
                 if sent {
                     steps_sent += 1;
                     // Record what we pushed so the resulting console echo isn't
@@ -348,7 +341,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::sync::Arc;
 
-    async fn test_sender() -> OscSender {
+    async fn test_tx() -> ConsoleTx {
         let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
         // Port 1 (any non-zero) — Linux's sendto rejects port 0 with
         // EINVAL while Windows accepts it, so the test sender needs a
@@ -356,14 +349,14 @@ mod tests {
         let remote: SocketAddr = "127.0.0.1:1".parse().unwrap();
         let client = OscClient::new(local, remote, None).await.unwrap();
         let (sender, _rx) = client.into_parts();
-        sender
+        ConsoleTx::new(sender)
     }
 
     #[tokio::test]
     async fn fade_empty_targets_completes_immediately() {
-        let sender = test_sender().await;
+        let tx = test_tx().await;
         let controller = FadeController::new();
-        let handle = controller.start_fade(1.0, 1.0, vec![], sender, None).await;
+        let handle = controller.start_fade(1.0, 1.0, vec![], tx).await;
         let result = handle.await.unwrap();
         assert_eq!(result.total_steps_sent, 0);
         assert!(!result.cancelled);
@@ -371,7 +364,7 @@ mod tests {
 
     #[tokio::test]
     async fn fade_sends_updates() {
-        let sender = test_sender().await;
+        let tx = test_tx().await;
         let controller = FadeController::new();
 
         let targets = vec![FadeTarget {
@@ -383,9 +376,7 @@ mod tests {
             end_value: ParameterValue::Float(1.0),
         }];
 
-        let handle = controller
-            .start_fade(1.0, 0.15, targets, sender, None)
-            .await;
+        let handle = controller.start_fade(1.0, 0.15, targets, tx).await;
         let result = handle.await.unwrap();
         // With 50ms interval over 150ms, should get ~3-4 update rounds
         assert!(
@@ -398,7 +389,7 @@ mod tests {
 
     #[tokio::test]
     async fn fade_cancellation() {
-        let sender = test_sender().await;
+        let tx = test_tx().await;
         let controller = Arc::new(FadeController::new());
 
         let targets = vec![FadeTarget {
@@ -410,7 +401,7 @@ mod tests {
             end_value: ParameterValue::Float(1.0),
         }];
 
-        let handle = controller.start_fade(1.0, 5.0, targets, sender, None).await;
+        let handle = controller.start_fade(1.0, 5.0, targets, tx).await;
 
         // Let it run briefly then cancel
         time::sleep(Duration::from_millis(80)).await;
@@ -422,17 +413,8 @@ mod tests {
 
     #[tokio::test]
     async fn start_fade_replaces_active() {
-        let sender = test_sender().await;
-        let sender2 = {
-            let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
-            // Port 1 (any non-zero) — Linux's sendto rejects port 0 with
-            // EINVAL while Windows accepts it, so the test sender needs a
-            // valid destination even though no one listens.
-            let remote: SocketAddr = "127.0.0.1:1".parse().unwrap();
-            let client = OscClient::new(local, remote, None).await.unwrap();
-            let (s, _rx) = client.into_parts();
-            s
-        };
+        let tx = test_tx().await;
+        let tx2 = test_tx().await;
         let controller = FadeController::new();
 
         let targets1 = vec![FadeTarget {
@@ -444,9 +426,7 @@ mod tests {
             end_value: ParameterValue::Float(1.0),
         }];
 
-        let handle1 = controller
-            .start_fade(1.0, 5.0, targets1, sender, None)
-            .await;
+        let handle1 = controller.start_fade(1.0, 5.0, targets1, tx).await;
 
         // Start a second fade — should cancel the first
         time::sleep(Duration::from_millis(80)).await;
@@ -458,9 +438,7 @@ mod tests {
             start_value: ParameterValue::Float(1.0),
             end_value: ParameterValue::Float(0.0),
         }];
-        let handle2 = controller
-            .start_fade(2.0, 0.1, targets2, sender2, None)
-            .await;
+        let handle2 = controller.start_fade(2.0, 0.1, targets2, tx2).await;
 
         // First fade should be cancelled
         let result1 = handle1.await.unwrap();

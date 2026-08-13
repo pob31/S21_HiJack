@@ -214,7 +214,9 @@ async fn run_headless(args: Args) {
     // Phase C: dirty tracker for "select modified" / "auto-preselect modified".
     let dirty_tracker = Arc::new(RwLock::new(model::dirty_tracker::DirtyTracker::new()));
 
-    // Create state + OscClient so we can build GangEngine before spawning the loop
+    // Create state + OscClient so we can build GangEngine before spawning the
+    // loop. Headless doesn't load AppPreferences (no UI), so the console
+    // family comes from the loaded show file or stays at the S-series default.
     let state = {
         let config = model::config::ConsoleConfig::default();
         Arc::new(RwLock::new(model::state::ConsoleState::new(config)))
@@ -247,6 +249,16 @@ async fn run_headless(args: Args) {
         Arc::new(std::sync::atomic::AtomicU64::new(0));
     let automation_override: console::automation_registry::AutomationOverride =
         Arc::new(console::automation_registry::AutomationRegistry::new());
+    // Shared sent-value log: engines record writes, the inbound chain screens
+    // the iPad link's echoes of those writes from gang/pan propagation.
+    let sent_log = console::console_tx::SentLog::new();
+    // Console profile: supplies the Pad wire quirks every engine encodes with.
+    // Derived from the (default or show-restored) config at connect time.
+    let profile = Arc::new(state.read().await.config.profile());
+    gang_engine.write().await.set_sent_log(sent_log.clone());
+    gang_engine.write().await.set_profile(profile.clone());
+    pan_link_engine.write().await.set_sent_log(sent_log.clone());
+    pan_link_engine.write().await.set_profile(profile.clone());
     let daemon = console::connection::DaemonState {
         state,
         macro_manager: macro_manager.clone(),
@@ -261,9 +273,14 @@ async fn run_headless(args: Args) {
         console_snapshot_tx: None,
         console_load_suppression: console_load_suppression.clone(),
         automation_override: Some(automation_override.clone()),
+        sent_log: sent_log.clone(),
     };
-    let manager =
-        ConnectionManager::connect_from_parts(sender.clone(), rx, daemon, cancel_token.clone());
+    let manager = ConnectionManager::connect_from_parts(
+        sender.clone(),
+        rx,
+        daemon.clone(),
+        cancel_token.clone(),
+    );
     info!("Connected successfully");
 
     // Parse operating mode
@@ -282,6 +299,8 @@ async fn run_headless(args: Args) {
     snapshot_engine.set_recall_progress(recall_progress.clone());
     snapshot_engine.set_console_load_suppression(console_load_suppression.clone());
     snapshot_engine.set_automation_override(automation_override.clone());
+    snapshot_engine.set_sent_log(sent_log.clone());
+    snapshot_engine.set_profile(profile.clone());
     // Look-ahead recall cache: pre-resolves the next cues' recall data in
     // the idle time between cues — matters most on the small SBC targets
     // headless mode is built for. Managers bump it on edits; the engine
@@ -327,6 +346,8 @@ async fn run_headless(args: Args) {
     );
     macro_engine.set_dirty_tracker(dirty_tracker.clone());
     macro_engine.set_recall_progress(recall_progress.clone());
+    macro_engine.set_sent_log(sent_log.clone());
+    macro_engine.set_profile(profile.clone());
     // Wrapped in `Arc` after the iPad sender is wired in below (see the
     // `ipad_sender_for_monitor` block), so iPad-only macro steps can fall
     // back to the iPad protocol on playback like the gang/snapshot engines.
@@ -351,11 +372,7 @@ async fn run_headless(args: Args) {
                 match ipad_connection::connect_mode2(
                     console_ipad_addr,
                     ipad_local,
-                    manager.state(),
-                    dirty_tracker.clone(),
-                    macro_manager.clone(),
-                    offline_mode.clone(),
-                    None,
+                    daemon.clone(),
                     None,
                     None, // headless: no OSC Log
                 )
@@ -402,11 +419,7 @@ async fn run_headless(args: Args) {
                             local_console_addr,
                             ipad_listen_addr,
                             ipad_target,
-                            manager.state(),
-                            dirty_tracker.clone(),
-                            macro_manager.clone(),
-                            offline_mode.clone(),
-                            None,
+                            daemon.clone(),
                             cancel_token.clone(),
                             None,
                             None, // headless: no OSC Log
@@ -488,6 +501,8 @@ async fn run_headless(args: Args) {
         let mut monitor_engine =
             MonitorEngine::new(manager.state(), manager.sender(), monitor_events_tx.clone());
         monitor_engine.set_ipad_sender(ipad_sender_for_monitor);
+        monitor_engine.set_sent_log(sent_log.clone());
+        monitor_engine.set_profile(profile.clone());
         let mon_mgr = monitor_manager.clone();
         let mut monitor_rx = monitor_cmd_rx;
         tokio::spawn(async move {

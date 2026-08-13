@@ -2166,8 +2166,18 @@ pub(crate) fn start_connection(
             token.clone(),
         ));
 
+        // Shared sent-value log: engines record writes, the inbound chain
+        // screens the iPad link's echoes of those writes from gang/pan
+        // propagation (GP OSC doesn't echo, so it's inert in Mode 1).
+        let sent_log = crate::console::console_tx::SentLog::new();
+        // Console profile: the Pad wire quirks every engine encodes with,
+        // derived from the config the show (or the default) supplied.
+        let profile = Arc::new(st.read().await.config.profile());
+
         // Create GangEngine with the sender
         let gang_engine = Arc::new(RwLock::new(GangEngine::new(st.clone(), osc_sender.clone())));
+        gang_engine.write().await.set_sent_log(sent_log.clone());
+        gang_engine.write().await.set_profile(profile.clone());
 
         // Create PanLinkEngine with the same sender + shared bindings.
         let pan_link_engine = Arc::new(RwLock::new(PanLinkEngine::new(
@@ -2177,6 +2187,8 @@ pub(crate) fn start_connection(
             dirty.clone(),
             gang_mgr.clone(),
         )));
+        pan_link_engine.write().await.set_sent_log(sent_log.clone());
+        pan_link_engine.write().await.set_profile(profile.clone());
 
         // Channel carrying the desk's current snapshot row to the follow-mode
         // dispatcher (spawned below). Fed by BOTH the GP OSC state-mirror loop
@@ -2205,8 +2217,10 @@ pub(crate) fn start_connection(
             console_snapshot_tx: Some(snap_event_tx.clone()),
             console_load_suppression: console_load_suppression.clone(),
             automation_override: Some(automation_override.clone()),
+            sent_log: sent_log.clone(),
         };
-        let manager = ConnectionManager::connect_from_parts(osc_sender, rx, daemon, token.clone());
+        let manager =
+            ConnectionManager::connect_from_parts(osc_sender, rx, daemon.clone(), token.clone());
 
         info!("Connected to console via UI");
         // Present the link as "Connecting…" (yellow) the instant we go
@@ -2235,6 +2249,8 @@ pub(crate) fn start_connection(
         // Share the live-override registry so an operator move on the desk
         // cancels the matching parameter's pre-wait/fade.
         snapshot_engine.set_automation_override(automation_override.clone());
+        snapshot_engine.set_sent_log(sent_log.clone());
+        snapshot_engine.set_profile(profile.clone());
         // Look-ahead recall cache (created above, next to the absorb loop).
         snapshot_engine.set_recall_cache(recall_cache.clone());
         // External cue triggers (QLab / LiveProfessor / MIDI) fire at the end
@@ -2262,11 +2278,7 @@ pub(crate) fn start_connection(
                     match ipad_connection::connect_mode2(
                         console_ipad_addr,
                         local_ipad_addr,
-                        st.clone(),
-                        dirty.clone(),
-                        macro_mgr.clone(),
-                        offline.clone(),
-                        Some(snap_event_tx.clone()),
+                        daemon.clone(),
                         iface_name.as_deref(),
                         Some(ipad_log.clone()),
                     )
@@ -2315,11 +2327,7 @@ pub(crate) fn start_connection(
                         local_ipad_addr,
                         ipad_listener_addr,
                         ipad_target,
-                        st.clone(),
-                        dirty.clone(),
-                        macro_mgr.clone(),
-                        offline.clone(),
-                        Some(snap_event_tx.clone()),
+                        daemon.clone(),
                         token.clone(),
                         iface_name.clone(),
                         Some(ipad_log.clone()),
@@ -2375,6 +2383,8 @@ pub(crate) fn start_connection(
         // playback instead of being skipped — matching the gang/snapshot
         // engines below.
         macro_eng.set_ipad_sender(app_ipad_sender.clone());
+        macro_eng.set_sent_log(sent_log.clone());
+        macro_eng.set_profile(profile.clone());
         let macro_eng = Arc::new(macro_eng);
 
         // Hand the freshly-built engines back to the App so UI buttons can
@@ -2387,6 +2397,8 @@ pub(crate) fn start_connection(
                 snapshot_engine: engine.clone(),
                 macro_engine: macro_eng.clone(),
                 ipad_sender: app_ipad_sender.clone(),
+                sent_log: sent_log.clone(),
+                profile: profile.clone(),
             });
         }
 
@@ -2617,8 +2629,10 @@ pub(crate) fn start_connection(
         // Monitor engine loop: drains the unified command stream and runs the
         // 20 Hz poll. Active whenever either transport is enabled.
         if run_monitor_engine {
-            let monitor_engine =
+            let mut monitor_engine =
                 MonitorEngine::new(st.clone(), manager.sender(), events_tx.clone());
+            monitor_engine.set_sent_log(sent_log.clone());
+            monitor_engine.set_profile(profile.clone());
             let mon_mgr_loop = mon_mgr.clone();
             let monitor_token = token.clone();
             let mut monitor_rx = monitor_rx;
@@ -3164,6 +3178,9 @@ pub(crate) fn save_app_preferences(setup: &SetupTabState) {
         last_open_dir: setup.last_open_dir.clone(),
         midi: setup.midi.clone(),
         sidecar_midi: setup.sidecar_midi.clone(),
+        // Console family / quirk overrides have no UI yet (Phase 1) — carry
+        // the on-disk values through so a hand-edited override survives.
+        ..AppPreferences::load()
     };
     if let Err(e) = prefs.save() {
         tracing::warn!(error = %e, "Failed to save app preferences");

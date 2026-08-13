@@ -17,7 +17,7 @@ pub struct RecallScopePopupState {
     /// Which popup is currently open.
     pub open: Option<RecallPopupKind>,
     /// For per-channel safe: which channel index is selected (1-based).
-    pub selected_channel: u8,
+    pub selected_channel: u16,
 }
 
 /// Which popup to show.
@@ -47,7 +47,7 @@ impl RecallPopupKind {
         matches!(self, Self::SessionScope)
     }
 
-    pub fn channel_id(&self, index: u8) -> Option<ChannelId> {
+    pub fn channel_id(&self, index: u16) -> Option<ChannelId> {
         match self {
             Self::SessionScope => None,
             Self::InputSafe => Some(ChannelId::Input(index)),
@@ -58,7 +58,7 @@ impl RecallPopupKind {
         }
     }
 
-    pub fn max_channels(&self, ic: u8, ac: u8, gc: u8, mc: u8, cc: u8) -> u8 {
+    pub fn max_channels(&self, ic: u16, ac: u16, gc: u16, mc: u16, cc: u16) -> u16 {
         match self {
             Self::SessionScope => 0,
             Self::InputSafe => ic,
@@ -101,6 +101,18 @@ pub fn draw_recall_popup(
     let Some(kind) = state.open.clone() else {
         return;
     };
+
+    // Defence in depth: the buttons that open this popup are already hidden on
+    // families without the S-series recall-scope screen, but a stale `open`
+    // flag (e.g. a show loaded while the popup was up) must not render it.
+    if !console_state
+        .config
+        .profile()
+        .supports(crate::model::family::AppFeature::RecallScopeUi)
+    {
+        state.open = None;
+        return;
+    }
 
     let input_count = console_state.config.input_channel_count;
     let aux_count = console_state.config.aux_output_count;

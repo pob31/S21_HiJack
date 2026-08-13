@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use super::channel::ChannelId;
+use super::family::{ConsoleFamily, ConsoleProfile, PadQuirks, ParamSupport};
 
 /// Fader dB at the very bottom of the track: −150 dB reads as −inf (fully off).
 /// The console owns the taper; the proxy only ever passes raw dB.
@@ -111,13 +112,16 @@ pub enum ParameterPath {
     Dyn2Listen,
     Dyn2KeySolo, // iPad protocol only
 
-    // Sends (input channels only)
-    SendEnabled(u8), // send/aux number
-    SendLevel(u8),
-    SendPan(u8),
+    // Sends (input channels only). Send/bus numbers are `u16` like channel
+    // numbers (sized for the largest console family); EQ/dyn band indices
+    // below stay `u8` — they're processing-structure indices, not
+    // console-size-dependent.
+    SendEnabled(u16), // send/aux number
+    SendLevel(u16),
+    SendPan(u16),
 
     // Group routing (iPad protocol only)
-    GroupSendOn(u8),
+    GroupSendOn(u16),
     MasterBusOn,
 
     // Inserts (iPad protocol only)
@@ -129,8 +133,8 @@ pub enum ParameterPath {
     CgMute,
 
     // Matrix sends (MatrixInput channels, iPad protocol only)
-    MatrixSendLevel(u8),
-    MatrixSendOn(u8),
+    MatrixSendLevel(u16),
+    MatrixSendOn(u16),
 
     // Graphic EQ (GraphicEq channels only, iPad protocol only)
     GeqBandGain(u8), // band 1–32
@@ -241,9 +245,12 @@ impl ParameterPath {
         }
     }
 
-    /// Convert to iPad protocol path suffix (after /{ChannelType}/{number}/).
-    /// Returns None for parameters with no iPad representation (GP OSC-only).
-    pub fn to_ipad_suffix(&self) -> Option<String> {
+    /// Convert to a Pad-protocol path suffix (after /{ChannelType}/{number}/)
+    /// under the given wire quirks.
+    ///
+    /// Returns None for parameters with no Pad representation (GP OSC-only).
+    /// Use [`Self::to_ipad_suffix`] for the S21 quirks.
+    pub fn to_pad_suffix(&self, q: &PadQuirks) -> Option<String> {
         match self {
             // Output
             ParameterPath::Name => Some("Channel_Input/name".into()),
@@ -281,74 +288,99 @@ impl ParameterPath {
             ParameterPath::HighpassFrequency => Some("Filters/lo_filter_freq".into()),
             ParameterPath::LowpassEnabled => Some("Filters/hi_filter_in".into()),
             ParameterPath::LowpassFrequency => Some("Filters/hi_filter_freq".into()),
-            // iPad numbers the EQ bands in reverse (internal b ↔ iPad 5-b) —
-            // see `ipad_eq_band_reverse`. Encode the reversed wire index.
-            ParameterPath::EqBandFrequency(b) => {
-                Some(format!("EQ/eq_freq_{}", ipad_eq_band_reverse(*b)?))
-            }
-            ParameterPath::EqBandGain(b) => {
-                Some(format!("EQ/eq_gain_{}", ipad_eq_band_reverse(*b)?))
-            }
-            ParameterPath::EqBandQ(b) => Some(format!("EQ/eq_Q_{}", ipad_eq_band_reverse(*b)?)),
-            ParameterPath::EqBandCurve(b) => {
-                Some(format!("EQ/eq_curve_{}", ipad_eq_band_reverse(*b)?))
-            }
-            ParameterPath::EqBandDynEnabled(b) => {
-                Some(format!("EQ/dynamic_eq_on_{}", ipad_eq_band_reverse(*b)?))
-            }
-            ParameterPath::EqBandDynThreshold(b) => {
-                Some(format!("EQ/eq_thresh_{}", ipad_eq_band_reverse(*b)?))
-            }
-            ParameterPath::EqBandDynRatio(b) => {
-                Some(format!("EQ/eq_ratio_{}", ipad_eq_band_reverse(*b)?))
-            }
-            ParameterPath::EqBandDynAttack(b) => {
-                Some(format!("EQ/eq_attack_{}", ipad_eq_band_reverse(*b)?))
-            }
-            ParameterPath::EqBandDynRelease(b) => {
-                Some(format!("EQ/eq_release_{}", ipad_eq_band_reverse(*b)?))
-            }
-            ParameterPath::EqBandDynOverUnder(b) => {
-                Some(format!("EQ/eq_over-under_{}", ipad_eq_band_reverse(*b)?))
-            }
+            // S21 firmware numbers the EQ bands in reverse (internal b ↔ wire
+            // 5-b) — see `pad_eq_band_map`. Families without the quirk encode
+            // the band index unchanged.
+            ParameterPath::EqBandFrequency(b) => Some(format!(
+                "EQ/eq_freq_{}",
+                pad_eq_band_map(*b, q.eq_bands_reversed)?
+            )),
+            ParameterPath::EqBandGain(b) => Some(format!(
+                "EQ/eq_gain_{}",
+                pad_eq_band_map(*b, q.eq_bands_reversed)?
+            )),
+            ParameterPath::EqBandQ(b) => Some(format!(
+                "EQ/eq_Q_{}",
+                pad_eq_band_map(*b, q.eq_bands_reversed)?
+            )),
+            ParameterPath::EqBandCurve(b) => Some(format!(
+                "EQ/eq_curve_{}",
+                pad_eq_band_map(*b, q.eq_bands_reversed)?
+            )),
+            ParameterPath::EqBandDynEnabled(b) => Some(format!(
+                "EQ/dynamic_eq_on_{}",
+                pad_eq_band_map(*b, q.eq_bands_reversed)?
+            )),
+            ParameterPath::EqBandDynThreshold(b) => Some(format!(
+                "EQ/eq_thresh_{}",
+                pad_eq_band_map(*b, q.eq_bands_reversed)?
+            )),
+            ParameterPath::EqBandDynRatio(b) => Some(format!(
+                "EQ/eq_ratio_{}",
+                pad_eq_band_map(*b, q.eq_bands_reversed)?
+            )),
+            ParameterPath::EqBandDynAttack(b) => Some(format!(
+                "EQ/eq_attack_{}",
+                pad_eq_band_map(*b, q.eq_bands_reversed)?
+            )),
+            ParameterPath::EqBandDynRelease(b) => Some(format!(
+                "EQ/eq_release_{}",
+                pad_eq_band_map(*b, q.eq_bands_reversed)?
+            )),
+            ParameterPath::EqBandDynOverUnder(b) => Some(format!(
+                "EQ/eq_over-under_{}",
+                pad_eq_band_map(*b, q.eq_bands_reversed)?
+            )),
 
             // Dynamics 1 (compressor)
             ParameterPath::Dyn1Enabled => Some("Dynamics/comp_in".into()),
             ParameterPath::Dyn1Mode => None, // GP OSC-only; iPad uses comp_knee per band
             ParameterPath::Dyn1MultibandDeesser => Some("Dynamics/comp-multiband-desser".into()),
-            // The iPad multiband numbers its bands Low=1, High=2, Mid=3 — i.e.
+            // The S21 multiband numbers its bands Low=1, High=2, Mid=3 — i.e.
             // it swaps the Mid/High bands relative to the internal/GP-OSC order
             // (internal 1=Low, 2=Mid, 3=High). Encode the swapped wire band for
-            // bands 2/3; band 1 (Low) is unchanged. See `ipad_dyn1_band_swap`.
+            // bands 2/3; band 1 (Low) is unchanged either way. See
+            // `pad_dyn1_band_map`.
+            //
+            // The band-1 *bare path* convention below (`comp_thresh` with no
+            // index) is deliberately NOT quirk-parameterized: it's a path-shape
+            // question, not an index mapping, and multiband dynamics are marked
+            // `Unsupported` on non-S families until a hardware probe settles the
+            // real SD/Quantum shape.
             ParameterPath::Dyn1Threshold(1) => Some("Dynamics/comp_thresh".into()),
-            ParameterPath::Dyn1Threshold(b) => {
-                Some(format!("Dynamics/comp_thresh_{}", ipad_dyn1_band_swap(*b)?))
-            }
+            ParameterPath::Dyn1Threshold(b) => Some(format!(
+                "Dynamics/comp_thresh_{}",
+                pad_dyn1_band_map(*b, q.dyn1_mid_high_swapped)?
+            )),
             ParameterPath::Dyn1Knee(1) => Some("Dynamics/comp_knee".into()),
-            ParameterPath::Dyn1Knee(b) => {
-                Some(format!("Dynamics/comp_knee_{}", ipad_dyn1_band_swap(*b)?))
-            }
+            ParameterPath::Dyn1Knee(b) => Some(format!(
+                "Dynamics/comp_knee_{}",
+                pad_dyn1_band_map(*b, q.dyn1_mid_high_swapped)?
+            )),
             ParameterPath::Dyn1Ratio(1) => Some("Dynamics/comp_ratio".into()),
-            ParameterPath::Dyn1Ratio(b) => {
-                Some(format!("Dynamics/comp_ratio_{}", ipad_dyn1_band_swap(*b)?))
-            }
+            ParameterPath::Dyn1Ratio(b) => Some(format!(
+                "Dynamics/comp_ratio_{}",
+                pad_dyn1_band_map(*b, q.dyn1_mid_high_swapped)?
+            )),
             ParameterPath::Dyn1Attack(1) => Some("Dynamics/comp_attack".into()),
-            ParameterPath::Dyn1Attack(b) => {
-                Some(format!("Dynamics/comp_attack_{}", ipad_dyn1_band_swap(*b)?))
-            }
+            ParameterPath::Dyn1Attack(b) => Some(format!(
+                "Dynamics/comp_attack_{}",
+                pad_dyn1_band_map(*b, q.dyn1_mid_high_swapped)?
+            )),
             ParameterPath::Dyn1Release(1) => Some("Dynamics/comp_release".into()),
             ParameterPath::Dyn1Release(b) => Some(format!(
                 "Dynamics/comp_release_{}",
-                ipad_dyn1_band_swap(*b)?
+                pad_dyn1_band_map(*b, q.dyn1_mid_high_swapped)?
             )),
             ParameterPath::Dyn1Gain(1) => Some("Dynamics/comp_gain".into()),
             ParameterPath::Dyn1Gain(b) => Some(format!(
                 "Dynamics/comp_auto-gain_{}",
-                ipad_dyn1_band_swap(*b)?
+                pad_dyn1_band_map(*b, q.dyn1_mid_high_swapped)?
             )),
-            ParameterPath::Dyn1Listen(b) => {
-                Some(format!("Dynamics/comp_listen_{}", ipad_dyn1_band_swap(*b)?))
-            }
+            ParameterPath::Dyn1Listen(b) => Some(format!(
+                "Dynamics/comp_listen_{}",
+                pad_dyn1_band_map(*b, q.dyn1_mid_high_swapped)?
+            )),
             ParameterPath::Dyn1CrossoverHigh => Some("Dynamics/comp_HP_crossover_1".into()),
             ParameterPath::Dyn1CrossoverLow => Some("Dynamics/comp_LP_crossover_1".into()),
 
@@ -396,9 +428,21 @@ impl ParameterPath {
         }
     }
 
-    /// Parse from an iPad protocol path suffix (the remaining path after the channel prefix).
+    /// [`Self::to_pad_suffix`] under the hardware-verified S21 quirks.
+    ///
+    /// Production code passes the live console's quirks explicitly; this is
+    /// the entry point for tests that pin S21 wire strings.
+    #[inline]
+    pub fn to_ipad_suffix(&self) -> Option<String> {
+        self.to_pad_suffix(&PadQuirks::S21)
+    }
+
+    /// Parse from a Pad-protocol path suffix (the remaining path after the
+    /// channel prefix) under the given wire quirks.
+    ///
     /// Expects input like "/fader" or "/EQ/eq_gain_2" (with leading /).
-    pub fn from_ipad_suffix(suffix: &str) -> Option<Self> {
+    /// Use [`Self::from_ipad_suffix`] for the S21 quirks.
+    pub fn from_pad_suffix(suffix: &str, q: &PadQuirks) -> Option<Self> {
         let suffix = suffix.strip_prefix('/').unwrap_or(suffix);
 
         // Direct matches
@@ -451,12 +495,12 @@ impl ParameterPath {
 
         // EQ band parameters: EQ/eq_{param}_{band}
         if let Some(rest) = suffix.strip_prefix("EQ/") {
-            return parse_ipad_eq_suffix(rest);
+            return parse_pad_eq_suffix(rest, q.eq_bands_reversed);
         }
 
         // Dynamics multiband: Dynamics/comp_{param}_{band}
         if let Some(rest) = suffix.strip_prefix("Dynamics/comp_") {
-            return parse_ipad_dyn1_suffix(rest);
+            return parse_pad_dyn1_suffix(rest, q.dyn1_mid_high_swapped);
         }
 
         // Sends: Aux_Send/{n}/send_{param}
@@ -483,6 +527,12 @@ impl ParameterPath {
         }
 
         None
+    }
+
+    /// [`Self::from_pad_suffix`] under the hardware-verified S21 quirks.
+    #[inline]
+    pub fn from_ipad_suffix(suffix: &str) -> Option<Self> {
+        Self::from_pad_suffix(suffix, &PadQuirks::S21)
     }
 
     /// Parse from a GP OSC path suffix (the part after /channel/{ch}/).
@@ -584,7 +634,7 @@ impl ParameterPath {
             }
             // Send parameters: send/{send}/{param}
             ["send", send, param] => {
-                let s: u8 = send.parse().ok()?;
+                let s: u16 = send.parse().ok()?;
                 match *param {
                     "enabled" => Some(ParameterPath::SendEnabled(s)),
                     "level" => Some(ParameterPath::SendLevel(s)),
@@ -712,6 +762,129 @@ impl ParameterPath {
         }
     }
 
+    /// How well this parameter is known to work on a given console family.
+    ///
+    /// S-series returns [`ParamSupport::Verified`] for everything — the whole
+    /// enum was built from the S21 command set and confirmed against a live
+    /// desk. SD/Quantum split into the core Pad tree (reachable in community
+    /// implementations of the same protocol → [`ParamSupport::Assumed`], the
+    /// backlog for the hardware probe) and everything that is either GP
+    /// OSC-only or an S21-dialect oddity ([`ParamSupport::Unsupported`]).
+    ///
+    /// Keep in sync with [`Self::to_pad_suffix`]: a parameter that is not
+    /// `Unsupported` must have a Pad path (enforced by
+    /// `support_implies_pad_path`).
+    pub fn support(&self, family: ConsoleFamily) -> ParamSupport {
+        use ParameterPath as P;
+
+        if family == ConsoleFamily::SSeries {
+            return ParamSupport::Verified;
+        }
+
+        // SD and Quantum share one classification today; they are one arm so
+        // a hardware probe can split them without restructuring the callers.
+        match self {
+            // ── Core Pad tree: same paths community SD/Quantum tooling drives.
+            P::Name
+            | P::Fader
+            | P::Mute
+            | P::Solo
+            | P::Pan
+            | P::SendEnabled(_)
+            | P::SendLevel(_)
+            | P::SendPan(_)
+            | P::AnalogGain
+            | P::Trim
+            | P::Polarity
+            | P::Phantom
+            | P::DelayEnabled
+            | P::DelayTime
+            | P::EqEnabled
+            | P::HighpassEnabled
+            | P::HighpassFrequency
+            | P::LowpassEnabled
+            | P::LowpassFrequency
+            | P::EqBandFrequency(_)
+            | P::EqBandGain(_)
+            | P::EqBandQ(_)
+            | P::Dyn1Enabled
+            | P::Dyn2Enabled
+            | P::Dyn2Threshold
+            | P::Dyn2Attack
+            | P::Dyn2Hold
+            | P::Dyn2Release
+            | P::Dyn2Range
+            | P::InsertAEnabled
+            | P::InsertBEnabled
+            | P::GeqEnabled
+            | P::GeqBandGain(_)
+            | P::MatrixSendLevel(_)
+            | P::MatrixSendOn(_) => ParamSupport::Assumed,
+
+            // Single-band compressor: band 1 is the plain comp on every desk.
+            // Higher bands are the S21 multiband, handled below.
+            P::Dyn1Threshold(1)
+            | P::Dyn1Knee(1)
+            | P::Dyn1Ratio(1)
+            | P::Dyn1Attack(1)
+            | P::Dyn1Release(1)
+            | P::Dyn1Gain(1) => ParamSupport::Assumed,
+
+            // ── GP OSC-only: no Pad path at all, and Pad-only families have
+            // no GP dialect to fall back on.
+            P::TotalGain
+            | P::GainTracking
+            | P::Balance
+            | P::Width
+            | P::DigitubeEnabled
+            | P::DigitubeDrive
+            | P::DigitubeBias
+            | P::Dyn1Mode
+            | P::Dyn2Knee
+            | P::Dyn2Ratio
+            | P::Dyn2Gain
+            | P::Dyn2Listen => ParamSupport::Unsupported,
+
+            // ── S21-dialect oddities: the path shape is an S-series artifact
+            // (the `Group_Send/17` master-bus hack, the CG bitmask, the
+            // multiband band layout) or the feature is S-series-specific.
+            // Unsupported until a hardware probe establishes the real shape.
+            P::MasterBusOn
+            | P::GroupSendOn(_)
+            | P::CgLevel
+            | P::CgMute
+            | P::MainAltIn
+            | P::StereoMode
+            | P::Dyn1MultibandDeesser
+            | P::Dyn1Threshold(_)
+            | P::Dyn1Knee(_)
+            | P::Dyn1Ratio(_)
+            | P::Dyn1Attack(_)
+            | P::Dyn1Release(_)
+            | P::Dyn1Gain(_)
+            | P::Dyn1Listen(_)
+            | P::Dyn1CrossoverHigh
+            | P::Dyn1CrossoverLow
+            | P::EqBandCurve(_)
+            | P::EqBandDynEnabled(_)
+            | P::EqBandDynThreshold(_)
+            | P::EqBandDynRatio(_)
+            | P::EqBandDynAttack(_)
+            | P::EqBandDynRelease(_)
+            | P::EqBandDynOverUnder(_)
+            | P::Dyn2Mode
+            | P::Dyn2KeySolo
+            | P::Dyn2Highpass
+            | P::Dyn2Lowpass => ParamSupport::Unsupported,
+        }
+    }
+
+    /// [`Self::available_for_channel`] additionally gated by the console
+    /// family's support table.
+    pub fn available_for_channel_on(&self, channel: &ChannelId, family: ConsoleFamily) -> bool {
+        self.support(family).is_usable() && self.available_for_channel(channel)
+    }
+
     /// Whether this path is reachable on the given channel type via either the
     /// GP OSC protocol or the iPad protocol. Source of truth:
     /// - GP OSC: `Documentation/DiGiCo S OSC Commandset_OSCpaths.csv`
@@ -804,9 +977,9 @@ impl ParameterPath {
     /// actual show config.
     pub fn applicable_to(
         channel: &ChannelId,
-        aux_count: u8,
-        group_count: u8,
-        matrix_count: u8,
+        aux_count: u16,
+        group_count: u16,
+        matrix_count: u16,
     ) -> Vec<ParameterPath> {
         let mut out: Vec<ParameterPath> = Vec::new();
 
@@ -941,6 +1114,21 @@ impl ParameterPath {
         }
 
         out
+    }
+
+    /// [`Self::applicable_to`] filtered by the console family's support table.
+    /// Identical to `applicable_to` on S-series (everything is `Verified`).
+    pub fn applicable_to_for_family(
+        channel: &ChannelId,
+        aux_count: u16,
+        group_count: u16,
+        matrix_count: u16,
+        family: ConsoleFamily,
+    ) -> Vec<ParameterPath> {
+        Self::applicable_to(channel, aux_count, group_count, matrix_count)
+            .into_iter()
+            .filter(|p| p.support(family).is_usable())
+            .collect()
     }
 }
 
@@ -1299,6 +1487,35 @@ impl ParameterPath {
             P::Pan | P::SendPan(_) | P::Balance | P::Width => {
                 if let ParameterValue::Float(f) = value {
                     return ParameterValue::Float(f.clamp(-1.0, 1.0));
+                }
+                value
+            }
+            _ => value,
+        }
+    }
+
+    /// [`Self::clamp_value`] plus any level range the console profile declares.
+    ///
+    /// S-series profiles carry no send-level range (`send_level_db_range:
+    /// None`), so this is provably identical to `clamp_value` there — the desk's
+    /// own range is trusted, as it always has been. Pad-only families declare a
+    /// range because their level scaling is a hypothesis until probed, and a
+    /// value outside it would be a silent mis-scale rather than an obvious
+    /// failure.
+    pub fn clamp_value_with_profile(
+        &self,
+        value: ParameterValue,
+        profile: &ConsoleProfile,
+    ) -> ParameterValue {
+        use ParameterPath as P;
+        let value = self.clamp_value(value);
+        let Some((lo, hi)) = profile.send_level_db_range else {
+            return value;
+        };
+        match self {
+            P::SendLevel(_) | P::MatrixSendLevel(_) | P::CgLevel => {
+                if let ParameterValue::Float(f) = value {
+                    return ParameterValue::Float(f.clamp(lo, hi));
                 }
                 value
             }
@@ -1677,131 +1894,149 @@ pub fn dyn1_band_name(b: u8) -> String {
     }
 }
 
-// ── iPad suffix parsing helpers ──────────────────────────────────────
+// ── Pad suffix parsing helpers ───────────────────────────────────────
 
-/// Parse iPad EQ suffix (after "EQ/").
-/// Map an EQ band index between the internal/GP-OSC numbering and the iPad
-/// protocol's numbering.
+/// Map an EQ band index between the internal/GP-OSC numbering and the Pad
+/// wire numbering.
 ///
-/// The S21 iPad/native protocol numbers the four parametric EQ bands in the
-/// reverse order of the internal 1-based model (and the GP-OSC wire): internal
-/// band `b` is iPad wire band `5 - b` (so 1↔4, 2↔3). The mapping is its own
-/// inverse, so the same function converts in either direction. Returns `None`
-/// for indices outside the valid 1..=4 band range.
+/// The S21 numbers the four parametric EQ bands in the reverse order of the
+/// internal 1-based model (and the GP-OSC wire): internal band `b` is wire
+/// band `5 - b` (so 1↔4, 2↔3). The mapping is its own inverse, so the same
+/// function converts in either direction. With `reversed = false` the index
+/// passes through unchanged. Returns `None` for indices outside the valid
+/// 1..=4 band range either way.
 ///
-/// Without this, iPad-sourced EQ updates land on the mirror-image band and
-/// (in Mode 3) collide with the correctly-decoded GP-OSC mirror writes, so a
-/// single edit corrupts two bands at once.
-fn ipad_eq_band_reverse(band: u8) -> Option<u8> {
-    ParameterPath::EQ_BAND_RANGE
-        .contains(&band)
-        .then(|| 5 - band)
+/// Without the reversal on S-series, iPad-sourced EQ updates land on the
+/// mirror-image band and (in Mode 3) collide with the correctly-decoded
+/// GP-OSC mirror writes, so a single edit corrupts two bands at once.
+fn pad_eq_band_map(band: u8, reversed: bool) -> Option<u8> {
+    if !ParameterPath::EQ_BAND_RANGE.contains(&band) {
+        return None;
+    }
+    Some(if reversed { 5 - band } else { band })
 }
 
-fn parse_ipad_eq_suffix(rest: &str) -> Option<ParameterPath> {
+fn parse_pad_eq_suffix(rest: &str, reversed: bool) -> Option<ParameterPath> {
     // Try patterns: eq_freq_{b}, eq_gain_{b}, eq_Q_{b}, eq_curve_{b},
     // dynamic_eq_on_{b}, eq_thresh_{b}, eq_over-under_{b}, eq_ratio_{b},
-    // eq_attack_{b}, eq_release_{b}. The wire band is reversed relative to the
-    // internal model — see `ipad_eq_band_reverse`.
+    // eq_attack_{b}, eq_release_{b}. On S-series the wire band is reversed
+    // relative to the internal model — see `pad_eq_band_map`.
     if let Some(b_str) = rest.strip_prefix("eq_freq_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandFrequency(ipad_eq_band_reverse(wire)?));
+        return Some(ParameterPath::EqBandFrequency(pad_eq_band_map(
+            wire, reversed,
+        )?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_gain_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandGain(ipad_eq_band_reverse(wire)?));
+        return Some(ParameterPath::EqBandGain(pad_eq_band_map(wire, reversed)?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_Q_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandQ(ipad_eq_band_reverse(wire)?));
+        return Some(ParameterPath::EqBandQ(pad_eq_band_map(wire, reversed)?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_curve_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandCurve(ipad_eq_band_reverse(wire)?));
+        return Some(ParameterPath::EqBandCurve(pad_eq_band_map(wire, reversed)?));
     }
     if let Some(b_str) = rest.strip_prefix("dynamic_eq_on_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandDynEnabled(ipad_eq_band_reverse(wire)?));
+        return Some(ParameterPath::EqBandDynEnabled(pad_eq_band_map(
+            wire, reversed,
+        )?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_thresh_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandDynThreshold(ipad_eq_band_reverse(
-            wire,
+        return Some(ParameterPath::EqBandDynThreshold(pad_eq_band_map(
+            wire, reversed,
         )?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_over-under_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandDynOverUnder(ipad_eq_band_reverse(
-            wire,
+        return Some(ParameterPath::EqBandDynOverUnder(pad_eq_band_map(
+            wire, reversed,
         )?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_ratio_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandDynRatio(ipad_eq_band_reverse(wire)?));
+        return Some(ParameterPath::EqBandDynRatio(pad_eq_band_map(
+            wire, reversed,
+        )?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_attack_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandDynAttack(ipad_eq_band_reverse(wire)?));
+        return Some(ParameterPath::EqBandDynAttack(pad_eq_band_map(
+            wire, reversed,
+        )?));
     }
     if let Some(b_str) = rest.strip_prefix("eq_release_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::EqBandDynRelease(ipad_eq_band_reverse(wire)?));
+        return Some(ParameterPath::EqBandDynRelease(pad_eq_band_map(
+            wire, reversed,
+        )?));
     }
     None
 }
 
-/// The S21 iPad multiband compressor numbers its three bands Low=1, High=2,
+/// The S21 multiband compressor numbers its three bands Low=1, High=2,
 /// Mid=3 — it swaps the Mid and High bands relative to the internal/GP-OSC order
-/// (internal 1=Low, 2=Mid, 3=High). Map an iPad multiband band index to the
+/// (internal 1=Low, 2=Mid, 3=High). Map a Pad multiband band index to the
 /// internal index; the swap is its own inverse, so the same function converts in
-/// both directions. Returns `None` outside the 1..=3 band range.
+/// both directions. With `swapped = false` the index passes through unchanged.
+/// Returns `None` outside the 1..=3 band range either way.
 ///
 /// Verified against the live desk: iPad `comp_thresh_3` and GP `dyn1/1`
 /// (internal band 2, Mid) carry the same value, as do iPad `comp_thresh_2` and
-/// GP `dyn1/2` (internal band 3, High). Without this, iPad-sourced multiband
-/// updates land on the swapped band and collide with the (correct) GP-OSC mirror
-/// writes, collapsing bands 2↔3.
-fn ipad_dyn1_band_swap(band: u8) -> Option<u8> {
-    match band {
-        1 => Some(1),
-        2 => Some(3),
-        3 => Some(2),
+/// GP `dyn1/2` (internal band 3, High). Without the swap on S-series,
+/// iPad-sourced multiband updates land on the swapped band and collide with the
+/// (correct) GP-OSC mirror writes, collapsing bands 2↔3.
+fn pad_dyn1_band_map(band: u8, swapped: bool) -> Option<u8> {
+    match (band, swapped) {
+        (1, _) => Some(1),
+        (2, true) => Some(3),
+        (3, true) => Some(2),
+        (2, false) => Some(2),
+        (3, false) => Some(3),
         _ => None,
     }
 }
 
-/// Parse iPad Dyn1 multiband suffix (after "Dynamics/comp_").
-fn parse_ipad_dyn1_suffix(rest: &str) -> Option<ParameterPath> {
-    // Multiband bands: comp_thresh_{b}, comp_knee_{b}, comp_ratio_{b}, etc. The
-    // wire band has Mid/High swapped relative to the internal model — see
-    // `ipad_dyn1_band_swap`.
+/// Parse Pad Dyn1 multiband suffix (after "Dynamics/comp_").
+fn parse_pad_dyn1_suffix(rest: &str, swapped: bool) -> Option<ParameterPath> {
+    // Multiband bands: comp_thresh_{b}, comp_knee_{b}, comp_ratio_{b}, etc. On
+    // S-series the wire band has Mid/High swapped relative to the internal
+    // model — see `pad_dyn1_band_map`.
     if let Some(b_str) = rest.strip_prefix("thresh_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::Dyn1Threshold(ipad_dyn1_band_swap(wire)?));
+        return Some(ParameterPath::Dyn1Threshold(pad_dyn1_band_map(
+            wire, swapped,
+        )?));
     }
     if let Some(b_str) = rest.strip_prefix("knee_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::Dyn1Knee(ipad_dyn1_band_swap(wire)?));
+        return Some(ParameterPath::Dyn1Knee(pad_dyn1_band_map(wire, swapped)?));
     }
     if let Some(b_str) = rest.strip_prefix("ratio_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::Dyn1Ratio(ipad_dyn1_band_swap(wire)?));
+        return Some(ParameterPath::Dyn1Ratio(pad_dyn1_band_map(wire, swapped)?));
     }
     if let Some(b_str) = rest.strip_prefix("attack_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::Dyn1Attack(ipad_dyn1_band_swap(wire)?));
+        return Some(ParameterPath::Dyn1Attack(pad_dyn1_band_map(wire, swapped)?));
     }
     if let Some(b_str) = rest.strip_prefix("release_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::Dyn1Release(ipad_dyn1_band_swap(wire)?));
+        return Some(ParameterPath::Dyn1Release(pad_dyn1_band_map(
+            wire, swapped,
+        )?));
     }
     if let Some(b_str) = rest.strip_prefix("auto-gain_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::Dyn1Gain(ipad_dyn1_band_swap(wire)?));
+        return Some(ParameterPath::Dyn1Gain(pad_dyn1_band_map(wire, swapped)?));
     }
     if let Some(b_str) = rest.strip_prefix("listen_") {
         let wire: u8 = b_str.parse().ok()?;
-        return Some(ParameterPath::Dyn1Listen(ipad_dyn1_band_swap(wire)?));
+        return Some(ParameterPath::Dyn1Listen(pad_dyn1_band_map(wire, swapped)?));
     }
     if let Some(b_str) = rest.strip_prefix("HP_crossover_") {
         let _b: u8 = b_str.parse().ok()?;
@@ -1818,7 +2053,7 @@ fn parse_ipad_dyn1_suffix(rest: &str) -> Option<ParameterPath> {
 fn parse_ipad_send_suffix(rest: &str) -> Option<ParameterPath> {
     // Format: {n}/send_level, {n}/send_pan, {n}/send_on
     let (n_str, param) = rest.split_once('/')?;
-    let n: u8 = n_str.parse().ok()?;
+    let n: u16 = n_str.parse().ok()?;
     match param {
         "send_level" => Some(ParameterPath::SendLevel(n)),
         "send_pan" => Some(ParameterPath::SendPan(n)),
@@ -1831,7 +2066,7 @@ fn parse_ipad_send_suffix(rest: &str) -> Option<ParameterPath> {
 fn parse_ipad_group_send_suffix(rest: &str) -> Option<ParameterPath> {
     // Format: {n}/send_on  (17 = master bus)
     let (n_str, param) = rest.split_once('/')?;
-    let n: u8 = n_str.parse().ok()?;
+    let n: u16 = n_str.parse().ok()?;
     if param != "send_on" {
         return None;
     }
@@ -1846,7 +2081,7 @@ fn parse_ipad_group_send_suffix(rest: &str) -> Option<ParameterPath> {
 fn parse_ipad_matrix_send_suffix(rest: &str) -> Option<ParameterPath> {
     // Format: {n}/send_level, {n}/send_on
     let (n_str, param) = rest.split_once('/')?;
-    let n: u8 = n_str.parse().ok()?;
+    let n: u16 = n_str.parse().ok()?;
     match param {
         "send_level" => Some(ParameterPath::MatrixSendLevel(n)),
         "send_on" => Some(ParameterPath::MatrixSendOn(n)),
@@ -2184,6 +2419,247 @@ mod tests {
                 .unwrap_or_else(|| panic!("from_ipad_suffix failed for /{suffix} (from {path:?})"));
             assert_eq!(parsed, path, "iPad round-trip failed for suffix: {suffix}");
         }
+    }
+
+    /// Every band-quirk combination must round-trip, not just the S21 one.
+    /// The golden tests above pin the S21 wire strings; this pins the
+    /// *involution* property across all four combinations, so a family whose
+    /// probe disproves either quirk still decodes what it encodes.
+    #[test]
+    fn pad_suffix_round_trips_under_every_band_quirk_combo() {
+        use crate::model::family::PadQuirks;
+
+        let mut paths: Vec<ParameterPath> = Vec::new();
+        for b in ParameterPath::EQ_BAND_RANGE {
+            paths.extend([
+                ParameterPath::EqBandFrequency(b),
+                ParameterPath::EqBandGain(b),
+                ParameterPath::EqBandQ(b),
+                ParameterPath::EqBandCurve(b),
+                ParameterPath::EqBandDynEnabled(b),
+                ParameterPath::EqBandDynThreshold(b),
+                ParameterPath::EqBandDynRatio(b),
+                ParameterPath::EqBandDynAttack(b),
+                ParameterPath::EqBandDynRelease(b),
+                ParameterPath::EqBandDynOverUnder(b),
+            ]);
+        }
+        for b in ParameterPath::DYN1_BAND_RANGE {
+            paths.extend([
+                ParameterPath::Dyn1Threshold(b),
+                ParameterPath::Dyn1Knee(b),
+                ParameterPath::Dyn1Ratio(b),
+                ParameterPath::Dyn1Attack(b),
+                ParameterPath::Dyn1Release(b),
+                ParameterPath::Dyn1Gain(b),
+                ParameterPath::Dyn1Listen(b),
+            ]);
+        }
+        // A few non-band paths to prove the quirks don't leak sideways.
+        paths.extend([
+            ParameterPath::Fader,
+            ParameterPath::Pan,
+            ParameterPath::SendLevel(3),
+            ParameterPath::GeqBandGain(16),
+        ]);
+
+        for eq_bands_reversed in [true, false] {
+            for dyn1_mid_high_swapped in [true, false] {
+                let q = PadQuirks {
+                    eq_bands_reversed,
+                    dyn1_mid_high_swapped,
+                    ..PadQuirks::S21
+                };
+                for path in &paths {
+                    let suffix = path.to_pad_suffix(&q).unwrap_or_else(|| {
+                        panic!("to_pad_suffix returned None for {path:?} under {q:?}")
+                    });
+                    let parsed = ParameterPath::from_pad_suffix(&format!("/{suffix}"), &q)
+                        .unwrap_or_else(|| {
+                            panic!("from_pad_suffix failed for /{suffix} ({path:?}) under {q:?}")
+                        });
+                    assert_eq!(&parsed, path, "round-trip failed for /{suffix} under {q:?}");
+                }
+            }
+        }
+    }
+
+    /// With the S21 band quirks disabled, wire indices must equal internal
+    /// ones — the whole point of the parameterization.
+    #[test]
+    fn pad_suffix_without_band_quirks_uses_identity_indices() {
+        use crate::model::family::PadQuirks;
+        let q = PadQuirks {
+            eq_bands_reversed: false,
+            dyn1_mid_high_swapped: false,
+            ..PadQuirks::S21
+        };
+        assert_eq!(
+            ParameterPath::EqBandGain(2).to_pad_suffix(&q).unwrap(),
+            "EQ/eq_gain_2"
+        );
+        assert_eq!(
+            ParameterPath::EqBandFrequency(1).to_pad_suffix(&q).unwrap(),
+            "EQ/eq_freq_1"
+        );
+        assert_eq!(
+            ParameterPath::Dyn1Threshold(3).to_pad_suffix(&q).unwrap(),
+            "Dynamics/comp_thresh_3"
+        );
+        assert_eq!(
+            ParameterPath::Dyn1Listen(2).to_pad_suffix(&q).unwrap(),
+            "Dynamics/comp_listen_2"
+        );
+        // And the S21 quirks still reverse/swap (the golden behaviour).
+        assert_eq!(
+            ParameterPath::EqBandGain(2)
+                .to_pad_suffix(&PadQuirks::S21)
+                .unwrap(),
+            "EQ/eq_gain_3"
+        );
+        assert_eq!(
+            ParameterPath::Dyn1Threshold(3)
+                .to_pad_suffix(&PadQuirks::S21)
+                .unwrap(),
+            "Dynamics/comp_thresh_2"
+        );
+    }
+
+    /// Out-of-range band indices stay rejected regardless of quirk state.
+    #[test]
+    fn pad_band_maps_reject_out_of_range_under_both_settings() {
+        use crate::model::family::PadQuirks;
+        for reversed in [true, false] {
+            let q = PadQuirks {
+                eq_bands_reversed: reversed,
+                dyn1_mid_high_swapped: reversed,
+                ..PadQuirks::S21
+            };
+            assert!(ParameterPath::EqBandGain(0).to_pad_suffix(&q).is_none());
+            assert!(ParameterPath::EqBandGain(5).to_pad_suffix(&q).is_none());
+            assert!(ParameterPath::Dyn1Threshold(4).to_pad_suffix(&q).is_none());
+            assert!(ParameterPath::from_pad_suffix("/EQ/eq_gain_5", &q).is_none());
+            assert!(ParameterPath::from_pad_suffix("/Dynamics/comp_thresh_4", &q).is_none());
+        }
+    }
+
+    // ── Per-family support table ────────────────────────────────────────
+
+    #[test]
+    fn s_series_supports_every_parameter() {
+        // The whole enum came from the S21 command set, so nothing is gated
+        // away on S-series — this is what guarantees Phase 1 changes no
+        // existing behaviour.
+        for ch in [
+            ChannelId::Input(1),
+            ChannelId::Aux(1),
+            ChannelId::Group(1),
+            ChannelId::Matrix(1),
+            ChannelId::ControlGroup(1),
+            ChannelId::GraphicEq(1),
+            ChannelId::MatrixInput(1),
+        ] {
+            for p in ParameterPath::applicable_to(&ch, 8, 8, 8) {
+                assert_eq!(
+                    p.support(ConsoleFamily::SSeries),
+                    ParamSupport::Verified,
+                    "{p:?} should be Verified on S-series"
+                );
+            }
+            assert_eq!(
+                ParameterPath::applicable_to(&ch, 8, 8, 8),
+                ParameterPath::applicable_to_for_family(&ch, 8, 8, 8, ConsoleFamily::SSeries),
+                "family filtering must be a no-op on S-series for {ch:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pad_only_families_gate_gp_only_and_s21_oddities() {
+        for family in [ConsoleFamily::SdRange, ConsoleFamily::Quantum] {
+            // Core Pad tree survives.
+            for p in [
+                ParameterPath::Fader,
+                ParameterPath::Mute,
+                ParameterPath::Pan,
+                ParameterPath::SendLevel(3),
+                ParameterPath::AnalogGain,
+                ParameterPath::EqBandGain(2),
+                ParameterPath::Dyn1Threshold(1),
+                ParameterPath::GeqBandGain(4),
+            ] {
+                assert_eq!(
+                    p.support(family),
+                    ParamSupport::Assumed,
+                    "{p:?} should be Assumed on {family:?}"
+                );
+            }
+            // GP-only and S21-dialect oddities are gated off.
+            for p in [
+                ParameterPath::TotalGain,
+                ParameterPath::DigitubeDrive,
+                ParameterPath::Balance,
+                ParameterPath::MasterBusOn,
+                ParameterPath::CgLevel,
+                ParameterPath::Dyn1Threshold(2),
+                ParameterPath::EqBandDynEnabled(1),
+                ParameterPath::Dyn2KeySolo,
+            ] {
+                assert_eq!(
+                    p.support(family),
+                    ParamSupport::Unsupported,
+                    "{p:?} should be Unsupported on {family:?}"
+                );
+            }
+        }
+    }
+
+    /// The support table and the codec must agree: anything we're willing to
+    /// use on a family has to have a Pad path to use it through.
+    #[test]
+    fn support_implies_pad_path() {
+        use crate::model::family::PadQuirks;
+        let q = PadQuirks::SD_HYPOTHESIS;
+        for family in [ConsoleFamily::SdRange, ConsoleFamily::Quantum] {
+            for ch in [
+                ChannelId::Input(1),
+                ChannelId::Aux(1),
+                ChannelId::Group(1),
+                ChannelId::Matrix(1),
+                ChannelId::ControlGroup(1),
+                ChannelId::GraphicEq(1),
+                ChannelId::MatrixInput(1),
+            ] {
+                for p in ParameterPath::applicable_to_for_family(&ch, 8, 8, 8, family) {
+                    assert!(
+                        p.to_pad_suffix(&q).is_some(),
+                        "{p:?} is usable on {family:?} but has no Pad path"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn family_filtering_shrinks_the_pad_only_parameter_set() {
+        let all = ParameterPath::applicable_to(&ChannelId::Input(1), 8, 8, 8);
+        let quantum = ParameterPath::applicable_to_for_family(
+            &ChannelId::Input(1),
+            8,
+            8,
+            8,
+            ConsoleFamily::Quantum,
+        );
+        assert!(
+            quantum.len() < all.len(),
+            "Quantum should expose fewer input params than S-series"
+        );
+        assert!(
+            !quantum.is_empty(),
+            "Quantum must still expose the core set"
+        );
+        assert!(quantum.contains(&ParameterPath::Fader));
+        assert!(!quantum.contains(&ParameterPath::DigitubeDrive));
     }
 
     #[test]
@@ -3036,6 +3512,60 @@ mod tests {
         assert_eq!(
             ParameterPath::Pan.clamp_value(ParameterValue::Int(7)),
             ParameterValue::Int(7),
+        );
+    }
+
+    #[test]
+    fn clamp_with_s_series_profile_is_identical_to_plain_clamp() {
+        use crate::model::family::{ConsoleFamily, ConsoleProfile};
+        let profile = ConsoleProfile::for_family(ConsoleFamily::SSeries);
+        for (path, value) in [
+            (ParameterPath::SendLevel(1), ParameterValue::Float(-200.0)),
+            (ParameterPath::SendLevel(1), ParameterValue::Float(40.0)),
+            (ParameterPath::CgLevel, ParameterValue::Float(-500.0)),
+            (ParameterPath::Fader, ParameterValue::Float(-150.0)),
+            (ParameterPath::Pan, ParameterValue::Float(2.0)),
+        ] {
+            assert_eq!(
+                path.clamp_value_with_profile(value.clone(), &profile),
+                path.clamp_value(value.clone()),
+                "S-series profile must not add clamping for {path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn clamp_with_pad_only_profile_bounds_send_levels() {
+        use crate::model::family::{ConsoleFamily, ConsoleProfile};
+        let profile = ConsoleProfile::for_family(ConsoleFamily::Quantum);
+        let (lo, hi) = profile
+            .send_level_db_range
+            .expect("Pad profile has a range");
+
+        assert_eq!(
+            ParameterPath::SendLevel(1)
+                .clamp_value_with_profile(ParameterValue::Float(999.0), &profile),
+            ParameterValue::Float(hi),
+        );
+        assert_eq!(
+            ParameterPath::MatrixSendLevel(1)
+                .clamp_value_with_profile(ParameterValue::Float(-999.0), &profile),
+            ParameterValue::Float(lo),
+        );
+        // In-range values pass through untouched.
+        assert_eq!(
+            ParameterPath::CgLevel.clamp_value_with_profile(ParameterValue::Float(-6.0), &profile),
+            ParameterValue::Float(-6.0),
+        );
+        // The channel fader is not a "send level" — left to the desk.
+        assert_eq!(
+            ParameterPath::Fader.clamp_value_with_profile(ParameterValue::Float(-999.0), &profile),
+            ParameterValue::Float(-999.0),
+        );
+        // Pan still clamps via the base rule.
+        assert_eq!(
+            ParameterPath::Pan.clamp_value_with_profile(ParameterValue::Float(2.0), &profile),
+            ParameterValue::Float(1.0),
         );
     }
 }

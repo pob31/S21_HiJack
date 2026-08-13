@@ -55,7 +55,7 @@ impl ChannelTypeChoice {
     }
 
     #[allow(clippy::wrong_self_convention)] // Copy enum; &self/self equivalent here.
-    fn to_channel_id(&self, num: u8) -> ChannelId {
+    fn to_channel_id(&self, num: u16) -> ChannelId {
         match self {
             Self::Input => ChannelId::Input(num),
             Self::Aux => ChannelId::Aux(num),
@@ -83,7 +83,7 @@ impl ChannelTypeChoice {
 fn palette_matches_filter(
     p: &ChannelPalette,
     type_choice: ChannelTypeChoice,
-    number: Option<u8>,
+    number: Option<u16>,
     name_query: &str,
 ) -> bool {
     if !type_choice.matches_channel(&p.channel) {
@@ -123,7 +123,7 @@ pub struct PalettesUiState {
     /// re-firing on a plain re-focus of the same channel number, and — crucially
     /// — to avoid clobbering a name the operator has since typed (we only
     /// overwrite when the field is empty or still exactly our last suggestion).
-    pub last_autofill: Option<(ChannelTypeChoice, u8, String)>,
+    pub last_autofill: Option<(ChannelTypeChoice, u16, String)>,
     pub status_message: Option<StatusMessage>,
 }
 
@@ -203,7 +203,7 @@ pub fn draw_palettes_section(
         // last suggestion — so a typed custom name is never clobbered (e.g. when
         // the number field loses focus to the Capture button).
         if num_resp.lost_focus() {
-            if let Ok(num) = state.capture_channel_number.parse::<u8>() {
+            if let Ok(num) = state.capture_channel_number.parse::<u16>() {
                 let already = matches!(
                     &state.last_autofill,
                     Some((t, n, _)) if *t == state.capture_channel_type && *n == num
@@ -350,7 +350,7 @@ pub fn draw_palettes_section(
                 // Filter the list to the capture form's channel type / number /
                 // name so the operator sees only palettes relevant to what they
                 // are building (see `palette_matches_filter`).
-                let number = state.capture_channel_number.parse::<u8>().ok();
+                let number = state.capture_channel_number.parse::<u16>().ok();
                 let type_choice = state.capture_channel_type;
                 let name_query = state.new_palette_name.clone();
                 let total = mgr.palettes.len();
@@ -1025,7 +1025,7 @@ fn capture_palette(
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    let Ok(ch_num) = state.capture_channel_number.parse::<u8>() else {
+    let Ok(ch_num) = state.capture_channel_number.parse::<u16>() else {
         state.status_message = Some(StatusMessage::with_help(
             "Invalid channel number",
             HelpKey::PaletteWarnInvalidChannel,

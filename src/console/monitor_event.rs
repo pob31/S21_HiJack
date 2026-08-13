@@ -37,13 +37,13 @@ use super::monitor_manager::MonitorManager;
 #[derive(Clone, Debug)]
 pub struct ClientStateSnapshot {
     /// `(input, aux, level, pan, on)` for every permitted send.
-    pub sends: Vec<(u8, u8, f32, f32, bool)>,
+    pub sends: Vec<(u16, u16, f32, f32, bool)>,
     /// `(input, name)` for each visible input that has a name.
-    pub input_names: Vec<(u8, String)>,
+    pub input_names: Vec<(u16, String)>,
     /// `(aux, name)` for each permitted aux that has a name.
-    pub aux_names: Vec<(u8, String)>,
+    pub aux_names: Vec<(u16, String)>,
     /// `(aux, fader, mute)` for each permitted aux.
-    pub aux_strips: Vec<(u8, f32, bool)>,
+    pub aux_strips: Vec<(u16, f32, bool)>,
 }
 
 /// A transport-neutral server→client output, published to the broadcast and
@@ -60,8 +60,8 @@ pub enum MonitorStateEvent {
     /// UDP path: `/monitor/state/send/{input}/{aux}/{level|pan|on}` `[value]`.
     SendEcho {
         source: ClientEndpoint,
-        input: u8,
-        aux: u8,
+        input: u16,
+        aux: u16,
         param: SendParam,
         value: ParameterValue,
     },
@@ -69,15 +69,15 @@ pub enum MonitorStateEvent {
     /// client permitted for `aux` with `input` visible.
     /// UDP path: `/monitor/state/send/{input}/{aux}` `[level, pan, on]`.
     SendState {
-        input: u8,
-        aux: u8,
+        input: u16,
+        aux: u16,
         level: f32,
         pan: f32,
         on: bool,
     },
     /// An aux master's `(fader, mute)`, poll-driven. Sent to every connected
     /// client permitted for `aux`. UDP path: `/monitor/state/aux/{aux}` `[fader, mute]`.
-    AuxState { aux: u8, fader: f32, mute: bool },
+    AuxState { aux: u16, fader: f32, mute: bool },
     /// Discovery reply (UDP-native; WS ignores). The UDP port is filled in by
     /// the fan-out from its own socket. Path: `/monitor/discovered` `[name, port]`.
     Discovered {

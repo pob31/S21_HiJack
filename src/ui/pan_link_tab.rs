@@ -34,9 +34,9 @@ use crate::osc::client::OscSender;
 pub struct PanLinkTabState {
     /// Inputs included in the current operation. Aux tile clicks toggle
     /// the link for every input in this set.
-    pub selected_inputs: BTreeSet<u8>,
+    pub selected_inputs: BTreeSet<u16>,
     /// Last clicked input — anchor for Shift+Click range selection.
-    pub range_anchor: Option<u8>,
+    pub range_anchor: Option<u16>,
     /// Working copy of the bindings. Tile clicks mutate this; only Apply
     /// writes back to the live `PanLinkBindings`.
     pub staged: PanLinkBindings,
@@ -87,8 +87,8 @@ impl PanLinkTabState {
     }
 }
 
-const TILES_PER_INPUT_ROW: u8 = 10;
-const TILES_PER_AUX_ROW: u8 = 4;
+const TILES_PER_INPUT_ROW: u16 = 10;
+const TILES_PER_AUX_ROW: u16 = 4;
 /// Gap between controls inside a panel header. The grid rows force
 /// `item_spacing.x = 0` for exact tile math, so the headers reset it to this.
 /// Tile sizing is responsive — see [`theme::channel_tile_width`].
@@ -161,7 +161,7 @@ pub fn draw_pan_link_tab(
             // Aux names are keyed by per-type aux index (1-based), so count
             // the aux buses preceding this one to map the unified bus index
             // onto the aux number the console stores names under.
-            let aux_index = mix_types.iter().take(idx).filter(|a| **a).count() as u8 + 1;
+            let aux_index = mix_types.iter().take(idx).filter(|a| **a).count() as u16 + 1;
             let name = state_guard
                 .get(&ParameterAddress {
                     channel: ChannelId::Aux(aux_index),
@@ -299,7 +299,7 @@ pub fn draw_pan_link_tab(
 
 struct AuxBusInfo {
     /// Unified mix-output bus index (1-based).
-    bus: u8,
+    bus: u16,
     label: String,
     /// Operator-assigned aux name, if any (empty when unnamed).
     name: String,
@@ -344,7 +344,7 @@ fn draw_inputs_grid(
     ui: &mut egui::Ui,
     tab: &mut PanLinkTabState,
     state: &ConsoleState,
-    input_count: u8,
+    input_count: u16,
     tile_w: f32,
     panel_w: f32,
 ) {
@@ -362,8 +362,8 @@ fn draw_inputs_grid(
         }
 
         let shift_held = ui.input(|i| i.modifiers.shift);
-        let mut clicked_input: Option<u8> = None;
-        let mut n: u8 = 1;
+        let mut clicked_input: Option<u16> = None;
+        let mut n: u16 = 1;
         while n <= input_count {
             ui.horizontal(|ui| {
                 let row_end = (n + TILES_PER_INPUT_ROW - 1).min(input_count);
@@ -414,7 +414,7 @@ fn draw_inputs_grid(
     });
 }
 
-fn apply_input_click(tab: &mut PanLinkTabState, ch: u8, shift_held: bool) {
+fn apply_input_click(tab: &mut PanLinkTabState, ch: u16, shift_held: bool) {
     if shift_held {
         if let Some(anchor) = tab.range_anchor {
             let (lo, hi) = if anchor <= ch {
@@ -464,8 +464,8 @@ fn draw_auxes_grid(
             return;
         }
 
-        let mut clicked_aux: Option<u8> = None;
-        let mut toggled_mono: Option<u8> = None;
+        let mut clicked_aux: Option<u16> = None;
+        let mut toggled_mono: Option<u16> = None;
         for chunk in aux_buses.chunks(TILES_PER_AUX_ROW as usize) {
             ui.horizontal(|ui| {
                 for info in chunk {
@@ -495,7 +495,7 @@ fn draw_auxes_grid(
         if let Some(bus) = clicked_aux {
             // Click cycle: Mixed → All-linked, All-linked → None,
             // None → All-linked. Always promotes Mixed to All on first click.
-            let inputs: Vec<u8> = tab.selected_inputs.iter().copied().collect();
+            let inputs: Vec<u16> = tab.selected_inputs.iter().copied().collect();
             let all_linked = inputs.iter().all(|i| tab.staged.is_active(*i, bus));
             let target = !all_linked;
             for i in inputs {
@@ -550,7 +550,7 @@ fn compute_aux_state(tab: &PanLinkTabState, info: &AuxBusInfo) -> AuxState {
 fn draw_input_tile(
     ui: &mut egui::Ui,
     tile_size: egui::Vec2,
-    ch: u8,
+    ch: u16,
     name: &str,
     selected: bool,
     has_link: bool,
@@ -828,7 +828,7 @@ fn blend(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
 mod tests {
     use super::*;
 
-    fn state_with(initial: &[(u8, u8)]) -> PanLinkTabState {
+    fn state_with(initial: &[(u16, u16)]) -> PanLinkTabState {
         let mut s = PanLinkTabState::default();
         for (i, a) in initial {
             s.staged.set_active(*i, *a, true);
@@ -853,7 +853,7 @@ mod tests {
         let mut s = state_with(&[]);
         apply_input_click(&mut s, 5, false); // anchor at 5
         apply_input_click(&mut s, 8, true); // shift-click 8 → range 5..=8
-        let v: Vec<u8> = s.selected_inputs.iter().copied().collect();
+        let v: Vec<u16> = s.selected_inputs.iter().copied().collect();
         assert_eq!(v, vec![5, 6, 7, 8]);
         assert_eq!(s.range_anchor, Some(8));
     }

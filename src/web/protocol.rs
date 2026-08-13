@@ -40,22 +40,22 @@ pub enum ClientMsg {
     /// Ask for a fresh full-state snapshot (e.g. after a reconnect).
     RequestState,
     SetSend {
-        input: u8,
-        aux: u8,
+        input: u16,
+        aux: u16,
         field: SendField,
         value: f32,
     },
     SetSendOn {
-        input: u8,
-        aux: u8,
+        input: u16,
+        aux: u16,
         on: bool,
     },
     SetAuxFader {
-        aux: u8,
+        aux: u16,
         value: f32,
     },
     SetAuxMute {
-        aux: u8,
+        aux: u16,
         mute: bool,
     },
 }
@@ -74,8 +74,8 @@ pub enum AuthErrorReason {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SendSnapshot {
-    pub input: u8,
-    pub aux: u8,
+    pub input: u16,
+    pub aux: u16,
     pub level: f32,
     pub pan: f32,
     pub on: bool,
@@ -83,13 +83,13 @@ pub struct SendSnapshot {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NameEntry {
-    pub channel: u8,
+    pub channel: u16,
     pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AuxSnapshot {
-    pub aux: u8,
+    pub aux: u16,
     pub fader: f32,
     pub mute: bool,
 }
@@ -101,9 +101,9 @@ pub enum ServerMsg {
     /// Sent right after a successful `Hello`.
     Welcome {
         client_name: String,
-        permitted_auxes: Vec<u8>,
-        visible_inputs: Vec<u8>,
-        input_count: u8,
+        permitted_auxes: Vec<u16>,
+        visible_inputs: Vec<u16>,
+        input_count: u16,
         console_connected: bool,
     },
     /// Full permitted-state snapshot.
@@ -115,23 +115,23 @@ pub enum ServerMsg {
     },
     /// Incremental: a single continuous send field changed (peer echo).
     SendField {
-        input: u8,
-        aux: u8,
+        input: u16,
+        aux: u16,
         field: SendField,
         value: f32,
     },
     /// Incremental: a send's on/off changed (peer echo).
-    SendOn { input: u8, aux: u8, on: bool },
+    SendOn { input: u16, aux: u16, on: bool },
     /// Incremental: a send's full `(level, pan, on)` (poll push).
     Send {
-        input: u8,
-        aux: u8,
+        input: u16,
+        aux: u16,
         level: f32,
         pan: f32,
         on: bool,
     },
     /// Incremental: an aux master's `(fader, mute)`.
-    Aux { aux: u8, fader: f32, mute: bool },
+    Aux { aux: u16, fader: f32, mute: bool },
     /// Console connection status changed / queried.
     ConsoleStatus { connected: bool },
     /// `Hello` was rejected.
@@ -144,15 +144,15 @@ pub enum ServerMsg {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientPerms {
     pub name: String,
-    pub permitted_auxes: Vec<u8>,
-    pub visible_inputs: Vec<u8>,
+    pub permitted_auxes: Vec<u16>,
+    pub visible_inputs: Vec<u16>,
 }
 
 impl ClientPerms {
-    fn permits_aux(&self, aux: u8) -> bool {
+    fn permits_aux(&self, aux: u16) -> bool {
         self.permitted_auxes.contains(&aux)
     }
-    fn input_visible(&self, input: u8) -> bool {
+    fn input_visible(&self, input: u16) -> bool {
         self.visible_inputs.is_empty() || self.visible_inputs.contains(&input)
     }
 }
@@ -371,7 +371,7 @@ fn value_bool(v: &ParameterValue) -> bool {
 mod tests {
     use super::*;
 
-    fn perms(name: &str, auxes: Vec<u8>, inputs: Vec<u8>) -> ClientPerms {
+    fn perms(name: &str, auxes: Vec<u16>, inputs: Vec<u16>) -> ClientPerms {
         ClientPerms {
             name: name.into(),
             permitted_auxes: auxes,

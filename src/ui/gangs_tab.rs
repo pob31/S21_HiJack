@@ -348,7 +348,7 @@ pub struct GangsTabState {
     /// Per-group shift-click anchor for the inline channel grid (channel number
     /// within that group's number space). Keyed by `ChannelGroup` so a range
     /// never bridges channel types. Cleared on save / cancel / edit-load.
-    pub member_anchor: HashMap<ChannelGroup, u8>,
+    pub member_anchor: HashMap<ChannelGroup, u16>,
     pub new_gang_sections: HashSet<ParameterSection>,
     /// Pan link mode for the gang being created / edited (independent of the
     /// linked sections above).
@@ -1050,7 +1050,7 @@ fn format_members(members: &[ChannelId]) -> String {
             ChannelId::GraphicEq(_) => "GEQ",
             ChannelId::MatrixInput(_) => "MtxIn",
         };
-        let numbers: Vec<u8> = members
+        let numbers: Vec<u16> = members
             .iter()
             .map(|m| match m {
                 ChannelId::Input(n)
@@ -1083,7 +1083,7 @@ fn format_members(members: &[ChannelId]) -> String {
 }
 
 /// Compress a sorted list of numbers into range notation: [1,2,3,7,12] -> "1-3,7,12"
-fn format_ranges(numbers: &[u8]) -> String {
+fn format_ranges(numbers: &[u16]) -> String {
     if numbers.is_empty() {
         return String::new();
     }

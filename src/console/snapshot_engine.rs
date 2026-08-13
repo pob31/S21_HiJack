@@ -10,6 +10,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::console::automation_registry::AutomationOverride;
+use crate::console::console_tx::{ConsoleTx, SendOutcome};
 use crate::console::cue_manager::CueManager;
 use crate::console::fade_engine::FadeTarget;
 use crate::console::recall_cache::RecallCache;
@@ -24,10 +25,8 @@ use crate::model::snapshot::{Cue, ScopeTemplate, Snapshot};
 use crate::model::state::ConsoleState;
 use crate::model::sync_direction::SharedSyncDirection;
 use crate::osc::client::OscSender;
-use crate::osc::encode;
 use crate::osc::encode::SystemCommand;
 use crate::osc::ipad_client::IpadSender;
-use crate::osc::ipad_encode;
 
 /// Settling delay between firing a console memory and writing the app's
 /// parameter overlay on top. Gives the console time to flood its own
@@ -223,8 +222,7 @@ pub struct UndoState {
 /// The snapshot recall engine — diffs snapshot data against live state and sends changes.
 pub struct SnapshotEngine {
     state: Arc<RwLock<ConsoleState>>,
-    sender: OscSender,
-    ipad_sender: Option<IpadSender>,
+    tx: ConsoleTx,
     /// Serializes the recall BRACKET phase (console-memory fire + settle +
     /// resolve + snap-through + discrete sends + fade spawn). NOT held for
     /// the fade duration — the timed path drops its owned guard right after
@@ -333,8 +331,7 @@ impl SnapshotEngine {
     ) -> Self {
         Self {
             state,
-            sender,
-            ipad_sender: None,
+            tx: ConsoleTx::new(sender),
             recall_gate: Arc::new(tokio::sync::Mutex::new(())),
             recall_epoch: AtomicU64::new(0),
             recall_cancel: std::sync::Mutex::new(CancellationToken::new()),
@@ -416,7 +413,20 @@ impl SnapshotEngine {
 
     /// Set (or clear) the iPad sender for iPad-only parameter recall.
     pub fn set_ipad_sender(&mut self, sender: Option<IpadSender>) {
-        self.ipad_sender = sender;
+        self.tx.set_pad_sender(sender);
+    }
+
+    /// Attach the shared sent-value log (echo screening on the iPad link).
+    /// Timed-recall tasks and inline fades clone the engine's `ConsoleTx`,
+    /// so they inherit this automatically.
+    pub fn set_sent_log(&mut self, log: crate::console::console_tx::SentLog) {
+        self.tx.set_sent_log(log);
+    }
+
+    /// Point the write path at the connected console's profile (Pad wire
+    /// quirks). Inherited by cloned handles in timed recalls and fades.
+    pub fn set_profile(&mut self, profile: Arc<crate::model::family::ConsoleProfile>) {
+        self.tx.set_profile(profile);
     }
 
     /// Attach a dirty tracker (Phase C). Called once at engine construction.
@@ -579,7 +589,7 @@ impl SnapshotEngine {
         let wire = row + CONSOLE_SNAPSHOT_WIRE_OFFSET;
         info!(stored = row, wire, "Firing console memory over GP OSC");
         let cmd = SystemCommand::SnapshotFire(wire);
-        if let Err(e) = self.sender.send(cmd.path(), cmd.args()).await {
+        if let Err(e) = self.tx.gp_sender().send(cmd.path(), cmd.args()).await {
             warn!(row, "Failed to fire console memory: {e}");
             return;
         }
@@ -1081,45 +1091,37 @@ impl SnapshotEngine {
             undo.insert(addr.clone(), live.clone());
         }
 
-        // Encode to GP OSC
-        match encode::encode_parameter(addr, value) {
-            Some((path, args)) => {
-                if let Err(e) = self.sender.send(&path, args).await {
-                    warn!(%addr, "Failed to send recall: {e}");
-                    *skipped += 1;
-                    false
-                } else {
-                    debug!(%addr, %value, "Recall: sent parameter");
-                    *sent += 1;
-                    true
-                }
+        // GP OSC first, iPad protocol as fallback
+        match self.tx.send_parameter(addr, value).await {
+            SendOutcome::SentGp => {
+                debug!(%addr, %value, "Recall: sent parameter");
+                *sent += 1;
+                true
             }
-            None => {
-                // Try iPad protocol as fallback
-                if let Some(ref ipad) = self.ipad_sender {
-                    match ipad_encode::encode_ipad_parameter(addr, value) {
-                        Some((path, args)) => {
-                            if let Err(e) = ipad.send(&path, args).await {
-                                warn!(%addr, "Failed to send iPad recall: {e}");
-                                *skipped += 1;
-                                false
-                            } else {
-                                debug!(%addr, %value, "Recall: sent via iPad protocol");
-                                *sent += 1;
-                                true
-                            }
-                        }
-                        None => {
-                            *skipped += 1;
-                            debug!(%addr, "Recall skip: no encoding available");
-                            false
-                        }
-                    }
-                } else {
-                    *skipped += 1;
-                    debug!(%addr, "Recall skip: iPad-only parameter (no iPad sender)");
-                    false
-                }
+            SendOutcome::SentPad => {
+                debug!(%addr, %value, "Recall: sent via iPad protocol");
+                *sent += 1;
+                true
+            }
+            SendOutcome::GpSendFailed => {
+                warn!(%addr, "Failed to send recall");
+                *skipped += 1;
+                false
+            }
+            SendOutcome::PadSendFailed => {
+                warn!(%addr, "Failed to send iPad recall");
+                *skipped += 1;
+                false
+            }
+            SendOutcome::NoEncoding => {
+                *skipped += 1;
+                debug!(%addr, "Recall skip: no encoding available");
+                false
+            }
+            SendOutcome::NoPadSender => {
+                *skipped += 1;
+                debug!(%addr, "Recall skip: iPad-only parameter (no iPad sender)");
+                false
             }
         }
     }
@@ -1509,8 +1511,7 @@ impl SnapshotEngine {
         //   - If mute going OFF: start all non-mute groups → wait → send mute
         //   - Otherwise:         start all groups concurrently
 
-        let sender = self.sender.clone();
-        let ipad_sender = self.ipad_sender.clone();
+        let tx = self.tx.clone();
         let pace = self.pace_us.load(Ordering::Relaxed);
 
         // Collect all spawned handles for tracking
@@ -1544,8 +1545,6 @@ impl SnapshotEngine {
             }
 
             let mute_timing = scope_ref.timing_for(&channel, TimingCategory::Mute);
-            let s = sender.clone();
-            let is = ipad_sender.clone();
 
             // Build the per-group execution closures
             let mut group_tasks: Vec<(
@@ -1593,9 +1592,8 @@ impl SnapshotEngine {
                 }
             }
 
-            // Clone sender for spawned tasks
-            let sender_for_channel = s.clone();
-            let ipad_for_channel = is.clone();
+            // Clone the console write path for spawned tasks
+            let tx_for_channel = tx.clone();
             let reg = registry.clone();
             // Shared live mirror, so each group can re-read the fader's CURRENT
             // position at fade-start (after its pre-wait) instead of using the
@@ -1613,8 +1611,7 @@ impl SnapshotEngine {
                 // Helper to send one param
                 #[allow(clippy::too_many_arguments)]
                 async fn send_one(
-                    sender: &OscSender,
-                    ipad: &Option<IpadSender>,
+                    tx: &ConsoleTx,
                     state: &Arc<RwLock<ConsoleState>>,
                     addr: &ParameterAddress,
                     value: &ParameterValue,
@@ -1636,19 +1633,7 @@ impl SnapshotEngine {
                             return false;
                         }
                     }
-                    let ok = match encode::encode_parameter(addr, value) {
-                        Some((path, args)) => sender.send(&path, args).await.is_ok(),
-                        None => {
-                            if let Some(ipad) = ipad {
-                                match ipad_encode::encode_ipad_parameter(addr, value) {
-                                    Some((path, args)) => ipad.send(&path, args).await.is_ok(),
-                                    None => false,
-                                }
-                            } else {
-                                false
-                            }
-                        }
-                    };
+                    let ok = tx.send_parameter(addr, value).await.is_sent();
                     if ok {
                         if let Some(r) = reg {
                             r.note_sent(addr, value, gen_id);
@@ -1664,8 +1649,7 @@ impl SnapshotEngine {
                 // Execute a single timing group
                 #[allow(clippy::too_many_arguments)]
                 async fn exec_group(
-                    sender: &OscSender,
-                    ipad: &Option<IpadSender>,
+                    tx: &ConsoleTx,
                     state: &Arc<RwLock<ConsoleState>>,
                     pre_wait: Duration,
                     fade_time: Duration,
@@ -1730,9 +1714,7 @@ impl SnapshotEngine {
                         if cancel.is_cancelled() {
                             return sent;
                         }
-                        if send_one(sender, ipad, state, &d.addr, &d.value, reg, gen_id, cancel)
-                            .await
-                        {
+                        if send_one(tx, state, &d.addr, &d.value, reg, gen_id, cancel).await {
                             sent += 1;
                             if pace_us > 0 {
                                 sleep(Duration::from_micros(pace_us)).await;
@@ -1750,8 +1732,7 @@ impl SnapshotEngine {
                         let result = crate::console::fade_engine::run_fade_inline(
                             fade_time.as_secs_f32(),
                             continuous_targets,
-                            sender.clone(),
-                            ipad.clone(),
+                            tx.clone(),
                             cancel.child_token(),
                             reg.clone(),
                             gen_id,
@@ -1767,8 +1748,7 @@ impl SnapshotEngine {
                 // Execute a Sends group with per-send enable/disable ordering.
                 #[allow(clippy::too_many_arguments)]
                 async fn exec_sends_group(
-                    sender: &OscSender,
-                    ipad: &Option<IpadSender>,
+                    tx: &ConsoleTx,
                     state: &Arc<RwLock<ConsoleState>>,
                     pre_wait: Duration,
                     fade_time: Duration,
@@ -1791,7 +1771,7 @@ impl SnapshotEngine {
                     }
 
                     // Sub-group by send index
-                    let mut by_send: HashMap<u8, Vec<ParamChange>> = HashMap::new();
+                    let mut by_send: HashMap<u16, Vec<ParamChange>> = HashMap::new();
                     let mut non_send_changes: Vec<ParamChange> = Vec::new();
 
                     for change in changes {
@@ -1807,9 +1787,7 @@ impl SnapshotEngine {
 
                     // Handle non-send params (shouldn't happen but be safe)
                     for c in &non_send_changes {
-                        if send_one(sender, ipad, state, &c.addr, &c.value, reg, gen_id, cancel)
-                            .await
-                        {
+                        if send_one(tx, state, &c.addr, &c.value, reg, gen_id, cancel).await {
                             sent += 1;
                             if pace_us > 0 {
                                 sleep(Duration::from_micros(pace_us)).await;
@@ -1820,8 +1798,7 @@ impl SnapshotEngine {
                     // Handle each send with ordering
                     let mut per_send_handles = Vec::new();
                     for (_send_idx, send_changes) in by_send {
-                        let s = sender.clone();
-                        let i = ipad.clone();
+                        let tx = tx.clone();
                         let st = state.clone();
                         let ft = fade_time;
                         let pu = pace_us;
@@ -1855,8 +1832,7 @@ impl SnapshotEngine {
                                 Some(true) => {
                                     // Enable ON: fade level/pan first, then enable
                                     sent += exec_group(
-                                        &s,
-                                        &i,
+                                        &tx,
                                         &st,
                                         Duration::ZERO,
                                         ft,
@@ -1868,10 +1844,8 @@ impl SnapshotEngine {
                                     )
                                     .await;
                                     if let Some(ec) = &enable_change {
-                                        if send_one(
-                                            &s, &i, &st, &ec.addr, &ec.value, &r, g, &cancel,
-                                        )
-                                        .await
+                                        if send_one(&tx, &st, &ec.addr, &ec.value, &r, g, &cancel)
+                                            .await
                                         {
                                             sent += 1;
                                         }
@@ -1880,17 +1854,14 @@ impl SnapshotEngine {
                                 Some(false) => {
                                     // Enable OFF: disable first, then fade level/pan
                                     if let Some(ec) = &enable_change {
-                                        if send_one(
-                                            &s, &i, &st, &ec.addr, &ec.value, &r, g, &cancel,
-                                        )
-                                        .await
+                                        if send_one(&tx, &st, &ec.addr, &ec.value, &r, g, &cancel)
+                                            .await
                                         {
                                             sent += 1;
                                         }
                                     }
                                     sent += exec_group(
-                                        &s,
-                                        &i,
+                                        &tx,
                                         &st,
                                         Duration::ZERO,
                                         ft,
@@ -1905,8 +1876,7 @@ impl SnapshotEngine {
                                 None => {
                                     // No enable change — just fade level/pan
                                     sent += exec_group(
-                                        &s,
-                                        &i,
+                                        &tx,
                                         &st,
                                         Duration::ZERO,
                                         ft,
@@ -1949,8 +1919,7 @@ impl SnapshotEngine {
                         .await;
                         if let Some(mc) = &mute_change {
                             if send_one(
-                                &sender_for_channel,
-                                &ipad_for_channel,
+                                &tx_for_channel,
                                 &state_for_channel,
                                 &mc.addr,
                                 &mc.value,
@@ -1966,8 +1935,7 @@ impl SnapshotEngine {
                         // Now run all non-mute groups concurrently
                         let mut handles = Vec::new();
                         for (cat, pre_wait, fade_time, changes) in group_tasks {
-                            let s = sender_for_channel.clone();
-                            let i = ipad_for_channel.clone();
+                            let tx = tx_for_channel.clone();
                             let st = state_for_channel.clone();
                             let pu = pace;
                             let r = reg.clone();
@@ -1976,14 +1944,14 @@ impl SnapshotEngine {
                             if cat == Some(TimingCategory::Sends) {
                                 handles.push(tokio::spawn(async move {
                                     exec_sends_group(
-                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
+                                        &tx, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
                                     )
                                     .await
                                 }));
                             } else {
                                 handles.push(tokio::spawn(async move {
                                     exec_group(
-                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
+                                        &tx, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
                                     )
                                     .await
                                 }));
@@ -1999,8 +1967,7 @@ impl SnapshotEngine {
                         // Mute OFF: run all non-mute groups, wait, then unmute
                         let mut handles = Vec::new();
                         for (cat, pre_wait, fade_time, changes) in group_tasks {
-                            let s = sender_for_channel.clone();
-                            let i = ipad_for_channel.clone();
+                            let tx = tx_for_channel.clone();
                             let st = state_for_channel.clone();
                             let pu = pace;
                             let r = reg.clone();
@@ -2009,14 +1976,14 @@ impl SnapshotEngine {
                             if cat == Some(TimingCategory::Sends) {
                                 handles.push(tokio::spawn(async move {
                                     exec_sends_group(
-                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
+                                        &tx, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
                                     )
                                     .await
                                 }));
                             } else {
                                 handles.push(tokio::spawn(async move {
                                     exec_group(
-                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
+                                        &tx, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
                                     )
                                     .await
                                 }));
@@ -2044,8 +2011,7 @@ impl SnapshotEngine {
                             .await;
                             if let Some(mc) = &mute_change {
                                 if send_one(
-                                    &sender_for_channel,
-                                    &ipad_for_channel,
+                                    &tx_for_channel,
                                     &state_for_channel,
                                     &mc.addr,
                                     &mc.value,
@@ -2064,8 +2030,7 @@ impl SnapshotEngine {
                         // No mute change — all groups run concurrently
                         let mut handles = Vec::new();
                         for (cat, pre_wait, fade_time, changes) in group_tasks {
-                            let s = sender_for_channel.clone();
-                            let i = ipad_for_channel.clone();
+                            let tx = tx_for_channel.clone();
                             let st = state_for_channel.clone();
                             let pu = pace;
                             let r = reg.clone();
@@ -2074,14 +2039,14 @@ impl SnapshotEngine {
                             if cat == Some(TimingCategory::Sends) {
                                 handles.push(tokio::spawn(async move {
                                     exec_sends_group(
-                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
+                                        &tx, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
                                     )
                                     .await
                                 }));
                             } else {
                                 handles.push(tokio::spawn(async move {
                                     exec_group(
-                                        &s, &i, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
+                                        &tx, &st, pre_wait, fade_time, changes, pu, &r, g, &c,
                                     )
                                     .await
                                 }));
@@ -2263,43 +2228,32 @@ impl SnapshotEngine {
         // Optimistically reflect our own send into the mirror on success — the
         // desk doesn't echo OSC-set values back, so without this the mirror goes
         // stale and a later fade would start from a stale value.
-        match encode::encode_parameter(addr, value) {
-            Some((path, args)) => {
-                if let Err(e) = self.sender.send(&path, args).await {
-                    warn!(%addr, "Failed to send recall: {e}");
-                    *skipped += 1;
-                    false
-                } else {
-                    debug!(%addr, %value, "Recall: sent discrete param");
-                    *sent += 1;
-                    self.state.write().await.update(addr.clone(), value.clone());
-                    true
-                }
+        match self.tx.send_parameter(addr, value).await {
+            SendOutcome::SentGp => {
+                debug!(%addr, %value, "Recall: sent discrete param");
+                *sent += 1;
+                self.state.write().await.update(addr.clone(), value.clone());
+                true
             }
-            None => {
-                if let Some(ipad) = &self.ipad_sender {
-                    match ipad_encode::encode_ipad_parameter(addr, value) {
-                        Some((path, args)) => {
-                            if let Err(e) = ipad.send(&path, args).await {
-                                warn!(%addr, "Failed to send iPad recall: {e}");
-                                *skipped += 1;
-                                false
-                            } else {
-                                debug!(%addr, %value, "Recall: sent discrete via iPad");
-                                *sent += 1;
-                                self.state.write().await.update(addr.clone(), value.clone());
-                                true
-                            }
-                        }
-                        None => {
-                            *skipped += 1;
-                            false
-                        }
-                    }
-                } else {
-                    *skipped += 1;
-                    false
-                }
+            SendOutcome::SentPad => {
+                debug!(%addr, %value, "Recall: sent discrete via iPad");
+                *sent += 1;
+                self.state.write().await.update(addr.clone(), value.clone());
+                true
+            }
+            SendOutcome::GpSendFailed => {
+                warn!(%addr, "Failed to send recall");
+                *skipped += 1;
+                false
+            }
+            SendOutcome::PadSendFailed => {
+                warn!(%addr, "Failed to send iPad recall");
+                *skipped += 1;
+                false
+            }
+            SendOutcome::NoEncoding | SendOutcome::NoPadSender => {
+                *skipped += 1;
+                false
             }
         }
     }
@@ -2509,7 +2463,7 @@ mod tests {
     }
 
     /// Snapshot holding a single fader value on `ch`, scoped to that channel.
-    fn fader_snap(ch: u8, db: f32) -> Snapshot {
+    fn fader_snap(ch: u16, db: f32) -> Snapshot {
         let scope = ScopeTemplate::new(
             "s".into(),
             vec![ChannelScope::from_sections(
@@ -3924,7 +3878,7 @@ mod tests {
 
     use crate::console::automation_registry::AutomationRegistry;
 
-    fn fader_addr(ch: u8) -> ParameterAddress {
+    fn fader_addr(ch: u16) -> ParameterAddress {
         ParameterAddress {
             channel: ChannelId::Input(ch),
             parameter: ParameterPath::Fader,

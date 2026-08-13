@@ -43,8 +43,8 @@ use tokio::sync::{RwLock, mpsc, watch};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::console::console_tx::ConsoleTx;
 use crate::console::cue_manager::CueManager;
-use crate::console::send_util::send_parameter;
 use crate::console::sidecar_decode::{DecodeState, HwEvent, decode, event_matches};
 use crate::console::sidecar_learn::LearnShared;
 use crate::model::parameter::{ParameterAddress, ParameterValue};
@@ -53,8 +53,6 @@ use crate::model::sidecar::{
     taper_to_value,
 };
 use crate::model::state::ConsoleState;
-use crate::osc::client::OscSender;
-use crate::osc::ipad_client::IpadSender;
 
 /// Echo-suppression window (matches `gang_engine`).
 const SUPPRESSION_WINDOW: Duration = Duration::from_millis(300);
@@ -95,9 +93,9 @@ pub struct SidecarDeps {
     pub hw_rx: mpsc::UnboundedReceiver<HwEvent>,
     /// UI commands (sync requests).
     pub svc_rx: mpsc::UnboundedReceiver<SvcCmd>,
-    /// Live console senders, rewired after each (re)connect from
+    /// Live console write path, rewired after each (re)connect from
     /// `pickup_pending_engines`; `None` while disconnected.
-    pub senders: watch::Receiver<Option<(OscSender, Option<IpadSender>)>>,
+    pub senders: watch::Receiver<Option<ConsoleTx>>,
     /// For resolving `RawOsc { target_id }` against the show's targets.
     pub cue_manager: Arc<RwLock<CueManager>>,
     /// Learn capture shared with the Sidecar tab.
@@ -305,7 +303,7 @@ async fn send_console_value(deps: &SidecarDeps, rt: &mut Runtime, b: &SidecarBin
     let BindingTarget::ConsoleParameter { address } = &b.target else {
         return;
     };
-    let Some((sender, ipad)) = deps.senders.borrow().clone() else {
+    let Some(tx) = deps.senders.borrow().clone() else {
         // No console link — nothing sensible to do with the move.
         return;
     };
@@ -317,7 +315,11 @@ async fn send_console_value(deps: &SidecarDeps, rt: &mut Runtime, b: &SidecarBin
 
     rt.sent_to_console
         .insert(address.clone(), (v, Instant::now()));
-    if send_parameter(&sender, &ipad, address, &ParameterValue::Float(v)).await {
+    if tx
+        .send_parameter(address, &ParameterValue::Float(v))
+        .await
+        .is_sent()
+    {
         // Optimistic mirror update (fade-engine precedent): the UI
         // reflects the move immediately; the console's echo then
         // matches both this value and the suppression entry above.
@@ -540,14 +542,14 @@ mod tests {
     use std::sync::Mutex as StdMutex;
     use tokio::net::UdpSocket;
 
-    fn fader_addr(n: u8) -> ParameterAddress {
+    fn fader_addr(n: u16) -> ParameterAddress {
         ParameterAddress {
             channel: ChannelId::Input(n),
             parameter: ParameterPath::Fader,
         }
     }
 
-    fn pb_binding(midi_channel: u8, input: u8) -> SidecarBinding {
+    fn pb_binding(midi_channel: u8, input: u16) -> SidecarBinding {
         SidecarBinding {
             id: Uuid::from_bytes([midi_channel; 16]),
             label: String::new(),
@@ -569,7 +571,7 @@ mod tests {
     struct Harness {
         hw_tx: mpsc::UnboundedSender<HwEvent>,
         svc_tx: mpsc::UnboundedSender<SvcCmd>,
-        senders_tx: watch::Sender<Option<(OscSender, Option<IpadSender>)>>,
+        senders_tx: watch::Sender<Option<ConsoleTx>>,
         state: Arc<RwLock<ConsoleState>>,
         motor_log: Arc<StdMutex<Vec<(ControlSelector, u16)>>>,
         /// Socket standing in for the console.
@@ -587,7 +589,7 @@ mod tests {
 
         let (hw_tx, hw_rx) = mpsc::unbounded_channel();
         let (svc_tx, svc_rx) = mpsc::unbounded_channel();
-        let (senders_tx, senders_rx) = watch::channel(Some((sender, None)));
+        let (senders_tx, senders_rx) = watch::channel(Some(ConsoleTx::new(sender)));
 
         let config = Arc::new(RwLock::new(config));
         let state = Arc::new(RwLock::new(ConsoleState::new(
@@ -843,7 +845,7 @@ mod tests {
         let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let client = OscClient::new(local, console_addr, None).await.unwrap();
         let (sender, _rx) = client.into_parts();
-        h.senders_tx.send(Some((sender, None))).unwrap();
+        h.senders_tx.send(Some(ConsoleTx::new(sender))).unwrap();
 
         tokio::time::timeout(Duration::from_millis(500), async {
             loop {
@@ -878,7 +880,7 @@ mod tests {
         let (sender, _rx) = client.into_parts();
         let (hw_tx, hw_rx) = mpsc::unbounded_channel();
         let (_svc_tx, svc_rx) = mpsc::unbounded_channel();
-        let (_senders_tx, senders_rx) = watch::channel(Some((sender, None)));
+        let (_senders_tx, senders_rx) = watch::channel(Some(ConsoleTx::new(sender)));
         let learn = Arc::new(StdMutex::new(LearnShared::default()));
         LearnShared::arm(&learn);
         let deps = SidecarDeps {

@@ -3,19 +3,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::osc_log::OscLog;
-use crate::model::state::ConsoleState;
 use crate::osc::client::{ReceivedOscMessage, format_osc_args};
 use crate::osc::ipad_client::{IpadClient, IpadSender};
 use crate::osc::ipad_parse::{self, ParsedIpadMessage};
 
+use super::connection::DaemonState;
+use super::inbound::{self, InboundSource};
 use super::ipad_handshake::{self, HandshakeResult};
-use super::macro_manager::MacroManager;
 
 /// Default handshake timeout.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -55,15 +54,10 @@ impl From<ipad_handshake::HandshakeError> for IpadConnectionError {
 /// Connects to the console's iPad remote port, performs the handshake,
 /// and returns a sender for sending iPad-only commands.
 /// Also starts a background loop to mirror iPad protocol state.
-#[allow(clippy::too_many_arguments)]
 pub async fn connect_mode2(
     console_ipad_addr: SocketAddr,
     local_addr: SocketAddr,
-    state: Arc<RwLock<ConsoleState>>,
-    dirty_tracker: Arc<RwLock<DirtyTracker>>,
-    macro_manager: Arc<RwLock<MacroManager>>,
-    offline_mode: Arc<AtomicBool>,
-    snapshot_event_tx: Option<mpsc::Sender<i32>>,
+    daemon: DaemonState,
     interface_name: Option<&str>,
     osc_log: Option<OscLog>,
 ) -> Result<(IpadSender, HandshakeResult, JoinHandle<()>), IpadConnectionError> {
@@ -86,27 +80,13 @@ pub async fn connect_mode2(
 
     // Seed current_console_snapshot from the handshake reply if present.
     if let Some(n) = handshake_result.current_snapshot {
-        state.write().await.current_console_snapshot = Some(n);
+        daemon.state.write().await.current_console_snapshot = Some(n);
     }
 
     // Start background state mirror loop
-    let state_clone = state.clone();
-    let dirty_clone = dirty_tracker.clone();
-    let macro_clone = macro_manager.clone();
-    let offline_clone = offline_mode.clone();
-    let snap_tx = snapshot_event_tx.clone();
     let log_clone = osc_log.clone();
     let handle = tokio::spawn(async move {
-        ipad_state_mirror_loop(
-            rx,
-            state_clone,
-            dirty_clone,
-            macro_clone,
-            offline_clone,
-            snap_tx,
-            log_clone,
-        )
-        .await;
+        ipad_state_mirror_loop(rx, daemon, log_clone).await;
     });
 
     Ok((sender, handshake_result, handle))
@@ -128,11 +108,7 @@ pub async fn connect_mode3_proxy(
     local_console_addr: SocketAddr,
     ipad_listen_addr: SocketAddr,
     ipad_target: SocketAddr,
-    state: Arc<RwLock<ConsoleState>>,
-    dirty_tracker: Arc<RwLock<DirtyTracker>>,
-    macro_manager: Arc<RwLock<MacroManager>>,
-    offline_mode: Arc<AtomicBool>,
-    snapshot_event_tx: Option<mpsc::Sender<i32>>,
+    daemon: DaemonState,
     cancel: tokio_util::sync::CancellationToken,
     interface_name: Option<String>,
     osc_log: Option<OscLog>,
@@ -188,23 +164,11 @@ pub async fn connect_mode3_proxy(
     // transient state dump, not the continuous meter stream.
     let (capture_tx, capture_rx) = mpsc::channel::<ProxyCapture>(2048);
 
-    let capture_state = state.clone();
-    let capture_dt = dirty_tracker.clone();
-    let capture_mgr = macro_manager.clone();
-    let capture_snap_tx = snapshot_event_tx.clone();
+    let capture_daemon = daemon.clone();
     let capture_cancel = cancel.clone();
     let capture_log = osc_log.clone();
     tokio::spawn(async move {
-        state_capture_loop(
-            capture_rx,
-            capture_state,
-            capture_dt,
-            capture_mgr,
-            capture_snap_tx,
-            capture_cancel,
-            capture_log,
-        )
-        .await;
+        state_capture_loop(capture_rx, capture_daemon, capture_cancel, capture_log).await;
     });
 
     // Start forwarding immediately (no handshake). Each direction is its own
@@ -212,8 +176,8 @@ pub async fn connect_mode3_proxy(
     // initial flood (C→I) no longer delays draining the iPad-side socket (and
     // vice versa), which is what was overflowing the kernel recv buffer and
     // dropping matrix/bus responses on the first connection.
-    let offline_c2i = offline_mode.clone();
-    let offline_i2c = offline_mode;
+    let offline_c2i = daemon.offline_mode.clone();
+    let offline_i2c = daemon.offline_mode.clone();
     let cancel_c2i = cancel.clone();
     let cancel_i2c = cancel;
     let capture_tx_c2i = capture_tx.clone();
@@ -272,10 +236,7 @@ struct ProxyCapture {
 /// raw byte forwarding in the `proxy_direction` tasks.
 async fn state_capture_loop(
     mut rx: mpsc::Receiver<ProxyCapture>,
-    state: Arc<RwLock<ConsoleState>>,
-    dirty_tracker: Arc<RwLock<DirtyTracker>>,
-    macro_manager: Arc<RwLock<MacroManager>>,
-    snapshot_event_tx: Option<mpsc::Sender<i32>>,
+    daemon: DaemonState,
     cancel: tokio_util::sync::CancellationToken,
     osc_log: Option<OscLog>,
 ) {
@@ -288,10 +249,7 @@ async fn state_capture_loop(
                     log_and_capture_packet(
                         &capture.bytes,
                         capture.direction,
-                        &state,
-                        &dirty_tracker,
-                        &macro_manager,
-                        &snapshot_event_tx,
+                        &daemon,
                         &osc_log,
                     )
                     .await;
@@ -306,22 +264,18 @@ async fn state_capture_loop(
 /// Background loop for Mode 2: mirrors iPad protocol messages into ConsoleState.
 async fn ipad_state_mirror_loop(
     mut rx: tokio::sync::mpsc::Receiver<ReceivedOscMessage>,
-    state: Arc<RwLock<ConsoleState>>,
-    dirty_tracker: Arc<RwLock<DirtyTracker>>,
-    macro_manager: Arc<RwLock<MacroManager>>,
-    offline_mode: Arc<AtomicBool>,
-    snapshot_event_tx: Option<mpsc::Sender<i32>>,
+    daemon: DaemonState,
     osc_log: Option<OscLog>,
 ) {
     info!("iPad state mirror loop started");
     while let Some(msg) = rx.recv().await {
-        if offline_mode.load(Ordering::Relaxed) {
+        if daemon.offline_mode.load(Ordering::Relaxed) {
             debug!(path = %msg.path, "iPad mirror: dropped (offline mode)");
             continue;
         }
         // Validate channel numbers against the live config so a buggy /
         // mis-configured peer can't pollute the mirror with bogus channels.
-        let config_snapshot = state.read().await.config.clone();
+        let config_snapshot = daemon.state.read().await.config.clone();
         let parsed = ipad_parse::parse_ipad_message_with_config(
             &msg.path,
             &msg.args,
@@ -336,35 +290,24 @@ async fn ipad_state_mirror_loop(
         }
         match parsed {
             ParsedIpadMessage::ParameterUpdate(addr, value) => {
-                debug!(%addr, %value, "iPad mirror: parameter update");
-                let old = state.write().await.update(addr.clone(), value.clone());
-                if let Some(prev) = &old {
-                    if prev != &value {
-                        dirty_tracker.write().await.mark(&addr);
-                    }
-                }
-                // Feed Learn-mode recording from the iPad path too.
-                // Without this the macro-recording UI would only ever
-                // capture changes that arrived via GP OSC — for an S21
-                // driven via the iPad protocol, that's nothing.
-                {
-                    let mut mgr = macro_manager.write().await;
-                    if mgr.is_recording() {
-                        mgr.record_change(addr.clone(), value.clone());
-                    }
-                }
+                // Full shared side-effect chain (mirror, dirty screening,
+                // operator override, gang + pan-link propagation, macro
+                // learn) — same as the GP loop. Historically this loop
+                // only mirrored + dirty-marked, so a desk move seen via
+                // the iPad protocol never gang-propagated.
+                inbound::apply_inbound_parameter(&daemon, &addr, &value, InboundSource::Pad).await;
             }
             ParsedIpadMessage::SnapshotInfo { current } => {
                 debug!(current, "iPad mirror: console snapshot is now {current}");
                 let prev = {
-                    let mut s = state.write().await;
+                    let mut s = daemon.state.write().await;
                     let p = s.current_console_snapshot;
                     s.current_console_snapshot = Some(current);
                     p
                 };
                 // Notify the follow-mode dispatcher only on actual changes.
                 if prev != Some(current) {
-                    if let Some(tx) = &snapshot_event_tx {
+                    if let Some(tx) = &daemon.console_snapshot_tx {
                         let _ = tx.try_send(current);
                     }
                 }
@@ -378,7 +321,7 @@ async fn ipad_state_mirror_loop(
                 // `/Console/Aux_Outputs/modes` and the Pan Link tab's
                 // aux-mode read needs to follow.
                 debug!(?cfg_msg, "iPad mirror: config update");
-                let mut s = state.write().await;
+                let mut s = daemon.state.write().await;
                 ipad_handshake::apply_config_message(&mut s.config, &cfg_msg);
             }
             _ => {
@@ -499,17 +442,15 @@ async fn proxy_direction(
 async fn log_and_capture_packet(
     data: &[u8],
     direction: &str,
-    state: &Arc<RwLock<ConsoleState>>,
-    dirty_tracker: &Arc<RwLock<DirtyTracker>>,
-    macro_manager: &Arc<RwLock<MacroManager>>,
-    snapshot_event_tx: &Option<mpsc::Sender<i32>>,
+    daemon: &DaemonState,
     osc_log: &Option<OscLog>,
 ) {
-    // Try standard OSC first
-    if let Ok((_, packet)) = rosc::decoder::decode_udp(data) {
+    // Try standard OSC first (alignment-tolerant — SD/Quantum and the iPad
+    // link emit packets whose length is not a multiple of 4).
+    if let Some(packet) = crate::osc::decode_udp_tolerant(data) {
         let messages = flatten_packet(packet);
         // Snapshot the config once for this packet's worth of messages.
-        let config_snapshot = state.read().await.config.clone();
+        let config_snapshot = daemon.state.read().await.config.clone();
         for msg in messages {
             let parsed = ipad_parse::parse_ipad_message_with_config(
                 &msg.path,
@@ -531,22 +472,12 @@ async fn log_and_capture_packet(
             match &parsed {
                 ParsedIpadMessage::ParameterUpdate(addr, value) => {
                     debug!(%addr, %value, "Proxy {direction}: param");
-                    let old = state.write().await.update(addr.clone(), value.clone());
-                    if let Some(prev) = &old {
-                        if prev != value {
-                            dirty_tracker.write().await.mark(addr);
-                        }
-                    }
-                    // Feed Learn-mode recording (Mode 3 path). Without
-                    // this, an S21 driven through the iPad proxy never
-                    // hands captured parameter changes to the macro
-                    // manager and Learn ends with zero steps.
-                    {
-                        let mut mgr = macro_manager.write().await;
-                        if mgr.is_recording() {
-                            mgr.record_change(addr.clone(), value.clone());
-                        }
-                    }
+                    // Full shared side-effect chain — same as the GP and
+                    // Mode-2 loops. I→C carries the real iPad operator's
+                    // moves, C→I carries the desk surface's; both are
+                    // operator input (engine-write echoes are screened by
+                    // the SentLog inside the chain).
+                    inbound::apply_inbound_parameter(daemon, addr, value, InboundSource::Pad).await;
                 }
                 ParsedIpadMessage::SnapshotInfo { current } => {
                     debug!(
@@ -554,13 +485,13 @@ async fn log_and_capture_packet(
                         "Proxy {direction}: console snapshot is now {current}"
                     );
                     let prev = {
-                        let mut s = state.write().await;
+                        let mut s = daemon.state.write().await;
                         let p = s.current_console_snapshot;
                         s.current_console_snapshot = Some(*current);
                         p
                     };
                     if prev != Some(*current) {
-                        if let Some(tx) = snapshot_event_tx {
+                        if let Some(tx) = &daemon.console_snapshot_tx {
                             let _ = tx.try_send(*current);
                         }
                     }
@@ -572,7 +503,7 @@ async fn log_and_capture_packet(
                     // changes, channel-count changes) so config-driven
                     // UI (Pan Link, Setup, …) follows the desk in real
                     // time instead of needing a reconnect.
-                    let mut s = state.write().await;
+                    let mut s = daemon.state.write().await;
                     ipad_handshake::apply_config_message(&mut s.config, cfg);
                 }
                 _ => {

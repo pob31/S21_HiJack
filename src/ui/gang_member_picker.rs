@@ -91,7 +91,7 @@ fn active_bucket(selection: &[ChannelId]) -> Option<TypeBucket> {
 }
 
 /// Inner channel number of any `ChannelId` variant.
-fn channel_number(ch: &ChannelId) -> u8 {
+fn channel_number(ch: &ChannelId) -> u16 {
     match ch {
         ChannelId::Input(n)
         | ChannelId::Aux(n)
@@ -159,11 +159,11 @@ fn pane_tile_width(pane_w: f32, cols: u8) -> f32 {
 /// to the clicked number, only within `group`'s own channel list.
 fn apply_click(
     selection: &mut Vec<ChannelId>,
-    anchor: &mut HashMap<ChannelGroup, u8>,
+    anchor: &mut HashMap<ChannelGroup, u16>,
     data: &ChannelGridData,
     group: ChannelGroup,
     ch: &ChannelId,
-    num: u8,
+    num: u16,
     shift: bool,
 ) {
     if shift {
@@ -207,14 +207,14 @@ pub fn draw_channel_grid(
     ui: &mut egui::Ui,
     data: &ChannelGridData,
     selection: &mut Vec<ChannelId>,
-    anchor: &mut HashMap<ChannelGroup, u8>,
+    anchor: &mut HashMap<ChannelGroup, u16>,
     width: f32,
     shift_held: bool,
 ) {
     let active = active_bucket(selection);
     let tile_w = pane_tile_width(width, AVAIL_COLS);
 
-    let mut clicked: Option<(ChannelGroup, ChannelId, u8)> = None;
+    let mut clicked: Option<(ChannelGroup, ChannelId, u16)> = None;
     let mut clear = false;
 
     ui.allocate_ui_with_layout(
@@ -319,10 +319,10 @@ mod tests {
         }
     }
 
-    fn inputs(n: u8) -> Vec<ChannelId> {
+    fn inputs(n: u16) -> Vec<ChannelId> {
         (1..=n).map(ChannelId::Input).collect()
     }
-    fn auxes(n: u8) -> Vec<ChannelId> {
+    fn auxes(n: u16) -> Vec<ChannelId> {
         (1..=n).map(ChannelId::Aux).collect()
     }
 

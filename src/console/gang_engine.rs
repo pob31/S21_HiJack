@@ -4,17 +4,16 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::debug;
 
+use crate::console::console_tx::ConsoleTx;
 use crate::model::parameter::{
     FADER_GANG_FLOOR_DB, FADER_INF_DB, ParameterAddress, ParameterPath, ParameterSection,
     ParameterValue,
 };
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
-use crate::osc::encode;
 use crate::osc::ipad_client::IpadSender;
-use crate::osc::ipad_encode;
 
 use super::gang_manager::GangManager;
 use crate::model::gang::{GangMode, GangPanMode};
@@ -37,8 +36,7 @@ const ROUTING_SECTIONS: &[ParameterSection] = &[
 /// compute the appropriate value for other members and send to the console.
 pub struct GangEngine {
     state: Arc<RwLock<ConsoleState>>,
-    sender: OscSender,
-    ipad_sender: Option<IpadSender>,
+    tx: ConsoleTx,
     /// Recently-sent ganged changes, keyed by address.
     /// Used to suppress feedback loops from console echo-back.
     suppression_set: HashMap<ParameterAddress, (ParameterValue, Instant)>,
@@ -56,15 +54,24 @@ impl GangEngine {
     pub fn new(state: Arc<RwLock<ConsoleState>>, sender: OscSender) -> Self {
         Self {
             state,
-            sender,
-            ipad_sender: None,
+            tx: ConsoleTx::new(sender),
             suppression_set: HashMap::new(),
             gang_virtual: HashMap::new(),
         }
     }
 
     pub fn set_ipad_sender(&mut self, sender: Option<IpadSender>) {
-        self.ipad_sender = sender;
+        self.tx.set_pad_sender(sender);
+    }
+
+    /// Attach the shared sent-value log (echo screening on the iPad link).
+    pub fn set_sent_log(&mut self, log: crate::console::console_tx::SentLog) {
+        self.tx.set_sent_log(log);
+    }
+
+    /// Point the write path at the connected console's profile (Pad wire quirks).
+    pub fn set_profile(&mut self, profile: Arc<crate::model::family::ConsoleProfile>) {
+        self.tx.set_profile(profile);
     }
 
     /// Check if this update should be suppressed (it's an echo-back from our own send).
@@ -330,37 +337,7 @@ impl GangEngine {
 
     /// Send a parameter change to the console via GP OSC (with iPad fallback).
     async fn send_to_console(&self, addr: &ParameterAddress, value: &ParameterValue) -> bool {
-        // Try GP OSC first
-        match encode::encode_parameter(addr, value) {
-            Some((path, args)) => {
-                if let Err(e) = self.sender.send(&path, args).await {
-                    warn!(%addr, "Gang: failed to send to console: {e}");
-                    return false;
-                }
-                true
-            }
-            None => {
-                // Try iPad protocol fallback
-                if let Some(ref ipad) = self.ipad_sender {
-                    match ipad_encode::encode_ipad_parameter(addr, value) {
-                        Some((path, args)) => {
-                            if let Err(e) = ipad.send(&path, args).await {
-                                warn!(%addr, "Gang: iPad send failed: {e}");
-                                return false;
-                            }
-                            true
-                        }
-                        None => {
-                            warn!(%addr, "Gang: cannot encode parameter for either protocol");
-                            false
-                        }
-                    }
-                } else {
-                    warn!(%addr, "Gang: no sender available for iPad-only parameter");
-                    false
-                }
-            }
-        }
+        self.tx.send_parameter_logged("Gang", addr, value).await
     }
 }
 
@@ -1150,7 +1127,7 @@ mod tests {
     async fn relative_fader_gang(
         engine: &GangEngine,
         manager: &mut GangManager,
-        members: &[(u8, f32)],
+        members: &[(u16, f32)],
     ) {
         let mut group = GangGroup::new(
             "Faders".into(),
@@ -1165,7 +1142,7 @@ mod tests {
         }
     }
 
-    async fn fader_db(engine: &GangEngine, ch: u8) -> Option<f32> {
+    async fn fader_db(engine: &GangEngine, ch: u16) -> Option<f32> {
         match engine.state.read().await.get(&fader(ChannelId::Input(ch))) {
             Some(ParameterValue::Float(f)) => Some(*f),
             _ => None,
@@ -1306,7 +1283,7 @@ mod tests {
         assert!((v - (-35.0)).abs() < 1e-3, "expected −35, got {v}");
     }
 
-    async fn pan_db(engine: &GangEngine, ch: u8) -> Option<f32> {
+    async fn pan_db(engine: &GangEngine, ch: u16) -> Option<f32> {
         match engine.state.read().await.get(&pan(ChannelId::Input(ch))) {
             Some(ParameterValue::Float(f)) => Some(*f),
             _ => None,

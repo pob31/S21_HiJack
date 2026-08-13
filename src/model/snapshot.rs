@@ -72,9 +72,9 @@ impl ScopeTemplate {
     /// never double-count.
     pub fn enumerate_addresses(
         &self,
-        aux_count: u8,
-        group_count: u8,
-        matrix_count: u8,
+        aux_count: u16,
+        group_count: u16,
+        matrix_count: u16,
     ) -> HashSet<ParameterAddress> {
         let mut out = HashSet::new();
         for cs in &self.channel_scopes {
@@ -163,7 +163,12 @@ impl ChannelScope {
     /// Idempotent — safe to call repeatedly. The aux/group/matrix counts come
     /// from the show config so the path enumeration respects the actual
     /// number of sends configured.
-    pub fn migrate_sections_to_paths(&mut self, aux_count: u8, group_count: u8, matrix_count: u8) {
+    pub fn migrate_sections_to_paths(
+        &mut self,
+        aux_count: u16,
+        group_count: u16,
+        matrix_count: u16,
+    ) {
         if self.sections.is_empty() {
             return;
         }
@@ -276,9 +281,9 @@ impl Snapshot {
         &self,
         scope: &ScopeTemplate,
         palettes: &HashMap<Uuid, ChannelPalette>,
-        aux_count: u8,
-        group_count: u8,
-        matrix_count: u8,
+        aux_count: u16,
+        group_count: u16,
+        matrix_count: u16,
     ) -> usize {
         scope
             .enumerate_addresses(aux_count, group_count, matrix_count)
