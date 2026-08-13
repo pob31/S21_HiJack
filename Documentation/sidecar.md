@@ -1,7 +1,7 @@
 # Fader Sidecar
 
 External MIDI control surfaces (motorized faders, endless encoders) bound to
-console parameters or arbitrary outbound OSC targets. Added in v0.1.6.
+console parameters or arbitrary outbound OSC targets. Added in v0.2.0.
 
 ## Architecture
 

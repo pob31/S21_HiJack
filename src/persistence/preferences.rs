@@ -100,7 +100,7 @@ pub struct AppPreferences {
     #[serde(default)]
     pub midi: MidiSettings,
     /// Fader sidecar MIDI port choice (machine-bound; see
-    /// [`SidecarMidiSettings`]). New in v0.1.6; older preference files
+    /// [`SidecarMidiSettings`]). New in v0.2.0; older preference files
     /// load with no sidecar ports configured.
     #[serde(default)]
     pub sidecar_midi: SidecarMidiSettings,
