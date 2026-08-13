@@ -506,6 +506,56 @@ async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender
     }
 }
 
+/// Builders for tests in this crate that need a wired-up [`DaemonState`].
+///
+/// Lives here because `DaemonState` does, and it is shared by the inbound
+/// chain's tests and the Pad connection's.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use crate::model::state::ConsoleState;
+
+    /// A `DaemonState` around an existing console-state handle, with real (if
+    /// unconnected) engines behind it. Sends go to a loopback port nobody
+    /// listens on — enough for anything that only inspects the mirror.
+    pub async fn daemon_with_state(state: Arc<RwLock<ConsoleState>>) -> DaemonState {
+        let client = crate::osc::client::OscClient::new(
+            "127.0.0.1:0".parse().unwrap(),
+            "127.0.0.1:1".parse().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        let (sender, _rx) = client.into_parts();
+
+        let gang_manager = Arc::new(RwLock::new(GangManager::new()));
+        let dirty_tracker = Arc::new(RwLock::new(DirtyTracker::new()));
+        DaemonState {
+            state: state.clone(),
+            macro_manager: Arc::new(RwLock::new(MacroManager::new())),
+            gang_engine: Arc::new(RwLock::new(GangEngine::new(state.clone(), sender.clone()))),
+            gang_manager: gang_manager.clone(),
+            pan_link_engine: Arc::new(RwLock::new(PanLinkEngine::new(
+                state,
+                sender,
+                Arc::new(RwLock::new(
+                    crate::model::pan_link::PanLinkBindings::default(),
+                )),
+                dirty_tracker.clone(),
+                gang_manager,
+            ))),
+            dirty_tracker,
+            offline_mode: Arc::new(AtomicBool::new(false)),
+            recall_progress: Arc::new(crate::model::recall_progress::RecallProgress::new()),
+            last_received: Arc::new(RwLock::new(None)),
+            console_snapshot_tx: None,
+            console_load_suppression: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            automation_override: None,
+            sent_log: SentLog::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,69 +2,82 @@ use rosc::OscType;
 
 use super::ipad_values;
 use crate::model::channel::ChannelId;
-use crate::model::family::{BoolWire, PadQuirks, PanWire};
+use crate::model::family::{BoolWire, LevelWire, PadWire, PanWire};
 use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
 
-/// Encode a parameter address and value into a Pad-protocol OSC path and args
-/// under the given wire quirks.
+/// Encode a parameter address and value into an OSC path and args for the
+/// given wire dialect.
 ///
-/// Returns None for parameters with no Pad representation (GP OSC-only).
-/// Applies the family's pan and boolean wire conventions.
+/// Returns None for parameters with no representation on the shared Pad tree
+/// (S-series GP OSC-only paths). Applies the surface's path prefix and level
+/// scaling, and the family's pan and boolean wire conventions.
 pub fn encode_pad_parameter(
     addr: &ParameterAddress,
     value: &ParameterValue,
-    q: &PadQuirks,
+    wire: &PadWire,
 ) -> Option<(String, Vec<OscType>)> {
-    let prefix = addr.channel.to_pad_path_prefix(q);
-    let suffix = addr.parameter.to_pad_suffix(q)?;
-    let path = format!("{prefix}/{suffix}");
-
-    // Apply pan conversion for Pan and SendPan
-    let effective_value = convert_value_for_pad(&addr.parameter, value, q.pan_wire);
-    let args = vec![value_to_osc_type(&effective_value, q.bool_wire)];
+    let path = pad_path(&addr.channel, &addr.parameter, wire)?;
+    let effective_value = convert_value_for_pad(&addr.parameter, value, wire);
+    let args = vec![value_to_osc_type(&effective_value, wire.quirks.bool_wire)];
     Some((path, args))
 }
 
-/// [`encode_pad_parameter`] under the hardware-verified S21 quirks.
+/// [`encode_pad_parameter`] under the hardware-verified S21 dialect.
 #[inline]
 pub fn encode_ipad_parameter(
     addr: &ParameterAddress,
     value: &ParameterValue,
 ) -> Option<(String, Vec<OscType>)> {
-    encode_pad_parameter(addr, value, &PadQuirks::S21)
+    encode_pad_parameter(addr, value, &PadWire::S21)
 }
 
-/// Encode a Pad-protocol query message (append /? to the parameter path).
+/// Encode a query message — the parameter's own address with `/?` appended and
+/// no argument. The desk replies on the un-suffixed path.
 pub fn encode_pad_query(
     channel: &ChannelId,
     parameter: &ParameterPath,
-    q: &PadQuirks,
+    wire: &PadWire,
 ) -> Option<String> {
-    let prefix = channel.to_pad_path_prefix(q);
-    let suffix = parameter.to_pad_suffix(q)?;
-    Some(format!("{prefix}/{suffix}/?"))
+    Some(format!("{}/?", pad_path(channel, parameter, wire)?))
 }
 
-/// [`encode_pad_query`] under the hardware-verified S21 quirks.
+/// [`encode_pad_query`] under the hardware-verified S21 dialect.
 #[inline]
 pub fn encode_ipad_query(channel: &ChannelId, parameter: &ParameterPath) -> Option<String> {
-    encode_pad_query(channel, parameter, &PadQuirks::S21)
+    encode_pad_query(channel, parameter, &PadWire::S21)
 }
 
-/// Convert an internal value to its on-the-wire form (pan range only).
+/// The full address for a parameter on this surface: surface prefix, then the
+/// channel prefix, then the parameter suffix.
+fn pad_path(channel: &ChannelId, parameter: &ParameterPath, wire: &PadWire) -> Option<String> {
+    let chan = channel.to_pad_path_prefix(&wire.quirks);
+    let suffix = parameter.to_pad_suffix(&wire.quirks)?;
+    Some(format!("{}{chan}/{suffix}", wire.surface.path_prefix()))
+}
+
+/// Convert an internal value to its on-the-wire form: pan range, and level
+/// scaling on surfaces that carry normalized positions instead of dB.
 fn convert_value_for_pad(
     parameter: &ParameterPath,
     value: &ParameterValue,
-    pan_wire: PanWire,
+    wire: &PadWire,
 ) -> ParameterValue {
     match parameter {
-        ParameterPath::Pan | ParameterPath::SendPan(_) => match (value, pan_wire) {
+        ParameterPath::Pan | ParameterPath::SendPan(_) => match (value, wire.quirks.pan_wire) {
             (ParameterValue::Float(f), PanWire::ZeroToOne) => {
                 ParameterValue::Float(ipad_values::internal_pan_to_ipad(*f))
             }
             // SignedUnit matches the internal representation — no conversion.
             _ => value.clone(),
         },
+        p if p.is_fader_level() && wire.surface.level_wire() == LevelWire::Normalized01 => {
+            match value {
+                ParameterValue::Float(db) => {
+                    ParameterValue::Float(ipad_values::db_to_normalized(*db))
+                }
+                _ => value.clone(),
+            }
+        }
         _ => value.clone(),
     }
 }

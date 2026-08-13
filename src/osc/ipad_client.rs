@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
 
 use super::client::{ReceivedOscMessage, format_osc_args};
@@ -38,7 +39,21 @@ impl IpadClient {
     }
 
     /// Split into a sender handle and a receive channel.
+    ///
+    /// The receive loop runs until the socket errors or the process ends. For
+    /// a connection that must release its port on disconnect, use
+    /// [`Self::into_parts_with_cancel`].
     pub fn into_parts(self) -> (IpadSender, mpsc::Receiver<ReceivedOscMessage>) {
+        self.into_parts_with_cancel(CancellationToken::new())
+    }
+
+    /// [`Self::into_parts`] with a cancellation token, so the receive loop
+    /// exits and frees the UDP port when the connection is torn down.
+    /// Mirrors `OscClient::into_parts_with_log`.
+    pub fn into_parts_with_cancel(
+        self,
+        cancel: CancellationToken,
+    ) -> (IpadSender, mpsc::Receiver<ReceivedOscMessage>) {
         let (tx, rx) = mpsc::channel(1024);
         let socket = std::sync::Arc::new(self.socket);
 
@@ -49,7 +64,7 @@ impl IpadClient {
             log: None,
         };
 
-        tokio::spawn(receive_loop(socket, tx));
+        tokio::spawn(receive_loop(socket, tx, cancel));
 
         (sender, rx)
     }
@@ -140,11 +155,23 @@ impl IpadSender {
 
 /// Background receive loop for iPad protocol messages.
 /// Handles both standard OSC and DiGiCo's non-standard bare-path packets.
-async fn receive_loop(socket: std::sync::Arc<UdpSocket>, tx: mpsc::Sender<ReceivedOscMessage>) {
+async fn receive_loop(
+    socket: std::sync::Arc<UdpSocket>,
+    tx: mpsc::Sender<ReceivedOscMessage>,
+    cancel: CancellationToken,
+) {
     let mut buf = vec![0u8; 65536];
     let mut first_message = true;
     loop {
-        match socket.recv_from(&mut buf).await {
+        let recv = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                tracing::info!("iPad receive loop cancelled — releasing port");
+                break;
+            }
+            r = socket.recv_from(&mut buf) => r,
+        };
+        match recv {
             Ok((size, src)) => {
                 if first_message {
                     tracing::info!(%src, size, "iPad: first packet received from {src} ({size} bytes)");

@@ -15,6 +15,7 @@ pub mod midi_engine;
 pub mod monitor_engine;
 pub mod monitor_event;
 pub mod monitor_manager;
+pub mod pad_connection;
 pub mod palette_manager;
 pub mod palette_tracker;
 pub mod pan_link_engine;

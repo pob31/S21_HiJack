@@ -648,10 +648,18 @@ impl ParameterPath {
 
     // ─── Phase 0: per-path scope granularity ────────────────────────────
 
-    /// EQ band index range (1..=4). Internal model is 1-based; the GP OSC wire
-    /// uses 0..=3 — encode/parse handle the shift. Names: 1=Low, 2=Lo Mid,
+    /// EQ band index range for a 4-band strip — every S-series channel, and
+    /// input channels on every family. Internal model is 1-based; the GP OSC
+    /// wire uses 0..=3 — encode/parse handle the shift. Names: 1=Low, 2=Lo Mid,
     /// 3=Hi Mid, 4=High (see `eq_band_name`).
+    ///
+    /// Prefer [`Self::eq_band_range`] where the channel and family are known:
+    /// SD/Quantum bus outputs carry eight bands, not four.
     pub const EQ_BAND_RANGE: std::ops::RangeInclusive<u8> = 1..=4;
+    /// The widest EQ strip any supported console offers (SD/Quantum bus
+    /// outputs). The codec validates against this; applicability is decided by
+    /// [`Self::eq_band_range`].
+    pub const EQ_BAND_RANGE_MAX: std::ops::RangeInclusive<u8> = 1..=8;
     /// Dyn1 band index range (1..=3 for the multiband compressor).
     /// Names: 1=Low, 2=Mid, 3=High (see `dyn1_band_name`).
     pub const DYN1_BAND_RANGE: std::ops::RangeInclusive<u8> = 1..=3;
@@ -981,6 +989,26 @@ impl ParameterPath {
         group_count: u16,
         matrix_count: u16,
     ) -> Vec<ParameterPath> {
+        Self::applicable_to_on(
+            channel,
+            aux_count,
+            group_count,
+            matrix_count,
+            ConsoleFamily::SSeries,
+        )
+    }
+
+    /// The family-aware core of [`Self::applicable_to`]. Family affects only
+    /// the EQ strip width today (see [`Self::eq_band_range`]); everything else
+    /// is decided by channel type. Support-table filtering is applied by
+    /// [`Self::applicable_to_for_family`], not here.
+    fn applicable_to_on(
+        channel: &ChannelId,
+        aux_count: u16,
+        group_count: u16,
+        matrix_count: u16,
+        family: ConsoleFamily,
+    ) -> Vec<ParameterPath> {
         let mut out: Vec<ParameterPath> = Vec::new();
 
         // Helper closure: push if available on this channel.
@@ -1025,7 +1053,7 @@ impl ParameterPath {
         push(ParameterPath::HighpassFrequency, &mut out);
         push(ParameterPath::LowpassEnabled, &mut out);
         push(ParameterPath::LowpassFrequency, &mut out);
-        for b in Self::EQ_BAND_RANGE {
+        for b in Self::eq_band_range(channel, family) {
             push(ParameterPath::EqBandFrequency(b), &mut out);
             push(ParameterPath::EqBandGain(b), &mut out);
             push(ParameterPath::EqBandQ(b), &mut out);
@@ -1116,8 +1144,9 @@ impl ParameterPath {
         out
     }
 
-    /// [`Self::applicable_to`] filtered by the console family's support table.
-    /// Identical to `applicable_to` on S-series (everything is `Verified`).
+    /// [`Self::applicable_to`] for a specific family, filtered by that family's
+    /// support table. Identical to `applicable_to` on S-series (every path is
+    /// `Verified`, and every strip is four bands).
     pub fn applicable_to_for_family(
         channel: &ChannelId,
         aux_count: u16,
@@ -1125,10 +1154,26 @@ impl ParameterPath {
         matrix_count: u16,
         family: ConsoleFamily,
     ) -> Vec<ParameterPath> {
-        Self::applicable_to(channel, aux_count, group_count, matrix_count)
+        Self::applicable_to_on(channel, aux_count, group_count, matrix_count, family)
             .into_iter()
             .filter(|p| p.support(family).is_usable())
             .collect()
+    }
+
+    /// How many parametric EQ bands `channel` has on `family`.
+    ///
+    /// DiGiCo's SD App guide states "4 band EQ (or 8 band where applicable)",
+    /// and the published `/sd/` command list bears it out: Aux, Group and
+    /// Matrix **outputs** expose `eq_*_1` through `eq_*_8`, while input
+    /// channels stop at 4. S-series is four bands throughout.
+    pub fn eq_band_range(
+        channel: &ChannelId,
+        family: ConsoleFamily,
+    ) -> std::ops::RangeInclusive<u8> {
+        use ChannelId as C;
+        let eight = matches!(family, ConsoleFamily::SdRange | ConsoleFamily::Quantum)
+            && matches!(channel, C::Aux(_) | C::Group(_) | C::Matrix(_));
+        if eight { 1..=8 } else { Self::EQ_BAND_RANGE }
     }
 }
 
@@ -1909,11 +1954,28 @@ pub fn dyn1_band_name(b: u8) -> String {
 /// Without the reversal on S-series, iPad-sourced EQ updates land on the
 /// mirror-image band and (in Mode 3) collide with the correctly-decoded
 /// GP-OSC mirror writes, so a single edit corrupts two bands at once.
+///
+/// Band width: unreversed indices are accepted across the widest strip any
+/// console offers ([`ParameterPath::EQ_BAND_RANGE_MAX`]), because SD/Quantum
+/// bus outputs carry eight bands. The reversal, by contrast, is `5 - band` —
+/// arithmetic that is only meaningful on a four-band strip — so a reversed
+/// index outside 1..=4 is rejected rather than mapped to nonsense. That costs
+/// nothing today: reversal is an S21 artifact, and no S-series channel has
+/// more than four bands. Should a probe ever find an eight-band console that
+/// also reverses, this needs the strip width passed in so it can use
+/// `width + 1 - band`.
 fn pad_eq_band_map(band: u8, reversed: bool) -> Option<u8> {
-    if !ParameterPath::EQ_BAND_RANGE.contains(&band) {
-        return None;
+    if reversed {
+        if !ParameterPath::EQ_BAND_RANGE.contains(&band) {
+            return None;
+        }
+        Some(5 - band)
+    } else {
+        if !ParameterPath::EQ_BAND_RANGE_MAX.contains(&band) {
+            return None;
+        }
+        Some(band)
     }
-    Some(if reversed { 5 - band } else { band })
 }
 
 fn parse_pad_eq_suffix(rest: &str, reversed: bool) -> Option<ParameterPath> {
@@ -2526,6 +2588,11 @@ mod tests {
     }
 
     /// Out-of-range band indices stay rejected regardless of quirk state.
+    ///
+    /// The EQ ceiling is quirk-dependent by design: the reversal is `5 - band`,
+    /// four-band arithmetic only meaningful on an S21 strip, whereas an
+    /// unreversed strip runs to eight bands on SD/Quantum bus outputs. Band
+    /// zero and the dyn1 range are absolute either way.
     #[test]
     fn pad_band_maps_reject_out_of_range_under_both_settings() {
         use crate::model::family::PadQuirks;
@@ -2536,10 +2603,24 @@ mod tests {
                 ..PadQuirks::S21
             };
             assert!(ParameterPath::EqBandGain(0).to_pad_suffix(&q).is_none());
-            assert!(ParameterPath::EqBandGain(5).to_pad_suffix(&q).is_none());
             assert!(ParameterPath::Dyn1Threshold(4).to_pad_suffix(&q).is_none());
-            assert!(ParameterPath::from_pad_suffix("/EQ/eq_gain_5", &q).is_none());
             assert!(ParameterPath::from_pad_suffix("/Dynamics/comp_thresh_4", &q).is_none());
+
+            if reversed {
+                // S21: nothing above band 4 exists to reverse.
+                assert!(ParameterPath::EqBandGain(5).to_pad_suffix(&q).is_none());
+                assert!(ParameterPath::from_pad_suffix("/EQ/eq_gain_5", &q).is_none());
+            } else {
+                // SD/Quantum bus outputs: bands 5..=8 are real and round-trip.
+                let wire = ParameterPath::EqBandGain(5).to_pad_suffix(&q).unwrap();
+                assert_eq!(wire, "EQ/eq_gain_5");
+                assert_eq!(
+                    ParameterPath::from_pad_suffix("/EQ/eq_gain_5", &q),
+                    Some(ParameterPath::EqBandGain(5))
+                );
+                assert!(ParameterPath::EqBandGain(9).to_pad_suffix(&q).is_none());
+                assert!(ParameterPath::from_pad_suffix("/EQ/eq_gain_9", &q).is_none());
+            }
         }
     }
 
@@ -2616,6 +2697,75 @@ mod tests {
 
     /// The support table and the codec must agree: anything we're willing to
     /// use on a family has to have a Pad path to use it through.
+    #[test]
+    fn eq_strip_is_four_bands_on_s_series_and_eight_on_sd_outputs() {
+        use crate::model::family::ConsoleFamily as F;
+        // S-series is four bands everywhere, inputs and outputs alike.
+        for ch in [ChannelId::Input(1), ChannelId::Aux(1), ChannelId::Group(1)] {
+            assert_eq!(
+                ParameterPath::eq_band_range(&ch, F::SSeries),
+                1..=4,
+                "{ch:?} on S-series"
+            );
+        }
+        for family in [F::SdRange, F::Quantum] {
+            // Inputs stay at four.
+            assert_eq!(
+                ParameterPath::eq_band_range(&ChannelId::Input(1), family),
+                1..=4
+            );
+            // Bus outputs carry eight.
+            for ch in [ChannelId::Aux(1), ChannelId::Group(2), ChannelId::Matrix(3)] {
+                assert_eq!(
+                    ParameterPath::eq_band_range(&ch, family),
+                    1..=8,
+                    "{ch:?} on {family:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn applicable_to_exposes_the_extra_sd_output_bands() {
+        use crate::model::family::ConsoleFamily as F;
+        let has_band8 = |family: F| {
+            ParameterPath::applicable_to_for_family(&ChannelId::Aux(1), 8, 8, 8, family)
+                .contains(&ParameterPath::EqBandGain(8))
+        };
+        assert!(has_band8(F::Quantum), "a Quantum aux must offer EQ band 8");
+        assert!(has_band8(F::SdRange), "an SD aux must offer EQ band 8");
+        assert!(
+            !has_band8(F::SSeries),
+            "an S-series aux has only four bands"
+        );
+        // The plain (family-free) entry point keeps its S-series behaviour.
+        assert!(
+            !ParameterPath::applicable_to(&ChannelId::Aux(1), 8, 8, 8)
+                .contains(&ParameterPath::EqBandGain(8))
+        );
+    }
+
+    #[test]
+    fn pad_eq_band_map_rejects_reversed_indices_beyond_a_four_band_strip() {
+        // Unreversed (SD/Quantum): the full eight-band strip round-trips.
+        for b in 1..=8u8 {
+            assert_eq!(super::pad_eq_band_map(b, false), Some(b));
+        }
+        assert_eq!(super::pad_eq_band_map(9, false), None);
+        // Reversed (S21): defined only on a four-band strip, and involutive.
+        for b in 1..=4u8 {
+            let wire = super::pad_eq_band_map(b, true).unwrap();
+            assert_eq!(super::pad_eq_band_map(wire, true), Some(b));
+        }
+        for b in 5..=9u8 {
+            assert_eq!(
+                super::pad_eq_band_map(b, true),
+                None,
+                "band {b} cannot be reversed on a four-band strip"
+            );
+        }
+    }
+
     #[test]
     fn support_implies_pad_path() {
         use crate::model::family::PadQuirks;

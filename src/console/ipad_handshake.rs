@@ -18,6 +18,68 @@ pub struct HandshakeResult {
     pub config: ConsoleConfig,
     pub layout_banks: Vec<BankData>,
     pub current_snapshot: Option<i32>,
+    /// How many replies the console sent during the handshake.
+    ///
+    /// A handshake returns `Ok` even when the desk never answers — it simply
+    /// times out with defaults — so this is the only evidence the console is
+    /// actually reachable. Pad-only connections use it to decide whether to
+    /// report a live link or stay in `Connecting`.
+    pub responses_seen: u32,
+}
+
+/// Tuning for [`perform_handshake_with`].
+///
+/// The defaults reproduce the S-series behaviour exactly: the nine queries
+/// captured from a real iPad session, and both collection phases running
+/// their full timeout regardless of what arrives. That path is
+/// hardware-verified and its regression run is still outstanding, so it is
+/// deliberately left alone.
+#[derive(Clone, Debug)]
+pub struct HandshakeOptions {
+    /// Extra `/?` queries appended to the standard set. Pad-only consoles ask
+    /// for the channel counts the S-series learns from GP OSC instead.
+    pub extra_config_queries: &'static [&'static str],
+    /// Stop collecting as soon as this many replies have arrived rather than
+    /// waiting out the timeout. `None` always waits — the S-series behaviour.
+    pub config_early_exit_after: Option<u32>,
+    /// Whether to query the surface layout banks at all. A Pad-only console
+    /// may not implement `/Layout/Layout/Banks`, and waiting a full timeout
+    /// for a reply that never comes doubles connect latency for nothing.
+    pub query_layout_banks: bool,
+}
+
+impl Default for HandshakeOptions {
+    fn default() -> Self {
+        Self {
+            extra_config_queries: &[],
+            config_early_exit_after: None,
+            query_layout_banks: true,
+        }
+    }
+}
+
+impl HandshakeOptions {
+    /// Counts the S-series gets from GP OSC `/console/channel/counts`, which a
+    /// Pad-only console has no other way to learn. Without these, matrix,
+    /// matrix-input, Control Group and Graphic EQ counts stay at their
+    /// defaults and the scope editor shows the wrong channel set.
+    pub const PAD_ONLY_COUNT_QUERIES: &'static [&'static str] = &[
+        "/Console/Matrix_Outputs/?",
+        "/Console/Matrix_Inputs/?",
+        "/Console/Control_Groups/?",
+        "/Console/Graphic_EQ/?",
+    ];
+
+    /// Options for a Pad-only console (SD/Quantum).
+    pub fn pad_only() -> Self {
+        Self {
+            extra_config_queries: Self::PAD_ONLY_COUNT_QUERIES,
+            // One reply per query is the ideal; settle for most of them so a
+            // console that ignores an unknown query still connects promptly.
+            config_early_exit_after: Some(10),
+            query_layout_banks: true,
+        }
+    }
 }
 
 /// Errors that can occur during the iPad handshake.
@@ -56,13 +118,24 @@ pub async fn perform_handshake(
     rx: &mut mpsc::Receiver<ReceivedOscMessage>,
     timeout: Duration,
 ) -> Result<HandshakeResult, HandshakeError> {
+    perform_handshake_with(sender, rx, timeout, &HandshakeOptions::default()).await
+}
+
+/// [`perform_handshake`] with explicit options — see [`HandshakeOptions`].
+pub async fn perform_handshake_with(
+    sender: &IpadSender,
+    rx: &mut mpsc::Receiver<ReceivedOscMessage>,
+    timeout: Duration,
+    opts: &HandshakeOptions,
+) -> Result<HandshakeResult, HandshakeError> {
     let mut config = ConsoleConfig::default();
     let mut current_snapshot: Option<i32> = None;
     let mut layout_banks = Vec::new();
+    let mut responses_seen = 0u32;
 
     // Phase 1: Send config queries
     info!("iPad handshake: sending config queries...");
-    let config_queries = [
+    const BASE_QUERIES: &[&str] = &[
         "/Snapshots/Current_Snapshot/?",
         "/Console/Name/?",
         "/Console/Session/Filename/?",
@@ -74,7 +147,7 @@ pub async fn perform_handshake(
         "/Console/Multis/?",
     ];
 
-    for query in &config_queries {
+    for query in BASE_QUERIES.iter().chain(opts.extra_config_queries) {
         sender.send(query, vec![]).await?;
         debug!(query, "Sent handshake query");
     }
@@ -97,14 +170,25 @@ pub async fn perform_handshake(
                     ParsedIpadMessage::ConfigResponse(cfg_msg) => {
                         apply_config_message(&mut config, &cfg_msg);
                         config_responses += 1;
+                        responses_seen += 1;
                     }
                     ParsedIpadMessage::SnapshotInfo { current } => {
                         current_snapshot = Some(current);
                         config_responses += 1;
+                        responses_seen += 1;
                     }
                     _ => {
                         debug!(path = msg.path, "Handshake: ignoring non-config message");
                     }
+                }
+                // Stop early once the console has answered enough of the
+                // queries — only when the caller opted in, so the S-series
+                // path keeps its original always-wait-the-timeout timing.
+                if let Some(limit) = opts.config_early_exit_after
+                    && config_responses >= limit
+                {
+                    info!(config_responses, "Config phase complete (all expected replies)");
+                    break;
                 }
             }
             _ = time::sleep(remaining) => {
@@ -123,37 +207,41 @@ pub async fn perform_handshake(
     );
 
     // Phase 3: Send layout banks query
-    info!("iPad handshake: querying layout banks...");
-    sender.send("/Layout/Layout/Banks/?", vec![]).await?;
+    if opts.query_layout_banks {
+        info!("iPad handshake: querying layout banks...");
+        sender.send("/Layout/Layout/Banks/?", vec![]).await?;
 
-    // Phase 4: Collect bank responses
-    let bank_deadline = time::Instant::now() + timeout;
+        // Phase 4: Collect bank responses
+        let bank_deadline = time::Instant::now() + timeout;
 
-    loop {
-        let remaining = bank_deadline.saturating_duration_since(time::Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
+        loop {
+            let remaining = bank_deadline.saturating_duration_since(time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
 
-        tokio::select! {
-            Some(msg) = rx.recv() => {
-                let parsed = ipad_parse::parse_ipad_message(&msg.path, &msg.args);
-                match parsed {
-                    ParsedIpadMessage::LayoutBank(bank) => {
-                        debug!(side = %bank.side, bank = bank.bank_number, "Received layout bank");
-                        layout_banks.push(bank);
-                    }
-                    ParsedIpadMessage::ConfigResponse(cfg_msg) => {
-                        // Late config response — still apply
-                        apply_config_message(&mut config, &cfg_msg);
-                    }
-                    _ => {
-                        debug!(path = msg.path, "Handshake banks: ignoring message");
+            tokio::select! {
+                Some(msg) = rx.recv() => {
+                    let parsed = ipad_parse::parse_ipad_message(&msg.path, &msg.args);
+                    match parsed {
+                        ParsedIpadMessage::LayoutBank(bank) => {
+                            debug!(side = %bank.side, bank = bank.bank_number, "Received layout bank");
+                            layout_banks.push(bank);
+                            responses_seen += 1;
+                        }
+                        ParsedIpadMessage::ConfigResponse(cfg_msg) => {
+                            // Late config response — still apply
+                            apply_config_message(&mut config, &cfg_msg);
+                            responses_seen += 1;
+                        }
+                        _ => {
+                            debug!(path = msg.path, "Handshake banks: ignoring message");
+                        }
                     }
                 }
-            }
-            _ = time::sleep(remaining) => {
-                break;
+                _ = time::sleep(remaining) => {
+                    break;
+                }
             }
         }
     }
@@ -172,6 +260,7 @@ pub async fn perform_handshake(
         config,
         layout_banks,
         current_snapshot,
+        responses_seen,
     })
 }
 

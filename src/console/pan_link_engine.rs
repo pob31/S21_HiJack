@@ -64,9 +64,26 @@ impl PanLinkEngine {
         dirty_tracker: Arc<RwLock<DirtyTracker>>,
         gang_manager: Arc<RwLock<GangManager>>,
     ) -> Self {
+        Self::from_tx(
+            state,
+            ConsoleTx::new(sender),
+            bindings,
+            dirty_tracker,
+            gang_manager,
+        )
+    }
+
+    /// Build on an existing console write path — see [`ConsoleTx::pad_only`].
+    pub fn from_tx(
+        state: Arc<RwLock<ConsoleState>>,
+        tx: ConsoleTx,
+        bindings: Arc<RwLock<PanLinkBindings>>,
+        dirty_tracker: Arc<RwLock<DirtyTracker>>,
+        gang_manager: Arc<RwLock<GangManager>>,
+    ) -> Self {
         Self {
             state,
-            tx: ConsoleTx::new(sender),
+            tx,
             bindings,
             dirty_tracker,
             gang_manager,

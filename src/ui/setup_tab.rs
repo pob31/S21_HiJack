@@ -137,6 +137,10 @@ pub struct SetupTabState {
     /// Whether the diagnostic tabs (OSC Log, Inspector) are visible.
     /// Operator preference — not persisted per-show.
     pub show_diagnostics: bool,
+    /// Which console family this machine talks to. Seeded from preferences,
+    /// overwritten by a loaded show's `console_config.family`, and pushed into
+    /// `ConsoleState.config` so family-dependent gating reacts immediately.
+    pub console_family: crate::model::family::ConsoleFamily,
     /// First-run popup is shown when the app starts with no
     /// `AppPreferences.ui_mode` on disk. Asks the operator to pick a
     /// mode; once dismissed, the choice is saved and this stays false.
@@ -232,6 +236,7 @@ impl SetupTabState {
             web_allow_cidrs: Vec::new(),
             ui_mode: prefs.ui_mode.unwrap_or_default(),
             show_diagnostics: prefs.show_diagnostics,
+            console_family: prefs.console_family.unwrap_or_default(),
             show_first_run_popup: prefs.ui_mode.is_none(),
             show_coverage_popup: false,
             show_advanced_panel: false,
@@ -440,6 +445,15 @@ fn conn_mode_help(mode: OperatingMode) -> HelpKey {
         OperatingMode::Mode1 => HelpKey::ConnModeMode1,
         OperatingMode::Mode2 => HelpKey::ConnModeMode2,
         OperatingMode::Mode3 => HelpKey::ConnModeMode3,
+    }
+}
+
+fn console_family_help(family: crate::model::family::ConsoleFamily) -> HelpKey {
+    use crate::model::family::ConsoleFamily as F;
+    match family {
+        F::SSeries => HelpKey::ConsoleFamilySSeries,
+        F::SdRange => HelpKey::ConsoleFamilySdRange,
+        F::Quantum => HelpKey::ConsoleFamilyQuantum,
     }
 }
 
@@ -1175,6 +1189,48 @@ pub fn draw_setup_tab(
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(6.0);
+
+                    // ── Console Family ──
+                    // Sits above Connection Mode because it subsumes it: on a
+                    // Pad-only family the mode selector has no effect (see
+                    // `ConnectionScheme::resolve`).
+                    server_grid("server_family_grid").show(ui, |ui| {
+                        theme::row_label(ui, "Console Family:", theme::label_color());
+                        ui.horizontal(|ui| {
+                            for family in crate::model::family::ConsoleFamily::ALL {
+                                let is_active = setup.console_family == family;
+                                let fill = if is_active { theme::ACCENT_BLUE } else { theme::btn_neutral() };
+                                let text_color = if is_active { theme::TEXT_PRIMARY } else { theme::neutral_inactive_text() };
+                                let btn = egui::Button::new(
+                                    egui::RichText::new(family.label()).color(text_color),
+                                )
+                                .fill(fill)
+                                .corner_radius(4.0)
+                                .min_size(egui::Vec2::new(action_btn_w, 28.0));
+                                if ui
+                                    .add_enabled_ui(!is_connected, |ui| {
+                                        ui.add_sized([action_btn_w, 28.0], btn)
+                                    })
+                                    .inner
+                                    .on_hover_text(help(console_family_help(family)))
+                                    .on_disabled_hover_text(help(HelpKey::ConnModeDisabled))
+                                    .clicked()
+                                    && setup.console_family != family
+                                {
+                                    setup.console_family = family;
+                                    save_app_preferences(setup);
+                                    // Push into the live config so family-gated
+                                    // UI updates without waiting for a connect.
+                                    let st = state.clone();
+                                    runtime.spawn(async move {
+                                        st.write().await.config.family = family;
+                                    });
+                                }
+                            }
+                        });
+                        ui.end_row();
+                    });
+                    ui.add_space(4.0);
 
                     // ── Connection Mode ──
                     server_grid("server_conn_grid").show(ui, |ui| {
@@ -2020,6 +2076,23 @@ pub(crate) fn start_connection(
     } else {
         0
     };
+    // A Pad-only family (SD/Quantum) needs the Pad connection path, which is
+    // built but not yet wired into this connect flow. Refuse plainly rather
+    // than falling through to the S-series GP path, which would bind a socket
+    // the desk is not listening on and look like it had connected.
+    let scheme =
+        crate::model::family::ConnectionScheme::resolve(setup.console_family, operating_mode);
+    if !scheme.uses_gp() {
+        setup.status_message = Some(
+            format!(
+                "{} consoles are not connectable yet — the Pad connection path is \
+                 still being wired up. Switch back to S Series to connect.",
+                setup.console_family.label()
+            )
+            .into(),
+        );
+        return;
+    }
     // Mode 3 proxies console traffic to a specific iPad — its IP is required
     // (read it off the DiGiCo iPad app). No autodiscovery.
     if operating_mode == OperatingMode::Mode3 && setup.ipad_ip.trim().is_empty() {
@@ -3178,8 +3251,11 @@ pub(crate) fn save_app_preferences(setup: &SetupTabState) {
         last_open_dir: setup.last_open_dir.clone(),
         midi: setup.midi.clone(),
         sidecar_midi: setup.sidecar_midi.clone(),
-        // Console family / quirk overrides have no UI yet (Phase 1) — carry
-        // the on-disk values through so a hand-edited override survives.
+        // Named explicitly: the operator picks this in the Setup tab, so the
+        // UI's value must win over whatever the spread would reload from disk.
+        console_family: Some(setup.console_family),
+        // Quirk overrides still have no UI — carry the on-disk value through
+        // so a hand-edited override survives a save from here.
         ..AppPreferences::load()
     };
     if let Err(e) = prefs.save() {

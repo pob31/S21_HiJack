@@ -152,6 +152,105 @@ impl Default for PadQuirks {
     }
 }
 
+/// How level parameters are scaled on the wire.
+///
+/// Distinct from [`FaderLaw`], which describes a *physical* fader's travel
+/// taper for the sidecar. This is purely the number in the OSC message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LevelWire {
+    /// The wire carries dB directly (S-series GP OSC and the Pad dialect).
+    Db,
+    /// The wire carries a normalized `0.0 ..= 1.0` position, as DiGiCo's
+    /// "Other OSC" list specifies (`fader, f, 1` = maximum).
+    Normalized01,
+}
+
+/// A control surface the console exposes — one OSC dialect on one connection.
+///
+/// A console family may offer more than one. They differ in how the address is
+/// spelled and how values are scaled, but the SD "Other OSC" and Pad surfaces
+/// share the same underlying TitleCase parameter tree, so one codec serves all
+/// three (see `ParameterPath::to_pad_suffix`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ConsoleSurface {
+    /// S-series general-purpose OSC: flat `/channel/{n}/{suffix}`, dB values,
+    /// documented bidirectional feedback (`/console/resend`, ping/pong).
+    SSeriesGp,
+    /// SD/Quantum "Other OSC": `/sd/` + the TitleCase tree, normalized values.
+    /// Documented by DiGiCo as send-only, but a field report has `/?` queries
+    /// working; whether it *pushes* surface moves is the Phase 2a probe's
+    /// decisive question.
+    SdOther,
+    /// The DiGiCo Pad (iPad) protocol: the bare TitleCase tree, dB values,
+    /// `/?` queries and push feedback. Reverse-engineered, and the console
+    /// accepts only one Pad device at a time.
+    Pad,
+}
+
+impl ConsoleSurface {
+    /// Literal prepended to every address on this surface (no trailing slash).
+    pub fn path_prefix(self) -> &'static str {
+        match self {
+            ConsoleSurface::SdOther => "/sd",
+            ConsoleSurface::SSeriesGp | ConsoleSurface::Pad => "",
+        }
+    }
+
+    /// How level values are scaled on this surface.
+    pub fn level_wire(self) -> LevelWire {
+        match self {
+            ConsoleSurface::SdOther => LevelWire::Normalized01,
+            ConsoleSurface::SSeriesGp | ConsoleSurface::Pad => LevelWire::Db,
+        }
+    }
+
+    /// Whether this surface addresses parameters through the TitleCase tree
+    /// (`/Input_Channels/1/…`) that the Pad codec emits. False only for the
+    /// S-series flat `/channel/{n}/…` numbering.
+    pub fn uses_pad_tree(self) -> bool {
+        matches!(self, ConsoleSurface::SdOther | ConsoleSurface::Pad)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ConsoleSurface::SSeriesGp => "GP OSC",
+            ConsoleSurface::SdOther => "Other OSC (/sd)",
+            ConsoleSurface::Pad => "DiGiCo Pad",
+        }
+    }
+}
+
+/// The complete wire dialect for one connection: which surface is in use, plus
+/// the quirk flags believed to apply to that console.
+///
+/// Travels together through the codec because both are needed to render an
+/// address and a value: the surface decides the path prefix and level scaling,
+/// the quirks decide band ordering and value encodings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PadWire {
+    pub surface: ConsoleSurface,
+    pub quirks: PadQuirks,
+}
+
+impl PadWire {
+    /// The hardware-verified S21 dialect on the Pad surface — the shape every
+    /// pre-existing test pins.
+    pub const S21: PadWire = PadWire {
+        surface: ConsoleSurface::Pad,
+        quirks: PadQuirks::S21,
+    };
+
+    pub fn new(surface: ConsoleSurface, quirks: PadQuirks) -> Self {
+        Self { surface, quirks }
+    }
+}
+
+impl Default for PadWire {
+    fn default() -> Self {
+        Self::S21
+    }
+}
+
 /// How fader positions relate to the value on the wire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FaderLaw {
@@ -187,8 +286,6 @@ pub enum EnumerationStrategy {
 /// per-family tab gating lands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AppFeature {
-    /// The GP OSC dialect exists on this console at all.
-    GpOsc,
     /// The recall-scope / channel-safe editor, whose block layout mirrors the
     /// S-series console screen.
     RecallScopeUi,
@@ -203,9 +300,9 @@ pub enum AppFeature {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConsoleProfile {
     pub family: ConsoleFamily,
-    /// Whether the GP OSC dialect is available. False for Pad-only families,
-    /// where every write must go out over the Pad link.
-    pub has_gp_osc: bool,
+    /// Every surface this console exposes, most preferred first. The first
+    /// entry is what a connection uses unless the operator overrides it.
+    pub surfaces: &'static [ConsoleSurface],
     pub pad_quirks: PadQuirks,
     pub fader_law: FaderLaw,
     pub heartbeat: HeartbeatStrategy,
@@ -226,7 +323,9 @@ impl ConsoleProfile {
         match family {
             ConsoleFamily::SSeries => Self {
                 family,
-                has_gp_osc: true,
+                // GP OSC first: it is the documented, feedback-capable surface
+                // and every S-series feature has been built on it.
+                surfaces: &[ConsoleSurface::SSeriesGp, ConsoleSurface::Pad],
                 pad_quirks: PadQuirks::S21,
                 fader_law: FaderLaw::RawDb,
                 heartbeat: HeartbeatStrategy::GpPingPong,
@@ -241,7 +340,13 @@ impl ConsoleProfile {
             // arms so a hardware probe can split them without restructuring.
             ConsoleFamily::SdRange | ConsoleFamily::Quantum => Self {
                 family,
-                has_gp_osc: false,
+                // Pad first, for now: it is the surface with positive evidence
+                // of push feedback, which the live state mirror requires.
+                // `SdOther` is DiGiCo's documented general-purpose interface
+                // and would be preferable — no one-device limit, no reverse
+                // engineering — but whether it reports the desk's own surface
+                // moves is unverified. Hardware session #1 may reorder these.
+                surfaces: &[ConsoleSurface::Pad, ConsoleSurface::SdOther],
                 pad_quirks: PadQuirks::SD_HYPOTHESIS,
                 fader_law: FaderLaw::RawDb,
                 heartbeat: HeartbeatStrategy::ConsoleNameQuery,
@@ -277,15 +382,80 @@ impl ConsoleProfile {
 
     pub fn supports(&self, feature: AppFeature) -> bool {
         match feature {
-            AppFeature::GpOsc => self.has_gp_osc,
             AppFeature::RecallScopeUi => self.family == ConsoleFamily::SSeries,
         }
+    }
+
+    /// Whether this console exposes `surface` at all.
+    pub fn has_surface(&self, surface: ConsoleSurface) -> bool {
+        self.surfaces.contains(&surface)
+    }
+
+    /// The surface a connection uses by default.
+    ///
+    /// Every family declares at least one, so this cannot fail in practice;
+    /// it falls back to [`ConsoleSurface::Pad`] rather than panicking, since
+    /// the Pad tree is the one all families share.
+    pub fn primary_surface(&self) -> ConsoleSurface {
+        self.surfaces
+            .first()
+            .copied()
+            .unwrap_or(ConsoleSurface::Pad)
     }
 }
 
 impl Default for ConsoleProfile {
     fn default() -> Self {
         Self::for_family(ConsoleFamily::default())
+    }
+}
+
+/// What a connection actually establishes, derived from the console family and
+/// the operator's chosen [`OperatingMode`](crate::model::operating_mode::OperatingMode).
+///
+/// The mode enum predates multi-family support and is phrased in S-series
+/// terms, so this translates it: on a Pad-only console "Mode 1" (GP OSC only)
+/// is meaningless, and every mode resolves to a Pad connection instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionScheme {
+    /// S-series, GP OSC alone.
+    GpOnly,
+    /// S-series, GP OSC plus a direct Pad link (Mode 2).
+    GpPlusPadDirect,
+    /// S-series, GP OSC plus the Pad proxy sitting in front of a real iPad
+    /// (Mode 3).
+    GpPlusPadProxy,
+    /// No GP OSC dialect exists — a single Pad connection carries everything.
+    PadDirect,
+}
+
+impl ConnectionScheme {
+    /// Resolve the scheme for a family and mode.
+    pub fn resolve(
+        family: ConsoleFamily,
+        mode: crate::model::operating_mode::OperatingMode,
+    ) -> Self {
+        use crate::model::operating_mode::OperatingMode as M;
+        match family {
+            // SD/Quantum have no `/channel/{n}/…` dialect at all, so the mode
+            // selector simply does not apply; they always connect over Pad.
+            ConsoleFamily::SdRange | ConsoleFamily::Quantum => ConnectionScheme::PadDirect,
+            ConsoleFamily::SSeries => match mode {
+                M::Mode1 => ConnectionScheme::GpOnly,
+                M::Mode2 => ConnectionScheme::GpPlusPadDirect,
+                M::Mode3 => ConnectionScheme::GpPlusPadProxy,
+            },
+        }
+    }
+
+    /// Whether this scheme binds a GP OSC socket and runs the GP loop.
+    pub fn uses_gp(self) -> bool {
+        !matches!(self, ConnectionScheme::PadDirect)
+    }
+
+    /// Whether the operator's iPad-port settings are needed.
+    pub fn uses_pad(self) -> bool {
+        !matches!(self, ConnectionScheme::GpOnly)
     }
 }
 
@@ -324,7 +494,8 @@ mod tests {
     #[test]
     fn s_series_profile_matches_verified_hardware_behaviour() {
         let p = ConsoleProfile::for_family(ConsoleFamily::SSeries);
-        assert!(p.has_gp_osc);
+        assert!(p.has_surface(ConsoleSurface::SSeriesGp));
+        assert_eq!(p.primary_surface(), ConsoleSurface::SSeriesGp);
         assert_eq!(p.pad_quirks, PadQuirks::S21);
         assert_eq!(p.heartbeat, HeartbeatStrategy::GpPingPong);
         assert_eq!(p.enumeration, EnumerationStrategy::GpResendDump);
@@ -333,10 +504,17 @@ mod tests {
     }
 
     #[test]
-    fn pad_only_families_have_no_gp_osc() {
+    fn sd_families_offer_pad_and_other_osc_but_not_s_series_gp() {
         for family in [ConsoleFamily::SdRange, ConsoleFamily::Quantum] {
             let p = ConsoleProfile::for_family(family);
-            assert!(!p.has_gp_osc, "{family:?} must not claim GP OSC");
+            assert!(
+                !p.has_surface(ConsoleSurface::SSeriesGp),
+                "{family:?} must not claim the S-series GP OSC dialect"
+            );
+            assert!(p.has_surface(ConsoleSurface::SdOther));
+            assert!(p.has_surface(ConsoleSurface::Pad));
+            // Pad leads until the probe shows /sd/ pushes surface moves.
+            assert_eq!(p.primary_surface(), ConsoleSurface::Pad);
             assert_eq!(p.heartbeat, HeartbeatStrategy::ConsoleNameQuery);
             assert_eq!(p.enumeration, EnumerationStrategy::PacedPadQueries);
             assert_eq!(p.pad_quirks, PadQuirks::SD_HYPOTHESIS);
@@ -361,13 +539,71 @@ mod tests {
     #[test]
     fn feature_support_by_family() {
         let s = ConsoleProfile::for_family(ConsoleFamily::SSeries);
-        assert!(s.supports(AppFeature::GpOsc));
         assert!(s.supports(AppFeature::RecallScopeUi));
         for family in [ConsoleFamily::SdRange, ConsoleFamily::Quantum] {
             let p = ConsoleProfile::for_family(family);
-            assert!(!p.supports(AppFeature::GpOsc));
             assert!(!p.supports(AppFeature::RecallScopeUi));
         }
+    }
+
+    #[test]
+    fn connection_scheme_resolution() {
+        use crate::model::operating_mode::OperatingMode as M;
+        // S-series keeps every mode meaning exactly what it always meant.
+        assert_eq!(
+            ConnectionScheme::resolve(ConsoleFamily::SSeries, M::Mode1),
+            ConnectionScheme::GpOnly
+        );
+        assert_eq!(
+            ConnectionScheme::resolve(ConsoleFamily::SSeries, M::Mode2),
+            ConnectionScheme::GpPlusPadDirect
+        );
+        assert_eq!(
+            ConnectionScheme::resolve(ConsoleFamily::SSeries, M::Mode3),
+            ConnectionScheme::GpPlusPadProxy
+        );
+        // Pad-only families ignore the mode entirely — including Mode 1,
+        // which would otherwise mean "GP OSC only" on a desk with no GP OSC.
+        for family in [ConsoleFamily::SdRange, ConsoleFamily::Quantum] {
+            for mode in [M::Mode1, M::Mode2, M::Mode3] {
+                assert_eq!(
+                    ConnectionScheme::resolve(family, mode),
+                    ConnectionScheme::PadDirect,
+                    "{family:?} + {mode:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn connection_scheme_capabilities() {
+        assert!(ConnectionScheme::GpOnly.uses_gp());
+        assert!(!ConnectionScheme::GpOnly.uses_pad());
+        assert!(ConnectionScheme::GpPlusPadDirect.uses_gp());
+        assert!(ConnectionScheme::GpPlusPadDirect.uses_pad());
+        // The one that matters: a Pad-only console binds no GP socket.
+        assert!(!ConnectionScheme::PadDirect.uses_gp());
+        assert!(ConnectionScheme::PadDirect.uses_pad());
+    }
+
+    #[test]
+    fn surface_wire_conventions() {
+        // The /sd/ surface is the only prefixed one, and the only one whose
+        // levels are normalized rather than dB.
+        assert_eq!(ConsoleSurface::SdOther.path_prefix(), "/sd");
+        assert_eq!(ConsoleSurface::Pad.path_prefix(), "");
+        assert_eq!(ConsoleSurface::SSeriesGp.path_prefix(), "");
+        assert_eq!(
+            ConsoleSurface::SdOther.level_wire(),
+            LevelWire::Normalized01
+        );
+        assert_eq!(ConsoleSurface::Pad.level_wire(), LevelWire::Db);
+        assert_eq!(ConsoleSurface::SSeriesGp.level_wire(), LevelWire::Db);
+        // Both SD surfaces address through the shared TitleCase tree; only the
+        // S-series flat /channel/{n}/ numbering does not.
+        assert!(ConsoleSurface::SdOther.uses_pad_tree());
+        assert!(ConsoleSurface::Pad.uses_pad_tree());
+        assert!(!ConsoleSurface::SSeriesGp.uses_pad_tree());
     }
 
     #[test]

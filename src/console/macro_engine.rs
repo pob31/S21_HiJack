@@ -70,9 +70,20 @@ impl MacroEngine {
         ui_tx: mpsc::Sender<UiEvent>,
         pace_us: Arc<AtomicU64>,
     ) -> Self {
+        Self::from_tx(state, ConsoleTx::new(sender), macro_manager, ui_tx, pace_us)
+    }
+
+    /// Build on an existing console write path — see [`ConsoleTx::pad_only`].
+    pub fn from_tx(
+        state: Arc<RwLock<ConsoleState>>,
+        tx: ConsoleTx,
+        macro_manager: Arc<RwLock<MacroManager>>,
+        ui_tx: mpsc::Sender<UiEvent>,
+        pace_us: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             state,
-            tx: ConsoleTx::new(sender),
+            tx,
             dirty_tracker: None,
             macro_manager,
             ui_tx,

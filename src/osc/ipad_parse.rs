@@ -3,7 +3,7 @@ use rosc::OscType;
 use super::ipad_values;
 use crate::model::channel::ChannelId;
 use crate::model::config::ChannelMode;
-use crate::model::family::{PadQuirks, PanWire};
+use crate::model::family::{LevelWire, PadQuirks, PadWire, PanWire};
 use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
 
 /// Result of parsing an iPad protocol OSC message.
@@ -73,11 +73,44 @@ pub fn parse_ipad_message_with_config(
     args: &[OscType],
     config: Option<&crate::model::config::ConsoleConfig>,
 ) -> ParsedIpadMessage {
-    // Wire quirks come from the live console config when we have one;
+    // Wire dialect comes from the live console config when we have one;
     // pre-discovery callers (handshake) get the S21 defaults.
-    let quirks = config
-        .map(|c| c.profile().pad_quirks)
-        .unwrap_or(PadQuirks::S21);
+    let wire = config
+        .map(|c| {
+            let p = c.profile();
+            PadWire::new(p.primary_surface(), p.pad_quirks)
+        })
+        .unwrap_or(PadWire::S21);
+    parse_pad_message(path, args, config, &wire)
+}
+
+/// Parse an inbound message for an explicit wire dialect.
+///
+/// Used where the surface is known independently of the stored config — the
+/// Protocol Probe, which exercises one surface at a time regardless of which
+/// the profile prefers.
+pub fn parse_pad_message(
+    path: &str,
+    args: &[OscType],
+    config: Option<&crate::model::config::ConsoleConfig>,
+    wire: &PadWire,
+) -> ParsedIpadMessage {
+    let quirks = wire.quirks;
+
+    // Strip the surface's prefix before anything else: on the `/sd/` surface
+    // every address is prefixed, and the rest of this parser (and the
+    // `/Console/…`, `/Snapshots/…`, `/Meters/…` literals below) is written
+    // against the bare tree. A prefixed surface that hands us an unprefixed
+    // path is not ours to interpret.
+    let surface_prefix = wire.surface.path_prefix();
+    let path = if surface_prefix.is_empty() {
+        path
+    } else {
+        match path.strip_prefix(surface_prefix) {
+            Some(rest) => rest,
+            None => return ParsedIpadMessage::Unknown(path.to_string()),
+        }
+    };
 
     // Snapshot info
     if path == "/Snapshots/Current_Snapshot"
@@ -106,7 +139,7 @@ pub fn parse_ipad_message_with_config(
     // Channel parameter: /{ChannelType}/{number}/{suffix}
     if let Some((channel, suffix)) = ChannelId::from_ipad_path_with_config(path, config)
         && let Some(parameter) = ParameterPath::from_pad_suffix(suffix, &quirks)
-        && let Some(value) = extract_value(&parameter, args, &quirks)
+        && let Some(value) = extract_value(&parameter, args, wire)
     {
         let addr = ParameterAddress { channel, parameter };
         return ParsedIpadMessage::ParameterUpdate(addr, value);
@@ -254,12 +287,14 @@ fn parse_meter_values(args: &[OscType]) -> ParsedIpadMessage {
     ParsedIpadMessage::MeterValues(meters)
 }
 
-/// Extract a typed value from OSC args, applying pan conversion for iPad protocol.
+/// Extract a typed value from OSC args, undoing the surface's pan and level
+/// wire conventions so the mirror always holds internal units.
 fn extract_value(
     parameter: &ParameterPath,
     args: &[OscType],
-    q: &PadQuirks,
+    wire: &PadWire,
 ) -> Option<ParameterValue> {
+    let q = &wire.quirks;
     let arg = args.first()?;
 
     let value = match parameter {
@@ -303,12 +338,20 @@ fn extract_value(
         _ => extract_float(arg),
     }?;
 
-    // Apply pan conversion, wire → internal. `SignedUnit` already matches the
-    // internal representation, so only `ZeroToOne` converts.
-    match (parameter, q.pan_wire) {
-        (ParameterPath::Pan | ParameterPath::SendPan(_), PanWire::ZeroToOne) => {
+    // Undo the wire conventions, wire → internal. `SignedUnit` pan and `Db`
+    // levels already match the internal representation, so only the converted
+    // forms do work here. Mirrors `ipad_encode::convert_value_for_pad`.
+    match parameter {
+        ParameterPath::Pan | ParameterPath::SendPan(_) if q.pan_wire == PanWire::ZeroToOne => {
             if let ParameterValue::Float(f) = &value {
                 Some(ParameterValue::Float(ipad_values::ipad_pan_to_internal(*f)))
+            } else {
+                Some(value)
+            }
+        }
+        p if p.is_fader_level() && wire.surface.level_wire() == LevelWire::Normalized01 => {
+            if let ParameterValue::Float(n) = &value {
+                Some(ParameterValue::Float(ipad_values::normalized_to_db(*n)))
             } else {
                 Some(value)
             }
@@ -658,17 +701,24 @@ mod tests {
     }
 }
 
-/// End-to-end wire round-trip across **every** quirk combination.
+/// End-to-end wire round-trip across **every** quirk combination, on **every**
+/// surface that uses the shared parameter tree.
 ///
 /// The golden tests elsewhere pin the S21 byte strings; this proves the
-/// encoder and parser stay mutual inverses for any family's quirks — which is
-/// what protects a console whose hardware probe disproves one of the
-/// SD/Quantum hypotheses.
+/// encoder and parser stay mutual inverses for any family's quirks and either
+/// surface — which is what protects a console whose hardware probe disproves
+/// one of the SD/Quantum hypotheses, and what lets the `/sd/` surface (prefix
+/// plus normalized levels) share one codec with the Pad surface.
 #[cfg(test)]
 mod quirk_round_trip_tests {
     use super::*;
-    use crate::model::family::{BoolWire, PadQuirks};
+    use crate::model::family::{BoolWire, ConsoleSurface, PadQuirks};
     use crate::osc::ipad_encode::encode_pad_parameter;
+
+    /// The surfaces that address parameters through the shared TitleCase tree.
+    fn tree_surfaces() -> [ConsoleSurface; 2] {
+        [ConsoleSurface::Pad, ConsoleSurface::SdOther]
+    }
 
     /// All 48 combinations of the five quirk flags.
     fn all_quirk_combos() -> Vec<PadQuirks> {
@@ -773,34 +823,82 @@ mod quirk_round_trip_tests {
     }
 
     #[test]
-    fn encode_then_parse_round_trips_under_every_quirk_combo() {
-        for q in all_quirk_combos() {
-            let cfg = config_with(q);
-            for (addr, value) in fixtures() {
-                let (path, args) = encode_pad_parameter(&addr, &value, &q)
-                    .unwrap_or_else(|| panic!("encode returned None for {addr} under {q:?}"));
-                let parsed = parse_ipad_message_with_config(&path, &args, Some(&cfg));
-                match parsed {
-                    ParsedIpadMessage::ParameterUpdate(got_addr, got_value) => {
-                        assert_eq!(
-                            got_addr, addr,
-                            "address round-trip failed for {path} under {q:?}"
-                        );
-                        match (&value, &got_value) {
-                            (ParameterValue::Float(a), ParameterValue::Float(b)) => assert!(
-                                (a - b).abs() < 1e-5,
-                                "value round-trip failed for {path} under {q:?}: {a} != {b}"
-                            ),
-                            (a, b) => {
-                                assert_eq!(a, b, "value round-trip failed for {path} under {q:?}")
+    fn encode_then_parse_round_trips_under_every_quirk_combo_and_surface() {
+        for surface in tree_surfaces() {
+            for q in all_quirk_combos() {
+                let cfg = config_with(q);
+                let wire = PadWire::new(surface, q);
+                for (addr, value) in fixtures() {
+                    let (path, args) =
+                        encode_pad_parameter(&addr, &value, &wire).unwrap_or_else(|| {
+                            panic!("encode returned None for {addr} on {surface:?} under {q:?}")
+                        });
+                    assert!(
+                        path.starts_with(surface.path_prefix()),
+                        "{path} is missing the {surface:?} prefix"
+                    );
+                    // Parse with the same explicit surface: `config_with`
+                    // stores quirks, but the surface is a property of the
+                    // connection, not the show file.
+                    let parsed = parse_pad_message(&path, &args, Some(&cfg), &wire);
+                    match parsed {
+                        ParsedIpadMessage::ParameterUpdate(got_addr, got_value) => {
+                            assert_eq!(
+                                got_addr, addr,
+                                "address round-trip failed for {path} on {surface:?} under {q:?}"
+                            );
+                            match (&value, &got_value) {
+                                (ParameterValue::Float(a), ParameterValue::Float(b)) => {
+                                    // Normalized levels quantize through a
+                                    // piecewise table, so allow a wider band
+                                    // for those than for a straight dB copy.
+                                    let tol = if addr.parameter.is_fader_level()
+                                        && surface.level_wire()
+                                            == crate::model::family::LevelWire::Normalized01
+                                    {
+                                        0.05
+                                    } else {
+                                        1e-5
+                                    };
+                                    assert!(
+                                        (a - b).abs() < tol,
+                                        "value round-trip failed for {path} on {surface:?} \
+                                         under {q:?}: {a} != {b}"
+                                    );
+                                }
+                                (a, b) => assert_eq!(
+                                    a, b,
+                                    "value round-trip failed for {path} on {surface:?} under {q:?}"
+                                ),
                             }
                         }
-                    }
-                    other => {
-                        panic!("expected ParameterUpdate for {path} under {q:?}, got {other:?}")
+                        other => panic!(
+                            "expected ParameterUpdate for {path} on {surface:?} \
+                             under {q:?}, got {other:?}"
+                        ),
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_prefixed_surface_rejects_an_unprefixed_address() {
+        // Guards the strip step: if a `/sd/` connection ever receives a bare
+        // Pad-tree address it is not ours to interpret, and silently accepting
+        // it would let two surfaces' traffic blur together in the mirror.
+        let q = PadQuirks::SD_HYPOTHESIS;
+        let cfg = config_with(q);
+        let wire = PadWire::new(ConsoleSurface::SdOther, q);
+        let parsed = parse_pad_message(
+            "/Input_Channels/1/fader",
+            &[OscType::Float(0.5)],
+            Some(&cfg),
+            &wire,
+        );
+        assert!(
+            matches!(parsed, ParsedIpadMessage::Unknown(_)),
+            "an unprefixed address must not parse on the /sd/ surface"
+        );
     }
 }

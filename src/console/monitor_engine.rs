@@ -41,11 +41,16 @@ impl MonitorEngine {
         sender: OscSender,
         events: broadcast::Sender<MonitorStateEvent>,
     ) -> Self {
-        Self {
-            state,
-            tx: ConsoleTx::new(sender),
-            events,
-        }
+        Self::from_tx(state, ConsoleTx::new(sender), events)
+    }
+
+    /// Build on an existing console write path — see [`ConsoleTx::pad_only`].
+    pub fn from_tx(
+        state: Arc<RwLock<ConsoleState>>,
+        tx: ConsoleTx,
+        events: broadcast::Sender<MonitorStateEvent>,
+    ) -> Self {
+        Self { state, tx, events }
     }
 
     pub fn set_ipad_sender(&mut self, sender: Option<IpadSender>) {

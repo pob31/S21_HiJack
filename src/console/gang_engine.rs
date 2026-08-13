@@ -52,9 +52,16 @@ pub struct GangEngine {
 
 impl GangEngine {
     pub fn new(state: Arc<RwLock<ConsoleState>>, sender: OscSender) -> Self {
+        Self::from_tx(state, ConsoleTx::new(sender))
+    }
+
+    /// Build on an existing console write path — the route for consoles with
+    /// no GP OSC link at all (SD/Quantum), where there is no `OscSender` to
+    /// hand over. See [`ConsoleTx::pad_only`].
+    pub fn from_tx(state: Arc<RwLock<ConsoleState>>, tx: ConsoleTx) -> Self {
         Self {
             state,
-            tx: ConsoleTx::new(sender),
+            tx,
             suppression_set: HashMap::new(),
             gang_virtual: HashMap::new(),
         }

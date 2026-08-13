@@ -327,11 +327,17 @@ mod tests {
         let mut cfg = ConsoleConfig::default();
         assert_eq!(cfg.family, ConsoleFamily::SSeries);
         assert_eq!(cfg.profile().pad_quirks, PadQuirks::S21);
-        assert!(cfg.profile().has_gp_osc);
+        assert_eq!(
+            cfg.profile().primary_surface(),
+            crate::model::family::ConsoleSurface::SSeriesGp
+        );
 
         cfg.family = ConsoleFamily::Quantum;
         assert_eq!(cfg.profile().pad_quirks, PadQuirks::SD_HYPOTHESIS);
-        assert!(!cfg.profile().has_gp_osc);
+        assert!(
+            !cfg.profile()
+                .has_surface(crate::model::family::ConsoleSurface::SSeriesGp)
+        );
     }
 
     #[test]
@@ -345,7 +351,10 @@ mod tests {
         cfg.pad_quirk_overrides = Some(corrected);
         assert_eq!(cfg.profile().pad_quirks, corrected);
         // Non-quirk profile fields still come from the family.
-        assert!(!cfg.profile().has_gp_osc);
+        assert!(
+            !cfg.profile()
+                .has_surface(crate::model::family::ConsoleSurface::SSeriesGp)
+        );
     }
 
     #[test]

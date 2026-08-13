@@ -250,6 +250,9 @@ pub enum HelpKey {
     ConnModeMode2,
     ConnModeMode3,
     ConnModeDisabled,
+    ConsoleFamilySSeries,
+    ConsoleFamilySdRange,
+    ConsoleFamilyQuantum,
     SetupNetwork,
     SetupCoverage,
     SetupNewShow,
@@ -1159,6 +1162,20 @@ fn meta(key: HelpKey) -> HelpMeta {
             "conn_mode.disabled",
             "Disconnect to change the connection mode.",
         ),
+        ConsoleFamilySSeries => (
+            "console_family.s_series",
+            "S21 / S31 — GP OSC plus the iPad protocol. The connection mode below applies.",
+        ),
+        ConsoleFamilySdRange => (
+            "console_family.sd_range",
+            "SD range — connects as a DiGiCo Pad device; the connection mode below \
+             does not apply. Load the SD command set on the console first.",
+        ),
+        ConsoleFamilyQuantum => (
+            "console_family.quantum",
+            "Quantum range — connects as a DiGiCo Pad device; the connection mode below \
+             does not apply. Load the Quantum command set on the console first.",
+        ),
         SetupNetwork => (
             "setup.network",
             "Local network interface the daemon binds to for OSC — pick the NIC on \
@@ -1891,6 +1908,9 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::ConnModeMode2,
     HelpKey::ConnModeMode3,
     HelpKey::ConnModeDisabled,
+    HelpKey::ConsoleFamilySSeries,
+    HelpKey::ConsoleFamilySdRange,
+    HelpKey::ConsoleFamilyQuantum,
     HelpKey::SetupNetwork,
     HelpKey::SetupCoverage,
     HelpKey::SetupNewShow,

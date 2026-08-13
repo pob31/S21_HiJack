@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::model::family::ConsoleProfile;
+use crate::model::family::{ConsoleProfile, ConsoleSurface, PadWire};
 use crate::model::parameter::{ParameterAddress, ParameterValue};
 use crate::osc::client::OscSender;
 use crate::osc::encode;
@@ -139,14 +139,17 @@ impl SendOutcome {
 /// `Arc`-backed), so spawned tasks (timed recalls, fades) take a clone.
 #[derive(Clone)]
 pub struct ConsoleTx {
-    gp: OscSender,
+    /// The S-series GP OSC sender. `None` on consoles that have no such
+    /// dialect at all — SD and Quantum, where every write goes out on a Pad
+    /// surface and no GP socket is even bound.
+    gp: Option<OscSender>,
     pad: Option<IpadSender>,
     /// Shared echo log — see [`SentLog`]. `None` until wired (tests, or a
     /// GP-only session where no echoes exist).
     sent_log: Option<SentLog>,
-    /// The connected console's profile, supplying the Pad wire quirks used to
-    /// encode. Defaults to the S-series profile so an unwired handle behaves
-    /// exactly as before.
+    /// The connected console's profile, supplying the surface and wire quirks
+    /// used to encode. Defaults to the S-series profile so an unwired handle
+    /// behaves exactly as before.
     profile: Arc<ConsoleProfile>,
 }
 
@@ -155,7 +158,7 @@ impl ConsoleTx {
     /// [`ConsoleTx::set_pad_sender`].
     pub fn new(gp: OscSender) -> Self {
         Self {
-            gp,
+            gp: Some(gp),
             pad: None,
             sent_log: None,
             profile: Arc::new(ConsoleProfile::default()),
@@ -164,10 +167,22 @@ impl ConsoleTx {
 
     pub fn with_pad(gp: OscSender, pad: Option<IpadSender>) -> Self {
         Self {
-            gp,
+            gp: Some(gp),
             pad,
             sent_log: None,
             profile: Arc::new(ConsoleProfile::default()),
+        }
+    }
+
+    /// A console reached only over a Pad surface, with no GP OSC link — an SD
+    /// or Quantum desk. The profile is required here rather than defaulted,
+    /// because it is what tells the write path which surface to speak.
+    pub fn pad_only(pad: IpadSender, profile: Arc<ConsoleProfile>) -> Self {
+        Self {
+            gp: None,
+            pad: Some(pad),
+            sent_log: None,
+            profile,
         }
     }
 
@@ -201,8 +216,16 @@ impl ConsoleTx {
     /// The GP OSC sender, for system commands (`/console/resend`, snapshot
     /// fire, ping/pong) that have no typed-parameter form yet. Escape hatch
     /// until system commands become dialect-mapped.
-    pub fn gp_sender(&self) -> &OscSender {
-        &self.gp
+    ///
+    /// `None` on a Pad-only console — callers must degrade gracefully rather
+    /// than assume a GP link exists.
+    pub fn gp_sender(&self) -> Option<&OscSender> {
+        self.gp.as_ref()
+    }
+
+    /// Whether the S-series GP OSC dialect is usable on this connection.
+    pub fn has_gp(&self) -> bool {
+        self.gp.is_some() && self.profile.has_surface(ConsoleSurface::SSeriesGp)
     }
 
     pub fn pad_sender(&self) -> Option<&IpadSender> {
@@ -226,34 +249,49 @@ impl ConsoleTx {
         outcome
     }
 
+    /// Route one write to the right surface.
+    ///
+    /// On an S-series console GP OSC is tried first and the Pad link picks up
+    /// what GP cannot express (analog gain, phantom, GEQ, …) — the long-
+    /// standing behaviour.
+    ///
+    /// On a Pad-only console (SD/Quantum) the GP branch is skipped entirely.
+    /// It has to be: those consoles have no `/channel/{n}/…` dialect, yet
+    /// nearly every ordinary parameter *encodes* as GP perfectly well, so
+    /// trying GP first would serialize a fader move into a message the desk
+    /// has never heard of and report it as sent. Routing on the profile — not
+    /// on "can GP encode this?" — is what keeps that from happening.
     async fn send_parameter_inner(
         &self,
         addr: &ParameterAddress,
         value: &ParameterValue,
     ) -> SendOutcome {
-        match encode::encode_parameter(addr, value) {
-            Some((path, args)) => match self.gp.send(&path, args).await {
+        if self.has_gp()
+            && let Some(gp) = &self.gp
+            && let Some((path, args)) = encode::encode_parameter(addr, value)
+        {
+            return match gp.send(&path, args).await {
                 Ok(()) => SendOutcome::SentGp,
                 Err(e) => {
                     debug!(%addr, "GP OSC socket send failed: {e}");
                     SendOutcome::GpSendFailed
                 }
-            },
-            None => match &self.pad {
-                Some(pad) => {
-                    match ipad_encode::encode_pad_parameter(addr, value, &self.profile.pad_quirks) {
-                        Some((path, args)) => match pad.send(&path, args).await {
-                            Ok(()) => SendOutcome::SentPad,
-                            Err(e) => {
-                                debug!(%addr, "iPad socket send failed: {e}");
-                                SendOutcome::PadSendFailed
-                            }
-                        },
-                        None => SendOutcome::NoEncoding,
-                    }
+            };
+        }
+
+        let Some(pad) = &self.pad else {
+            return SendOutcome::NoPadSender;
+        };
+        let wire = PadWire::new(self.profile.primary_surface(), self.profile.pad_quirks);
+        match ipad_encode::encode_pad_parameter(addr, value, &wire) {
+            Some((path, args)) => match pad.send(&path, args).await {
+                Ok(()) => SendOutcome::SentPad,
+                Err(e) => {
+                    debug!(%addr, "Pad socket send failed: {e}");
+                    SendOutcome::PadSendFailed
                 }
-                None => SendOutcome::NoPadSender,
             },
+            None => SendOutcome::NoEncoding,
         }
     }
 
@@ -417,16 +455,19 @@ mod tests {
     async fn profile_quirks_change_the_encoded_path() {
         use crate::model::family::{ConsoleProfile, PadQuirks};
 
-        // CG 1 encodes as wire 0 under the S21 quirks…
         let addr = ParameterAddress {
             channel: ChannelId::ControlGroup(1),
             parameter: ParameterPath::CgLevel,
         };
+        let wire_for =
+            |tx: &ConsoleTx| PadWire::new(tx.profile().primary_surface(), tx.profile().pad_quirks);
+
+        // CG 1 encodes as wire 0 under the S21 quirks…
         let s21 = ConsoleTx::with_pad(gp_sender().await, Some(pad_sender().await));
         let (path, _) = crate::osc::ipad_encode::encode_pad_parameter(
             &addr,
             &ParameterValue::Int(0),
-            &s21.profile().pad_quirks,
+            &wire_for(&s21),
         )
         .unwrap();
         assert_eq!(path, "/Control_Groups/0/CGs_level");
@@ -442,10 +483,51 @@ mod tests {
         let (path, _) = crate::osc::ipad_encode::encode_pad_parameter(
             &addr,
             &ParameterValue::Int(0),
-            &tx.profile().pad_quirks,
+            &wire_for(&tx),
         )
         .unwrap();
         assert_eq!(path, "/Control_Groups/1/CGs_level");
+    }
+
+    /// The blocker this phase exists to fix: on a Pad-only console every
+    /// ordinary parameter still *encodes* as GP OSC, so a GP-first router
+    /// would fire a fader move at a dialect the desk has never heard of and
+    /// report success.
+    #[tokio::test]
+    async fn pad_only_console_never_routes_a_gp_encodable_parameter_to_gp() {
+        use crate::model::family::{ConsoleFamily, ConsoleProfile};
+
+        // A plain input fader — GP OSC encodes this perfectly well.
+        let addr = gp_addr();
+        assert!(
+            crate::osc::encode::encode_parameter(&addr, &ParameterValue::Float(-10.0)).is_some(),
+            "test premise: the fader must be GP-encodable"
+        );
+
+        let profile = Arc::new(ConsoleProfile::for_family(ConsoleFamily::Quantum));
+        let tx = ConsoleTx::pad_only(pad_sender().await, profile);
+        assert!(!tx.has_gp(), "a Quantum has no GP OSC dialect");
+        assert!(tx.gp_sender().is_none());
+
+        let outcome = tx
+            .send_parameter(&addr, &ParameterValue::Float(-10.0))
+            .await;
+        assert_eq!(
+            outcome,
+            SendOutcome::SentPad,
+            "a Pad-only console must receive this over the Pad surface, not GP"
+        );
+    }
+
+    #[tokio::test]
+    async fn s_series_still_prefers_gp_for_gp_encodable_parameters() {
+        // The other half of the contract: nothing changes for the S21.
+        let tx = ConsoleTx::with_pad(gp_sender().await, Some(pad_sender().await));
+        assert!(tx.has_gp());
+        let outcome = tx
+            .send_parameter(&gp_addr(), &ParameterValue::Float(-10.0))
+            .await;
+        assert_eq!(outcome, SendOutcome::SentGp);
     }
 
     #[tokio::test]

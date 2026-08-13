@@ -1057,7 +1057,7 @@ mod tests {
         assert_eq!(parsed.console_config.family, ConsoleFamily::Quantum);
         let profile = parsed.console_config.profile();
         assert_eq!(profile.pad_quirks, PadQuirks::SD_HYPOTHESIS);
-        assert!(!profile.has_gp_osc);
+        assert!(!profile.has_surface(crate::model::family::ConsoleSurface::SSeriesGp));
         assert!(!profile.supports(AppFeature::RecallScopeUi));
         // Channel counts beyond the S-series range survive the u16 widening.
         assert_eq!(parsed.console_config.input_channel_count, 128);

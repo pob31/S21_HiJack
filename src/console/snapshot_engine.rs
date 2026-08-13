@@ -329,9 +329,20 @@ impl SnapshotEngine {
         sender: OscSender,
         pace_us: Arc<AtomicU64>,
     ) -> Self {
+        Self::from_tx(state, ConsoleTx::new(sender), pace_us)
+    }
+
+    /// Build on an existing console write path — see [`ConsoleTx::pad_only`].
+    /// Console-memory recall degrades to a warning on families with no GP OSC
+    /// dialect (see `fire_console_memory_if_needed`).
+    pub fn from_tx(
+        state: Arc<RwLock<ConsoleState>>,
+        tx: ConsoleTx,
+        pace_us: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             state,
-            tx: ConsoleTx::new(sender),
+            tx,
             recall_gate: Arc::new(tokio::sync::Mutex::new(())),
             recall_epoch: AtomicU64::new(0),
             recall_cancel: std::sync::Mutex::new(CancellationToken::new()),
@@ -584,12 +595,25 @@ impl SnapshotEngine {
             let mut sup = self.console_fire_suppression.write().await;
             sup.insert(row, Instant::now());
         }
+        // Firing a console memory is a GP OSC system command with no Pad-tree
+        // equivalent yet, so on a Pad-only desk (SD/Quantum) there is nothing
+        // to send. Say so plainly rather than silently doing nothing — the
+        // operator asked for a console recall and is not getting one.
+        let Some(gp) = self.tx.gp_sender() else {
+            warn!(
+                row,
+                "Console-memory recall needs the GP OSC dialect, which this console \
+                 family does not have — skipping the console row (the app's own \
+                 parameter overlay still recalls)"
+            );
+            return;
+        };
         // Convert the stored 1-based row to the desk's wire base only at the
         // wire boundary (see CONSOLE_SNAPSHOT_WIRE_OFFSET).
         let wire = row + CONSOLE_SNAPSHOT_WIRE_OFFSET;
         info!(stored = row, wire, "Firing console memory over GP OSC");
         let cmd = SystemCommand::SnapshotFire(wire);
-        if let Err(e) = self.tx.gp_sender().send(cmd.path(), cmd.args()).await {
+        if let Err(e) = gp.send(cmd.path(), cmd.args()).await {
             warn!(row, "Failed to fire console memory: {e}");
             return;
         }
