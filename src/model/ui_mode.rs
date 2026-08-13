@@ -17,15 +17,15 @@ pub enum UiMode {
 impl UiMode {
     /// Whether the given tab is visible in this mode.
     ///
-    /// `show_diagnostics` controls the OSC Log + Inspector tabs and is
-    /// independent of the mode (operator preference, not a per-show
+    /// `show_diagnostics` controls the OSC Log + Inspector + Probe tabs and
+    /// is independent of the mode (operator preference, not a per-show
     /// setting).
     pub fn tab_visible(self, tab: Tab, show_diagnostics: bool) -> bool {
         match tab {
             Tab::Setup | Tab::Macros | Tab::Gangs | Tab::PanLink | Tab::Sidecar => true,
             Tab::Snapshots => self != UiMode::LiveMusic,
             Tab::Monitor => self != UiMode::Theatre,
-            Tab::OscLog | Tab::Inspector => show_diagnostics,
+            Tab::OscLog | Tab::Inspector | Tab::Probe => show_diagnostics,
         }
     }
 
@@ -123,8 +123,10 @@ mod tests {
         for m in UiMode::ALL {
             assert!(!m.tab_visible(Tab::OscLog, false));
             assert!(!m.tab_visible(Tab::Inspector, false));
+            assert!(!m.tab_visible(Tab::Probe, false));
             assert!(m.tab_visible(Tab::OscLog, true));
             assert!(m.tab_visible(Tab::Inspector, true));
+            assert!(m.tab_visible(Tab::Probe, true));
         }
     }
 

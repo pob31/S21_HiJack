@@ -15,6 +15,7 @@ pub mod net_interfaces;
 pub mod osc_log_tab;
 pub mod palettes_ui;
 pub mod pan_link_tab;
+pub mod probe_tab;
 pub mod recall_scope_popup;
 pub mod scope_editor;
 pub mod setup_tab;
@@ -36,6 +37,7 @@ pub enum Tab {
     Monitor,
     OscLog,
     Inspector,
+    Probe,
 }
 
 /// Engine handles produced by the connect-console async task.
@@ -47,16 +49,17 @@ pub enum Tab {
 /// macro, Recall snapshot) can use them. Without this hand-off, the App
 /// fields stay `None` and UI-driven actions silently no-op.
 pub struct PendingEngines {
-    pub sender: crate::osc::client::OscSender,
+    /// GP OSC sender — `None` on a Pad-only (SD/Quantum) session, where no GP
+    /// socket is bound at all.
+    pub sender: Option<crate::osc::client::OscSender>,
     pub snapshot_engine: std::sync::Arc<crate::console::snapshot_engine::SnapshotEngine>,
     pub macro_engine: std::sync::Arc<crate::console::macro_engine::MacroEngine>,
     pub ipad_sender: Option<crate::osc::ipad_client::IpadSender>,
-    /// This connection's shared sent-value log (echo screening) — attached
-    /// to the sidecar service's `ConsoleTx` so its writes are screened too.
-    pub sent_log: crate::console::console_tx::SentLog,
-    /// The connected console's profile, so the sidecar's own write path
-    /// encodes with the same Pad wire quirks as the engines.
-    pub profile: std::sync::Arc<crate::model::family::ConsoleProfile>,
+    /// Pre-wired console write path for the sidecar service: this connection's
+    /// sent-value log (echo screening) and console profile are already attached
+    /// by the connect task, so the pickup hands it over rather than rebuilding
+    /// one — and a Pad-only session can hand over a GP-less path.
+    pub console_tx: crate::console::console_tx::ConsoleTx,
 }
 
 /// Events sent from async tasks back to the UI thread.

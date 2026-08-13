@@ -33,6 +33,7 @@ use super::monitor_tab::MonitorTabState;
 use super::osc_log_tab::OscLogTabState;
 use super::palettes_ui::PalettesUiState;
 use super::pan_link_tab::PanLinkTabState;
+use super::probe_tab::ProbeTabState;
 use super::setup_tab::SetupTabState;
 use super::snapshots_tab::SnapshotsTabState;
 use super::status::StatusMessage;
@@ -332,6 +333,7 @@ pub struct HiJackApp {
     pub monitor: MonitorTabState,
     pub osc_log_tab: OscLogTabState,
     pub inspector: InspectorTabState,
+    pub probe: ProbeTabState,
 
     /// Post-capture confirmation popup, when one is showing.
     pub capture_confirm: Option<CaptureConfirm>,
@@ -562,6 +564,7 @@ impl HiJackApp {
             monitor: MonitorTabState::default(),
             osc_log_tab: OscLogTabState::default(),
             inspector: InspectorTabState::default(),
+            probe: ProbeTabState::default(),
             capture_confirm: None,
             show_cue_list_popup: false,
             confirm_close: false,
@@ -946,25 +949,19 @@ impl HiJackApp {
             .ok()
             .and_then(|mut slot| slot.take());
         if let Some(p) = pending {
-            self.sender = Some(p.sender);
+            // `None` on a Pad-only session: SD/Quantum bind no GP socket.
+            self.sender = p.sender;
             self.snapshot_engine = Some(p.snapshot_engine);
             self.macro_engine = Some(p.macro_engine);
             if p.ipad_sender.is_some() {
                 self.ipad_sender = p.ipad_sender;
             }
             // Hand the fresh write path to the sidecar service — its watch
-            // sees the change and runs a console-wins sync sweep. Shares the
-            // connection's sent-value log so sidecar writes are screened
-            // from gang/pan propagation when the iPad link echoes them.
-            if let Some(sender) = self.sender.clone() {
-                let mut tx = crate::console::console_tx::ConsoleTx::with_pad(
-                    sender,
-                    self.ipad_sender.clone(),
-                );
-                tx.set_sent_log(p.sent_log);
-                tx.set_profile(p.profile);
-                let _ = self.sidecar_senders_tx.send(Some(tx));
-            }
+            // sees the change and runs a console-wins sync sweep. The connect
+            // task built it, so it already shares this connection's sent-value
+            // log (sidecar writes are screened from gang/pan propagation when
+            // the console echoes them) and its console profile.
+            let _ = self.sidecar_senders_tx.send(Some(p.console_tx));
         }
     }
 
@@ -2411,6 +2408,7 @@ impl eframe::App for HiJackApp {
                         (Tab::Monitor, "Monitor"),
                         (Tab::OscLog, "OSC Log"),
                         (Tab::Inspector, "Inspector"),
+                        (Tab::Probe, "Probe"),
                     ];
                     let mode = self.setup.ui_mode;
                     let diag = self.setup.show_diagnostics;
@@ -2449,6 +2447,7 @@ impl eframe::App for HiJackApp {
                             Tab::Monitor => HelpKey::TabMonitor,
                             Tab::OscLog => HelpKey::TabOscLog,
                             Tab::Inspector => HelpKey::TabInspector,
+                            Tab::Probe => HelpKey::TabProbe,
                         };
                         if ui.add(btn).on_hover_text(help(tab_help)).clicked() {
                             self.active_tab = tab;
@@ -3142,6 +3141,17 @@ impl eframe::App for HiJackApp {
                 }
                 Tab::Inspector => {
                     super::inspector_tab::draw_inspector_tab(ui, &mut self.inspector, &self.state);
+                }
+                Tab::Probe => {
+                    super::probe_tab::draw_probe_tab(
+                        ui,
+                        &mut self.probe,
+                        &self.state,
+                        &self.ipad_sender,
+                        &self.osc_log,
+                        &self.setup.console_ip,
+                        &self.runtime,
+                    );
                 }
             }
         });

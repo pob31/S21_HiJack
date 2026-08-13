@@ -67,6 +67,7 @@ pub enum HelpKey {
     TabMonitor,
     TabOscLog,
     TabInspector,
+    TabProbe,
 
     // ── Shared widgets ──
     LongPressConfirm,
@@ -172,6 +173,28 @@ pub enum HelpKey {
     InspectorTypeFilter,
     InspectorSortHeader,
 
+    // ── Diagnostics: Protocol probe ──
+    ProbeSurfacePad,
+    ProbeSurfaceSd,
+    ProbeSdHost,
+    ProbeSdConsolePort,
+    ProbeSdLocalPort,
+    ProbeChannel,
+    ProbePushWindow,
+    ProbeWrite,
+    ProbePull,
+    ProbePush,
+    ProbeStop,
+    ProbeConfirmActed,
+    ProbeConfirmNoEffect,
+    ProbeFreePath,
+    ProbeFreeKind,
+    ProbeFreeValue,
+    ProbeChase,
+    ProbeNotes,
+    ProbeSaveReport,
+    ProbeClear,
+
     // ── Gang parameter sections ──
     GangFaderMutePan,
     GangName,
@@ -250,6 +273,7 @@ pub enum HelpKey {
     ConnModeMode2,
     ConnModeMode3,
     ConnModeDisabled,
+    ConnModePadFamily,
     ConsoleFamilySSeries,
     ConsoleFamilySdRange,
     ConsoleFamilyQuantum,
@@ -526,6 +550,11 @@ fn meta(key: HelpKey) -> HelpMeta {
             "Live log of OSC traffic to and from the console.",
         ),
         TabInspector => ("tab.inspector", "Inspect the live parameter state mirror."),
+        TabProbe => (
+            "tab.probe",
+            "Verify on real hardware what a console's OSC surface can do: accept \
+             writes, answer queries, and report the desk's own moves.",
+        ),
 
         // ── Shared widgets ──
         LongPressConfirm => ("widget.long_press_confirm", "Hold {ms} ms to confirm."),
@@ -900,6 +929,109 @@ fn meta(key: HelpKey) -> HelpMeta {
             "Click to sort by this column; click again to reverse.",
         ),
 
+        // ── Diagnostics: Protocol probe ──
+        ProbeSurfacePad => (
+            "probe.surface_pad",
+            "Probe the DiGiCo Pad surface: bare paths and dB values, sent down the \
+             connection this app already holds. Needs a live connection.",
+        ),
+        ProbeSurfaceSd => (
+            "probe.surface_sd",
+            "Probe the \"/sd/\" Other-OSC surface: a /sd path prefix and normalized \
+             0..1 values. Opens its own UDP socket, so it works without a connection \
+             — but the desk must have that device configured.",
+        ),
+        ProbeSdHost => (
+            "probe.sd_host",
+            "IP address of the console's Other-OSC device.",
+        ),
+        ProbeSdConsolePort => (
+            "probe.sd_console_port",
+            "Port the console's Other OSC device listens on — probes are sent here. \
+             It cannot be the port the Pad device already uses; read it off the \
+             desk's External Control page.",
+        ),
+        ProbeSdLocalPort => (
+            "probe.sd_local_port",
+            "Port this app listens on for that device's replies. Must match the \
+             destination port set on the desk, and must be free on this PC — the \
+             live Pad link usually holds 9000. The socket is opened per run and \
+             closed again.",
+        ),
+        ProbeChannel => (
+            "probe.channel",
+            "Input channel the built-in probes address. Pick one you can afford to \
+             change — WRITE tests move the real desk.",
+        ),
+        ProbePushWindow => (
+            "probe.push_window",
+            "How long a PUSH test listens after you arm it, in seconds. Long enough \
+             to walk to the console and move the control.",
+        ),
+        ProbeWrite => (
+            "probe.write",
+            "Send a value and watch the DESK. The app cannot tell whether the console \
+             acted, so the row waits for your answer.",
+        ),
+        ProbePull => (
+            "probe.pull",
+            "Send \"{path}/?\" with no argument and record whatever comes back, \
+             including its type and scaling. Nothing coming back is also a result.",
+        ),
+        ProbePush => (
+            "probe.push",
+            "Listen without sending anything, then move that control on the console. \
+             This is the decisive test: a surface that never reports the desk's own \
+             moves cannot drive ganging.",
+        ),
+        ProbeStop => (
+            "probe.stop",
+            "Stop listening now and record what arrived so far.",
+        ),
+        ProbeConfirmActed => (
+            "probe.confirm_acted",
+            "You watched the console and the parameter changed.",
+        ),
+        ProbeConfirmNoEffect => (
+            "probe.confirm_no_effect",
+            "You watched the console and nothing changed.",
+        ),
+        ProbeFreePath => (
+            "probe.free_path",
+            "OSC path to probe, sent exactly as typed after the surface prefix. \
+             \"{ch}\" is replaced with the probe channel.",
+        ),
+        ProbeFreeKind => (
+            "probe.free_kind",
+            "How the value goes on the wire. Chosen explicitly, not guessed, so the \
+             console's boolean format can be measured: float 1.0, int 1 and OSC true \
+             are three different messages.",
+        ),
+        ProbeFreeValue => (
+            "probe.free_value",
+            "Value to send with a WRITE. Ignored by PULL and PUSH, which send no \
+             argument.",
+        ),
+        ProbeChase => (
+            "probe.chase",
+            "Load this address and value into the free-form row. Nothing is sent \
+             until you press WRITE, PULL or PUSH.",
+        ),
+        ProbeNotes => (
+            "probe.notes",
+            "Free text copied verbatim into the saved report — console model, \
+             firmware, and anything you saw that the table cannot capture.",
+        ),
+        ProbeSaveReport => (
+            "probe.save_report",
+            "Write every result, plus the combinations you never ran, to a Markdown \
+             file that can be pasted straight into the project's field notes.",
+        ),
+        ProbeClear => (
+            "probe.clear",
+            "Discard every result recorded this session. Save the report first.",
+        ),
+
         // ── Gang parameter sections ──
         GangFaderMutePan => (
             "gang.fader_mute_pan",
@@ -1161,6 +1293,10 @@ fn meta(key: HelpKey) -> HelpMeta {
         ConnModeDisabled => (
             "conn_mode.disabled",
             "Disconnect to change the connection mode.",
+        ),
+        ConnModePadFamily => (
+            "conn_mode.pad_family",
+            "SD and Quantum consoles always connect as a DiGiCo Pad device — the connection mode applies to S Series only.",
         ),
         ConsoleFamilySSeries => (
             "console_family.s_series",
@@ -1765,6 +1901,7 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::TabMonitor,
     HelpKey::TabOscLog,
     HelpKey::TabInspector,
+    HelpKey::TabProbe,
     HelpKey::LongPressConfirm,
     HelpKey::MacroLearnReady,
     HelpKey::MacroLearnNeedsConn,
@@ -1847,6 +1984,26 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::InspectorTypeAll,
     HelpKey::InspectorTypeFilter,
     HelpKey::InspectorSortHeader,
+    HelpKey::ProbeSurfacePad,
+    HelpKey::ProbeSurfaceSd,
+    HelpKey::ProbeSdHost,
+    HelpKey::ProbeSdConsolePort,
+    HelpKey::ProbeSdLocalPort,
+    HelpKey::ProbeChannel,
+    HelpKey::ProbePushWindow,
+    HelpKey::ProbeWrite,
+    HelpKey::ProbePull,
+    HelpKey::ProbePush,
+    HelpKey::ProbeStop,
+    HelpKey::ProbeConfirmActed,
+    HelpKey::ProbeConfirmNoEffect,
+    HelpKey::ProbeFreePath,
+    HelpKey::ProbeFreeKind,
+    HelpKey::ProbeFreeValue,
+    HelpKey::ProbeChase,
+    HelpKey::ProbeNotes,
+    HelpKey::ProbeSaveReport,
+    HelpKey::ProbeClear,
     HelpKey::GangFaderMutePan,
     HelpKey::GangName,
     HelpKey::GangInputGain,
@@ -1908,6 +2065,7 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::ConnModeMode2,
     HelpKey::ConnModeMode3,
     HelpKey::ConnModeDisabled,
+    HelpKey::ConnModePadFamily,
     HelpKey::ConsoleFamilySSeries,
     HelpKey::ConsoleFamilySdRange,
     HelpKey::ConsoleFamilyQuantum,

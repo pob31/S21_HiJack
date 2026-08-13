@@ -36,7 +36,7 @@ use crate::model::state::{ConnectionHealth, ConsoleState};
 use crate::model::sync_direction::{SharedSyncDirection, SnapshotSyncDirection};
 use crate::model::ui_mode::{ColorTheme, UiMode};
 use crate::osc::client::OscClient;
-use crate::osc::ipad_client::IpadSender;
+use crate::osc::ipad_client::{IpadClient, IpadSender};
 use crate::osc::monitor_server::MonitorServer;
 use crate::osc::trigger_listener::TriggerListener;
 use crate::persistence::preferences::AppPreferences;
@@ -252,6 +252,28 @@ impl SetupTabState {
 /// console IP yet, picking a NIC will rewrite the first three octets
 /// to match the chosen interface.
 pub const DEFAULT_CONSOLE_IP: &str = "192.168.1.1";
+
+/// The stock console/local port pair for a family, used as a sentinel by the
+/// family selector the same way [`DEFAULT_CONSOLE_IP`] is by the NIC picker: a
+/// field still holding the *outgoing* family's stock value is re-stocked for
+/// the incoming one, and anything the operator typed is left alone.
+///
+/// S-series values match the CLI defaults. Pad families read the profile's
+/// conventional External Control ports — the console listens on 8000 and sends
+/// to 9000, per the SD App user guide's setup procedure.
+pub(crate) fn family_stock_ports(family: crate::model::family::ConsoleFamily) -> (String, String) {
+    use crate::model::family::{ConsoleFamily, ConsoleProfile};
+    match family {
+        ConsoleFamily::SSeries => ("8000".to_string(), "8001".to_string()),
+        ConsoleFamily::SdRange | ConsoleFamily::Quantum => {
+            let profile = ConsoleProfile::for_family(family);
+            (
+                profile.default_pad_send_port.to_string(),
+                profile.default_pad_receive_port.to_string(),
+            )
+        }
+    }
+}
 
 /// Split an IPv4 address into its four octets as string slices.
 /// Returns `None` if the input doesn't have exactly four
@@ -765,8 +787,18 @@ pub fn draw_setup_tab(
             ui.painter().rect_filled(rect, 0.0, theme::border_subtle());
             ui.add_space(6.0);
 
-            let uses_ipad = setup.operating_mode.uses_ipad_protocol();
-            let is_proxy = setup.operating_mode == OperatingMode::Mode3;
+            // Both are S-series concepts. A Pad-only family carries everything
+            // over its single Pad link, drawn as the console satellite — and it
+            // keeps whatever mode was last selected for an S21, so without this
+            // gate a Quantum session left in Mode 3 would paint a second,
+            // permanently disconnected "iPad" link that never had a job to do.
+            let family_uses_gp = crate::model::family::ConnectionScheme::resolve(
+                setup.console_family,
+                setup.operating_mode,
+            )
+            .uses_gp();
+            let uses_ipad = family_uses_gp && setup.operating_mode.uses_ipad_protocol();
+            let is_proxy = family_uses_gp && setup.operating_mode == OperatingMode::Mode3;
 
             let console_status = {
                 // Non-blocking read so the Setup tab never freezes on the
@@ -1217,6 +1249,18 @@ pub fn draw_setup_tab(
                                     .clicked()
                                     && setup.console_family != family
                                 {
+                                    // Re-stock the port pair for the incoming
+                                    // family, but only where the operator has
+                                    // left the outgoing family's stock value.
+                                    let (prev_console, prev_local) =
+                                        family_stock_ports(setup.console_family);
+                                    let (next_console, next_local) = family_stock_ports(family);
+                                    if setup.console_port == prev_console {
+                                        setup.console_port = next_console;
+                                    }
+                                    if setup.local_port == prev_local {
+                                        setup.local_port = next_local;
+                                    }
                                     setup.console_family = family;
                                     save_app_preferences(setup);
                                     // Push into the live config so family-gated
@@ -1233,6 +1277,14 @@ pub fn draw_setup_tab(
                     ui.add_space(4.0);
 
                     // ── Connection Mode ──
+                    // The mode is an S-series concept: a Pad-only family always
+                    // resolves to one Pad link whatever is selected here, so grey
+                    // the row out rather than let it look like it chose something.
+                    let mode_applies = crate::model::family::ConnectionScheme::resolve(
+                        setup.console_family,
+                        setup.operating_mode,
+                    )
+                    .uses_gp();
                     server_grid("server_conn_grid").show(ui, |ui| {
                         theme::row_label(ui, "Connection Mode:", theme::label_color());
                         ui.horizontal(|ui| {
@@ -1248,12 +1300,16 @@ pub fn draw_setup_tab(
                                 .corner_radius(4.0)
                                 .min_size(egui::Vec2::new(action_btn_w, 28.0));
                                 if ui
-                                    .add_enabled_ui(!is_connected, |ui| {
+                                    .add_enabled_ui(!is_connected && mode_applies, |ui| {
                                         ui.add_sized([action_btn_w, 28.0], btn)
                                     })
                                     .inner
                                     .on_hover_text(help(conn_mode_help(mode)))
-                                    .on_disabled_hover_text(help(HelpKey::ConnModeDisabled))
+                                    .on_disabled_hover_text(help(if mode_applies {
+                                        HelpKey::ConnModeDisabled
+                                    } else {
+                                        HelpKey::ConnModePadFamily
+                                    }))
                                     .clicked()
                                 {
                                     setup.operating_mode = mode;
@@ -1864,9 +1920,19 @@ pub fn draw_setup_tab(
                 .resizable(false)
                 .open(&mut open)
                 .show(ui.ctx(), |ui| {
-                    let uses_ipad = setup.operating_mode.uses_ipad_protocol();
+                    // On a Pad-only console the GP column simply does not
+                    // exist, so scoring a row as reachable because GP OSC
+                    // covers it would promise a dialect the desk never speaks.
+                    let pad_only = !crate::model::family::ConnectionScheme::resolve(
+                        setup.console_family,
+                        setup.operating_mode,
+                    )
+                    .uses_gp();
+                    let uses_ipad = pad_only || setup.operating_mode.uses_ipad_protocol();
                     ui.label(
-                        egui::RichText::new(if uses_ipad {
+                        egui::RichText::new(if pad_only {
+                            "SD / Quantum consoles carry every parameter over the Pad protocol — the connection mode does not apply."
+                        } else if uses_ipad {
                             "Mode uses GP OSC + iPad protocol — almost everything is reachable."
                         } else {
                             "Mode 1 is GP OSC only — several parameters require switching to Mode 2 or 3."
@@ -1883,9 +1949,15 @@ pub fn draw_setup_tab(
                             ui.label(egui::RichText::new("Available?").strong());
                             ui.end_row();
                             for row in PROTOCOL_COVERAGE {
-                                let available = row.gp || (uses_ipad && row.ipad);
+                                let available = if pad_only {
+                                    row.ipad
+                                } else {
+                                    row.gp || (uses_ipad && row.ipad)
+                                };
                                 let (mark, color) = if available {
                                     ("yes", theme::label_color())
+                                } else if pad_only {
+                                    ("not on this console", theme::label_weak())
                                 } else if row.gp || row.ipad {
                                     ("needs Mode 2/3", theme::label_weak())
                                 } else {
@@ -2005,6 +2077,40 @@ pub(crate) fn start_connection(
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
     egui_ctx: &Arc<std::sync::OnceLock<egui::Context>>,
 ) {
+    // Pad-only families (SD/Quantum) have no GP OSC dialect and no S-series
+    // mode semantics, so they take their own connection path entirely. Branch
+    // before any field parsing below: most of it is GP/iPad-specific, and a
+    // stale S-series-only value (an iPad port left blank from a previous show,
+    // say) would otherwise reject a Pad connect with an irrelevant message.
+    if crate::model::family::ConnectionScheme::resolve(setup.console_family, setup.operating_mode)
+        == crate::model::family::ConnectionScheme::PadDirect
+    {
+        start_pad_connection(
+            setup,
+            state,
+            cue_manager,
+            macro_manager,
+            gang_manager,
+            pan_link_bindings,
+            offline_mode,
+            auto_update_on_recall,
+            sync_direction,
+            dirty_tracker,
+            last_received,
+            pending_engines,
+            trigger_dispatcher,
+            connected,
+            cancel_token,
+            osc_log,
+            send_pace_us,
+            progress,
+            runtime,
+            ui_tx,
+            egui_ctx,
+        );
+        return;
+    }
+
     let console_port: u16 = match setup.console_port.parse() {
         Ok(p) => p,
         Err(_) => {
@@ -2076,23 +2182,6 @@ pub(crate) fn start_connection(
     } else {
         0
     };
-    // A Pad-only family (SD/Quantum) needs the Pad connection path, which is
-    // built but not yet wired into this connect flow. Refuse plainly rather
-    // than falling through to the S-series GP path, which would bind a socket
-    // the desk is not listening on and look like it had connected.
-    let scheme =
-        crate::model::family::ConnectionScheme::resolve(setup.console_family, operating_mode);
-    if !scheme.uses_gp() {
-        setup.status_message = Some(
-            format!(
-                "{} consoles are not connectable yet — the Pad connection path is \
-                 still being wired up. Switch back to S Series to connect.",
-                setup.console_family.label()
-            )
-            .into(),
-        );
-        return;
-    }
     // Mode 3 proxies console traffic to a specific iPad — its IP is required
     // (read it off the DiGiCo iPad app). No autodiscovery.
     if operating_mode == OperatingMode::Mode3 && setup.ipad_ip.trim().is_empty() {
@@ -2460,18 +2549,27 @@ pub(crate) fn start_connection(
         macro_eng.set_profile(profile.clone());
         let macro_eng = Arc::new(macro_eng);
 
+        // The sidecar service's write path, built here rather than in the
+        // pickup so both this task and the Pad-only one deliver a single
+        // identical, pre-wired handle. Uses *this* connection's iPad sender.
+        let mut sidecar_tx = crate::console::console_tx::ConsoleTx::with_pad(
+            manager.sender(),
+            app_ipad_sender.clone(),
+        );
+        sidecar_tx.set_sent_log(sent_log.clone());
+        sidecar_tx.set_profile(profile.clone());
+
         // Hand the freshly-built engines back to the App so UI buttons can
         // use them. This is the missing wire-up: the App fields used to be
         // initialised to `None` and never populated, so Run / Recall buttons
         // looked enabled but silently no-oped at runtime.
         if let Ok(mut slot) = pending.lock() {
             *slot = Some(crate::ui::PendingEngines {
-                sender: manager.sender(),
+                sender: Some(manager.sender()),
                 snapshot_engine: engine.clone(),
                 macro_engine: macro_eng.clone(),
                 ipad_sender: app_ipad_sender.clone(),
-                sent_log: sent_log.clone(),
-                profile: profile.clone(),
+                console_tx: sidecar_tx,
             });
         }
 
@@ -2742,6 +2840,288 @@ pub(crate) fn start_connection(
             });
         } else {
             drop(monitor_rx);
+        }
+
+        let _ = tx.send(UiEvent::ConnectionEstablished);
+        if let Some(ctx) = ctx.get() {
+            ctx.request_repaint();
+        }
+    });
+}
+
+/// Connect to a Pad-only console (SD / Quantum).
+///
+/// Mirrors [`start_connection`]'s shape — a synchronous parse/validate phase,
+/// then one spawned task — but builds the whole session on the Pad surface:
+/// no GP socket is bound at all, and the engines write through a
+/// [`ConsoleTx::pad_only`](crate::console::console_tx::ConsoleTx::pad_only)
+/// path instead of a GP sender.
+///
+/// Deliberately minimal for this phase. The palette absorb loop, the recall
+/// look-ahead cache, follow-mode dispatch, the trigger listener and the
+/// monitor/web servers are **not** started here; they are S-series-proven
+/// paths that will be brought over once the S21 regression run has cleared
+/// the phases already shipped. `Documentation/QUANTUM_VERIFICATION.md` states
+/// that scope for testers.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn start_pad_connection(
+    setup: &mut SetupTabState,
+    state: &Arc<RwLock<ConsoleState>>,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    macro_manager: &Arc<RwLock<MacroManager>>,
+    gang_manager: &Arc<RwLock<GangManager>>,
+    pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
+    offline_mode: &Arc<AtomicBool>,
+    auto_update_on_recall: &Arc<AtomicBool>,
+    sync_direction: &SharedSyncDirection,
+    dirty_tracker: &Arc<RwLock<DirtyTracker>>,
+    last_received: &Arc<RwLock<Option<crate::model::parameter::ParameterAddress>>>,
+    pending_engines: &Arc<std::sync::Mutex<Option<crate::ui::PendingEngines>>>,
+    trigger_dispatcher: &Arc<crate::console::trigger_dispatcher::TriggerDispatcher>,
+    connected: &Arc<AtomicBool>,
+    cancel_token: &mut Option<CancellationToken>,
+    osc_log: &OscLog,
+    send_pace_us: &Arc<std::sync::atomic::AtomicU64>,
+    progress: &ProgressBars,
+    runtime: &tokio::runtime::Handle,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+    egui_ctx: &Arc<std::sync::OnceLock<egui::Context>>,
+) {
+    // A Pad session needs exactly two ports, with the same meaning as the GP
+    // pair: where the console listens, and where we do.
+    let console_port: u16 = match setup.console_port.parse() {
+        Ok(p) => p,
+        Err(_) => {
+            setup.status_message = Some(StatusMessage::with_help(
+                "Invalid console port",
+                HelpKey::SetupWarnInvalidConsolePort,
+            ));
+            return;
+        }
+    };
+    let local_port: u16 = match setup.local_port.parse() {
+        Ok(p) => p,
+        Err(_) => {
+            setup.status_message = Some(StatusMessage::with_help(
+                "Invalid local port",
+                HelpKey::SetupWarnInvalidLocalPort,
+            ));
+            return;
+        }
+    };
+
+    let bind_ip_str = if setup.local_ip.is_empty() {
+        "0.0.0.0".to_string()
+    } else {
+        setup.local_ip.clone()
+    };
+    let iface_name = setup.interface_name.clone().or_else(|| {
+        if !setup.local_ip.is_empty() {
+            net_interfaces::interface_for_ip(&setup.local_ip)
+        } else {
+            None
+        }
+    });
+    if setup.interface_name.is_none() && iface_name.is_some() {
+        setup.interface_name = iface_name.clone();
+    }
+
+    let console_addr_str = format!("{}:{}", setup.console_ip, console_port);
+    let console_addr: SocketAddr = match console_addr_str.parse() {
+        Ok(a) => a,
+        Err(_) => {
+            setup.status_message = Some(StatusMessage::with_help(
+                "Invalid console address",
+                HelpKey::SetupWarnInvalidConsoleAddr,
+            ));
+            return;
+        }
+    };
+    let bind_ip = bind_ip_str.as_str();
+    let local_addr: SocketAddr = format!("{bind_ip}:{local_port}")
+        .parse()
+        .expect("Invalid local address");
+
+    setup.status_message = Some("Connecting...".into());
+
+    // Same idempotency rule as the GP path: cancel any live connection before
+    // replacing the token, or its tasks and sockets are orphaned forever.
+    if let Some(old) = cancel_token.take() {
+        info!("start_pad_connection: cancelling existing connection before (re)connect");
+        old.cancel();
+    }
+    connected.store(false, Ordering::Relaxed);
+
+    let token = CancellationToken::new();
+    *cancel_token = Some(token.clone());
+
+    // Read the operator's family choice here: the selector pushes it into the
+    // live config through a spawned write that may not have landed yet.
+    let console_family = setup.console_family;
+
+    let st = state.clone();
+    let cue_mgr = cue_manager.clone();
+    let macro_mgr = macro_manager.clone();
+    let gang_mgr = gang_manager.clone();
+    let pl_bindings = pan_link_bindings.clone();
+    let offline = offline_mode.clone();
+    let auto_update_flag = auto_update_on_recall.clone();
+    let follow_dir = sync_direction.clone();
+    let dirty = dirty_tracker.clone();
+    let last_recv = last_received.clone();
+    let conn_flag = connected.clone();
+    let tx = ui_tx.clone();
+    let ctx = egui_ctx.clone();
+    let send_pace_us = send_pace_us.clone();
+    let progress = progress.clone();
+    let log = osc_log.clone();
+    let pending = pending_engines.clone();
+    let trigger_dispatcher = trigger_dispatcher.clone();
+
+    runtime.spawn(async move {
+        // Bind first: the sender has to exist before the engines that write
+        // through it, hence `connect_pad_from_parts` rather than `connect_pad`.
+        let client = match IpadClient::new(local_addr, console_addr, iface_name.as_deref()).await {
+            Ok(c) => c,
+            Err(e) => {
+                error!("Pad connection failed: {e}");
+                let _ = tx.send(UiEvent::ConnectionFailed(e.to_string()));
+                if let Some(ctx) = ctx.get() {
+                    ctx.request_repaint();
+                }
+                return;
+            }
+        };
+        let (mut pad_sender, rx) = client.into_parts_with_cancel(token.clone());
+        // Per-clone fields — set before the sender is cloned into the write
+        // path below, or those clones log nothing and ignore offline mode.
+        pad_sender.set_log(Some(log.clone()));
+        pad_sender.set_offline_flag(offline.clone());
+
+        // The profile below decides the write surface, so the config has to
+        // carry the family the operator actually picked.
+        st.write().await.config.family = console_family;
+
+        let console_load_suppression: crate::console::snapshot_engine::ConsoleLoadSuppression =
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let sent_log = crate::console::console_tx::SentLog::new();
+        let profile = Arc::new(st.read().await.config.profile());
+
+        // One write path, shared by every engine. The sent-value log must be
+        // attached *before* it is cloned: the log inside this handle and
+        // `DaemonState.sent_log` have to be the same instance, or the desk's
+        // echo of our own gang/pan write comes back looking like an operator
+        // move and propagates again.
+        let mut console_tx =
+            crate::console::console_tx::ConsoleTx::pad_only(pad_sender.clone(), profile.clone());
+        console_tx.set_sent_log(sent_log.clone());
+
+        let gang_engine = Arc::new(RwLock::new(GangEngine::from_tx(
+            st.clone(),
+            console_tx.clone(),
+        )));
+        let pan_link_engine = Arc::new(RwLock::new(PanLinkEngine::from_tx(
+            st.clone(),
+            console_tx.clone(),
+            pl_bindings.clone(),
+            dirty.clone(),
+            gang_mgr.clone(),
+        )));
+        let automation_override: crate::console::automation_registry::AutomationOverride =
+            std::sync::Arc::new(crate::console::automation_registry::AutomationRegistry::new());
+
+        let daemon = crate::console::connection::DaemonState {
+            state: st.clone(),
+            macro_manager: macro_mgr.clone(),
+            gang_engine: gang_engine.clone(),
+            gang_manager: gang_mgr,
+            pan_link_engine: pan_link_engine.clone(),
+            dirty_tracker: dirty.clone(),
+            offline_mode: offline.clone(),
+            // Inbound (green) bar: the paced `/?` enumeration sweep.
+            recall_progress: progress.inbound.clone(),
+            last_received: last_recv.clone(),
+            // Follow-mode dispatch is not started in this phase.
+            console_snapshot_tx: None,
+            console_load_suppression: console_load_suppression.clone(),
+            automation_override: Some(automation_override.clone()),
+            sent_log: sent_log.clone(),
+        };
+
+        // Yellow the instant the socket is bound, before the desk has said
+        // anything: `theme::console_status` reads the connected flag first, so
+        // without this the dot stays red for the whole handshake.
+        st.write().await.health = ConnectionHealth::Connecting;
+        conn_flag.store(true, Ordering::Relaxed);
+
+        if let Err(e) = crate::console::pad_connection::connect_pad_from_parts(
+            pad_sender.clone(),
+            rx,
+            daemon.clone(),
+            profile.clone(),
+            token.clone(),
+            Some(log.clone()),
+        )
+        .await
+        {
+            error!("Pad connection failed: {e}");
+            // The receive loop is already spawned and holding the local port;
+            // cancel so it releases now rather than at the next connect.
+            token.cancel();
+            conn_flag.store(false, Ordering::Relaxed);
+            let _ = tx.send(UiEvent::ConnectionFailed(e.to_string()));
+            if let Some(ctx) = ctx.get() {
+                ctx.request_repaint();
+            }
+            return;
+        }
+        // A desk that never answered still returns Ok here, leaving health at
+        // Connecting — a yellow dot that never greens is the honest signal.
+
+        // The handshake can sit for ten seconds against a slow or silent desk,
+        // which is ample time for the operator to give up and hit Disconnect.
+        // Publishing engines now would re-raise the connected flag over a loop
+        // that has already been cancelled, leaving the UI claiming a live link
+        // to a dead socket.
+        if token.is_cancelled() {
+            info!("Pad connection: cancelled during handshake, not publishing engines");
+            return;
+        }
+
+        let mut snapshot_engine =
+            SnapshotEngine::from_tx(st.clone(), console_tx.clone(), send_pace_us.clone());
+        snapshot_engine.set_dirty_tracker(dirty.clone());
+        snapshot_engine.set_recall_progress(progress.outbound.clone());
+        snapshot_engine.set_cue_manager(cue_mgr.clone());
+        snapshot_engine.set_auto_update_flag(auto_update_flag.clone());
+        // Console-memory fire is GP-only; on this surface it warns instead.
+        snapshot_engine.set_sync_direction(follow_dir.clone());
+        snapshot_engine.set_console_load_suppression(console_load_suppression.clone());
+        snapshot_engine.set_automation_override(automation_override.clone());
+        // Cue triggers (QLab / LiveProfessor / MIDI) are dialect-independent.
+        snapshot_engine.set_trigger_dispatcher(trigger_dispatcher.clone());
+        let engine = Arc::new(snapshot_engine);
+
+        let mut macro_eng = MacroEngine::from_tx(
+            st.clone(),
+            console_tx.clone(),
+            macro_mgr.clone(),
+            tx.clone(),
+            send_pace_us.clone(),
+        );
+        macro_eng.set_dirty_tracker(dirty.clone());
+        macro_eng.set_recall_progress(progress.outbound.clone());
+        let macro_eng = Arc::new(macro_eng);
+
+        if let Ok(mut slot) = pending.lock() {
+            *slot = Some(crate::ui::PendingEngines {
+                // No GP socket exists on this console.
+                sender: None,
+                snapshot_engine: engine.clone(),
+                macro_engine: macro_eng.clone(),
+                ipad_sender: Some(pad_sender.clone()),
+                console_tx: console_tx.clone(),
+            });
         }
 
         let _ = tx.send(UiEvent::ConnectionEstablished);
@@ -3323,6 +3703,70 @@ fn draw_first_run_popup(ui: &mut egui::Ui, setup: &mut SetupTabState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sentinel rule the family selector applies: re-stock a port field
+    /// only where it still holds the outgoing family's stock value.
+    fn restock(
+        from: crate::model::family::ConsoleFamily,
+        to: crate::model::family::ConsoleFamily,
+        ports: (&str, &str),
+    ) -> (String, String) {
+        let (prev_console, prev_local) = family_stock_ports(from);
+        let (next_console, next_local) = family_stock_ports(to);
+        let console = if ports.0 == prev_console {
+            next_console
+        } else {
+            ports.0.to_string()
+        };
+        let local = if ports.1 == prev_local {
+            next_local
+        } else {
+            ports.1.to_string()
+        };
+        (console, local)
+    }
+
+    #[test]
+    fn switching_family_restocks_only_untouched_ports() {
+        use crate::model::family::ConsoleFamily::{Quantum, SSeries};
+
+        // Stock S-series pair follows the family across.
+        assert_eq!(
+            restock(SSeries, Quantum, ("8000", "8001")),
+            ("8000".to_string(), "9000".to_string())
+        );
+        // …and back again, losslessly.
+        assert_eq!(
+            restock(Quantum, SSeries, ("8000", "9000")),
+            ("8000".to_string(), "8001".to_string())
+        );
+        // An operator-entered local port survives the switch untouched, even
+        // though the console port beside it is still stock and does move.
+        assert_eq!(
+            restock(SSeries, Quantum, ("8000", "9999")),
+            ("8000".to_string(), "9999".to_string())
+        );
+        // Both edited: nothing is rewritten.
+        assert_eq!(
+            restock(SSeries, Quantum, ("7000", "7001")),
+            ("7000".to_string(), "7001".to_string())
+        );
+    }
+
+    #[test]
+    fn pad_families_stock_the_profile_external_control_ports() {
+        use crate::model::family::{ConsoleFamily, ConsoleProfile};
+
+        // The desk's External Control page is configured Send=9000 /
+        // Receive=8000 from the console's point of view, so we send to 8000
+        // and listen on 9000. Pin it to the profile so the two cannot drift.
+        for family in [ConsoleFamily::SdRange, ConsoleFamily::Quantum] {
+            let profile = ConsoleProfile::for_family(family);
+            let (console_port, local_port) = family_stock_ports(family);
+            assert_eq!(console_port, profile.default_pad_send_port.to_string());
+            assert_eq!(local_port, profile.default_pad_receive_port.to_string());
+        }
+    }
 
     #[test]
     fn first_two_octets_match_under_slash_16() {

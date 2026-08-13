@@ -46,6 +46,15 @@ pub struct HandshakeOptions {
     /// may not implement `/Layout/Layout/Banks`, and waiting a full timeout
     /// for a reply that never comes doubles connect latency for nothing.
     pub query_layout_banks: bool,
+    /// Gap between consecutive queries, or `None` to send them back to back.
+    ///
+    /// The whole enumeration sweep is paced one-query-in-flight because SD
+    /// desks are reported to drop bursts — yet this handshake opens with a
+    /// dozen-odd queries fired instantly, which is the same burst by another
+    /// name. Every reply lost there is a channel count silently left at its
+    /// default. S-series stays back-to-back: that timing is what the
+    /// hardware-verified path does today.
+    pub query_pacing: Option<Duration>,
 }
 
 impl Default for HandshakeOptions {
@@ -54,6 +63,7 @@ impl Default for HandshakeOptions {
             extra_config_queries: &[],
             config_early_exit_after: None,
             query_layout_banks: true,
+            query_pacing: None,
         }
     }
 }
@@ -63,7 +73,16 @@ impl HandshakeOptions {
     /// Pad-only console has no other way to learn. Without these, matrix,
     /// matrix-input, Control Group and Graphic EQ counts stay at their
     /// defaults and the scope editor shows the wrong channel set.
+    ///
+    /// The aux and group counts are here for a subtler reason: `BASE_QUERIES`
+    /// asks those two buses for their *modes*, never their *count*, and an S21
+    /// happens to volunteer the count alongside the modes reply. That is an
+    /// observed courtesy of one desk, not a protocol guarantee, so ask
+    /// outright rather than let a console that stays quiet leave the app
+    /// mirroring the wrong number of buses.
     pub const PAD_ONLY_COUNT_QUERIES: &'static [&'static str] = &[
+        "/Console/Aux_Outputs/?",
+        "/Console/Group_Outputs/?",
         "/Console/Matrix_Outputs/?",
         "/Console/Matrix_Inputs/?",
         "/Console/Control_Groups/?",
@@ -76,8 +95,17 @@ impl HandshakeOptions {
             extra_config_queries: Self::PAD_ONLY_COUNT_QUERIES,
             // One reply per query is the ideal; settle for most of them so a
             // console that ignores an unknown query still connects promptly.
-            config_early_exit_after: Some(10),
-            query_layout_banks: true,
+            // Late replies are not lost either way — the mirror loop feeds
+            // config messages through the same `apply_config_message`.
+            config_early_exit_after: Some(12),
+            // The bank phase has no early exit, so it always runs its full
+            // timeout — five seconds added to every single connect. The Pad
+            // connection then throws `layout_banks` away, so that is five
+            // seconds bought for nothing. Skip it.
+            query_layout_banks: false,
+            // Cheap insurance: fifteen queries spaced this far apart still
+            // finish inside a third of a second.
+            query_pacing: Some(Duration::from_millis(20)),
         }
     }
 }
@@ -147,7 +175,16 @@ pub async fn perform_handshake_with(
         "/Console/Multis/?",
     ];
 
-    for query in BASE_QUERIES.iter().chain(opts.extra_config_queries) {
+    for (i, query) in BASE_QUERIES
+        .iter()
+        .chain(opts.extra_config_queries)
+        .enumerate()
+    {
+        if let Some(gap) = opts.query_pacing
+            && i > 0
+        {
+            time::sleep(gap).await;
+        }
         sender.send(query, vec![]).await?;
         debug!(query, "Sent handshake query");
     }
@@ -327,6 +364,79 @@ mod tests {
     use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::net::UdpSocket;
+
+    /// Time the console side takes to receive `expected` queries, bounded so a
+    /// dropped datagram fails the test instead of hanging it.
+    async fn query_arrival_spread(
+        console_sock: &UdpSocket,
+        expected: usize,
+    ) -> std::time::Duration {
+        let mut buf = [0u8; 2048];
+        let mut first = None;
+        let mut last = std::time::Instant::now();
+        for _ in 0..expected {
+            let recv =
+                time::timeout(Duration::from_secs(2), console_sock.recv_from(&mut buf)).await;
+            assert!(recv.is_ok(), "handshake sent fewer than {expected} queries");
+            let now = std::time::Instant::now();
+            first.get_or_insert(now);
+            last = now;
+        }
+        last.duration_since(first.unwrap())
+    }
+
+    /// The enumeration sweep is paced one-query-in-flight because SD desks are
+    /// reported to drop bursts, so the handshake must not undo that by opening
+    /// with a dozen queries at once. Every reply lost to a burst is a channel
+    /// count left silently at its default.
+    #[tokio::test]
+    async fn pad_only_handshake_paces_its_queries_and_the_default_does_not() {
+        let opts = HandshakeOptions {
+            extra_config_queries: &[],
+            config_early_exit_after: Some(1),
+            query_layout_banks: false,
+            query_pacing: Some(Duration::from_millis(20)),
+        };
+        let base_query_count = 9;
+
+        let (sender, mut rx, console_sock, _) = mock_ipad_pair().await;
+        let handshake = tokio::spawn(async move {
+            perform_handshake_with(&sender, &mut rx, Duration::from_millis(50), &opts).await
+        });
+        let paced = query_arrival_spread(&console_sock, base_query_count).await;
+        let _ = handshake.await.unwrap();
+
+        // Eight gaps of 20 ms; allow generous slack for a loaded CI machine
+        // while still being far above what an unpaced burst could produce.
+        assert!(
+            paced >= Duration::from_millis(100),
+            "paced handshake sent {base_query_count} queries within {paced:?} — pacing lost"
+        );
+
+        // The S-series default must keep its original back-to-back timing:
+        // that path is hardware-verified and its regression run is outstanding.
+        let (sender, mut rx, console_sock, _) = mock_ipad_pair().await;
+        let handshake = tokio::spawn(async move {
+            perform_handshake_with(
+                &sender,
+                &mut rx,
+                Duration::from_millis(50),
+                &HandshakeOptions {
+                    query_layout_banks: false,
+                    ..HandshakeOptions::default()
+                },
+            )
+            .await
+        });
+        let unpaced = query_arrival_spread(&console_sock, base_query_count).await;
+        let _ = handshake.await.unwrap();
+
+        assert!(
+            unpaced < Duration::from_millis(50),
+            "default handshake took {unpaced:?} to send {base_query_count} queries — \
+             it should still be back to back"
+        );
+    }
 
     /// Helper: create a mock sender/receiver pair for testing handshake.
     /// Returns (IpadSender, a handle to inject mock responses, receiver for handshake).
