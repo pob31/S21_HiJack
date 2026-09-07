@@ -51,6 +51,8 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 13 | Reaper preset differs from it in exactly one control: `*` | Confirmed on hardware |
 | 14 | Device implements the full MCU connection handshake | Confirmed on hardware |
 | 15 | Bank 1 self-identifies as `0x14`, bank 2 as `0x15` | Confirmed on hardware |
+| 17 | OSC mode carries master-section buttons only — no faders | Confirmed on hardware |
+| 18 | OSC button messages are bare triggers, no arguments | Confirmed on hardware |
 
 ## Findings
 
@@ -393,6 +395,52 @@ using those four plus ordinary channel-voice messages. Use nothing else.
 When something beyond them is needed, ask Asparion rather than probing. This is the third
 finding pointing that way — after the master dial colour and the extra display lines — and it
 is the one that cost hardware downtime.
+
+### 17–18. OSC mode via the Asparion Connector — Confirmed on hardware
+
+The Connector app bridges the D700 to OSC over UDP. Configured at `127.0.0.1`, Rx 7000
+(commands in), Tx 7001 (surface events out).
+
+**What it emits — the complete set observed:**
+
+| Address | Args |
+| --- | --- |
+| `/play` | none |
+| `/stop` | none |
+| `/record` | none |
+| `/click` | none |
+| `/repeat` | none |
+| `/device/track/bank/-` | none |
+| `/device/track/bank/+` | none |
+
+**What it does not emit: anything continuous.** Separate captures of faders, encoders and the
+volume knob in isolation produced **zero packets**. A hands-off control capture also produced
+zero, confirming the Connector transmits only on user action rather than on a timer — so the
+silence during fader moves is a real negative, not a missed window.
+
+OSC mode is therefore a **transport remote, not a control surface**. It cannot carry a fader
+position, so it cannot replace the MIDI path for the sidecar's core job.
+
+**But the two protocols cover each other's gaps exactly.** Faders and encoders work over MIDI
+and are unavailable over OSC; buttons emit clean semantic OSC addresses and are the one thing
+the MIDI path cannot bind, because `sidecar_learn.rs` discards note events.
+
+**And the message shapes already match.** S21_HiJack's trigger listener accepts `/cue/go`,
+`/cue/previous` and `/cue/current` as bare argument-less messages — precisely the form the
+D700's buttons take. Only the address *names* differ. Two consequences:
+
+- If the Connector's address map is **editable**, mapping Play → `/cue/go` and
+  Stop → `/cue/previous` makes the D700 fire cues today with **no code at all**, by pointing
+  the Connector's Tx at the app's trigger port.
+- If it is **fixed**, an alias table in `parse_trigger_message` is a few lines and achieves
+  the same thing.
+
+Either way this is the cheapest route to a working button on this surface — cheaper than the
+learn-plus-discrete-target-plus-LED-echo work the MIDI path needs, though it does not replace
+it (OSC gives no LED feedback, so the button stays dark).
+
+**Open question:** whether the Connector's OSC address map is user-configurable. That decides
+between "no code" and "a few lines", and it is a look at the Connector's UI.
 
 ## Implications for the sidecar
 
