@@ -272,6 +272,16 @@ The operator's description of a full-surface chase — faders, LEDs, rings and d
 together across both banks — as "super responsive" is worth recording: there is no observed
 need to pace or throttle output to this surface, unlike the console's ARM chip.
 
+**The D700's faders are faster and more consistently responsive than the S21's own**, per the
+operator, who owns both. This matters for how the sidecar is understood. Every pacing
+concession in the current design — the inter-message delay during large recalls, the 15 ms
+per-binding floor, the 25 ms motor poll — exists for the *console*, not the surface. None of
+them is required by this hardware.
+
+The consequence is that a D700 sidecar is not merely *more* faders than the desk provides: on
+this evidence it is *better* ones. The only reason to slow output to it is end-stop wear
+(finding 23), not throughput.
+
 ### 12. The master dial takes no colour — Confirmed on hardware (negative)
 
 `0x72` defines eight colour bytes, one per strip. The obvious extension hypothesis — that
