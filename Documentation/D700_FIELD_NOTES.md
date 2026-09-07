@@ -51,9 +51,8 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 13 | Reaper preset differs from it in exactly one control: `*` | Confirmed on hardware |
 | 14 | Device implements the full MCU connection handshake | Confirmed on hardware |
 | 15 | Bank 1 self-identifies as `0x14`, bank 2 as `0x15` | Confirmed on hardware |
-| 17 | OSC mode carries master-section buttons only — no faders | Confirmed on hardware |
-| 18 | OSC button messages are bare triggers, no arguments | Confirmed on hardware |
-| 19 | Connector OSC appears **output-only** — no inbound effect found | Confirmed on hardware (negative) |
+| 17 | OSC findings 17–19 were measured against an **EMPTY template** | Retracted — see finding 20 |
+| 20 | The Connector's OSC map is **user-authored**, and was blank | Confirmed on hardware |
 
 ## Findings
 
@@ -397,6 +396,58 @@ When something beyond them is needed, ask Asparion rather than probing. This is 
 finding pointing that way — after the master dial colour and the extra display lines — and it
 is the one that cost hardware downtime.
 
+### ⚠ Findings 17–19 are RETRACTED
+
+Everything in this OSC section was measured **before it was established that the Connector's
+OSC template was empty**. The Configurator's OSC preset is a blank map the operator fills in;
+it ships with nothing defined.
+
+That invalidates the conclusions, not the observations:
+
+- "Faders emit nothing over OSC" — they emit nothing because **nothing was mapped to them**,
+  not because OSC cannot carry a fader.
+- "The Connector's OSC is output-only" — **unsupportable**. Thirty inbound addresses failed
+  because there was no map to receive into, not because inbound is unsupported.
+- The seven addresses that did arrive (`/play`, `/stop`, `/record`, `/click`, `/repeat`,
+  `/device/track/bank/±`) are presumably hardwired defaults rather than the template.
+
+The raw observations below are kept because they are accurate as *observations*. Read them as
+"what an empty OSC template does", which is very nearly nothing, and draw no conclusions about
+the protocol's capability from them.
+
+### 20. The OSC map is user-authored — Confirmed on hardware
+
+This is the material fact, and it changes the picture completely. The address scheme is not
+Asparion's to dictate and ours to discover: **it is ours to define.**
+
+The implication for this application is unusually direct. S21_HiJack already speaks OSC
+natively — the console, the monitor clients and the cue triggers all do. A user-authored map
+means the D700 can be told to emit the app's *own* vocabulary, with no translation layer at
+any point:
+
+| D700 control | Could emit | Reaches |
+| --- | --- | --- |
+| Play | `/cue/go` | the trigger listener, today, unmodified |
+| Stop | `/cue/previous` | ditto |
+| `*` | `/cue/fire 12` | ditto |
+| a button | `/macro/fire <name>` | ditto |
+| a button | `/snapshot/recall <name>` | ditto |
+
+Those are the addresses `parse_trigger_message` already accepts. Nothing in the app needs to
+change for a correctly-authored template to drive cues, macros and snapshot recalls from the
+surface.
+
+**What still needs establishing on hardware:**
+
+1. Whether faders and encoders can be mapped to OSC addresses **with a value argument** — the
+   thing that decides whether OSC can carry a fader at all. Findings 17–19 say nothing about
+   this.
+2. Whether the template supports an **inbound** map, for motors, LEDs, text and colour.
+3. What argument types and value ranges the template offers.
+
+Until a non-empty template is tested, MIDI remains the only *demonstrated* path for anything
+continuous or for any feedback.
+
 ### 17–18. OSC mode via the Asparion Connector — Confirmed on hardware
 
 The Connector app bridges the D700 to OSC over UDP. Configured at `127.0.0.1`, Rx 7000
@@ -468,7 +519,7 @@ requires app-side configuration to enable an inbound map, or uses a namespace un
 the above. Asparion's documentation would settle it. But roughly thirty candidate addresses
 across four hypotheses, including its own vocabulary, is enough to stop guessing.
 
-### The resulting division of labour
+### The division of labour — provisional, pending a populated template
 
 | Need | Protocol | Why |
 | --- | --- | --- |
