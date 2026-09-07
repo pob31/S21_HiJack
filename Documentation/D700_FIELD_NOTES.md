@@ -56,6 +56,7 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 21 | OSC **drives the motor faders** — float 0.0–1.0 | Confirmed on hardware |
 | 22 | OSC **sets the master dial colour** — unreachable over MIDI | Confirmed on hardware |
 | 22a | Which RGB argument format the dial accepts | Unknown |
+| 23 | **Motors slam the end stops** on instant full-travel commands | Confirmed on hardware |
 
 ## Findings
 
@@ -569,6 +570,42 @@ respect.**
    encoders, roughly fifty buttons, two display rows and colour is a large number of entries
    to type by hand. If the map is a file, generating it is minutes; if it is a GUI grid, it is
    an evening. This is a practical blocker on the whole approach, not a detail.
+
+### 23. Motors hit the end stops hard — Confirmed on hardware
+
+Commanding a fader straight to `0.0` or `1.0` from the far end drives it into the physical end
+stop at full speed, with no deceleration. The operator's description: *"brutal, no easing off
+at the end of the run."*
+
+**This is a wear issue, not an aesthetic one.** A motorised fader driven repeatedly into its
+stop is being asked to stall against a hard limit every time.
+
+Two qualifications on the observation:
+
+- It was produced by a probe that commanded instant full-travel jumps (all faders to `0.0`,
+  then all to `1.0`, nothing in between). The earlier MIDI sweep stepped through
+  `0 → 4096 → 8192 → 12288 → 16383` and drew no such complaint, so the trigger is the **step
+  size**, not the protocol.
+- Whether the D700's firmware ramps at all for smaller moves was not measured. The 20-step
+  smooth sweep in the same probe was not reported as harsh, which suggests it does not need to.
+
+**Implication for the sidecar — and it applies to the existing MIDI path today.** The bottom
+of the fader range is not an edge case: `FADER_INF_DB` is where a parked channel lives, so any
+sync sweep or cue recall that pushes a fader from unity to −inf commands exactly the
+full-travel jump that slams. The motor poll in `sidecar_service.rs` sends absolute positions
+with no rate limiting.
+
+Worth considering when the outbound path is next touched:
+
+1. **Interpolate large jumps** over a handful of steps rather than commanding the destination
+   in one message. Roughly 20 steps was smooth on this hardware.
+2. **Rate-limit per binding**, so a burst of console updates cannot chain into repeated
+   full-travel slams.
+3. Do **not** clamp short of the endpoints to avoid the stop — a fader that cannot reach −inf
+   misrepresents the desk, which is worse than the wear.
+
+None of this is urgent, and nothing here is evidence of damage. It is the kind of thing that
+is cheap to get right while writing the code and expensive to retrofit after a year of shows.
 
 ## Implications for the sidecar
 
