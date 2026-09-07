@@ -53,6 +53,9 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 15 | Bank 1 self-identifies as `0x14`, bank 2 as `0x15` | Confirmed on hardware |
 | 17 | OSC findings 17–19 were measured against an **EMPTY template** | Retracted — see finding 20 |
 | 20 | The Connector's OSC map is **user-authored**, and was blank | Confirmed on hardware |
+| 21 | OSC **drives the motor faders** — float 0.0–1.0 | Confirmed on hardware |
+| 22 | OSC **sets the master dial colour** — unreachable over MIDI | Confirmed on hardware |
+| 22a | Which RGB argument format the dial accepts | Unknown |
 
 ## Findings
 
@@ -529,6 +532,43 @@ across four hypotheses, including its own vocabulary, is enough to stop guessing
 
 OSC earns its place for exactly one job — getting buttons into the app without touching
 `sidecar_learn.rs` — and one-way is sufficient there, because a cue trigger needs no feedback.
+
+### 21–22. OSC is bidirectional, and reaches further than MIDI — Confirmed on hardware
+
+With entries authored into the template, inbound OSC works. Two things were driven from the
+app side, both confirmed on hardware:
+
+| What | Address (operator-chosen) | Argument | Result |
+| --- | --- | --- | --- |
+| Motor faders 1–4 | `/fader/1` … `/fader/4` | `Float` 0.0–1.0 | Motors moved: bottom, top, staircase, inverted staircase, and a smooth 20-step sweep |
+| Master dial colour | `/masterdial/rgb` | RGB (format TBD) | Dial changed colour |
+
+**The addresses are not protocol constants.** They are what the operator typed into the
+template. `/fader/1` has no more significance than any other string — which is the whole point
+of finding 20, and the reason this cannot be documented as a fixed command set the way the
+MIDI side can.
+
+**The master dial matters disproportionately.** Its colour was proven unreachable over MIDI
+across four hypotheses — extended `0x72` payloads, the ring-CC range, the vendor-extension
+command space, and a completed MCU handshake (findings 7d and 12). The MCU colour command
+structurally defines eight strip bytes and has nowhere to put a ninth control. OSC reaches it
+because the map is authored rather than discovered.
+
+So the two protocols are not merely complementary: **OSC is a superset in at least one
+respect.**
+
+**Still open:**
+
+1. Which RGB argument format the dial accepts — three floats, three ints (0–255 or 0–127), a
+   packed int, or a string. An isolating probe was sent but not read back.
+2. Whether faders and encoders can be mapped **outbound** with a value, which decides whether
+   OSC can replace MIDI for reading the surface. Findings 17–19 tested this against an empty
+   template and are retracted; it has not been re-tested.
+3. Whether display text, strip colour and button LEDs are similarly mappable inbound.
+4. Whether the Configurator's map can be **bulk-edited or imported**. Sixteen faders, sixteen
+   encoders, roughly fifty buttons, two display rows and colour is a large number of entries
+   to type by hand. If the map is a file, generating it is minutes; if it is a GUI grid, it is
+   an evening. This is a practical blocker on the whole approach, not a detail.
 
 ## Implications for the sidecar
 
