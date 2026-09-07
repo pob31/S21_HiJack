@@ -53,6 +53,7 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 15 | Bank 1 self-identifies as `0x14`, bank 2 as `0x15` | Confirmed on hardware |
 | 17 | OSC mode carries master-section buttons only — no faders | Confirmed on hardware |
 | 18 | OSC button messages are bare triggers, no arguments | Confirmed on hardware |
+| 19 | Connector OSC appears **output-only** — no inbound effect found | Confirmed on hardware (negative) |
 
 ## Findings
 
@@ -441,6 +442,42 @@ it (OSC gives no LED feedback, so the button stays dark).
 
 **Open question:** whether the Connector's OSC address map is user-configurable. That decides
 between "no code" and "a few lines", and it is a look at the Connector's UI.
+
+### 19. The Connector's OSC is output-only — Confirmed on hardware (negative)
+
+The Connector binds UDP 7000 and receives packets there, but nothing sent to it produced any
+effect on the surface. Tested, each with `Int`, `Float` and bare-argument forms where
+sensible:
+
+| Hypothesis | Addresses tried |
+| --- | --- |
+| DrivenByMoss track namespace | `/track/1/volume`, `/fader`, `/level`, `/name`, `/label`, `/text`, `/vu`, `/color`, `/colour`, `/mute`, `/solo`, `/select`, `/recarm` |
+| Other common surface conventions | `/fader/1`, `/volume/1`, `/1/fader1`, `/display/1`, `/master/volume` |
+| Its **own** emitted vocabulary | `/play`, `/stop`, `/record`, `/click`, `/repeat` — with `Int(1)`, `Float(1.0)` and bare |
+| Announce / refresh | `/refresh`, `/reload` |
+
+No fader moved, no text appeared, no colour changed, no LED lit. Notably `/play` — an address
+the Connector demonstrably knows, because it emits it — had no effect in any argument form.
+
+**Conclusion: OSC on this hardware is one-way.** The Connector publishes surface events and
+does not accept feedback. Every output path the sidecar needs — motors, LEDs, encoder rings,
+display text, colour — is reachable **only over MIDI**.
+
+This is recorded as a negative rather than a certainty: it remains possible that the Connector
+requires app-side configuration to enable an inbound map, or uses a namespace unlike any of
+the above. Asparion's documentation would settle it. But roughly thirty candidate addresses
+across four hypotheses, including its own vocabulary, is enough to stop guessing.
+
+### The resulting division of labour
+
+| Need | Protocol | Why |
+| --- | --- | --- |
+| Fader positions in | MIDI | OSC carries nothing continuous (finding 17) |
+| Motors, LEDs, rings, text, colour out | MIDI | OSC accepts nothing inbound (finding 19) |
+| Button presses in | **OSC** | Clean semantic addresses; MIDI learn discards notes |
+
+OSC earns its place for exactly one job — getting buttons into the app without touching
+`sidecar_learn.rs` — and one-way is sufficient there, because a cue trigger needs no feedback.
 
 ## Implications for the sidecar
 
