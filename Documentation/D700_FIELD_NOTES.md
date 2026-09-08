@@ -44,7 +44,7 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 7 | Display honours device IDs `0x10`, `0x11`, `0x14`, `0x15` alike | Confirmed on hardware |
 | 7a | **Colour is host-controllable** via SysEx `0x72`, per strip | Confirmed on hardware |
 | 7b | Colour applies to the encoder rings (dials), not just the LCD | Confirmed on hardware |
-| 7c | Only the low 3 bits carry colour; the field is 3-bit RGB | Confirmed on hardware |
+| 7c | SysEx `0x72` carries only 3-bit RGB — a coarse path, not the limit | Confirmed on hardware |
 | 7d | Master dial colour is **not** reachable via SysEx `0x72` | Confirmed on hardware (negative) |
 | 8 | Findings 1–12 match the **Mackie** preset exactly | Confirmed on hardware |
 | 8a | What the Universal preset sends (never captured) | Unknown, low priority |
@@ -59,13 +59,15 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 23 | **Motors slam the end stops** on instant full-travel commands | Confirmed on hardware |
 | 24 | Device is composite: vendor **HID** (`MI_00`) + USB-MIDI (`MI_01`) | Confirmed on hardware |
 | 25 | The Configurator speaks a **config-upload** protocol over HID | Confirmed on hardware |
-| 26 | Master dial colour is a **stored setting**, not a runtime command | Confirmed on hardware |
+| 26 | ~~Master dial colour is a stored setting only~~ | **Retracted — see 31** |
 | 27 | HID carries the **raw** surface protocol; MIDI is an MCU translation | Confirmed on hardware |
 | 28 | **Both banks arrive on one HID endpoint**, distinguished by a port byte | Confirmed on hardware |
 | 29 | HID report IDs separate realtime (`0x04`) from config (`0x20`) | Confirmed on hardware |
 | 30 | HID report `0x04` **drives motors and LEDs** — syntax captured | Confirmed on hardware |
 | 30a | ~~Writing needs 5 bytes; `hid_write` pads to 33~~ | **Retracted — see 30b** |
 | 30b | **`hidapi` drives the motors.** Writes work; device ACKs each one | Confirmed on hardware |
+| 31 | **True RGB with smooth gradient** on all dials incl. master | Confirmed on hardware |
+| 31a | The native MIDI RGB command's CC number | Unknown |
 
 ## Findings
 
@@ -780,6 +782,51 @@ HID problem that does not exist.
 The `08` in the acknowledgement is not decoded. In the input direction the second byte is
 `00`/`01` for bank 1/2, so `08` is evidently a flag rather than a bank index — plausibly
 "originated from host". Worth understanding before relying on it to detect a rejected write.
+
+### 31. True RGB, and the master dial retracted — Confirmed on hardware
+
+**Finding 26 is retracted.** It concluded the master dial's colour was a stored setting
+reachable only by rewriting 86 config pages. It is runtime-controllable; the route simply was
+not any of the four I probed.
+
+Asparion, asked directly, described the method:
+
+> Use the midi code listed in the configurator for that encoder. Then send r g b values
+> divided by 2 → 0-127, on midi channel 1 2 3. It will only refresh after you sent the last
+> one, blue. You can turn it on/off without changing the colour on the first channel, 0 resp 1.
+
+So the colour path is **three CC messages sharing one controller number across three MIDI
+channels**, each carrying a halved 8-bit value, with the blue message triggering the refresh.
+
+**Confirmed on hardware via operator-authored OSC.** With `/dial/1/rgb`, `/dial/9/rgb` and
+`/dial/0/rgb` mapped in the Connector taking three floats `0.0`–`1.0`:
+
+| Sweep | Steps | Result |
+| --- | --- | --- |
+| Brightness, black → red → black | 128 each way | smooth |
+| Hue, full colour wheel | 180 | smooth |
+| White level, black → white | 128 | smooth |
+
+All three dials — bank 1, bank 2 and the **master** — behaved identically.
+
+**This reframes finding 7a.** SysEx `0x72` gives 8 colours because its field is 3 bits, not
+because the hardware is limited to eight. The LEDs are 128 levels per channel, ~2 million
+colours, and `0x72` is a coarse shortcut. It also explains the D700's own idle animation
+fading smoothly, which the 8-colour theory could not.
+
+**Still unknown (31a): the CC number for the direct MIDI path.** Thirty-two candidates across
+`0x10`–`0x17` and `0x30`–`0x37` on two channel groupings produced nothing — unsurprising, since
+both blocks already carry V-pot input and ring-position display respectively. Asparion call it
+"a small addition" to Mackie, so it sits outside the standard map. The Configurator's
+**Encoder / LED** tab lists it.
+
+Until that number is known, RGB requires the Connector in the path (app → OSC → Connector →
+device). With it, S21_HiJack could drive colour over MIDI directly.
+
+**Note also:** the encoder *rings* are monochrome position indicators. The RGB element is the
+strip / knob surround. Ring position (`CC 0x30`–`0x37`) and strip colour are different things,
+which is why writing colour values to the ring CCs merely drove the position display to
+minimum.
 
 ## Implications for the sidecar
 
