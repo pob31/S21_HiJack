@@ -31,3 +31,4 @@ test_s21
 *.iconset/            # transient iconset staged for iconutil
 /Output               # Windows Inno Setup compiler output (assets/*.iss)
 *.AppImage            # Linux AppImage, if produced ad hoc
+usbcap/

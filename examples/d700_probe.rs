@@ -51,6 +51,34 @@ fn main() -> R<()> {
         "fadertest" => fadertest(),
         "faderf" => faderf(),
         "show" => show(),
+        "rgbshow" => rgbshow(
+            args.get(2).map(String::as_str).unwrap_or("wave"),
+            args.get(3).and_then(|s| s.parse().ok()).unwrap_or(20),
+        ),
+        "slowcycle" => slowcycle(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1000)),
+        "pulse" => pulse(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(180)),
+        "encscan" => encscan(),
+        "encscan2" => encscan2(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2)),
+        "encrgb" => encrgb(
+            args.get(2)
+                .and_then(|s| u8::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+                .unwrap_or(0x30),
+        ),
+        "dialrgb" => dialrgb(args.get(2).map(String::as_str).unwrap_or("int")),
+        "dialloop" => dialloop(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(150)),
+        "dialsweep" => dialsweep(),
+        "hidout" => hidout(),
+        "hidloop" => hidloop(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(60)),
+        "hidrgb" => hidrgb(),
+        "hidrgbscan" => hidrgbscan(
+            args.get(2)
+                .and_then(|s| u8::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+                .unwrap_or(0xb6),
+        ),
+        "hidinit" => hidinit(),
+        "hidclass" => hidclass(),
+        "hidshow" => hidshow(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(40)),
+        "lightshow" => lightshow(),
         _ => {
             eprintln!("usage: d700 [list | mon <secs> | lcd <text> | sweep | leds]");
             Ok(())
@@ -2426,5 +2454,1021 @@ fn faderf() -> R<()> {
         set(n, 0.0)?;
     }
     println!("\nDid faders 1-4 move?");
+    Ok(())
+}
+
+/// The 8 SysEx colours ordered around the colour wheel rather than by value.
+/// 1 red, 3 yellow, 2 green, 6 cyan, 4 blue, 5 magenta - each step is one
+/// primary added or removed, so a sweep through them reads as a hue rotation
+/// even though only six hues exist.
+const HUES: [u8; 6] = [1, 3, 2, 6, 4, 5];
+
+/// Per Asparion: set an encoder ring's colour by sending r/2, g/2, b/2 as the
+/// SAME CC number on MIDI channels 1, 2 and 3. The ring refreshes only when the
+/// blue (channel 3) message arrives, so order matters.
+fn set_ring_rgb(conn: &mut midir::MidiOutputConnection, cc: u8, r: u8, g: u8, b: u8) -> R<()> {
+    conn.send(&[0xB0, cc, r / 2])?; // channel 1 - red
+    conn.send(&[0xB1, cc, g / 2])?; // channel 2 - green
+    conn.send(&[0xB2, cc, b / 2])?; // channel 3 - blue, triggers refresh
+    Ok(())
+}
+
+/// Animated colour across all 16 strips. Effects: wave, breathe, comet, fade.
+fn rgbshow(effect: &str, secs: u64) -> R<()> {
+    let ports = out_ports()?;
+    let mut conns: Vec<_> = ports.iter().filter_map(|n| open_out(n).ok()).collect();
+    if conns.is_empty() {
+        return Err("no D700 output".into());
+    }
+    println!("effect '{effect}' on {} bank(s) for {secs}s", conns.len());
+
+    let paint = |conns: &mut Vec<midir::MidiOutputConnection>, strips: &[u8; 16]| -> R<()> {
+        for (bank, c) in conns.iter_mut().enumerate() {
+            let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x72];
+            m.extend(&strips[bank * 8..bank * 8 + 8]);
+            m.push(0xF7);
+            c.send(&m)?;
+        }
+        Ok(())
+    };
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    let mut frame = 0usize;
+    while std::time::Instant::now() < deadline {
+        let mut strips = [0u8; 16];
+        match effect {
+            // Hue wave travelling left to right across all 16 strips.
+            "wave" => {
+                for (i, s) in strips.iter_mut().enumerate() {
+                    *s = HUES[(i + frame) % HUES.len()];
+                }
+            }
+            // All strips one hue, stepping round the wheel - a slow colour fade.
+            "breathe" => {
+                let c = HUES[(frame / 4) % HUES.len()];
+                strips = [c; 16];
+            }
+            // A white head with a coloured tail, chasing round the surface.
+            "comet" => {
+                let head = frame % 16;
+                for (i, s) in strips.iter_mut().enumerate() {
+                    let d = (16 + head - i) % 16;
+                    *s = match d {
+                        0 => 7,
+                        1 => HUES[frame % HUES.len()],
+                        2 => HUES[(frame + 3) % HUES.len()],
+                        _ => 0,
+                    };
+                }
+            }
+            // Split the surface into hue bands that drift - closest to a gradient.
+            _ => {
+                for (i, s) in strips.iter_mut().enumerate() {
+                    let pos = (i * HUES.len()) / 16;
+                    *s = HUES[(pos + frame / 3) % HUES.len()];
+                }
+            }
+        }
+        paint(&mut conns, &strips)?;
+        frame += 1;
+        sleep(Duration::from_millis(110));
+    }
+
+    // Leave the surface dark rather than mid-animation.
+    paint(&mut conns, &[0u8; 16])?;
+    println!("done ({frame} frames)");
+    Ok(())
+}
+
+/// Step all 16 strips through the full 8-colour palette at a chosen interval,
+/// naming each colour as it goes. Purpose: compare against the D700's own idle
+/// animation. If they look the same, the device is cycling this same palette
+/// and there is no finer colour resolution hiding anywhere.
+fn slowcycle(ms: u64) -> R<()> {
+    let names = [
+        "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+    ];
+    let ports = out_ports()?;
+    let mut conns: Vec<_> = ports.iter().filter_map(|n| open_out(n).ok()).collect();
+    println!(
+        "stepping the 8-colour palette every {ms}ms on {} bank(s)",
+        conns.len()
+    );
+    println!("compare against the D700's own idle animation\n");
+    for round in 0..2 {
+        for (v, name) in names.iter().enumerate().skip(1) {
+            for c in conns.iter_mut() {
+                let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x72];
+                m.extend(vec![v as u8; 8]);
+                m.push(0xF7);
+                c.send(&m)?;
+            }
+            println!("  round {} : {v} {name}", round + 1);
+            sleep(Duration::from_millis(ms));
+        }
+    }
+    for c in conns.iter_mut() {
+        let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x72];
+        m.extend(vec![7u8; 8]);
+        m.push(0xF7);
+        c.send(&m)?;
+    }
+    println!("\nleft on white. Does the D700's idle fade look like this, or smoother?");
+    Ok(())
+}
+
+/// Minimal, unmistakable colour traffic for a USB capture: alternate all eight
+/// strips RED / GREEN every 3 s. Exactly one SysEx per change, so the USB trace
+/// shows a single isolated write rather than a burst to pick apart.
+fn pulse(secs: u64) -> R<()> {
+    let name = out_ports()?.into_iter().next().ok_or("no output")?;
+    let mut conn = open_out(&name)?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    let mut red = true;
+    let mut n = 0u32;
+    while std::time::Instant::now() < deadline {
+        let c = if red { 1u8 } else { 2u8 };
+        let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x72];
+        m.extend(vec![c; 8]);
+        m.push(0xF7);
+        conn.send(&m)?;
+        n += 1;
+        println!(
+            "  [{n:3}] all strips -> {}  ({})",
+            if red { "RED" } else { "GREEN" },
+            hex_full(&m)
+        );
+        red = !red;
+        sleep(Duration::from_secs(3));
+    }
+    println!("done: {n} colour writes");
+    Ok(())
+}
+
+/// Which CC addresses encoder 1's ring? Asparion say "the midi code listed in
+/// the configurator"; we do not have it, so try the two MCU candidates -
+/// the V-pot input block (0x10-0x17) and the ring-LED block (0x30-0x37).
+fn encscan() -> R<()> {
+    let name = out_ports()?.into_iter().next().ok_or("no output")?;
+    let mut conn = open_out(&name)?;
+    println!("scanning CC candidates for encoder 1's ring colour");
+    println!("each is set to VIVID RED for 2s, then off\n");
+    for cc in [
+        0x10u8, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36,
+        0x37,
+    ] {
+        println!("  CC 0x{cc:02X} ({cc}) -> red");
+        set_ring_rgb(&mut conn, cc, 255, 0, 0)?;
+        sleep(Duration::from_millis(2000));
+        set_ring_rgb(&mut conn, cc, 0, 0, 0)?;
+        sleep(Duration::from_millis(300));
+    }
+    println!("\nWhich CC lit a ring, and which ring was it?");
+    Ok(())
+}
+
+/// Second attempt at the ring-RGB CC, addressing two problems with the first:
+///
+/// 1. The surface was left WHITE by an earlier SysEx 0x72 write, which may mask
+///    or override a per-ring colour. Blank everything to black first.
+/// 2. Asparion's "on midi channel 1 2 3 resp. 2 3 4" is ambiguous. The first
+///    scan used channels 1/2/3; `base` lets us try 2/3/4.
+///
+/// Also sends the documented enable (`value 1` on the first channel) before the
+/// colour triple, in case a ring must be switched on to show anything.
+fn encscan2(base: u8) -> R<()> {
+    let name = out_ports()?.into_iter().next().ok_or("no output")?;
+    let mut conn = open_out(&name)?;
+
+    // Blank the SysEx colour layer so nothing masks a per-ring change.
+    for port in out_ports()? {
+        if let Ok(mut c) = open_out(&port) {
+            let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x72];
+            m.extend(vec![0u8; 8]);
+            m.push(0xF7);
+            let _ = c.send(&m);
+        }
+    }
+    println!("blanked SysEx colour layer to black");
+    sleep(Duration::from_millis(600));
+
+    let s0 = 0xB0 | (base - 1);
+    let s1 = 0xB0 | base;
+    let s2 = 0xB0 | (base + 1);
+    println!(
+        "scanning with MIDI channels {}/{}/{}  (status {s0:02X} {s1:02X} {s2:02X})",
+        base,
+        base + 1,
+        base + 2
+    );
+    println!("each CC set to VIVID GREEN for 2s\n");
+
+    for cc in [
+        0x10u8, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36,
+        0x37,
+    ] {
+        println!("  CC 0x{cc:02X} ({cc}) -> enable + green");
+        conn.send(&[s0, cc, 1])?; // documented on/off: 1 = on
+        sleep(Duration::from_millis(120));
+        conn.send(&[s0, cc, 0])?; // r = 0
+        conn.send(&[s1, cc, 127])?; // g = 254/2
+        conn.send(&[s2, cc, 0])?; // b = 0, triggers refresh
+        sleep(Duration::from_millis(1900));
+        conn.send(&[s0, cc, 0])?;
+        conn.send(&[s1, cc, 0])?;
+        conn.send(&[s2, cc, 0])?;
+        sleep(Duration::from_millis(250));
+    }
+    println!("\nAnything green? Which CC, and which ring?");
+    Ok(())
+}
+
+/// Full-RGB demonstration on one ring: a proper hue sweep, impossible with the
+/// 8-colour SysEx path.
+fn encrgb(cc: u8) -> R<()> {
+    let name = out_ports()?.into_iter().next().ok_or("no output")?;
+    let mut conn = open_out(&name)?;
+    println!("full-RGB sweep on CC 0x{cc:02X}\n");
+
+    for (r, g, b, n) in [
+        (255u8, 0u8, 0u8, "red"),
+        (255, 128, 0, "orange"),
+        (255, 255, 0, "yellow"),
+        (0, 255, 0, "green"),
+        (0, 255, 255, "cyan"),
+        (0, 0, 255, "blue"),
+        (128, 0, 255, "violet"),
+        (255, 255, 255, "white"),
+    ] {
+        println!("  {n:8} rgb({r},{g},{b})");
+        set_ring_rgb(&mut conn, cc, r, g, b)?;
+        sleep(Duration::from_millis(1200));
+    }
+
+    println!("\n  smooth hue rotation - 128 steps");
+    for i in 0..128u32 {
+        let h = (i as f32) / 128.0 * 6.0;
+        let x = (255.0 * (1.0 - (h % 2.0 - 1.0).abs())) as u8;
+        let (r, g, b) = match h as u32 {
+            0 => (255, x, 0),
+            1 => (x, 255, 0),
+            2 => (0, 255, x),
+            3 => (0, x, 255),
+            4 => (x, 0, 255),
+            _ => (255, 0, x),
+        };
+        set_ring_rgb(&mut conn, cc, r, g, b)?;
+        sleep(Duration::from_millis(45));
+    }
+    set_ring_rgb(&mut conn, cc, 0, 0, 0)?;
+    println!("done");
+    Ok(())
+}
+
+/// Drive operator-authored OSC addresses for dial RGB, so a USB capture can
+/// show what the Connector emits to the device. Deliberately uses one primary
+/// per dial and the value 254 (-> 127 after halving), which is distinctive
+/// enough to spot by eye in a byte stream.
+///
+///   /dial/1/rgb  bank 1 dial 1   -> RED
+///   /dial/9/rgb  bank 2 dial 1   -> GREEN
+///   /dial/0/rgb  master dial     -> BLUE
+fn dialrgb(fmt: &str) -> R<()> {
+    use rosc::OscType::{Float, Int};
+    use std::net::UdpSocket;
+    let sock = UdpSocket::bind("0.0.0.0:0")?;
+
+    let cases: [(&str, u8, u8, u8, &str); 3] = [
+        ("/dial/1/rgb", 254, 0, 0, "RED   (bank 1, dial 1)"),
+        ("/dial/9/rgb", 0, 254, 0, "GREEN (bank 2, dial 1)"),
+        ("/dial/0/rgb", 0, 0, 254, "BLUE  (master dial)"),
+    ];
+
+    println!("sending to 127.0.0.1:7000 as '{fmt}'\n");
+    for (path, r, g, b, label) in cases {
+        let args = match fmt {
+            "float" => vec![
+                Float(r as f32 / 255.0),
+                Float(g as f32 / 255.0),
+                Float(b as f32 / 255.0),
+            ],
+            "half" => vec![Int(r as i32 / 2), Int(g as i32 / 2), Int(b as i32 / 2)],
+            _ => vec![Int(r as i32), Int(g as i32), Int(b as i32)],
+        };
+        let msg = rosc::OscPacket::Message(rosc::OscMessage {
+            addr: path.to_string(),
+            args: args.clone(),
+        });
+        sock.send_to(&rosc::encoder::encode(&msg)?, "127.0.0.1:7000")?;
+        println!("  {path:<16} {label}   {args:?}");
+        sleep(Duration::from_millis(2500));
+    }
+
+    println!("\nthen black, to mark the end of the sequence in the trace");
+    for (path, _, _, _, _) in cases {
+        let args = match fmt {
+            "float" => vec![Float(0.0), Float(0.0), Float(0.0)],
+            _ => vec![Int(0), Int(0), Int(0)],
+        };
+        let msg = rosc::OscPacket::Message(rosc::OscMessage {
+            addr: path.to_string(),
+            args,
+        });
+        sock.send_to(&rosc::encoder::encode(&msg)?, "127.0.0.1:7000")?;
+        sleep(Duration::from_millis(700));
+    }
+    println!("done");
+    Ok(())
+}
+
+/// Float 0.0-1.0 RGB on the operator's OSC dial addresses, looping so a USB
+/// capture can be started at any moment and still catch a full cycle.
+/// One primary per dial keeps each command unmistakable in the trace.
+fn dialloop(secs: u64) -> R<()> {
+    use rosc::OscType::Float;
+    use std::net::UdpSocket;
+    let sock = UdpSocket::bind("0.0.0.0:0")?;
+    let send = |path: &str, r: f32, g: f32, b: f32| -> R<()> {
+        let msg = rosc::OscPacket::Message(rosc::OscMessage {
+            addr: path.to_string(),
+            args: vec![Float(r), Float(g), Float(b)],
+        });
+        sock.send_to(&rosc::encoder::encode(&msg)?, "127.0.0.1:7000")?;
+        Ok(())
+    };
+
+    println!("float 0.0-1.0 RGB, looping for {secs}s");
+    println!("  /dial/1/rgb  bank 1 dial 1");
+    println!("  /dial/9/rgb  bank 2 dial 1");
+    println!("  /dial/0/rgb  master dial\n");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    let mut n = 0u32;
+    while std::time::Instant::now() < deadline {
+        for (path, r, g, b, label) in [
+            ("/dial/1/rgb", 1.0f32, 0.0, 0.0, "dial 1  RED"),
+            ("/dial/9/rgb", 0.0, 1.0, 0.0, "dial 9  GREEN"),
+            ("/dial/0/rgb", 0.0, 0.0, 1.0, "master  BLUE"),
+        ] {
+            send(path, r, g, b)?;
+            println!("  [{n:3}] {label}");
+            n += 1;
+            sleep(Duration::from_millis(2200));
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+        }
+        // All off, marking the cycle boundary in the trace.
+        for path in ["/dial/1/rgb", "/dial/9/rgb", "/dial/0/rgb"] {
+            send(path, 0.0, 0.0, 0.0)?;
+        }
+        sleep(Duration::from_millis(1200));
+    }
+    for path in ["/dial/1/rgb", "/dial/9/rgb", "/dial/0/rgb"] {
+        send(path, 0.0, 0.0, 0.0)?;
+    }
+    println!("done: {n} colour messages");
+    Ok(())
+}
+
+/// Is the dial RGB genuinely graded, or quantised to a few steps?
+///
+/// Three sweeps, each fine enough that banding would be obvious:
+///   1. brightness  - black to full red in 128 steps, then back
+///   2. hue         - full colour wheel in 180 steps
+///   3. white level - black to white in 128 steps (all three channels together)
+///
+/// Driven on all three dials at once so bank 1, bank 2 and master can be
+/// compared for identical behaviour.
+fn dialsweep() -> R<()> {
+    use rosc::OscType::Float;
+    use std::net::UdpSocket;
+    let sock = UdpSocket::bind("0.0.0.0:0")?;
+    let paint = |r: f32, g: f32, b: f32| -> R<()> {
+        for path in ["/dial/1/rgb", "/dial/9/rgb", "/dial/0/rgb"] {
+            let msg = rosc::OscPacket::Message(rosc::OscMessage {
+                addr: path.to_string(),
+                args: vec![Float(r), Float(g), Float(b)],
+            });
+            sock.send_to(&rosc::encoder::encode(&msg)?, "127.0.0.1:7000")?;
+        }
+        Ok(())
+    };
+
+    println!("1/3  BRIGHTNESS: black -> red -> black, 128 steps each way (~13s)");
+    println!("     watch for banding, or a smooth ramp");
+    for i in 0..=127 {
+        paint(i as f32 / 127.0, 0.0, 0.0)?;
+        sleep(Duration::from_millis(50));
+    }
+    for i in (0..=127).rev() {
+        paint(i as f32 / 127.0, 0.0, 0.0)?;
+        sleep(Duration::from_millis(50));
+    }
+
+    println!("2/3  HUE: full colour wheel, 180 steps (~14s)");
+    for i in 0..180 {
+        let h = (i as f32) / 180.0 * 6.0;
+        let x = 1.0 - (h % 2.0 - 1.0).abs();
+        let (r, g, b) = match h as u32 {
+            0 => (1.0, x, 0.0),
+            1 => (x, 1.0, 0.0),
+            2 => (0.0, 1.0, x),
+            3 => (0.0, x, 1.0),
+            4 => (x, 0.0, 1.0),
+            _ => (1.0, 0.0, x),
+        };
+        paint(r, g, b)?;
+        sleep(Duration::from_millis(80));
+    }
+
+    println!("3/3  WHITE LEVEL: black -> white, 128 steps (~6s)");
+    for i in 0..=127 {
+        let v = i as f32 / 127.0;
+        paint(v, v, v)?;
+        sleep(Duration::from_millis(50));
+    }
+    paint(0.0, 0.0, 0.0)?;
+    println!("\ndone. Smooth throughout, or visible steps?");
+    Ok(())
+}
+
+/// Does HID report 0x04 work OUTBOUND?
+///
+/// Input reports are `04 <port> <3 MIDI-style bytes>`, so the symmetric guess is
+/// that writing the same shape drives the surface. Report 0x04 is the realtime
+/// channel - structurally separate from the 0x20 config pages - so this is not
+/// a configuration write and carries none of that risk.
+///
+/// Deliberately uses mid-range fader positions only. Finding 23: full-travel
+/// commands slam the end stops.
+fn hidout() -> R<()> {
+    let api = hidapi::HidApi::new()?;
+    const VID: u16 = 0x04D8;
+    const PID: u16 = 0xE44E;
+
+    println!("HID interfaces for {VID:04X}:{PID:04X}:");
+    let mut path = None;
+    for d in api.device_list() {
+        if d.vendor_id() == VID && d.product_id() == PID {
+            println!(
+                "  iface {:>2}  usage_page={:#06x} usage={:#06x}  path={:?}",
+                d.interface_number(),
+                d.usage_page(),
+                d.usage(),
+                d.path()
+            );
+            if path.is_none() {
+                path = Some(d.path().to_owned());
+            }
+        }
+    }
+    let path = path.ok_or("no D700 HID interface found")?;
+
+    let dev = match api.open_path(&path) {
+        Ok(d) => d,
+        Err(e) => {
+            println!("\nopen failed: {e}");
+            println!("If this says access/exclusive, the Configurator holds the interface.");
+            println!("Close the Asparion Configurator and retry.");
+            return Ok(());
+        }
+    };
+    println!("\nopened. writing report 0x04 -> fader 1, mid-range positions only");
+    println!("(no end stops - see finding 23)\n");
+
+    // 0x1000 = 25%, 0x2000 = 50%, 0x3000 = 75% of 14-bit travel.
+    for (val, label) in [
+        (0x1000u16, "25%"),
+        (0x2000, "50%"),
+        (0x3000, "75%"),
+        (0x2000, "50%"),
+    ] {
+        let lsb = (val & 0x7F) as u8;
+        let msb = (val >> 7) as u8;
+        let report = [0x04u8, 0x00, 0xE0, lsb, msb];
+        match dev.write(&report) {
+            Ok(n) => println!(
+                "  wrote {n} bytes: {}   (fader 1 -> {label})",
+                report
+                    .iter()
+                    .map(|b| format!("{b:02X}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            Err(e) => {
+                println!("  write failed: {e}");
+                return Ok(());
+            }
+        }
+        sleep(Duration::from_millis(1500));
+    }
+
+    println!("\nDid fader 1 move to 25%, 50%, 75%, then back to 50%?");
+    Ok(())
+}
+
+/// Emit report 0x04 fader writes on a loop so a USB capture can catch them.
+/// The point is to see what OUR write looks like on the wire next to the
+/// Configurator's 5-byte frames - is it padded to 33, or something else?
+fn hidloop(secs: u64) -> R<()> {
+    let api = hidapi::HidApi::new()?;
+    let path = api
+        .device_list()
+        .find(|d| d.vendor_id() == 0x04D8 && d.product_id() == 0xE44E)
+        .map(|d| d.path().to_owned())
+        .ok_or("no D700 HID interface")?;
+    let dev = api.open_path(&path)?;
+
+    println!("writing 04 00 E0 <lsb> <msb> every 1.5s for {secs}s");
+    println!("mid-range only, no end stops\n");
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    let mut n = 0u32;
+    let vals = [0x1000u16, 0x2000, 0x3000, 0x2000];
+    while std::time::Instant::now() < deadline {
+        let v = vals[(n as usize) % vals.len()];
+        let report = [0x04u8, 0x00, 0xE0, (v & 0x7F) as u8, (v >> 7) as u8];
+        match dev.write(&report) {
+            Ok(w) => println!(
+                "  [{n:3}] hid_write returned {w:2}  for  {}",
+                report
+                    .iter()
+                    .map(|b| format!("{b:02X}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            Err(e) => {
+                println!("  write failed: {e}");
+                break;
+            }
+        }
+        n += 1;
+        sleep(Duration::from_millis(1500));
+    }
+    println!("done: {n} writes");
+    Ok(())
+}
+
+/// Drive dial RGB over HID directly, bypassing the Connector entirely.
+///
+/// Captured from the Connector while it served OSC colour messages:
+///   08 2a 0a b6 <index> 00 <R> <G> <B>
+/// Full 8-bit per channel - better than the halved 0-127 of the MIDI method
+/// Asparion described, and it needs no CC number.
+fn hidrgb() -> R<()> {
+    let api = hidapi::HidApi::new()?;
+    let path = api
+        .device_list()
+        .find(|d| d.vendor_id() == 0x04D8 && d.product_id() == 0xE44E)
+        .map(|d| d.path().to_owned())
+        .ok_or("no D700 HID interface")?;
+    let dev = api.open_path(&path)?;
+
+    let set = |idx: u8, r: u8, g: u8, b: u8| -> R<()> {
+        let msg = [0x08u8, 0x2a, 0x0a, 0xb6, idx, 0x00, r, g, b];
+        dev.write(&msg)?;
+        Ok(())
+    };
+
+    println!("writing 08 2a 0a b6 <idx> 00 <R> <G> <B> over HID\n");
+    println!("1/2  named colours on indices 00, 01, 02");
+    for (r, g, b, n) in [
+        (255u8, 0u8, 0u8, "red"),
+        (0, 255, 0, "green"),
+        (0, 0, 255, "blue"),
+        (255, 200, 0, "amber"),
+        (255, 255, 255, "white"),
+    ] {
+        for idx in 0..3u8 {
+            set(idx, r, g, b)?;
+        }
+        println!("   {n}");
+        sleep(Duration::from_millis(1400));
+    }
+
+    println!("\n2/2  smooth hue rotation, 180 steps - full 8-bit");
+    for i in 0..180u32 {
+        let h = (i as f32) / 180.0 * 6.0;
+        let x = (255.0 * (1.0 - (h % 2.0 - 1.0).abs())) as u8;
+        let (r, g, b) = match h as u32 {
+            0 => (255, x, 0),
+            1 => (x, 255, 0),
+            2 => (0, 255, x),
+            3 => (0, x, 255),
+            4 => (x, 0, 255),
+            _ => (255, 0, x),
+        };
+        for idx in 0..3u8 {
+            set(idx, r, g, b)?;
+        }
+        sleep(Duration::from_millis(70));
+    }
+    for idx in 0..3u8 {
+        set(idx, 0, 0, 0)?;
+    }
+    println!("\ndone - did the dials colour WITHOUT the Connector in the path?");
+    Ok(())
+}
+
+/// Which element does each index address? One at a time, slowly, so the device
+/// is never asked to keep up and each result is unambiguous.
+///
+/// `type_byte` is the constant we saw as 0xb6; it may select the element class
+/// (strip surround / master / something else), so it is parameterised.
+fn hidrgbscan(type_byte: u8) -> R<()> {
+    let api = hidapi::HidApi::new()?;
+    let path = api
+        .device_list()
+        .find(|d| d.vendor_id() == 0x04D8 && d.product_id() == 0xE44E)
+        .map(|d| d.path().to_owned())
+        .ok_or("no D700 HID interface")?;
+    let dev = api.open_path(&path)?;
+
+    let set = |idx: u8, r: u8, g: u8, b: u8| -> R<()> {
+        dev.write(&[0x08u8, 0x2a, 0x0a, type_byte, idx, 0x00, r, g, b])?;
+        Ok(())
+    };
+
+    println!("type byte 0x{type_byte:02X}, indices 0x00..0x13, one at a time");
+    println!("each set BRIGHT RED for 1.5s, then black\n");
+    for idx in 0x00..=0x13u8 {
+        print!("  idx 0x{idx:02X} ({idx:2}) -> red ... ");
+        use std::io::Write as _;
+        std::io::stdout().flush().ok();
+        set(idx, 255, 0, 0)?;
+        sleep(Duration::from_millis(1500));
+        set(idx, 0, 0, 0)?;
+        sleep(Duration::from_millis(400));
+        println!("off");
+    }
+    println!("\nWhich indices lit something, and which element was it?");
+    Ok(())
+}
+
+/// Replay the Connector's session-open handshake, then try colour.
+///
+/// Captured from the Connector's own startup:
+///   OUT  08 2a 2b 29 2c 28 ...   session open
+///   IN   08 2a 2b 00 ...         device acknowledges
+///
+/// Byte 4 of the 0x0a colour command is an element-class selector, not a
+/// constant - the trace shows a2, b0, b2 and b6 - so all four are tried.
+fn hidinit() -> R<()> {
+    let api = hidapi::HidApi::new()?;
+    let path = api
+        .device_list()
+        .find(|d| d.vendor_id() == 0x04D8 && d.product_id() == 0xE44E)
+        .map(|d| d.path().to_owned())
+        .ok_or("no D700 HID interface")?;
+    let dev = api.open_path(&path)?;
+    dev.set_blocking_mode(false).ok();
+
+    let mut rx = [0u8; 64];
+    let mut send = |label: &str, m: &[u8]| -> R<()> {
+        dev.write(m)?;
+        println!(
+            "  OUT {label:<14} {}",
+            m.iter()
+                .map(|b| format!("{b:02X}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        sleep(Duration::from_millis(220));
+        while let Ok(n) = dev.read_timeout(&mut rx, 60) {
+            if n == 0 {
+                break;
+            }
+            println!(
+                "  IN                 {}",
+                rx[..n]
+                    .iter()
+                    .map(|b| format!("{b:02X}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+        Ok(())
+    };
+
+    println!("=== session open ===");
+    send(
+        "open",
+        &[0x08, 0x2a, 0x2b, 0x29, 0x2c, 0x28, 0x00, 0x00, 0x00],
+    )?;
+    send(
+        "status",
+        &[0x08, 0x2a, 0x2d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+    )?;
+
+    println!("\n=== colour, trying each element class ===");
+    for class in [0xb6u8, 0xb2, 0xb0, 0xa2] {
+        println!("\n  class 0x{class:02X} - indices 0..3 set RED for 2s");
+        for idx in 0..4u8 {
+            dev.write(&[0x08, 0x2a, 0x0a, class, idx, 0x00, 0xFF, 0x00, 0x00])?;
+        }
+        sleep(Duration::from_millis(2000));
+        for idx in 0..4u8 {
+            dev.write(&[0x08, 0x2a, 0x0a, class, idx, 0x00, 0x00, 0x00, 0x00])?;
+        }
+        sleep(Duration::from_millis(500));
+    }
+    println!("\nDid anything light red? Which element class?");
+    Ok(())
+}
+
+/// Which element class drives the dial RGB? Handshake first, then b6 and b2
+/// held long enough to be unmistakable, in distinct colours.
+///
+/// 0xb0 is skipped deliberately: it returned "device not functioning" and this
+/// hardware has stalled once and wedged once already.
+fn hidclass() -> R<()> {
+    let api = hidapi::HidApi::new()?;
+    let path = api
+        .device_list()
+        .find(|d| d.vendor_id() == 0x04D8 && d.product_id() == 0xE44E)
+        .map(|d| d.path().to_owned())
+        .ok_or("no D700 HID interface")?;
+    let dev = api.open_path(&path)?;
+
+    // Session open, as captured from the Connector's startup.
+    dev.write(&[0x08, 0x2a, 0x2b, 0x29, 0x2c, 0x28, 0x00, 0x00, 0x00])?;
+    sleep(Duration::from_millis(300));
+    println!("session opened\n");
+
+    let paint = |class: u8, r: u8, g: u8, b: u8| -> R<()> {
+        for idx in 0..3u8 {
+            dev.write(&[0x08, 0x2a, 0x0a, class, idx, 0x00, r, g, b])?;
+            sleep(Duration::from_millis(40));
+        }
+        Ok(())
+    };
+
+    for (class, (r, g, b), name) in [
+        (0xb6u8, (255u8, 0u8, 0u8), "RED"),
+        (0xb2u8, (0, 0, 255), "BLUE"),
+    ] {
+        println!("  class 0x{class:02X} -> {name}, holding 5s");
+        paint(class, r, g, b)?;
+        sleep(Duration::from_secs(5));
+        paint(class, 0, 0, 0)?;
+        sleep(Duration::from_millis(900));
+    }
+
+    println!("\nWhich class lit the dials - 0xB6 (red) or 0xB2 (blue), or both?");
+    Ok(())
+}
+
+/// The finished article: smooth 8-bit RGB on the D700's dials, driven directly
+/// over HID with no Asparion software running.
+///
+///   08 2a 2b 29 2c 28 00 00 00          open session
+///   08 2a 0a b6 <idx> 00 <R> <G> <B>    set colour, 0-255 per channel
+///
+/// Element class 0xb6, indices 0/1/2 = dial 1, dial 9, master. Each element is
+/// given a phase offset so the three chase rather than moving in lockstep.
+/// Update rate is kept modest - rapid bursts have stalled this device before.
+fn hidshow(secs: u64) -> R<()> {
+    let api = hidapi::HidApi::new()?;
+    let path = api
+        .device_list()
+        .find(|d| d.vendor_id() == 0x04D8 && d.product_id() == 0xE44E)
+        .map(|d| d.path().to_owned())
+        .ok_or("no D700 HID interface")?;
+    let dev = api.open_path(&path)?;
+    dev.write(&[0x08, 0x2a, 0x2b, 0x29, 0x2c, 0x28, 0x00, 0x00, 0x00])?;
+    sleep(Duration::from_millis(300));
+    println!("session opened - full 8-bit hue rotation for {secs}s\n");
+
+    /// Hue in [0,6) to 8-bit RGB.
+    fn hue(h: f32) -> (u8, u8, u8) {
+        let x = (255.0 * (1.0 - (h % 2.0 - 1.0).abs())) as u8;
+        match h as u32 {
+            0 => (255, x, 0),
+            1 => (x, 255, 0),
+            2 => (0, 255, x),
+            3 => (0, x, 255),
+            4 => (x, 0, 255),
+            _ => (255, 0, x),
+        }
+    }
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    let mut step = 0u32;
+    while std::time::Instant::now() < deadline {
+        for idx in 0..3u8 {
+            // 1/3 of the wheel between each element, so they chase.
+            let h = ((step as f32) / 90.0 + (idx as f32) * 2.0) % 6.0;
+            let (r, g, b) = hue(h);
+            dev.write(&[0x08, 0x2a, 0x0a, 0xb6, idx, 0x00, r, g, b])?;
+            sleep(Duration::from_millis(25));
+        }
+        step += 1;
+    }
+    for idx in 0..3u8 {
+        dev.write(&[0x08, 0x2a, 0x0a, 0xb6, idx, 0x00, 0, 0, 0])?;
+        sleep(Duration::from_millis(30));
+    }
+    println!("done - {step} steps, no Connector, no Configurator, no MIDI");
+    Ok(())
+}
+
+/// A choreographed demonstration using everything mapped over two days:
+/// 16 motor faders, button LEDs, encoder rings, strip colour, full 8-bit RGB
+/// dials over HID, and both displays.
+///
+/// Two constraints from the field notes are respected throughout:
+///   * finding 23 - never command full travel; faders stay inside 0x0600..0x3A00
+///   * finding 33 - HID writes are paced ~25ms apart, or the device stalls
+fn lightshow() -> R<()> {
+    let ports = out_ports()?;
+    let mut midi: Vec<_> = ports.iter().filter_map(|n| open_out(n).ok()).collect();
+    if midi.is_empty() {
+        return Err("no D700 MIDI output".into());
+    }
+    let hid = hidapi::HidApi::new().ok().and_then(|api| {
+        let p = api
+            .device_list()
+            .find(|d| d.vendor_id() == 0x04D8 && d.product_id() == 0xE44E)
+            .map(|d| d.path().to_owned())?;
+        api.open_path(&p).ok()
+    });
+    if let Some(h) = &hid {
+        h.write(&[0x08, 0x2a, 0x2b, 0x29, 0x2c, 0x28, 0x00, 0x00, 0x00])
+            .ok();
+        sleep(Duration::from_millis(250));
+    }
+    println!(
+        "MIDI banks: {}   HID RGB: {}",
+        midi.len(),
+        if hid.is_some() { "yes" } else { "no" }
+    );
+
+    // ---- helpers -----------------------------------------------------------
+    let text = |m: &mut Vec<midir::MidiOutputConnection>, bank: usize, row: u8, t: &str| {
+        if let Some(c) = m.get_mut(bank) {
+            let mut msg = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x12, row];
+            let mut body: Vec<u8> = t.bytes().take(56).collect();
+            while body.len() < 56 {
+                body.push(b' ');
+            }
+            msg.extend(body);
+            msg.push(0xF7);
+            let _ = c.send(&msg);
+        }
+    };
+    let colours = |m: &mut Vec<midir::MidiOutputConnection>, c16: &[u8; 16]| {
+        for (b, conn) in m.iter_mut().enumerate() {
+            let mut msg = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x72];
+            msg.extend(&c16[b * 8..b * 8 + 8]);
+            msg.push(0xF7);
+            let _ = conn.send(&msg);
+        }
+    };
+    let fader = |m: &mut Vec<midir::MidiOutputConnection>, n: usize, v: u16| {
+        let (bank, ch) = (n / 8, (n % 8) as u8);
+        if let Some(c) = m.get_mut(bank) {
+            let _ = c.send(&[0xE0 | ch, (v & 0x7F) as u8, (v >> 7) as u8]);
+        }
+    };
+    let led = |m: &mut Vec<midir::MidiOutputConnection>, n: usize, base: u8, on: bool| {
+        let (bank, i) = (n / 8, (n % 8) as u8);
+        if let Some(c) = m.get_mut(bank) {
+            let _ = c.send(&[0x90, base + i, if on { 127 } else { 0 }]);
+        }
+    };
+    let ring = |m: &mut Vec<midir::MidiOutputConnection>, n: usize, pos: u8| {
+        let (bank, i) = (n / 8, (n % 8) as u8);
+        if let Some(c) = m.get_mut(bank) {
+            let _ = c.send(&[0xB0, 0x30 + i, pos]);
+        }
+    };
+    let dial = |h: &Option<hidapi::HidDevice>, idx: u8, r: u8, g: u8, b: u8| {
+        if let Some(d) = h {
+            let _ = d.write(&[0x08, 0x2a, 0x0a, 0xb6, idx, 0x00, r, g, b]);
+        }
+    };
+    fn hue(h: f32) -> (u8, u8, u8) {
+        let x = (255.0 * (1.0 - (h % 2.0 - 1.0).abs())) as u8;
+        match h as u32 {
+            0 => (255, x, 0),
+            1 => (x, 255, 0),
+            2 => (0, 255, x),
+            3 => (0, x, 255),
+            4 => (x, 0, 255),
+            _ => (255, 0, x),
+        }
+    }
+    const LO: u16 = 0x0600;
+    const HI: u16 = 0x3A00;
+
+    // ---- I. curtain up -----------------------------------------------------
+    println!("I.   curtain up");
+    colours(&mut midi, &[0u8; 16]);
+    for n in 0..16 {
+        fader(&mut midi, n, LO);
+    }
+    text(&mut midi, 0, 0x00, "  S21    HiJack  ");
+    text(&mut midi, 1, 0x00, "   D700    RGB   ");
+    text(&mut midi, 0, 0x38, " sixteen faders  ");
+    text(&mut midi, 1, 0x38, "  two  displays  ");
+    sleep(Duration::from_secs(2));
+
+    // ---- II. fader wave, LEDs and rings following --------------------------
+    println!("II.  wave");
+    for step in 0..150 {
+        let t = step as f32 / 12.0;
+        for n in 0..16 {
+            let phase = t - (n as f32) * 0.4;
+            let s = (phase.sin() + 1.0) / 2.0;
+            fader(&mut midi, n, LO + ((HI - LO) as f32 * s) as u16);
+            ring(&mut midi, n, 1 + (s * 10.0) as u8);
+        }
+        if step % 3 == 0 {
+            let head = (step / 3) % 16;
+            for n in 0..16 {
+                led(&mut midi, n, 0x10, n == head);
+            }
+        }
+        if step % 6 == 0 {
+            let mut c = [0u8; 16];
+            for (n, v) in c.iter_mut().enumerate() {
+                *v = HUES[(n + step / 6) % HUES.len()];
+            }
+            colours(&mut midi, &c);
+        }
+        if step % 4 == 0 {
+            for idx in 0..3u8 {
+                let (r, g, b) = hue((t * 0.6 + idx as f32 * 2.0) % 6.0);
+                dial(&hid, idx, r, g, b);
+                sleep(Duration::from_millis(25));
+            }
+        }
+        sleep(Duration::from_millis(40));
+    }
+
+    // ---- III. converge -----------------------------------------------------
+    println!("III. converge");
+    text(&mut midi, 0, 0x00, "  colour   chase ");
+    text(&mut midi, 1, 0x00, "   8-bit   RGB   ");
+    for step in 0..90 {
+        for n in 0..16 {
+            let d = ((n as i32) - 8).abs() as f32;
+            let s = ((step as f32 / 8.0) - d * 0.5).sin().max(0.0);
+            fader(&mut midi, n, LO + ((HI - LO) as f32 * s) as u16);
+        }
+        let head = step % 16;
+        for n in 0..16 {
+            led(&mut midi, n, 0x00, n == head);
+            led(&mut midi, n, 0x18, n == (15 - head));
+        }
+        if step % 4 == 0 {
+            for idx in 0..3u8 {
+                let (r, g, b) = hue((step as f32 / 6.0 + idx as f32) % 6.0);
+                dial(&hid, idx, r, g, b);
+                sleep(Duration::from_millis(25));
+            }
+        }
+        sleep(Duration::from_millis(55));
+    }
+
+    // ---- IV. finale --------------------------------------------------------
+    println!("IV.  finale");
+    text(&mut midi, 0, 0x00, "   thank    you  ");
+    text(&mut midi, 1, 0x00, "  Asparion D700  ");
+    text(&mut midi, 0, 0x38, "                 ");
+    text(&mut midi, 1, 0x38, "                 ");
+    for flash in 0..6 {
+        let on = flash % 2 == 0;
+        for n in 0..16 {
+            for base in [0x00u8, 0x08, 0x10, 0x18] {
+                led(&mut midi, n, base, on);
+            }
+            fader(&mut midi, n, if on { HI } else { LO });
+        }
+        colours(&mut midi, &[if on { 7 } else { 0 }; 16]);
+        for idx in 0..3u8 {
+            let v = if on { 255 } else { 0 };
+            dial(&hid, idx, v, v, v);
+            sleep(Duration::from_millis(25));
+        }
+        sleep(Duration::from_millis(320));
+    }
+
+    println!("V.   curtain down");
+    for n in 0..16 {
+        for base in [0x00u8, 0x08, 0x10, 0x18] {
+            led(&mut midi, n, base, false);
+        }
+        ring(&mut midi, n, 0);
+        fader(&mut midi, n, LO);
+    }
+    colours(&mut midi, &[0u8; 16]);
+    for idx in 0..3u8 {
+        dial(&hid, idx, 0, 0, 0);
+        sleep(Duration::from_millis(25));
+    }
+    text(&mut midi, 0, 0x00, "                 ");
+    text(&mut midi, 1, 0x00, "                 ");
+    println!("\nfin.");
     Ok(())
 }
