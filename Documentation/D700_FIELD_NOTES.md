@@ -57,6 +57,9 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 22 | OSC **sets the master dial colour** — unreachable over MIDI | Confirmed on hardware |
 | 22a | Which RGB argument format the dial accepts | Unknown |
 | 23 | **Motors slam the end stops** on instant full-travel commands | Confirmed on hardware |
+| 24 | Device is composite: vendor **HID** (`MI_00`) + USB-MIDI (`MI_01`) | Confirmed on hardware |
+| 25 | The Configurator speaks a **config-upload** protocol over HID | Confirmed on hardware |
+| 26 | Master dial colour is a **stored setting**, not a runtime command | Confirmed on hardware |
 
 ## Findings
 
@@ -616,6 +619,55 @@ Worth considering when the outbound path is next touched:
 
 None of this is urgent, and nothing here is evidence of damage. It is the kind of thing that
 is cheap to get right while writing the code and expensive to retrofit after a year of shows.
+
+### 24–26. The vendor HID channel — Confirmed on hardware
+
+A USBPcap capture of the Configurator changing the surface colours settles what days of MIDI
+probing could not.
+
+**The D700 is a composite USB device**, `VID_04D8` (Microchip) `PID_E44E`, serial `D700RTB12017`:
+
+| Interface | Class | Role |
+| --- | --- | --- |
+| `MI_00` | HID, vendor-defined | the Configurator's private channel |
+| `MI_01` | MEDIA | class-compliant USB-MIDI — everything in findings 1–16 |
+
+**The HID protocol is framed `<length> 2a <command> …`** on interrupt endpoints `0x01` (out)
+and `0x81` (in):
+
+| Message | Dir | Meaning |
+| --- | --- | --- |
+| `08 2a 00 00…` | both | idle / keepalive |
+| `08 2a 22 22 00 <page>` | out | read config page |
+| `20 2a e3 00 <page> 00 00 <24 bytes>` | in | page contents |
+| `08 2a 22 44 00…` | out | begin write |
+| `20 2a 2a 00 <page> <24 bytes> 00 00 00 00` | out | write config page |
+| `08 2a 2d 00…` → `10 2a 2d 01 11 11…` | both | status query |
+
+**Changing anything is a whole-config read-modify-write.** The Configurator reads all **86
+pages** (`0x00`–`0x55`, 24 bytes each = **2064 bytes**) and writes all 86 back. There is no
+per-element command — which is exactly why the operator observed that every colour changes
+together and the master dial cannot be set on its own.
+
+### Why this closes the master-dial question
+
+Findings 7d and 12 recorded the master dial colour as unreachable over MIDI after four
+hypotheses and a completed MCU handshake. This explains it: **the colour was never a command.**
+It is a byte in a stored configuration block, written by the Configurator and persisted on the
+device.
+
+Reaching it would mean reading 86 pages, editing bytes, and writing 86 pages back — roughly
+172 USB transactions to change one dial, with a corrupted device configuration as the failure
+mode. That is not a runtime operation, and S21_HiJack should not attempt it.
+
+**Practical conclusion: treat the master dial colour as a Configurator setting.** Set it once,
+by hand, to whatever suits the rig. The 16 strips and their dials remain freely controllable at
+runtime over MIDI SysEx `0x72` (finding 7a), which is where colour actually earns its keep.
+
+The exact byte offsets of the colour values inside the block were not identified. Doing so
+needs a differencing capture — the same block written with two different colours — and would be
+useful only to someone building a configuration tool, not for runtime control. The reassembled
+block from this capture is retained as evidence but is not committed.
 
 ## Implications for the sidecar
 
