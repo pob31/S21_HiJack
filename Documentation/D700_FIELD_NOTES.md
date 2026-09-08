@@ -63,6 +63,8 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 27 | HID carries the **raw** surface protocol; MIDI is an MCU translation | Confirmed on hardware |
 | 28 | **Both banks arrive on one HID endpoint**, distinguished by a port byte | Confirmed on hardware |
 | 29 | HID report IDs separate realtime (`0x04`) from config (`0x20`) | Confirmed on hardware |
+| 30 | HID report `0x04` **drives motors and LEDs** — syntax captured | Confirmed on hardware |
+| 30a | Writing it needs a **5-byte** transfer; `hid_write` pads to 33 | Confirmed on hardware |
 
 ## Findings
 
@@ -727,6 +729,46 @@ not a finding.
 
 `hidapi` is already a dependency of this project (for the Stream Deck integration), so testing
 costs nothing in new dependencies.
+
+### 30. The output syntax, from the Configurator's Test Mode — Confirmed on hardware
+
+The Configurator has a **Test Mode** that drives the surface from the app. Capturing it gives
+the output protocol directly, with no guessing. Test Mode uses the HID interface exclusively —
+no USB-MIDI traffic appeared at all.
+
+**Report `0x04`, five bytes, on interrupt endpoint `0x01`:**
+
+| Frame | Drives |
+| --- | --- |
+| `04 <port> E<n> <lsb> <msb>` | motor fader *n*+1, 14-bit (`E0`, `E1`, `E7` observed) |
+| `04 <port> 90 <note> <01\|00>` | button LED on / off (notes `0x6F`–`0x7F` observed) |
+
+It is the same five-byte frame as the input direction (finding 27), same `<port>` byte for bank
+selection. The channel is symmetrical: a MIDI-like tunnel with a bank index.
+
+Note the LED notes here (`0x6F`–`0x7F`) are the **native** numbering, not the MCU button map
+(`0x00`–`0x1F`) from finding 4 — consistent with finding 27, where HID is raw and MIDI is a
+translation.
+
+### 30a. Why a correct-looking write does nothing — Confirmed on hardware
+
+A write of `04 00 E0 00 20` — the right shape, verified against the capture — moved nothing.
+The reason is transfer length, not syntax:
+
+- The Configurator writes **5 bytes**.
+- `hidapi`'s `write()` reported **33 bytes**.
+
+Windows exposes one `OutputReportByteLength` per HID device: the maximum across all output
+report IDs. The config pages (report `0x20`) are 33 bytes, so that maximum is 33, and
+`hid_write` pads every report to it. The device evidently expects report `0x04` at its declared
+5 and ignores a 33-byte frame carrying that ID.
+
+This is a Windows HID plumbing problem, not a protocol one. **The protocol is solved.** What is
+unresolved is how to emit a 5-byte output report from a Windows process through the HID class
+driver — the same `hidapi` the Stream Deck integration already uses.
+
+Worth noting the Configurator itself manages it, so it is possible; how it does so is not yet
+established.
 
 ## Implications for the sidecar
 
