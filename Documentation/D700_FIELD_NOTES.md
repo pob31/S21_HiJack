@@ -64,7 +64,8 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 28 | **Both banks arrive on one HID endpoint**, distinguished by a port byte | Confirmed on hardware |
 | 29 | HID report IDs separate realtime (`0x04`) from config (`0x20`) | Confirmed on hardware |
 | 30 | HID report `0x04` **drives motors and LEDs** — syntax captured | Confirmed on hardware |
-| 30a | Writing it needs a **5-byte** transfer; `hid_write` pads to 33 | Confirmed on hardware |
+| 30a | ~~Writing needs 5 bytes; `hid_write` pads to 33~~ | **Retracted — see 30b** |
+| 30b | **`hidapi` drives the motors.** Writes work; device ACKs each one | Confirmed on hardware |
 
 ## Findings
 
@@ -721,11 +722,9 @@ Three of the four hard problems in the MIDI approach dissolve:
 3. **Port enumeration.** No WinMM renumbering, no `MIDIIN2` ambiguity, no exclusive-open
    contention. One HID device, opened by VID/PID, with a serial (`D700RTB12017`) it volunteers.
 
-**Untested and decisive: whether report `0x04` works outbound.** Everything above is the input
-direction. If writing `04 <port> E0 <lsb> <msb>` drives a motor, then HID covers input *and*
-output for the whole surface, both banks, on one handle — and `midir` becomes unnecessary
-rather than merely awkward. The format's symmetry makes it plausible but it is a hypothesis,
-not a finding.
+**Report `0x04` works outbound — confirmed (finding 30b).** HID therefore covers input *and*
+output for the whole surface, both banks, on one handle, and `midir` is unnecessary rather than
+merely awkward.
 
 `hidapi` is already a dependency of this project (for the Stream Deck integration), so testing
 costs nothing in new dependencies.
@@ -750,25 +749,37 @@ Note the LED notes here (`0x6F`–`0x7F`) are the **native** numbering, not the 
 (`0x00`–`0x1F`) from finding 4 — consistent with finding 27, where HID is raw and MIDI is a
 translation.
 
-### 30a. Why a correct-looking write does nothing — Confirmed on hardware
+### 30a–30b. Writing report `0x04` from `hidapi` works — Confirmed on hardware
 
-A write of `04 00 E0 00 20` — the right shape, verified against the capture — moved nothing.
-The reason is transfer length, not syntax:
+**Finding 30a as first written is retracted.** It claimed a correct-looking write did nothing
+because Windows padded it to 33 bytes. Both halves were wrong.
 
-- The Configurator writes **5 bytes**.
-- `hidapi`'s `write()` reported **33 bytes**.
+A USB capture of this application's own writes settled it:
 
-Windows exposes one `OutputReportByteLength` per HID device: the maximum across all output
-report IDs. The config pages (report `0x20`) are 33 bytes, so that maximum is 33, and
-`hid_write` pads every report to it. The device evidently expects report `0x04` at its declared
-5 and ignores a 33-byte frame carrying that ID.
+- The transfer on the wire is **exactly 5 bytes** — `04 00 e0 00 40` — byte-identical in form
+  to the Configurator's. `hidapi`'s `write()` *returns* 33, but that return value does not
+  describe the transfer; nothing is padded.
+- **The device acknowledges every write.** Each OUT is followed within two frames by an IN
+  carrying the identical payload with the second byte changed from `00` to `08`:
 
-This is a Windows HID plumbing problem, not a protocol one. **The protocol is solved.** What is
-unresolved is how to emit a 5-byte output report from a Windows process through the HID class
-driver — the same `hidapi` the Stream Deck integration already uses.
+```
+OUT   04 00 e0 00 40
+IN    04 08 e0 00 40      <- acknowledgement, port byte 00 -> 08
+```
 
-Worth noting the Configurator itself manages it, so it is possible; how it does so is not yet
-established.
+- **The motors move.** Sustained writes cycling fader 1 through 25% / 50% / 75% were confirmed
+  on the hardware by the operator.
+
+The earlier "nothing happened" was an observation miss on a short four-write test, not a
+protocol failure. Recorded here rather than quietly edited, because a wrong negative in a
+provenance file is worse than no entry: it would have sent the next person hunting a Windows
+HID problem that does not exist.
+
+**So `hidapi` — already a dependency of this project — can drive the D700 directly.**
+
+The `08` in the acknowledgement is not decoded. In the input direction the second byte is
+`00`/`01` for bank 1/2, so `08` is evidently a flag rather than a bank index — plausibly
+"originated from host". Worth understanding before relying on it to detect a rejected write.
 
 ## Implications for the sidecar
 
