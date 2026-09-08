@@ -60,6 +60,9 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 24 | Device is composite: vendor **HID** (`MI_00`) + USB-MIDI (`MI_01`) | Confirmed on hardware |
 | 25 | The Configurator speaks a **config-upload** protocol over HID | Confirmed on hardware |
 | 26 | Master dial colour is a **stored setting**, not a runtime command | Confirmed on hardware |
+| 27 | HID carries the **raw** surface protocol; MIDI is an MCU translation | Confirmed on hardware |
+| 28 | **Both banks arrive on one HID endpoint**, distinguished by a port byte | Confirmed on hardware |
+| 29 | HID report IDs separate realtime (`0x04`) from config (`0x20`) | Confirmed on hardware |
 
 ## Findings
 
@@ -668,6 +671,62 @@ The exact byte offsets of the colour values inside the block were not identified
 needs a differencing capture — the same block written with two different colours — and would be
 useful only to someone building a configuration tool, not for runtime control. The reassembled
 block from this capture is retained as evidence but is not committed.
+
+### 27–29. HID carries the raw surface; MIDI is a translation — Confirmed on hardware
+
+A USBPcap capture taken while the operator worked faders and encoders, with a colour pulse
+running the other way, caught **1292 control messages on each of two endpoints at once** —
+USB-MIDI IN (`0x82`) and vendor HID IN (`0x81`). Same count, different content.
+
+| Control | HID (native) | MIDI (MCU-mapped) |
+| --- | --- | --- |
+| Faders 1–8 | pitch bend `E0`–`E7` | pitch bend `E0`–`E7` (identical) |
+| Fader touch | Note `0x30`–`0x37` | Note `0x68`–`0x6F` |
+| Encoders | CC `0x14`–`0x1B` | CC `0x10`–`0x17` |
+| Volume knob | CC `0x03` | pitch bend `E8` (channel 9) |
+
+**Every MCU convention documented in findings 1–4 is a translation layer.** The `0x68` touch
+range, the V-pot CC block, the master fader on channel 9 — the MCU spec supplies all of them,
+and the D700 maps its native dialect onto them. Underneath, the hardware speaks something
+simpler and flatter.
+
+**Both banks share one HID endpoint.** HID messages are `04 <port> <3 MIDI-style bytes>`, where
+`<port>` is `00` for bank 1 and `01` for bank 2 — 662 and 630 messages respectively in this
+capture. The USB-MIDI side carries the same split as cable numbers in the USB-MIDI event
+packet, which Windows then splits into the two port pairs we spent finding 6 on.
+
+**The leading byte is a HID Report ID**, and it partitions the protocol cleanly:
+
+| Report | Size | Carries |
+| --- | --- | --- |
+| `0x04` | 5 bytes | realtime control events |
+| `0x08` | 9 bytes | short commands, status, keepalive |
+| `0x20` | 33 bytes | configuration pages (finding 25) |
+
+So realtime control and configuration are **separate channels**. Writing report `0x04` is not
+the whole-config rewrite of finding 26, and carries none of that risk.
+
+### Why this could replace the MIDI path entirely
+
+Three of the four hard problems in the MIDI approach dissolve:
+
+1. **The single-device limit.** `SidecarMidiSettings` holds one input and one output name and
+   the engine owns one `midir` pair, so only 8 of 16 faders are reachable. Over HID both banks
+   arrive on one endpoint with a port byte — nothing to make multi-device.
+2. **Preset drift.** The `*` button moved `0x36` → `0x5A` between Mackie and Reaper (finding
+   13) because the *translation* changed. The raw stream does not drift, so a binding learned
+   once stays correct across presets.
+3. **Port enumeration.** No WinMM renumbering, no `MIDIIN2` ambiguity, no exclusive-open
+   contention. One HID device, opened by VID/PID, with a serial (`D700RTB12017`) it volunteers.
+
+**Untested and decisive: whether report `0x04` works outbound.** Everything above is the input
+direction. If writing `04 <port> E0 <lsb> <msb>` drives a motor, then HID covers input *and*
+output for the whole surface, both banks, on one handle — and `midir` becomes unnecessary
+rather than merely awkward. The format's symmetry makes it plausible but it is a hypothesis,
+not a finding.
+
+`hidapi` is already a dependency of this project (for the Stream Deck integration), so testing
+costs nothing in new dependencies.
 
 ## Implications for the sidecar
 
