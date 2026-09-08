@@ -69,7 +69,7 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 31 | **True RGB with smooth gradient** on all dials incl. master | Confirmed on hardware |
 | 31a | The native MIDI RGB command's CC number | Unknown |
 | 32 | **HID session-open handshake** captured and replayed successfully | Confirmed on hardware |
-| 33 | RGB over HID: `08 2a 0a <class> <idx> 00 <R> <G> <B>`, 8-bit | Partially confirmed |
+| 33 | **Full 8-bit RGB over HID, no vendor software required** | Confirmed on hardware |
 
 ## Findings
 
@@ -850,31 +850,50 @@ finding 8a.
 byte-identical replies from the device. So a third-party application can open a session on the
 vendor HID channel without any Asparion software running.
 
-### 33. RGB over HID — Partially confirmed
+### 33. Full 8-bit RGB over HID, with no vendor software — Confirmed on hardware
 
-The colour command captured from the Connector is:
+**The complete sequence, verified end to end:**
 
 ```
-08 2a 0a <class> <index> 00 <R> <G> <B>
+08 2a 2b 29 2c 28 00 00 00              open session
+08 2a 0a b6 <index> 00 <R> <G> <B>      set colour, 0-255 per channel
 ```
 
-with **full 8-bit** channels, finer than the halved 0–127 of the MIDI method Asparion
-described. Byte 4 is an **element-class selector, not a constant** — the startup trace shows
-`0a a2`, `0a b0`, `0a b2` where colour traffic showed `0a b6`. That is why an index scan under
-`b6` alone lit nothing.
+| Field | Meaning |
+| --- | --- |
+| `0a` | set-colour command |
+| `b6` | element class — **dial RGB**. `b2` is a different class and had no effect on dials; the startup trace also shows `a2` and `b0` |
+| `<index>` | `00`, `01`, `02` addressed dials 1, 9 and master on this unit |
+| `<R> <G> <B>` | full 8-bit, **not** halved to 0–127 as the MIDI method requires |
 
-**Not yet working from our side.** After a successful handshake, colour writes on classes
-`b6` and `b2` were accepted without error but produced no confirmed visual change, and a write
-on class `b0` returned `device not functioning` — a stall, not a disconnect: all four USB
-interfaces still enumerated healthy immediately afterwards.
+Confirmed by a 40-second hue rotation: 511 steps, 1533 writes, three elements chasing each
+other a third of the colour wheel apart, smooth throughout, with the Connector and the
+Configurator both shut down. No OSC hop, no MIDI, no CC number.
 
-Something in the Connector's fuller startup is still missing. The trace also contains
-`08 2a 21 01`, `08 2a 22 23 15`, `08 2a 20 0b 02` and `08 2a 20 0a` exchanges before any colour
-command, at least one of which is likely to be the step that arms the realtime channel.
+**Pacing matters.** An earlier attempt stalled with `device not functioning` when three writes
+were issued back to back. Spacing them ~25 ms apart ran 1533 writes without a single stall. So
+the surface wants its writes paced — modestly, but it wants them paced.
 
-**Deliberately not brute-forced.** The device stalled once here and wedged once yesterday
-(finding 5d). The remaining sequence should be established by capturing the Connector doing a
-colour change immediately after startup, in one trace, rather than by guessing.
+**`0xB0` remains untested.** It is the class that returned the stall, and given this device
+wedged once yesterday it was left alone deliberately rather than retried.
+
+### What this means for the sidecar
+
+The vendor HID channel now covers the whole surface from our own code:
+
+| Capability | Route | Status |
+| --- | --- | --- |
+| All controls in, both banks | HID report `0x04`, port byte | Confirmed (27, 28) |
+| Motor faders out | HID report `0x04` | Confirmed (30b) |
+| Button LEDs out | HID report `0x04`, `90 <note> <on>` | Confirmed (30) |
+| **Colour, 8-bit RGB** | HID report `0x08`, `0a b6` | **Confirmed (33)** |
+
+`hidapi` is already a dependency of this project. One handle, no `midir`, no third-party
+application, no preset dependence — and finer colour than Asparion's own documented method.
+
+The trade-off recorded in finding 32 still stands: the Connector holds the HID interface
+exclusively, so S21_HiJack and the Connector cannot both use it. Direct HID means the
+Connector is not running.
 
 ## Implications for the sidecar
 
