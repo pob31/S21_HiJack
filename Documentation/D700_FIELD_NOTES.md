@@ -68,6 +68,8 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 30b | **`hidapi` drives the motors.** Writes work; device ACKs each one | Confirmed on hardware |
 | 31 | **True RGB with smooth gradient** on all dials incl. master | Confirmed on hardware |
 | 31a | The native MIDI RGB command's CC number | Unknown |
+| 32 | **HID session-open handshake** captured and replayed successfully | Confirmed on hardware |
+| 33 | RGB over HID: `08 2a 0a <class> <idx> 00 <R> <G> <B>`, 8-bit | Partially confirmed |
 
 ## Findings
 
@@ -827,6 +829,52 @@ device). With it, S21_HiJack could drive colour over MIDI directly.
 strip / knob surround. Ring position (`CC 0x30`–`0x37`) and strip colour are different things,
 which is why writing colour values to the ring CCs merely drove the position display to
 minimum.
+
+### 32. The HID session-open handshake — Confirmed on hardware
+
+Capturing the Connector's **startup** (capture begun first, app launched into it) revealed an
+initialisation exchange nothing else had shown:
+
+```
+OUT  08 2a 2b 29 2c 28 00 00 00      session open
+IN   08 2a 2b 00 00 00 00 00 00      device acknowledges
+OUT  08 2a 2d 00 00 00 00 00 00      status query
+IN   10 2a 2d 01 11 11 ...           status reply
+```
+
+Then a configuration read, during which the device returns its preset name in UTF-16 — the
+bytes spell `U n i v e r s a l`, incidentally confirming which preset was active and closing
+finding 8a.
+
+**Replaying the handshake works.** Sending the same two messages from `hidapi` produced
+byte-identical replies from the device. So a third-party application can open a session on the
+vendor HID channel without any Asparion software running.
+
+### 33. RGB over HID — Partially confirmed
+
+The colour command captured from the Connector is:
+
+```
+08 2a 0a <class> <index> 00 <R> <G> <B>
+```
+
+with **full 8-bit** channels, finer than the halved 0–127 of the MIDI method Asparion
+described. Byte 4 is an **element-class selector, not a constant** — the startup trace shows
+`0a a2`, `0a b0`, `0a b2` where colour traffic showed `0a b6`. That is why an index scan under
+`b6` alone lit nothing.
+
+**Not yet working from our side.** After a successful handshake, colour writes on classes
+`b6` and `b2` were accepted without error but produced no confirmed visual change, and a write
+on class `b0` returned `device not functioning` — a stall, not a disconnect: all four USB
+interfaces still enumerated healthy immediately afterwards.
+
+Something in the Connector's fuller startup is still missing. The trace also contains
+`08 2a 21 01`, `08 2a 22 23 15`, `08 2a 20 0b 02` and `08 2a 20 0a` exchanges before any colour
+command, at least one of which is likely to be the step that arms the realtime channel.
+
+**Deliberately not brute-forced.** The device stalled once here and wedged once yesterday
+(finding 5d). The remaining sequence should be established by capturing the Connector doing a
+colour change immediately after startup, in one trace, rather than by guessing.
 
 ## Implications for the sidecar
 
