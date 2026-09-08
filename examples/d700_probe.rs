@@ -79,6 +79,7 @@ fn main() -> R<()> {
         "hidclass" => hidclass(),
         "hidshow" => hidshow(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(40)),
         "lightshow" => lightshow(),
+        "btime" => btime(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(45)),
         _ => {
             eprintln!("usage: d700 [list | mon <secs> | lcd <text> | sweep | leds]");
             Ok(())
@@ -3470,5 +3471,112 @@ fn lightshow() -> R<()> {
     text(&mut midi, 0, 0x00, "                 ");
     text(&mut midi, 1, 0x00, "                 ");
     println!("\nfin.");
+    Ok(())
+}
+
+/// Button timing: is a "double click" a hardware bounce, a firmware-generated
+/// double-click event, or two deliberate presses?
+///
+/// The existing `mon` prints no timestamps, so a 20 ms contact bounce and a
+/// second press two seconds later look identical in its output. This logs every
+/// note event with a millisecond timestamp and the gap since the previous event
+/// on the SAME note, then summarises the gaps.
+///
+/// Reading the result:
+///   < 30 ms    contact bounce or firmware double-fire - a defect
+///   80-400 ms  human double-click - deliberate, and possibly a device feature
+///   > 500 ms   two separate presses
+fn btime(secs: u64) -> R<()> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    let probe = MidiInput::new("probe")?;
+    let names: Vec<String> = probe
+        .ports()
+        .iter()
+        .filter_map(|p| probe.port_name(p).ok())
+        .filter(|n| n.to_lowercase().contains(MATCH))
+        .collect();
+    if names.is_empty() {
+        println!("no D700 input ports found");
+        return Ok(());
+    }
+
+    // note -> (last event instant, gaps observed)
+    let seen: Arc<Mutex<HashMap<u8, (std::time::Instant, Vec<u128>)>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let t0 = std::time::Instant::now();
+    let mut conns = Vec::new();
+
+    for name in &names {
+        let mut mi = MidiInput::new("probe")?;
+        mi.ignore(Ignore::ActiveSense);
+        let port = mi
+            .ports()
+            .into_iter()
+            .find(|p| mi.port_name(p).map(|n| &n == name).unwrap_or(false))
+            .ok_or("port vanished")?;
+        let tag = name.clone();
+        let seen = Arc::clone(&seen);
+        conns.push(mi.connect(
+            &port,
+            "probe-in",
+            move |_ts, msg, _| {
+                if msg.len() < 3 || (msg[0] & 0xF0) != 0x90 {
+                    return;
+                }
+                let (note, vel) = (msg[1], msg[2]);
+                let now = std::time::Instant::now();
+                let ms = now.duration_since(t0).as_millis();
+                let mut g = seen.lock().unwrap();
+                let gap = g
+                    .get(&note)
+                    .map(|(prev, _)| now.duration_since(*prev).as_millis());
+                let e = g.entry(note).or_insert((now, Vec::new()));
+                if let Some(d) = gap {
+                    e.1.push(d);
+                    e.0 = now;
+                }
+                let kind = if vel > 0 { "DOWN" } else { "UP  " };
+                match gap {
+                    Some(d) => {
+                        println!("  {ms:>7} ms  {tag:<18} note 0x{note:02X} {kind}  (+{d} ms)")
+                    }
+                    None => println!("  {ms:>7} ms  {tag:<18} note 0x{note:02X} {kind}"),
+                }
+            },
+            (),
+        )?);
+    }
+
+    println!("listening for {secs}s on {} port(s)", conns.len());
+    println!(
+        "press each button ONCE, deliberately, with a clear pause between
+"
+    );
+    sleep(Duration::from_secs(secs));
+
+    println!(
+        "
+--- gaps between consecutive events on the same note ---"
+    );
+    let g = seen.lock().unwrap();
+    let mut notes: Vec<_> = g.iter().collect();
+    notes.sort_by_key(|(n, _)| **n);
+    let mut bounces = 0usize;
+    for (note, (_, gaps)) in notes {
+        if gaps.is_empty() {
+            continue;
+        }
+        let short = gaps.iter().filter(|d| **d < 30).count();
+        bounces += short;
+        let list: Vec<String> = gaps.iter().map(|d| format!("{d}")).collect();
+        println!("  note 0x{note:02X}: {} ms", list.join(", "));
+    }
+    println!(
+        "
+{bounces} gap(s) under 30 ms - those are bounces or firmware doubles."
+    );
+    println!("80-400 ms gaps are human double-clicks; over 500 ms, separate presses.");
     Ok(())
 }
