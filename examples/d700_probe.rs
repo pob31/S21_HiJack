@@ -31,6 +31,13 @@ fn main() -> R<()> {
         "mcolor2" => mcolor2(),
         "ident" => ident(),
         "handshake" => handshake(),
+        "mlive" => mlive(),
+        "monlive" => monlive(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(25)),
+        "mpos" => mpos(),
+        "heat" => heat(),
+        "master3c" => master3c(),
+        "gradient" => gradient(),
+        "rvc" => rvc(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(40)),
         "rows" => rows(),
         "rows2" => rows2(),
         "cmd18" => cmd18(),
@@ -1013,6 +1020,739 @@ fn handshake() -> R<()> {
     m.push(0xF7);
     conn.send(&m)?;
     println!("\nDid the master dial colour change this time?");
+    Ok(())
+}
+
+/// Master-dial colour hunt WITH a live MCU connection held open.
+///
+/// `handshake` proved 0x72 (even bytes 9-16) lights only the 8 channel rings,
+/// never the master dial. So the master ring wants a different message. This
+/// completes the handshake and then, on the SAME still-open connection, sweeps
+/// the remaining candidates the connection-less `mcolor2` couldn't test live:
+///   A. ring CCs 0x38..0x3F (just above the 8 channel rings 0x30..0x37)
+///   B. sibling vendor SysEx commands 0x70..0x7F (skip 0x72), 9 colour bytes
+///
+/// Unsafe command ranges (0x0A-0x0F go-offline/config, 0x61-0x63 resets) are
+/// never touched. Nothing sent here persists — power-cycle clears everything.
+fn mlive() -> R<()> {
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+
+    let probe = MidiInput::new("probe")?;
+    let in_names: Vec<String> = probe
+        .ports()
+        .iter()
+        .filter_map(|p| probe.port_name(p).ok())
+        .filter(|n| n.to_lowercase().contains(MATCH))
+        .collect();
+    let mut conns = Vec::new();
+    for name in &in_names {
+        let mut mi = MidiInput::new("probe")?;
+        mi.ignore(Ignore::None);
+        let port = mi
+            .ports()
+            .into_iter()
+            .find(|p| mi.port_name(p).map(|n| &n == name).unwrap_or(false))
+            .ok_or("port vanished")?;
+        let t = tx.clone();
+        let tag = name.clone();
+        conns.push(mi.connect(
+            &port,
+            "probe-in",
+            move |_ts, msg, _| {
+                if msg.first() == Some(&0xF0) {
+                    println!("   <<< {tag}: {}", hex_full(msg));
+                    let _ = t.send(msg.to_vec());
+                }
+            },
+            (),
+        )?);
+    }
+
+    let out_name = out_ports()?.into_iter().next().ok_or("no output")?;
+    let mut conn = open_out(&out_name)?;
+
+    // ── Handshake, keep `conn` open for the whole sweep ──
+    println!(">>> device query");
+    conn.send(&[0xF0, 0x00, 0x00, 0x66, 0x14, 0x00, 0xF7])?;
+    let reply = rx
+        .recv_timeout(Duration::from_secs(3))
+        .map_err(|_| "no reply to device query")?;
+    if reply.len() < 18 || reply[5] != 0x01 {
+        println!("unexpected reply: {}", hex_full(&reply));
+        return Ok(());
+    }
+    let serial = &reply[6..13];
+    let challenge = &reply[13..17];
+    let resp = mcu_response(challenge);
+    let mut hs = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x02];
+    hs.extend(serial);
+    hs.extend(resp);
+    hs.push(0xF7);
+    conn.send(&hs)?;
+    match rx.recv_timeout(Duration::from_secs(3)) {
+        Ok(m) if m.len() > 5 && m[5] == 0x03 => println!("    ACCEPTED — connection live\n"),
+        Ok(m) => println!("    reply: {}\n", hex_full(&m)),
+        Err(_) => println!("    (no ACK — proceeding anyway)\n"),
+    }
+
+    // Baseline: channel rings off so any master change is unambiguous.
+    for i in 0..8u8 {
+        conn.send(&[0xB0, 0x30 + i, 0])?;
+    }
+    let mut strips_black = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x72];
+    strips_black.extend(vec![0u8; 8]);
+    strips_black.push(0xF7);
+    conn.send(&strips_black)?;
+    sleep(Duration::from_millis(600));
+
+    // ── Part A: ring CCs above the 8 channel rings ──
+    println!("PART A — ring CCs 0x38..0x3F (watch ONLY the master dial)");
+    for cc in 0x38..=0x3Fu8 {
+        for v in [0x01u8, 0x0B, 0x2B, 0x41, 0x7F] {
+            conn.send(&[0xB0, cc, v])?;
+            sleep(Duration::from_millis(180));
+        }
+        println!("   CC 0x{cc:02X} swept 1/0x0B/0x2B/0x41/0x7F");
+        sleep(Duration::from_millis(400));
+        conn.send(&[0xB0, cc, 0])?;
+    }
+
+    // ── Part B: sibling vendor SysEx commands, 9 red bytes each ──
+    println!("\nPART B — vendor SysEx cmds 0x70..0x7F (skip 0x72), 9 red bytes");
+    for cmd in 0x70..=0x7Fu8 {
+        if cmd == 0x72 {
+            continue;
+        }
+        let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, cmd];
+        m.extend(vec![1u8; 9]);
+        m.push(0xF7);
+        conn.send(&m)?;
+        println!("   cmd 0x{cmd:02X} sent");
+        sleep(Duration::from_millis(900));
+    }
+
+    // Leave the surface tidy.
+    conn.send(&strips_black)?;
+    for i in 0..8u8 {
+        conn.send(&[0xB0, 0x30 + i, 0])?;
+    }
+    println!("\nDid the master dial light at any point?");
+    println!("Part A: which CC value (report the 0x{{cc}} line)?");
+    println!("Part B: which command byte?");
+    println!("If nothing ever lit it, the master-dial RGB is almost certainly");
+    println!("OSC-preset-only and not reachable in Mackie mode.");
+    Ok(())
+}
+
+/// Live rotary -> value -> colour loop. Handshakes, then for `secs`: each of
+/// the 8 encoders (relative CC 0x10..0x17) accumulates its own 0-100 value; on
+/// every change the dial's ring shows the value as a dot (CC 0x30..0x37), its
+/// colour steps a cool->warm palette ramp (0x72, fixed palette — no true
+/// gradient), and its scribble strip shows the number. Each dial independent.
+fn rvc(secs: u64) -> R<()> {
+    // Encoder events (channel 0..7, signed ticks) from the input thread.
+    let (tx, rx) = std::sync::mpsc::channel::<(u8, i32)>();
+    let probe = MidiInput::new("probe")?;
+    let in_names: Vec<String> = probe
+        .ports()
+        .iter()
+        .filter_map(|p| probe.port_name(p).ok())
+        .filter(|n| n.to_lowercase().contains(MATCH))
+        .collect();
+    let mut conns = Vec::new();
+    for name in &in_names {
+        let mut mi = MidiInput::new("probe")?;
+        mi.ignore(Ignore::ActiveSense);
+        let port = mi
+            .ports()
+            .into_iter()
+            .find(|p| mi.port_name(p).map(|n| &n == name).unwrap_or(false))
+            .ok_or("port vanished")?;
+        let t = tx.clone();
+        conns.push(mi.connect(
+            &port,
+            "probe-in",
+            move |_ts, msg, _| {
+                // Relative V-Pot: 0xB0, cc 0x10..0x17, val<0x40 = +, else -(val-0x40).
+                if msg.len() == 3 && msg[0] & 0xF0 == 0xB0 && (0x10..=0x17).contains(&msg[1]) {
+                    let n = msg[1] - 0x10;
+                    let v = msg[2];
+                    let ticks = if v < 0x40 {
+                        v as i32
+                    } else {
+                        -((v & 0x3F) as i32)
+                    };
+                    let _ = t.send((n, ticks));
+                }
+            },
+            (),
+        )?);
+    }
+
+    let out_name = out_ports()?.into_iter().next().ok_or("no output")?;
+    let mut conn = open_out(&out_name)?;
+    // Handshake so the surface streams + accepts feedback.
+    let (htx, hrx) = std::sync::mpsc::channel::<Vec<u8>>();
+    // Re-open one input purely to read the handshake reply.
+    let mut mi = MidiInput::new("probe-hs")?;
+    mi.ignore(Ignore::None);
+    let hs_port = mi
+        .ports()
+        .into_iter()
+        .find(|p| {
+            mi.port_name(p)
+                .map(|n| n.to_lowercase().contains(MATCH))
+                .unwrap_or(false)
+        })
+        .ok_or("no D700 input")?;
+    let _hs_conn = mi.connect(
+        &hs_port,
+        "hs",
+        move |_t, m, _| {
+            if m.first() == Some(&0xF0) {
+                let _ = htx.send(m.to_vec());
+            }
+        },
+        (),
+    )?;
+    conn.send(&[0xF0, 0x00, 0x00, 0x66, 0x14, 0x00, 0xF7])?;
+    if let Ok(reply) = hrx.recv_timeout(Duration::from_secs(3)) {
+        if reply.len() >= 18 && reply[5] == 0x01 {
+            let serial = reply[6..13].to_vec();
+            let resp = mcu_response(&reply[13..17]);
+            let mut hs = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x02];
+            hs.extend(&serial);
+            hs.extend(resp);
+            hs.push(0xF7);
+            conn.send(&hs)?;
+        }
+    }
+
+    // Cool -> warm ramp over the fixed palette (violet-ish low, red high).
+    let colour_for = |v: f32| -> u8 {
+        match v as u32 {
+            0..=16 => 5,  // magenta / violet
+            17..=33 => 4, // blue
+            34..=50 => 6, // cyan
+            51..=66 => 2, // green
+            67..=83 => 3, // yellow
+            _ => 1,       // red
+        }
+    };
+
+    let mut values = [50.0f32; 8];
+    let mut colours = [0u8; 8];
+
+    // Static top row: "Dial N". Bottom row shows live values.
+    let mut row1 = Vec::new();
+    for i in 0..8 {
+        row1.extend(pad7(&format!("Dial {}", i + 1)));
+    }
+    let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x12, 0x00];
+    m.extend(row1);
+    m.push(0xF7);
+    conn.send(&m)?;
+
+    // Paint initial state for all 8.
+    for n in 0..8u8 {
+        paint_dial(
+            &mut conn,
+            n,
+            values[n as usize],
+            colour_for(values[n as usize]),
+        )?;
+        colours[n as usize] = colour_for(values[n as usize]);
+    }
+    push_colours(&mut conn, &colours)?;
+
+    println!("--- turn the 8 rotaries for {secs}s — each dial's colour tracks its value ---");
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    while std::time::Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_millis(60)) {
+            Ok((n, ticks)) => {
+                let i = n as usize;
+                values[i] = (values[i] + ticks as f32 * 3.0).clamp(0.0, 100.0);
+                let c = colour_for(values[i]);
+                let recolour = c != colours[i];
+                colours[i] = c;
+                paint_dial(&mut conn, n, values[i], c)?;
+                if recolour {
+                    push_colours(&mut conn, &colours)?;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(_) => break,
+        }
+    }
+
+    // Tidy: rings off, strips black.
+    for n in 0..8u8 {
+        conn.send(&[0xB0, 0x30 + n, 0])?;
+    }
+    push_colours(&mut conn, &[0u8; 8])?;
+    println!("--- done ---");
+    Ok(())
+}
+
+/// Show one dial's value: ring dot position (CC 0x30+n, MCU single-dot mode)
+/// and the number on its scribble strip (row 2, offset 0x38 + n*7).
+fn paint_dial(conn: &mut midir::MidiOutputConnection, n: u8, value: f32, _c: u8) -> R<()> {
+    let pos = 1 + (value / 100.0 * 10.0).round() as u8; // 1..=11
+    conn.send(&[0xB0, 0x30 + n, pos.min(11)])?;
+    let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x12, 0x38 + n * 7];
+    m.extend(pad7(&format!("{}%", value.round() as u32)));
+    m.push(0xF7);
+    conn.send(&m)?;
+    Ok(())
+}
+
+/// Push all 8 ring colours in one 0x72 command.
+fn push_colours(conn: &mut midir::MidiOutputConnection, colours: &[u8; 8]) -> R<()> {
+    let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x72];
+    m.extend(colours.iter().copied());
+    m.push(0xF7);
+    conn.send(&m)?;
+    Ok(())
+}
+
+/// Is the ring palette rich enough for a smooth gradient? We've only used
+/// indices 1/4/5 (red/blue/magenta). This handshakes then walks the FULL 0x72
+/// index range across the 8 dials in blocks, labelling each with its index, so
+/// we can see whether values above 7 are new hues (=> gradient possible) or
+/// just repeats of the basic 8 (=> gradient needs the OSC preset).
+fn gradient() -> R<()> {
+    // Handshake (colour behaved best connected).
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let probe = MidiInput::new("probe")?;
+    let in_names: Vec<String> = probe
+        .ports()
+        .iter()
+        .filter_map(|p| probe.port_name(p).ok())
+        .filter(|n| n.to_lowercase().contains(MATCH))
+        .collect();
+    let mut conns = Vec::new();
+    for name in &in_names {
+        let mut mi = MidiInput::new("probe")?;
+        mi.ignore(Ignore::None);
+        let port = mi
+            .ports()
+            .into_iter()
+            .find(|p| mi.port_name(p).map(|n| &n == name).unwrap_or(false))
+            .ok_or("port vanished")?;
+        let t = tx.clone();
+        conns.push(mi.connect(
+            &port,
+            "probe-in",
+            move |_ts, msg, _| {
+                if msg.first() == Some(&0xF0) {
+                    let _ = t.send(msg.to_vec());
+                }
+            },
+            (),
+        )?);
+    }
+    let out_name = out_ports()?.into_iter().next().ok_or("no output")?;
+    let mut conn = open_out(&out_name)?;
+    conn.send(&[0xF0, 0x00, 0x00, 0x66, 0x14, 0x00, 0xF7])?;
+    if let Ok(reply) = rx.recv_timeout(Duration::from_secs(3)) {
+        if reply.len() >= 18 && reply[5] == 0x01 {
+            let serial = reply[6..13].to_vec();
+            let resp = mcu_response(&reply[13..17]);
+            let mut hs = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x02];
+            hs.extend(&serial);
+            hs.extend(resp);
+            hs.push(0xF7);
+            conn.send(&hs)?;
+        }
+    }
+    println!("connection live\n");
+
+    // Blocks of 8 consecutive indices, so adjacent dials reveal any smooth step.
+    let blocks: [[u8; 8]; 4] = [
+        [0, 1, 2, 3, 4, 5, 6, 7],
+        [8, 9, 10, 11, 12, 13, 14, 15],
+        [16, 20, 24, 28, 32, 40, 48, 56],
+        [64, 72, 80, 90, 100, 110, 120, 127],
+    ];
+
+    for (bi, block) in blocks.iter().enumerate() {
+        // Label each dial with its index value.
+        let mut row = Vec::new();
+        for idx in block {
+            row.extend(pad7(&format!("i{idx}")));
+        }
+        let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x12, 0x00];
+        m.extend(row);
+        m.push(0xF7);
+        conn.send(&m)?;
+
+        let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x72];
+        m.extend(block.iter().copied());
+        m.push(0xF7);
+        conn.send(&m)?;
+
+        println!(
+            ">>> BLOCK {} — dials show indices {:?} (hold 6s)",
+            bi + 1,
+            block
+        );
+        sleep(Duration::from_secs(6));
+    }
+
+    // Tidy.
+    let mut black = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x72];
+    black.extend(vec![0u8; 8]);
+    black.push(0xF7);
+    conn.send(&black)?;
+
+    println!("\nAcross the 4 blocks: how many DISTINCT colours did you see?");
+    println!("If only ~8 (repeating), the palette is fixed -> no MIDI gradient.");
+    println!("If indices kept producing NEW shades, a gradient IS possible.");
+    Ok(())
+}
+
+/// Drive + monitor the master dial via CC 0x3C (its MIDI-mode Light/Position).
+/// Tries raw first (MIDI mode is not MCU, so no handshake needed), then a
+/// handshaked pass as fallback, then a short window to catch the dial's own
+/// CC 0x3C when turned. A single 0-127 value = brightness/position, not hue.
+fn master3c() -> R<()> {
+    let probe = MidiInput::new("probe")?;
+    let in_names: Vec<String> = probe
+        .ports()
+        .iter()
+        .filter_map(|p| probe.port_name(p).ok())
+        .filter(|n| n.to_lowercase().contains(MATCH))
+        .collect();
+    let mut conns = Vec::new();
+    for name in &in_names {
+        let mut mi = MidiInput::new("probe")?;
+        mi.ignore(Ignore::ActiveSense);
+        let port = mi
+            .ports()
+            .into_iter()
+            .find(|p| mi.port_name(p).map(|n| &n == name).unwrap_or(false))
+            .ok_or("port vanished")?;
+        let tag = name.clone();
+        conns.push(mi.connect(
+            &port,
+            "probe-in",
+            move |_ts, msg, _| {
+                // Only surface CC traffic (the master dial's own 0x3C).
+                if msg.first().map(|b| b & 0xF0) == Some(0xB0) {
+                    println!("   <<< {tag} {} {}", hex(msg), decode(msg));
+                }
+            },
+            (),
+        )?);
+    }
+
+    let out_name = out_ports()?.into_iter().next().ok_or("no output")?;
+    let mut conn = open_out(&out_name)?;
+
+    let sweep = |conn: &mut midir::MidiOutputConnection| -> R<()> {
+        for v in [0u8, 20, 40, 64, 90, 110, 127, 90, 64, 20, 0] {
+            conn.send(&[0xB0, 0x3C, v])?;
+            println!("   CC 0x3C = {v}");
+            sleep(Duration::from_millis(450));
+        }
+        Ok(())
+    };
+
+    println!("PHASE 1 — RAW (no handshake): sweep CC 0x3C 0..127..0");
+    sweep(&mut conn)?;
+
+    println!("\nPHASE 2 — after MCU handshake, same sweep");
+    conn.send(&[0xF0, 0x00, 0x00, 0x66, 0x14, 0x00, 0xF7])?;
+    sleep(Duration::from_millis(400));
+    // Best-effort handshake reply is handled by the surface; we can't read it
+    // here (the input callback only prints CC), so just answer blind is skipped
+    // — many MIDI-mode configs don't gate. Re-sweep regardless.
+    sweep(&mut conn)?;
+
+    println!("\nPHASE 3 — turn the MASTER DIAL now (watching for CC 0x3C in) ~8s");
+    sleep(Duration::from_secs(8));
+
+    conn.send(&[0xB0, 0x3C, 0])?;
+    println!("\nDid the master dial light / move during phase 1 or 2?");
+    println!("And did turning it print a '<<< ... CC ... 0x3C' line in phase 3?");
+    Ok(())
+}
+
+/// Value-as-colour demo across the 8 channel dials: each gets a temp value and
+/// a colour on a **dark-violet (low) -> red (high)** ramp, with the value shown
+/// on its scribble strip. Fires TWO colour encodings so we learn which the D700
+/// honours, watching the result decides the format:
+///   1. RGB triplets — 0x72 + 24 bytes (3 per dial). A smooth ramp = RGB works.
+///   2. indexed palette — 0x72 + 8 bytes (one index per dial), best-guess
+///      violet->red using the X-Touch palette (5 magenta .. 1 red).
+///
+/// 7-bit clamps applied (SysEx data must be 0-127).
+fn heat() -> R<()> {
+    // Handshake so the surface is live (colour has behaved better connected).
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let probe = MidiInput::new("probe")?;
+    let in_names: Vec<String> = probe
+        .ports()
+        .iter()
+        .filter_map(|p| probe.port_name(p).ok())
+        .filter(|n| n.to_lowercase().contains(MATCH))
+        .collect();
+    let mut conns = Vec::new();
+    for name in &in_names {
+        let mut mi = MidiInput::new("probe")?;
+        mi.ignore(Ignore::None);
+        let port = mi
+            .ports()
+            .into_iter()
+            .find(|p| mi.port_name(p).map(|n| &n == name).unwrap_or(false))
+            .ok_or("port vanished")?;
+        let t = tx.clone();
+        conns.push(mi.connect(
+            &port,
+            "probe-in",
+            move |_ts, msg, _| {
+                if msg.first() == Some(&0xF0) {
+                    let _ = t.send(msg.to_vec());
+                }
+            },
+            (),
+        )?);
+    }
+    let out_name = out_ports()?.into_iter().next().ok_or("no output")?;
+    let mut conn = open_out(&out_name)?;
+    conn.send(&[0xF0, 0x00, 0x00, 0x66, 0x14, 0x00, 0xF7])?;
+    if let Ok(reply) = rx.recv_timeout(Duration::from_secs(3)) {
+        if reply.len() >= 18 && reply[5] == 0x01 {
+            let serial = reply[6..13].to_vec();
+            let resp = mcu_response(&reply[13..17]);
+            let mut hs = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x02];
+            hs.extend(&serial);
+            hs.extend(resp);
+            hs.push(0xF7);
+            conn.send(&hs)?;
+        }
+    }
+    println!("connection live\n");
+
+    // Eight temp "values" (percent), ascending so the ramp is obvious.
+    let vals: [u8; 8] = [8, 20, 33, 46, 58, 71, 84, 97];
+
+    // Label each strip: row 1 "Dial N", row 2 "NN%".
+    let mut row1 = Vec::new();
+    let mut row2 = Vec::new();
+    for (i, v) in vals.iter().enumerate() {
+        row1.extend(pad7(&format!("Dial {}", i + 1)));
+        row2.extend(pad7(&format!("{v}%")));
+    }
+    for (off, data) in [(0x00u8, &row1), (0x38u8, &row2)] {
+        let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x12, off];
+        m.extend(data.iter().copied());
+        m.push(0xF7);
+        conn.send(&m)?;
+    }
+
+    // Map a 0..100 value to a 7-bit violet->red RGB triplet.
+    // Dark violet ~ (30,0,50); red ~ (127,0,0). R rises, B falls, G stays 0.
+    let rgb = |v: u8| -> (u8, u8, u8) {
+        let t = (v as f32 / 100.0).clamp(0.0, 1.0);
+        let r = (30.0 + t * 97.0).round() as u8;
+        let b = (50.0 * (1.0 - t)).round() as u8;
+        (r.min(127), 0, b.min(127))
+    };
+
+    println!("ATTEMPT 1 — RGB triplets: 0x72 + 24 bytes (3 per dial)");
+    let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x72];
+    for v in vals {
+        let (r, g, b) = rgb(v);
+        m.extend([r, g, b]);
+        println!("   dial {:>2}%  rgb=({r},{g},{b})", v);
+    }
+    m.push(0xF7);
+    conn.send(&m)?;
+    println!("   -> smooth violet->red ramp across the 8 dials? (RGB works)");
+    sleep(Duration::from_secs(6));
+
+    println!("\nATTEMPT 2 — indexed palette: 0x72 + 8 bytes (violet->red buckets)");
+    // X-Touch palette has no true gradient; approximate low->high as
+    // magenta(5) -> blue(4) -> red(1) buckets so SOMETHING tracks value.
+    let idx = |v: u8| -> u8 {
+        match v {
+            0..=39 => 5,  // magenta (violet-ish)
+            40..=69 => 4, // blue
+            _ => 1,       // red
+        }
+    };
+    let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x72];
+    for v in vals {
+        let c = idx(v);
+        m.extend([c]);
+        println!("   dial {:>2}%  index={c}", v);
+    }
+    m.push(0xF7);
+    conn.send(&m)?;
+    println!("   -> 8 dials in violet/blue/red buckets? (indexed palette)");
+    sleep(Duration::from_secs(6));
+
+    println!("\nWhich attempt tracked the values, and did the colours read as a");
+    println!("violet->red progression? That tells us the D700's colour format.");
+    Ok(())
+}
+
+/// Live master-dial FEEDBACK attempt. The dial reports as MCU channel 9
+/// (pitch-bend ch9), so this handshakes and then, on the live connection:
+///   A. echoes pitch-bend ch9 back across the range — does the ring show
+///      POSITION (light up / move) the way a motor fader or ring would?
+///   B. drives V-Pot-ring position on the "9th" ring CC (0x38) — some layouts
+///      put the master ring just above the 8 channel rings.
+///   C. one more 0x72 colour try with the 9th byte, cycling colours.
+///
+/// Watch the master dial for ANY change (position lights or colour).
+fn mpos() -> R<()> {
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let probe = MidiInput::new("probe")?;
+    let in_names: Vec<String> = probe
+        .ports()
+        .iter()
+        .filter_map(|p| probe.port_name(p).ok())
+        .filter(|n| n.to_lowercase().contains(MATCH))
+        .collect();
+    let mut conns = Vec::new();
+    for name in &in_names {
+        let mut mi = MidiInput::new("probe")?;
+        mi.ignore(Ignore::None);
+        let port = mi
+            .ports()
+            .into_iter()
+            .find(|p| mi.port_name(p).map(|n| &n == name).unwrap_or(false))
+            .ok_or("port vanished")?;
+        let t = tx.clone();
+        conns.push(mi.connect(
+            &port,
+            "probe-in",
+            move |_ts, msg, _| {
+                if msg.first() == Some(&0xF0) {
+                    let _ = t.send(msg.to_vec());
+                }
+            },
+            (),
+        )?);
+    }
+
+    let out_name = out_ports()?.into_iter().next().ok_or("no output")?;
+    let mut conn = open_out(&out_name)?;
+    println!(">>> handshake");
+    conn.send(&[0xF0, 0x00, 0x00, 0x66, 0x14, 0x00, 0xF7])?;
+    if let Ok(reply) = rx.recv_timeout(Duration::from_secs(3)) {
+        if reply.len() >= 18 && reply[5] == 0x01 {
+            let serial = reply[6..13].to_vec();
+            let resp = mcu_response(&reply[13..17]);
+            let mut hs = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x02];
+            hs.extend(&serial);
+            hs.extend(resp);
+            hs.push(0xF7);
+            conn.send(&hs)?;
+            println!("    connection live\n");
+        }
+    }
+
+    println!("PART A — echo pitch-bend ch9 (master) position 0 -> full -> 0");
+    for pos in [0u16, 2048, 4096, 8192, 12288, 16383, 8192, 0] {
+        conn.send(&[0xE8, (pos & 0x7F) as u8, (pos >> 7) as u8])?;
+        println!("   PB ch9 = {pos}");
+        sleep(Duration::from_millis(700));
+    }
+
+    println!("\nPART B — V-Pot ring position on CC 0x38 (the '9th' ring)");
+    for v in [0x01u8, 0x03, 0x06, 0x0B, 0x2B, 0x00] {
+        conn.send(&[0xB0, 0x38, v])?;
+        println!("   CC 0x38 = 0x{v:02X}");
+        sleep(Duration::from_millis(600));
+    }
+
+    println!("\nPART C — 0x72 colour, 9th byte cycling colours (strips 1-8 black)");
+    for (c, name) in [(1u8, "red"), (2, "green"), (4, "blue"), (7, "white")] {
+        let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x72];
+        m.extend(vec![0u8; 8]);
+        m.push(c);
+        m.push(0xF7);
+        conn.send(&m)?;
+        println!("   0x72 9th byte = {c} ({name})");
+        sleep(Duration::from_millis(1200));
+    }
+
+    // tidy
+    conn.send(&[0xB0, 0x38, 0])?;
+    let mut black = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x72];
+    black.extend(vec![0u8; 8]);
+    black.push(0xF7);
+    conn.send(&black)?;
+
+    println!("\nDid the master dial do ANYTHING in A, B, or C?");
+    Ok(())
+}
+
+/// Handshake, hold the connection live, then MONITOR input for `secs`.
+///
+/// The surface is handshake-gated, so a plain `mon` sees nothing. This brings
+/// the connection up first, then prints decoded traffic — use it to confirm a
+/// freshly-mapped control transmits (e.g. the master dial set to Jog should
+/// emit CC 0x3C relative when turned).
+fn monlive(secs: u64) -> R<()> {
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let probe = MidiInput::new("probe")?;
+    let in_names: Vec<String> = probe
+        .ports()
+        .iter()
+        .filter_map(|p| probe.port_name(p).ok())
+        .filter(|n| n.to_lowercase().contains(MATCH))
+        .collect();
+    let mut conns = Vec::new();
+    for name in &in_names {
+        let mut mi = MidiInput::new("probe")?;
+        mi.ignore(Ignore::ActiveSense);
+        let port = mi
+            .ports()
+            .into_iter()
+            .find(|p| mi.port_name(p).map(|n| &n == name).unwrap_or(false))
+            .ok_or("port vanished")?;
+        let t = tx.clone();
+        let tag = name.clone();
+        conns.push(mi.connect(
+            &port,
+            "probe-in",
+            move |_ts, msg, _| {
+                if msg.first() == Some(&0xF0) {
+                    let _ = t.send(msg.to_vec());
+                }
+                println!("{:<16} {:<26} {}", tag, hex(msg), decode(msg));
+            },
+            (),
+        )?);
+    }
+
+    let out_name = out_ports()?.into_iter().next().ok_or("no output")?;
+    let mut conn = open_out(&out_name)?;
+    println!(">>> handshake");
+    conn.send(&[0xF0, 0x00, 0x00, 0x66, 0x14, 0x00, 0xF7])?;
+    if let Ok(reply) = rx.recv_timeout(Duration::from_secs(3)) {
+        if reply.len() >= 18 && reply[5] == 0x01 {
+            let serial = reply[6..13].to_vec();
+            let resp = mcu_response(&reply[13..17]);
+            let mut hs = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x02];
+            hs.extend(&serial);
+            hs.extend(resp);
+            hs.push(0xF7);
+            conn.send(&hs)?;
+            println!("    connection reply sent (surface should be live)");
+        }
+    } else {
+        println!("    (no handshake reply — monitoring anyway)");
+    }
+
+    println!("\n--- turn the MASTER DIAL (and move faders/buttons) for {secs}s ---");
+    println!("{:<16} {:<26} MEANING", "PORT", "RAW");
+    sleep(Duration::from_secs(secs));
+    println!("--- done ---");
     Ok(())
 }
 
