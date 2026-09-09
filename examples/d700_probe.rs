@@ -3625,7 +3625,11 @@ fn clickprobe(secs: u64) -> R<()> {
             .into_iter()
             .find(|p| mi.port_name(p).map(|n| &n == name).unwrap_or(false))
             .ok_or("port vanished")?;
-        let tag = if name.to_lowercase().contains("midiin2") { "MIDI b2" } else { "MIDI b1" };
+        let tag = if name.to_lowercase().contains("midiin2") {
+            "MIDI b2"
+        } else {
+            "MIDI b1"
+        };
         let log = Arc::clone(&log);
         conns.push(mi.connect(
             &port,
@@ -3640,8 +3644,11 @@ fn clickprobe(secs: u64) -> R<()> {
                             if msg[2] > 0 { "DOWN" } else { "UP" }
                         ),
                         0xB0 => format!("CC 0x{:02X} = {}", msg[1], msg[2]),
-                        0xE0 => format!("PB ch{} = {}", (msg[0] & 0x0F) + 1,
-                                        ((msg[2] as u16) << 7) | msg[1] as u16),
+                        0xE0 => format!(
+                            "PB ch{} = {}",
+                            (msg[0] & 0x0F) + 1,
+                            ((msg[2] as u16) << 7) | msg[1] as u16
+                        ),
                         _ => return,
                     },
                     _ => return,
@@ -3657,7 +3664,9 @@ fn clickprobe(secs: u64) -> R<()> {
     let deadline = std::time::Instant::now() + Duration::from_secs(secs);
     let mut handles = Vec::new();
     for port in [7001u16, 8000, 8001, 9000] {
-        let Ok(sock) = UdpSocket::bind(("0.0.0.0", port)) else { continue };
+        let Ok(sock) = UdpSocket::bind(("0.0.0.0", port)) else {
+            continue;
+        };
         sock.set_read_timeout(Some(Duration::from_millis(200))).ok();
         println!("OSC listening on {port}");
         let log = Arc::clone(&log);
@@ -3666,9 +3675,12 @@ fn clickprobe(secs: u64) -> R<()> {
             while std::time::Instant::now() < deadline {
                 if let Ok((n, _)) = sock.recv_from(&mut buf) {
                     let ms = std::time::Instant::now().duration_since(t0).as_millis();
-                    if let Ok((_, rosc::OscPacket::Message(m))) = rosc::decoder::decode_udp(&buf[..n]) {
+                    if let Ok((_, rosc::OscPacket::Message(m))) =
+                        rosc::decoder::decode_udp(&buf[..n])
+                    {
                         let a: Vec<String> = m.args.iter().map(|x| format!("{x:?}")).collect();
-                        log.lock().unwrap()
+                        log.lock()
+                            .unwrap()
                             .push((ms, format!("OSC      {} [{}]", m.addr, a.join(", "))));
                     }
                 }
@@ -3676,10 +3688,14 @@ fn clickprobe(secs: u64) -> R<()> {
         }));
     }
 
-    println!("
-capturing {secs}s - SINGLE-click a control, pause, then DOUBLE-click it");
-    println!("do one control at a time, with clear gaps between
-");
+    println!(
+        "
+capturing {secs}s - SINGLE-click a control, pause, then DOUBLE-click it"
+    );
+    println!(
+        "do one control at a time, with clear gaps between
+"
+    );
     sleep(Duration::from_secs(secs));
     for h in handles {
         let _ = h.join();
@@ -3697,8 +3713,11 @@ capturing {secs}s - SINGLE-click a control, pause, then DOUBLE-click it");
         }
         prev = Some(*ms);
     }
-    println!("
-{} events. Look for: does a double click produce TWO MIDI", v.len());
+    println!(
+        "
+{} events. Look for: does a double click produce TWO MIDI",
+        v.len()
+    );
     println!("note-ons, and does OSC show a click AND a dClick, or dClick alone?");
     Ok(())
 }
@@ -3725,7 +3744,9 @@ fn oscscan(secs: u64) -> R<()> {
     candidates.extend([10000u16, 10023, 53000, 3819, 8080]);
 
     for port in candidates {
-        let Ok(sock) = UdpSocket::bind(("0.0.0.0", port)) else { continue };
+        let Ok(sock) = UdpSocket::bind(("0.0.0.0", port)) else {
+            continue;
+        };
         sock.set_read_timeout(Some(Duration::from_millis(200))).ok();
         bound.push(port);
         let log = Arc::clone(&log);
@@ -3749,9 +3770,11 @@ fn oscscan(secs: u64) -> R<()> {
 
     println!("listening on {} ports for {secs}s", bound.len());
     println!("range: 7001-7010, 8000-8010, 9000-9010, plus 10000/10023/53000/3819/8080");
-    println!("
+    println!(
+        "
 work the controls now - single clicks, then double clicks
-");
+"
+    );
     sleep(Duration::from_secs(secs));
     for h in handles {
         let _ = h.join();
@@ -3774,8 +3797,11 @@ work the controls now - single clicks, then double clicks
         let mut ports: Vec<u16> = v.iter().map(|(_, p, _)| *p).collect();
         ports.sort_unstable();
         ports.dedup();
-        println!("
-{} events. Connector is transmitting to: {ports:?}", v.len());
+        println!(
+            "
+{} events. Connector is transmitting to: {ports:?}",
+            v.len()
+        );
     }
     Ok(())
 }
@@ -3813,7 +3839,11 @@ fn rawprobe(secs: u64) -> R<()> {
             .into_iter()
             .find(|p| mi.port_name(p).map(|n| &n == name).unwrap_or(false))
             .ok_or("port vanished")?;
-        let tag = if name.to_lowercase().contains("midiin2") { "b2" } else { "b1" };
+        let tag = if name.to_lowercase().contains("midiin2") {
+            "b2"
+        } else {
+            "b1"
+        };
         let log = Arc::clone(&log);
         conns.push(mi.connect(
             &port,
@@ -3848,12 +3878,16 @@ fn rawprobe(secs: u64) -> R<()> {
     // The device stays quiet on HID until a host session exists.
     dev.write(&[0x08, 0x2a, 0x2b, 0x29, 0x2c, 0x28, 0x00, 0x00, 0x00])?;
     sleep(Duration::from_millis(250));
-    println!("HID interface open, session started
-");
+    println!(
+        "HID interface open, session started
+"
+    );
 
     let deadline = std::time::Instant::now() + Duration::from_secs(secs);
-    println!("capturing {secs}s - tap, hold, then double-click the same button
-");
+    println!(
+        "capturing {secs}s - tap, hold, then double-click the same button
+"
+    );
 
     let mut buf = [0u8; 64];
     while std::time::Instant::now() < deadline {
@@ -3887,7 +3921,9 @@ fn rawprobe(secs: u64) -> R<()> {
                     0xE0 => continue, // faders: too chatty for this question
                     _ => format!("{st:02X} {d1:02X} {d2:02X}"),
                 };
-                log.lock().unwrap().push((ms, format!("HID  bank{port}  {what}")));
+                log.lock()
+                    .unwrap()
+                    .push((ms, format!("HID  bank{port}  {what}")));
             }
             _ => {}
         }
@@ -3904,8 +3940,11 @@ fn rawprobe(secs: u64) -> R<()> {
         }
         prev = Some(*ms);
     }
-    println!("
-{} events. A HID event BEFORE its MIDI counterpart means HID", v.len());
+    println!(
+        "
+{} events. A HID event BEFORE its MIDI counterpart means HID",
+        v.len()
+    );
     println!("sees the raw switch, and the gap is the firmware's added latency.");
     Ok(())
 }
