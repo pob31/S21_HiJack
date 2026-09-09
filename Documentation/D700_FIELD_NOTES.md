@@ -70,6 +70,11 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 31a | The native MIDI RGB command's CC number | Unknown |
 | 32 | **HID session-open handshake** captured and replayed successfully | Confirmed on hardware |
 | 33 | **Full 8-bit RGB over HID, no vendor software required** | Confirmed on hardware |
+| 34 | Double-click is a **per-button firmware feature**, off by default | Confirmed on hardware |
+| 34a | It is **suppressive**: the single is withheld until the gesture resolves | Confirmed on hardware |
+| 34b | A deliberate press resolves early and reports **real** duration | Confirmed on hardware |
+| 34c | The processing sits **below the protocol layer** — preset-independent | Confirmed on hardware |
+| 34d | The resolve delay in milliseconds | Unknown |
 
 ## Findings
 
@@ -894,6 +899,65 @@ application, no preset dependence — and finer colour than Asparion's own docum
 The trade-off recorded in finding 32 still stands: the Connector holds the HID interface
 exclusively, so S21_HiJack and the Connector cannot both use it. Direct HID means the
 Connector is not running.
+
+### 34. Double-click, and what it costs — Confirmed on hardware
+
+The `*` (magic) button can emit **F1 (`0x36`) on a single click and F2 (`0x37`) on a double**.
+This is not a Mackie concept; it is an Asparion firmware feature, **off by default** and enabled
+per button by a checkbox in the Configurator. Before ticking it, 262 star-button events across
+two captures produced only F1, at every interval from 51 ms upward.
+
+**It is suppressive, not additive.** The single click is withheld until the gesture resolves; a
+double emits F2 *alone*, never F1 followed by F2. This was established by the operator directly,
+watching down-stroke latency in Max — better evidence than event grouping, and it corrected an
+earlier reading of these same captures that had it backwards.
+
+**Three timing regimes** (the operator's formulation, and it matches every capture):
+
+| Case | What is precise |
+| --- | --- |
+| Double-click **off** | the **down stroke** — real switch timing, 48–258 ms press durations |
+| Double-click **on**, deliberate press | the **release** — the press resolves early and reports real duration |
+| Everything else | cooked by the firmware, with latency |
+
+The middle case is the useful one and follows from the firmware being sensible: a double click is
+by definition *two short clicks*, so a press held past the short-click threshold can no longer be
+half of one. The device resolves it immediately and then reports the genuine release.
+
+Measured, with double-click enabled:
+
+| Gesture | Reported DOWN→UP |
+| --- | --- |
+| Quick taps | 0–70 ms |
+| **Deliberate holds** | **863, 877, 1224, 1540, 1568, 1728, 2188 ms** — real |
+| Doubles (F2) | 0–5 ms — a synthesised pulse |
+
+So **reported duration = real hold − resolve delay**, which is why a tap leaves almost nothing and
+a two-second hold leaves almost all of it. The resolve delay itself (34d) was not measured; it
+needs a hold of known duration, and `known − reported` gives it.
+
+**It is preset-independent.** Basic MIDI produced byte-identical behaviour to Mackie — same notes,
+same timing signature. So the processing sits below the protocol layer, in the switch scanning,
+and no host-side choice avoids it.
+
+**The raw switch is not visible to any host over MIDI.** HID is the only candidate route: yesterday's
+bus capture proved it carries the raw surface protocol, but replaying only the session handshake
+produced no button events. The Connector's startup also performs `08 2a 21 01`, `08 2a 22 23 15`,
+`08 2a 20 0b 02` and `08 2a 20 0a` exchanges, one of which likely arms the realtime input stream.
+Until those are replayed, firmware-processed events are all we get.
+
+### Design consequences
+
+1. **Bind on release, not on press.** The release is a real event under the operator's control and
+   is precise in the deliberate-press case; the down stroke is not, once double-click is on.
+2. **Double-click is for escalation, never alternation.** Panic → Hard Panic works. Go → Undo Go
+   does not: F1 has already fired, so the second action would have to reverse the first, and with
+   a GO the audio has already escaped (`§4.5` of the Go.dot PRD is explicit about this).
+3. **Keep it off anything where a late single click matters.** A graceful panic that fades can
+   absorb 0.4 s; a GO cannot.
+4. **Layout is where this gets decided.** Which buttons carry double-click is a design choice with
+   a latency cost attached, and it should be made deliberately rather than because the checkbox was
+   available.
 
 ## Implications for the sidecar
 

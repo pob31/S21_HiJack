@@ -80,6 +80,9 @@ fn main() -> R<()> {
         "hidshow" => hidshow(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(40)),
         "lightshow" => lightshow(),
         "btime" => btime(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(45)),
+        "clickprobe" => clickprobe(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(45)),
+        "oscscan" => oscscan(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(45)),
+        "rawprobe" => rawprobe(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(45)),
         _ => {
             eprintln!("usage: d700 [list | mon <secs> | lcd <text> | sweep | leds]");
             Ok(())
@@ -3578,5 +3581,331 @@ fn btime(secs: u64) -> R<()> {
 {bounces} gap(s) under 30 ms - those are bounces or firmware doubles."
     );
     println!("80-400 ms gaps are human double-clicks; over 500 ms, separate presses.");
+    Ok(())
+}
+
+/// Double-click investigation: MIDI and OSC on ONE timeline, with timestamps.
+///
+/// The operator mapped `clickLED` and `dClick` per control in the Connector, so
+/// the device evidently has a firmware notion of a double click - that is not a
+/// Mackie concept. Two questions follow, and both need timing:
+///
+///   1. **Additive or suppressive?** If a double click emits the single event
+///      AND a dClick, it is additive and costs no latency. If it emits only
+///      dClick, the single was withheld while the device waited - which delays
+///      every single click by the detection window.
+///   2. **Where does the doubling live?** If MIDI shows two note-ons where HID
+///      or OSC shows one click plus one dClick, the doubling is in the MCU
+///      translation rather than the switch.
+///
+/// Listens to every D700 MIDI input and the Connector's likely Tx ports at once,
+/// timestamps everything against a common origin, and prints the merged timeline
+/// sorted at the end (live output from several threads interleaves badly).
+fn clickprobe(secs: u64) -> R<()> {
+    use std::net::UdpSocket;
+    use std::sync::{Arc, Mutex};
+
+    let t0 = std::time::Instant::now();
+    let log: Arc<Mutex<Vec<(u128, String)>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // ---- MIDI inputs -------------------------------------------------------
+    let probe = MidiInput::new("probe")?;
+    let names: Vec<String> = probe
+        .ports()
+        .iter()
+        .filter_map(|p| probe.port_name(p).ok())
+        .filter(|n| n.to_lowercase().contains(MATCH))
+        .collect();
+    let mut conns = Vec::new();
+    for name in &names {
+        let mut mi = MidiInput::new("probe")?;
+        mi.ignore(Ignore::ActiveSense);
+        let port = mi
+            .ports()
+            .into_iter()
+            .find(|p| mi.port_name(p).map(|n| &n == name).unwrap_or(false))
+            .ok_or("port vanished")?;
+        let tag = if name.to_lowercase().contains("midiin2") { "MIDI b2" } else { "MIDI b1" };
+        let log = Arc::clone(&log);
+        conns.push(mi.connect(
+            &port,
+            "probe-in",
+            move |_ts, msg, _| {
+                let ms = std::time::Instant::now().duration_since(t0).as_millis();
+                let d = match msg.len() {
+                    3 => match msg[0] & 0xF0 {
+                        0x90 => format!(
+                            "note 0x{:02X} {}",
+                            msg[1],
+                            if msg[2] > 0 { "DOWN" } else { "UP" }
+                        ),
+                        0xB0 => format!("CC 0x{:02X} = {}", msg[1], msg[2]),
+                        0xE0 => format!("PB ch{} = {}", (msg[0] & 0x0F) + 1,
+                                        ((msg[2] as u16) << 7) | msg[1] as u16),
+                        _ => return,
+                    },
+                    _ => return,
+                };
+                log.lock().unwrap().push((ms, format!("{tag:<8} {d}")));
+            },
+            (),
+        )?);
+    }
+    println!("MIDI inputs: {}", conns.len());
+
+    // ---- OSC listeners -----------------------------------------------------
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    let mut handles = Vec::new();
+    for port in [7001u16, 8000, 8001, 9000] {
+        let Ok(sock) = UdpSocket::bind(("0.0.0.0", port)) else { continue };
+        sock.set_read_timeout(Some(Duration::from_millis(200))).ok();
+        println!("OSC listening on {port}");
+        let log = Arc::clone(&log);
+        handles.push(std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            while std::time::Instant::now() < deadline {
+                if let Ok((n, _)) = sock.recv_from(&mut buf) {
+                    let ms = std::time::Instant::now().duration_since(t0).as_millis();
+                    if let Ok((_, rosc::OscPacket::Message(m))) = rosc::decoder::decode_udp(&buf[..n]) {
+                        let a: Vec<String> = m.args.iter().map(|x| format!("{x:?}")).collect();
+                        log.lock().unwrap()
+                            .push((ms, format!("OSC      {} [{}]", m.addr, a.join(", "))));
+                    }
+                }
+            }
+        }));
+    }
+
+    println!("
+capturing {secs}s - SINGLE-click a control, pause, then DOUBLE-click it");
+    println!("do one control at a time, with clear gaps between
+");
+    sleep(Duration::from_secs(secs));
+    for h in handles {
+        let _ = h.join();
+    }
+
+    // ---- merged timeline ---------------------------------------------------
+    let mut v = log.lock().unwrap().clone();
+    v.sort_by_key(|(t, _)| *t);
+    println!("--- merged timeline ---");
+    let mut prev: Option<u128> = None;
+    for (ms, what) in &v {
+        match prev {
+            Some(p) => println!("  {ms:>7} ms  (+{:>5}) {what}", ms - p),
+            None => println!("  {ms:>7} ms  (     ) {what}"),
+        }
+        prev = Some(*ms);
+    }
+    println!("
+{} events. Look for: does a double click produce TWO MIDI", v.len());
+    println!("note-ons, and does OSC show a click AND a dClick, or dClick alone?");
+    Ok(())
+}
+
+/// Where is the Connector transmitting? Bind a wide range of UDP ports and
+/// report anything that arrives, with timestamps and deltas.
+///
+/// Used when the Connector's Tx port is unknown or has moved: rather than
+/// hunting through its UI, listen everywhere plausible at once.
+fn oscscan(secs: u64) -> R<()> {
+    use std::net::UdpSocket;
+    use std::sync::{Arc, Mutex};
+
+    let t0 = std::time::Instant::now();
+    let log: Arc<Mutex<Vec<(u128, u16, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    let mut handles = Vec::new();
+    let mut bound = Vec::new();
+
+    let mut candidates: Vec<u16> = Vec::new();
+    candidates.extend(7001..=7010);
+    candidates.extend(8000..=8010);
+    candidates.extend(9000..=9010);
+    candidates.extend([10000u16, 10023, 53000, 3819, 8080]);
+
+    for port in candidates {
+        let Ok(sock) = UdpSocket::bind(("0.0.0.0", port)) else { continue };
+        sock.set_read_timeout(Some(Duration::from_millis(200))).ok();
+        bound.push(port);
+        let log = Arc::clone(&log);
+        handles.push(std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            while std::time::Instant::now() < deadline {
+                if let Ok((n, _)) = sock.recv_from(&mut buf) {
+                    let ms = std::time::Instant::now().duration_since(t0).as_millis();
+                    let d = match rosc::decoder::decode_udp(&buf[..n]) {
+                        Ok((_, rosc::OscPacket::Message(m))) => {
+                            let a: Vec<String> = m.args.iter().map(|x| format!("{x:?}")).collect();
+                            format!("{} [{}]", m.addr, a.join(", "))
+                        }
+                        _ => format!("<{n} bytes, not an OSC message>"),
+                    };
+                    log.lock().unwrap().push((ms, port, d));
+                }
+            }
+        }));
+    }
+
+    println!("listening on {} ports for {secs}s", bound.len());
+    println!("range: 7001-7010, 8000-8010, 9000-9010, plus 10000/10023/53000/3819/8080");
+    println!("
+work the controls now - single clicks, then double clicks
+");
+    sleep(Duration::from_secs(secs));
+    for h in handles {
+        let _ = h.join();
+    }
+
+    let mut v = log.lock().unwrap().clone();
+    v.sort_by_key(|(t, _, _)| *t);
+    println!("--- timeline ---");
+    let mut prev: Option<u128> = None;
+    for (ms, port, what) in &v {
+        match prev {
+            Some(p) => println!("  {ms:>7} ms (+{:>5})  :{port}  {what}", ms - p),
+            None => println!("  {ms:>7} ms (     )  :{port}  {what}"),
+        }
+        prev = Some(*ms);
+    }
+    if v.is_empty() {
+        println!("  nothing arrived on any of those ports");
+    } else {
+        let mut ports: Vec<u16> = v.iter().map(|(_, p, _)| *p).collect();
+        ports.sort_unstable();
+        ports.dedup();
+        println!("
+{} events. Connector is transmitting to: {ports:?}", v.len());
+    }
+    Ok(())
+}
+
+/// Can we see the PHYSICAL press, or only the firmware's decision?
+///
+/// Over MIDI we only ever observe what the firmware chose to emit - with
+/// double-click enabled that is a synthesised pulse arriving after the
+/// detection window. The HID interface carries the RAW surface protocol of
+/// which MIDI is a translation (see the field notes), so if the double-click
+/// logic lives in that translation, HID should show the press immediately.
+///
+/// Reads HID input reports and MIDI on one timeline. The gap between a HID
+/// event and its MIDI counterpart IS the firmware's added latency.
+fn rawprobe(secs: u64) -> R<()> {
+    use std::sync::{Arc, Mutex};
+
+    let t0 = std::time::Instant::now();
+    let log: Arc<Mutex<Vec<(u128, String)>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // ---- MIDI ---------------------------------------------------------------
+    let probe = MidiInput::new("probe")?;
+    let names: Vec<String> = probe
+        .ports()
+        .iter()
+        .filter_map(|p| probe.port_name(p).ok())
+        .filter(|n| n.to_lowercase().contains(MATCH))
+        .collect();
+    let mut conns = Vec::new();
+    for name in &names {
+        let mut mi = MidiInput::new("probe")?;
+        mi.ignore(Ignore::ActiveSense);
+        let port = mi
+            .ports()
+            .into_iter()
+            .find(|p| mi.port_name(p).map(|n| &n == name).unwrap_or(false))
+            .ok_or("port vanished")?;
+        let tag = if name.to_lowercase().contains("midiin2") { "b2" } else { "b1" };
+        let log = Arc::clone(&log);
+        conns.push(mi.connect(
+            &port,
+            "probe-in",
+            move |_ts, msg, _| {
+                if msg.len() == 3 && (msg[0] & 0xF0) == 0x90 {
+                    let ms = std::time::Instant::now().duration_since(t0).as_millis();
+                    log.lock().unwrap().push((
+                        ms,
+                        format!(
+                            "MIDI {tag}  note 0x{:02X} {}",
+                            msg[1],
+                            if msg[2] > 0 { "DOWN" } else { "UP" }
+                        ),
+                    ));
+                }
+            },
+            (),
+        )?);
+    }
+    println!("MIDI inputs: {}", conns.len());
+
+    // ---- HID ----------------------------------------------------------------
+    let api = hidapi::HidApi::new()?;
+    let path = api
+        .device_list()
+        .find(|d| d.vendor_id() == 0x04D8 && d.product_id() == 0xE44E)
+        .map(|d| d.path().to_owned())
+        .ok_or("no D700 HID interface - is the Connector or Configurator holding it?")?;
+    let dev = api.open_path(&path)?;
+    dev.set_blocking_mode(false).ok();
+    // The device stays quiet on HID until a host session exists.
+    dev.write(&[0x08, 0x2a, 0x2b, 0x29, 0x2c, 0x28, 0x00, 0x00, 0x00])?;
+    sleep(Duration::from_millis(250));
+    println!("HID interface open, session started
+");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    println!("capturing {secs}s - tap, hold, then double-click the same button
+");
+
+    let mut buf = [0u8; 64];
+    while std::time::Instant::now() < deadline {
+        match dev.read_timeout(&mut buf, 5) {
+            Ok(n) if n >= 5 => {
+                let ms = std::time::Instant::now().duration_since(t0).as_millis();
+                // Report id is byte 0. Only 0x04 carries realtime control:
+                // 04 <port> <status> <d1> <d2>. 0x08 is keepalive/status.
+                if buf[0] != 0x04 {
+                    if buf[0] == 0x08 && buf[2] == 0x00 {
+                        continue; // keepalive - not interesting here
+                    }
+                    log.lock().unwrap().push((
+                        ms,
+                        format!(
+                            "HID  report 0x{:02X}  {}",
+                            buf[0],
+                            buf[..n.min(9)]
+                                .iter()
+                                .map(|b| format!("{b:02X}"))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        ),
+                    ));
+                    continue;
+                }
+                let (port, st, d1, d2) = (buf[1], buf[2], buf[3], buf[4]);
+                let what = match st & 0xF0 {
+                    0x90 => format!("note 0x{d1:02X} {}", if d2 > 0 { "DOWN" } else { "UP" }),
+                    0xB0 => format!("CC 0x{d1:02X} = {d2}"),
+                    0xE0 => continue, // faders: too chatty for this question
+                    _ => format!("{st:02X} {d1:02X} {d2:02X}"),
+                };
+                log.lock().unwrap().push((ms, format!("HID  bank{port}  {what}")));
+            }
+            _ => {}
+        }
+    }
+
+    let mut v = log.lock().unwrap().clone();
+    v.sort_by_key(|(t, _)| *t);
+    println!("--- merged timeline ---");
+    let mut prev: Option<u128> = None;
+    for (ms, what) in &v {
+        match prev {
+            Some(p) => println!("  {ms:>7} ms (+{:>5})  {what}", ms - p),
+            None => println!("  {ms:>7} ms (     )  {what}"),
+        }
+        prev = Some(*ms);
+    }
+    println!("
+{} events. A HID event BEFORE its MIDI counterpart means HID", v.len());
+    println!("sees the raw switch, and the gap is the firmware's added latency.");
     Ok(())
 }
