@@ -12,6 +12,14 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 **Confirmed on hardware**, **Documented**, **Reported, unverified**, **Assumed by analogy**,
 **Unknown**.
 
+## Companion document
+
+`D700_CONTROL_GUIDE.md` is the recipe book: how to drive every parameter, with
+the exact bytes, prerequisites and traps, written for an operator to follow and
+an implementer to work straight from. **This file is the evidence; that one is
+the distillation.** Where they disagree, this file is the record of what was
+measured.
+
 ## Hardware measured
 
 | | |
