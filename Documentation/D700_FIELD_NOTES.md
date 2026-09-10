@@ -80,6 +80,10 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 35b | Firmware runs an **idle animation** that reclaims the LEDs | Confirmed on hardware |
 | 35c | Whether provisioning a 4th element makes index `03` live | Unknown, now moot |
 | 36 | **Encoder RGB over MIDI**: note-on ch 2/3/4, note `0x20`+n | Confirmed on hardware |
+| 36c | An element's colour note **is its own button note** | Confirmed on hardware |
+| 36d | Master dial colours at note `0x38` (F3, its knob-press note) | Confirmed on hardware |
+| 36e | Only **17 elements have RGB**; other buttons are single-colour LEDs | Confirmed on hardware |
+| 36f | Colour is **preset-independent** (Mackie and Universal identical) | Confirmed on hardware |
 | 36a | `.aPres` files are the 2048-byte config block in hex | Confirmed |
 | 36b | `.aConPres` is XML mapping `(ExID, ID, ElType)` to OSC paths | Confirmed |
 
@@ -1060,6 +1064,46 @@ and Asparion's own phrasing — "the midi code listed in the configurator", "on 
 
 One bit of resolution per channel is the only thing HID wins, and against 128 levels it is not
 visible. **Use the MIDI path.**
+
+### 36c–36f. The rule, its reach, and its limit
+
+**An element's colour note is its own button note.** The encoders use `0x20`+n because that is
+`VPOT_CLICK0`, their V-Pot press note. The master dial uses `0x38` — `TRANSPORT.F3` in Asparion's
+script, and the same note our own day-one capture recorded for the master knob press. One rule,
+no special cases:
+
+```
+91 <button note> <r>     channel 2
+92 <button note> <g>     channel 3
+93 <button note> <b>     channel 4, triggers the refresh
+```
+
+**But only 17 elements have RGB hardware.** Painting the whole note space in coloured blocks —
+Rec `0x00`–`0x07`, Solo `0x08`–`0x0F`, Mute `0x10`–`0x17`, Select `0x18`–`0x1F`, V-Pots
+`0x20`–`0x27`, master section `0x28`–`0x3F`, rest `0x40`–`0x5F` — coloured only the rotaries and
+the master dial. **Every other button is a single-colour LED**, driven the ordinary MCU way with
+note-on on channel 1.
+
+So the surface's colour budget is:
+
+| Elements | Count | Colour |
+| --- | --- | --- |
+| Encoders (V-Pot rings/surrounds) | 16 | **full RGB**, 128 levels per channel |
+| Master dial | 1 | **full RGB** |
+| All other buttons | ~59 | on/off, single colour |
+
+**Preset-independent.** Identical behaviour under Mackie and Universal, which matters because the
+button *map* is not (finding 13: `*` moves between `0x36` and `0x5A`). Colour is therefore the most
+robust thing on this surface — physical addressing, no provisioning, vendor-documented, and
+unaffected by which preset the operator has loaded.
+
+### 36g. This closes findings 7d, 12 and 26 properly
+
+The master dial's colour took four failed MIDI hypotheses, a completed MCU handshake, a USB
+capture and a config-block analysis to conclude it was "a stored setting, not runtime
+controllable" (finding 26, later retracted via OSC). It is three MIDI messages. The HID route
+found on the second day works, but it was the hard way round, and the SysEx `0x72` path — eight
+colours, strips only — was never the real colour interface at all.
 
 The on/off Asparion mentioned — "you can turn it on/off without changing the colour on the first
 channel, 0 resp 1" — is note-on on **channel 1** (`0x90`) at the same note, which is the ordinary

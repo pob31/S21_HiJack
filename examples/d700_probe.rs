@@ -93,6 +93,8 @@ fn main() -> R<()> {
             args.get(4).and_then(|s| s.parse().ok()).unwrap_or(900),
         ),
         "mrgb" => mrgb(),
+        "masterrgb" => masterrgb(),
+        "allrgb" => allrgb(),
         _ => {
             eprintln!("usage: d700 [list | mon <secs> | lcd <text> | sweep | leds]");
             Ok(())
@@ -4126,5 +4128,139 @@ fn mrgb() -> R<()> {
         "
 done - did the encoders colour, all 16, with no provisioning?"
     );
+    Ok(())
+}
+
+/// Master dial RGB over MIDI.
+///
+/// Asparion's Bitwig script colours the master dial with the same three-channel
+/// scheme as the encoders, but at note `TRANSPORT.F3` = `0x38` — which is the
+/// master knob's own press note (finding 4a). So the rule generalises: **an
+/// element's colour note is its own button note**, and the encoders' `0x20`+n
+/// is simply VPOT_CLICK0.
+///
+/// From `D700_base.js`, on master mute:
+/// ```text
+/// sendMidi(NOTEON | 1, TRANSPORT.F3, on ? 127 : 0);
+/// sendMidi(NOTEON | 2, TRANSPORT.F3, 0);
+/// sendMidi(NOTEON | 3, TRANSPORT.F3, 0);
+/// ```
+fn masterrgb() -> R<()> {
+    let name = out_ports()?
+        .into_iter()
+        .next()
+        .ok_or("no D700 MIDI output")?;
+    let mut conn = open_out(&name)?;
+    const F3: u8 = 0x38;
+
+    let set = |c: &mut midir::MidiOutputConnection, r: u8, g: u8, b: u8| -> R<()> {
+        c.send(&[0x91, F3, r / 2])?;
+        c.send(&[0x92, F3, g / 2])?;
+        c.send(&[0x93, F3, b / 2])?; // blue triggers the refresh
+        Ok(())
+    };
+
+    println!(
+        "master dial (note 0x38 = F3), bank 1 port
+"
+    );
+    println!("1/2  named colours");
+    for (r, g, b, n) in [
+        (255u8, 0u8, 0u8, "red"),
+        (0, 255, 0, "green"),
+        (0, 0, 255, "blue"),
+        (255, 180, 0, "amber"),
+        (255, 255, 255, "white"),
+    ] {
+        set(&mut conn, r, g, b)?;
+        println!("     {n}");
+        sleep(Duration::from_millis(1300));
+    }
+
+    println!(
+        "
+2/2  smooth hue rotation"
+    );
+    for step in 0..200u32 {
+        let h = ((step as f32) / 33.0) % 6.0;
+        let x = (255.0 * (1.0 - (h % 2.0 - 1.0).abs())) as u8;
+        let (r, g, b) = match h as u32 {
+            0 => (255, x, 0),
+            1 => (x, 255, 0),
+            2 => (0, 255, x),
+            3 => (0, x, 255),
+            4 => (x, 0, 255),
+            _ => (255, 0, x),
+        };
+        set(&mut conn, r, g, b)?;
+        sleep(Duration::from_millis(40));
+    }
+    set(&mut conn, 0, 0, 0)?;
+    println!(
+        "
+done - did the MASTER dial colour and fade?"
+    );
+    Ok(())
+}
+
+/// How far does the colour rule reach?
+///
+/// Encoders colour at `0x20`+n (their V-Pot press note) and the master dial at
+/// `0x38` (its knob-press note), both on channels 2/3/4. If an element's colour
+/// note really is its own button note, the channel-strip buttons and the master
+/// section should colour too.
+///
+/// Paints the whole note space in blocks, each a distinct colour, so one look at
+/// the surface says which ranges are colourable and which are not.
+fn allrgb() -> R<()> {
+    let ports = out_ports()?;
+    let mut conns: Vec<_> = ports.iter().filter_map(|n| open_out(n).ok()).collect();
+    if conns.is_empty() {
+        return Err("no D700 MIDI output".into());
+    }
+
+    let blocks: [(u8, u8, (u8, u8, u8), &str); 7] = [
+        (0x00, 0x07, (255, 0, 0), "RED     Rec/Arm  0x00-0x07"),
+        (0x08, 0x0F, (0, 255, 0), "GREEN   Solo     0x08-0x0F"),
+        (0x10, 0x17, (0, 0, 255), "BLUE    Mute     0x10-0x17"),
+        (0x18, 0x1F, (255, 255, 0), "YELLOW  Select  0x18-0x1F"),
+        (
+            0x20,
+            0x27,
+            (255, 0, 255),
+            "MAGENTA V-Pot   0x20-0x27  (known good)",
+        ),
+        (0x28, 0x3F, (0, 255, 255), "CYAN    master  0x28-0x3F"),
+        (0x40, 0x5F, (255, 255, 255), "WHITE   rest    0x40-0x5F"),
+    ];
+
+    for (lo, hi, (r, g, b), label) in blocks {
+        println!("  {label}");
+        for note in lo..=hi {
+            for c in conns.iter_mut() {
+                c.send(&[0x91, note, r / 2])?;
+                c.send(&[0x92, note, g / 2])?;
+                c.send(&[0x93, note, b / 2])?;
+            }
+            sleep(Duration::from_millis(8));
+        }
+    }
+
+    println!(
+        "
+holding 15s - which blocks actually coloured?"
+    );
+    sleep(Duration::from_secs(15));
+
+    for (lo, hi, _, _) in blocks {
+        for note in lo..=hi {
+            for c in conns.iter_mut() {
+                c.send(&[0x91, note, 0])?;
+                c.send(&[0x92, note, 0])?;
+                c.send(&[0x93, note, 0])?;
+            }
+        }
+    }
+    println!("cleared");
     Ok(())
 }
