@@ -92,6 +92,7 @@ fn main() -> R<()> {
                 .unwrap_or(0x11),
             args.get(4).and_then(|s| s.parse().ok()).unwrap_or(900),
         ),
+        "mrgb" => mrgb(),
         _ => {
             eprintln!("usage: d700 [list | mon <secs> | lcd <text> | sweep | leds]");
             Ok(())
@@ -4016,5 +4017,114 @@ fn rgbmap(class: u8, last: u8, dwell: u64) -> R<()> {
 Did a light sweep across? If so, in what order, and how many"
     );
     println!("distinct elements lit? Which index was the MASTER dial?");
+    Ok(())
+}
+
+/// Encoder RGB over MIDI, per Asparion's own Bitwig control script.
+///
+/// `Dxxx_encoders.js`, `EncoderStrip.prototype.setColor`:
+/// ```text
+/// r = parseInt(r * 127);
+/// sendMidi(NOTEON | 1, VPOT_CLICK0 + index, r);   // channel 2 - red
+/// sendMidi(NOTEON | 2, VPOT_CLICK0 + index, g);   // channel 3 - green
+/// sendMidi(NOTEON | 3, VPOT_CLICK0 + index, b);   // channel 4 - blue, refreshes
+/// ```
+/// with `VPOT_CLICK0 = 32` (`0x20`), the MCU V-Pot press note, and the bank
+/// selected by which MIDI port the message is sent to.
+///
+/// This is NOTE-ON, not CC - which is why 32 CC-based scans found nothing. The
+/// colour component travels as the velocity byte, 0..127.
+///
+/// Unlike the HID colour path (finding 35), the note number is a PHYSICAL
+/// position, so this needs no provisioning.
+fn mrgb() -> R<()> {
+    let ports = out_ports()?;
+    let mut conns: Vec<_> = ports.iter().filter_map(|n| open_out(n).ok()).collect();
+    if conns.is_empty() {
+        return Err("no D700 MIDI output".into());
+    }
+    println!(
+        "banks: {}
+",
+        conns.len()
+    );
+
+    // r/g/b are 0..=255 here; the wire wants 0..=127.
+    let set = |c: &mut midir::MidiOutputConnection, idx: u8, r: u8, g: u8, b: u8| -> R<()> {
+        let note = 0x20 + idx;
+        c.send(&[0x91, note, r / 2])?;
+        c.send(&[0x92, note, g / 2])?;
+        c.send(&[0x93, note, b / 2])?; // blue last - triggers the refresh
+        Ok(())
+    };
+
+    println!("1/3  encoder 1 of bank 1 through named colours");
+    for (r, g, b, n) in [
+        (255u8, 0u8, 0u8, "red"),
+        (0, 255, 0, "green"),
+        (0, 0, 255, "blue"),
+        (255, 180, 0, "amber"),
+        (255, 255, 255, "white"),
+    ] {
+        set(&mut conns[0], 0, r, g, b)?;
+        println!("     {n}");
+        sleep(Duration::from_millis(1200));
+    }
+
+    println!(
+        "
+2/3  a rainbow across all encoders, both banks"
+    );
+    for (bank, c) in conns.iter_mut().enumerate() {
+        for i in 0..8u8 {
+            let h = ((bank * 8 + i as usize) as f32) / 16.0 * 6.0;
+            let x = (255.0 * (1.0 - (h % 2.0 - 1.0).abs())) as u8;
+            let (r, g, b) = match h as u32 {
+                0 => (255, x, 0),
+                1 => (x, 255, 0),
+                2 => (0, 255, x),
+                3 => (0, x, 255),
+                4 => (x, 0, 255),
+                _ => (255, 0, x),
+            };
+            set(c, i, r, g, b)?;
+            sleep(Duration::from_millis(60));
+        }
+    }
+    sleep(Duration::from_secs(3));
+
+    println!(
+        "
+3/3  smooth hue rotation, 8-bit, both banks"
+    );
+    for step in 0..160u32 {
+        for (bank, c) in conns.iter_mut().enumerate() {
+            for i in 0..8u8 {
+                let pos = (bank * 8 + i as usize) as f32;
+                let h = ((step as f32) / 20.0 + pos / 16.0 * 6.0) % 6.0;
+                let x = (255.0 * (1.0 - (h % 2.0 - 1.0).abs())) as u8;
+                let (r, g, b) = match h as u32 {
+                    0 => (255, x, 0),
+                    1 => (x, 255, 0),
+                    2 => (0, 255, x),
+                    3 => (0, x, 255),
+                    4 => (x, 0, 255),
+                    _ => (255, 0, x),
+                };
+                set(c, i, r, g, b)?;
+            }
+        }
+        sleep(Duration::from_millis(45));
+    }
+
+    for c in conns.iter_mut() {
+        for i in 0..8u8 {
+            set(c, i, 0, 0, 0)?;
+        }
+    }
+    println!(
+        "
+done - did the encoders colour, all 16, with no provisioning?"
+    );
     Ok(())
 }

@@ -67,7 +67,7 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 30a | ~~Writing needs 5 bytes; `hid_write` pads to 33~~ | **Retracted — see 30b** |
 | 30b | **`hidapi` drives the motors.** Writes work; device ACKs each one | Confirmed on hardware |
 | 31 | **True RGB with smooth gradient** on all dials incl. master | Confirmed on hardware |
-| 31a | The native MIDI RGB command's CC number | Unknown |
+| 31a | ~~The native MIDI RGB command's CC number~~ | **Resolved — it is not a CC; see 36** |
 | 32 | **HID session-open handshake** captured and replayed successfully | Confirmed on hardware |
 | 33 | **Full 8-bit RGB over HID, no vendor software required** | Confirmed on hardware |
 | 34 | Double-click is a **per-button firmware feature**, off by default | Confirmed on hardware |
@@ -78,7 +78,10 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 35 | Colour reaches **only configured elements** — index is a config slot | Confirmed on hardware |
 | 35a | Classes `b2` and `a2` address no dials | Confirmed on hardware (negative) |
 | 35b | Firmware runs an **idle animation** that reclaims the LEDs | Confirmed on hardware |
-| 35c | Whether provisioning a 4th element makes index `03` live | Unknown |
+| 35c | Whether provisioning a 4th element makes index `03` live | Unknown, now moot |
+| 36 | **Encoder RGB over MIDI**: note-on ch 2/3/4, note `0x20`+n | Confirmed on hardware |
+| 36a | `.aPres` files are the 2048-byte config block in hex | Confirmed |
+| 36b | `.aConPres` is XML mapping `(ExID, ID, ElType)` to OSC paths | Confirmed |
 
 ## Findings
 
@@ -1009,6 +1012,78 @@ for one of the config-block settings.
 **The decisive confirmation is cheap and not yet done (35c):** provision a fourth element — map
 `/dial/2/rgb` in the Connector — and re-run the `b6` sweep. If index `03` then lights dial 2, the
 mechanism is proven and indices are allocated in configuration order.
+
+### 36. Encoder RGB over MIDI — Confirmed on hardware
+
+**This resolves finding 31a and retires finding 35's provisioning problem.**
+
+The answer was in Asparion's own published Bitwig control script all along, in
+`Dxxx_encoders.js`:
+
+```js
+EncoderStrip.prototype.setColor = function(index, r, g, b)
+{
+    r = parseInt(r * 127); g = parseInt(g * 127); b = parseInt(b * 127);
+    sendMidi(MIDIMSGTYPES.NOTEON | 1, VPOT_CLICK0 + index, r);  // channel 2 - red
+    sendMidi(MIDIMSGTYPES.NOTEON | 2, VPOT_CLICK0 + index, g);  // channel 3 - green
+    sendMidi(MIDIMSGTYPES.NOTEON | 3, VPOT_CLICK0 + index, b);  // channel 4 - blue
+}                                          // "only refreshes after blue received"
+```
+
+with `VPOT_CLICK0 = 32` (`0x20`) — the MCU V-Pot press note. So:
+
+```
+91 <0x20+n> <r>      channel 2, velocity = red   (0..127)
+92 <0x20+n> <g>      channel 3, velocity = green
+93 <0x20+n> <b>      channel 4, velocity = blue, triggers the refresh
+```
+
+`n` is 0–7 within a bank, and **the bank is chosen by which MIDI port the message is sent to**
+(`getMidiPortByEx`). Confirmed on hardware: a smooth 8-bit-sourced hue rotation across all
+sixteen encoders, both banks.
+
+**Why 32 earlier scans found nothing.** They sent **CC** on channels 1/2/3. It is **note-on** on
+channels 2/3/4, with the colour component as the *velocity* byte. Two wrong assumptions at once,
+and Asparion's own phrasing — "the midi code listed in the configurator", "on midi channel 1 2 3"
+— is consistent with both readings, which is why the email alone was not enough to find it.
+
+**This is the better colour path**, and by some distance:
+
+| | HID (`0a b6`) | MIDI (note-on) |
+| --- | --- | --- |
+| Addressing | configuration slot | **physical position** |
+| Reachable without provisioning | 3 of 17 | **all 16 encoders** |
+| Read-back needed to discover mapping | yes, and none exists | **no** |
+| Resolution | 8-bit | 7-bit (0–127) |
+| Vendor-documented | no | **yes** — their own shipped script |
+| Likely to survive firmware updates | unknown | **yes** |
+
+One bit of resolution per channel is the only thing HID wins, and against 128 levels it is not
+visible. **Use the MIDI path.**
+
+The on/off Asparion mentioned — "you can turn it on/off without changing the colour on the first
+channel, 0 resp 1" — is note-on on **channel 1** (`0x90`) at the same note, which is the ordinary
+V-Pot LED state. So colour and lit-state are independent.
+
+### 36a–36b. The published preset files
+
+Asparion publish their presets at `asparion.de/files/downloads/d700/…`, and two formats are worth
+knowing:
+
+**`.aPres` — Configurator presets.** Plain text: a `D700 Preset` header, a version, the preset
+name, then **4096 hex characters = 2048 bytes**. That payload is byte-identical in structure to
+the configuration block captured over USB in finding 25 (85 pages of 24 bytes plus a partial
+8-byte page = 2048). So the whole device configuration can be inspected, diffed and understood
+**offline, with no hardware risk** — which is the safe way to approach anything the config block
+controls, including whatever disables the idle animation (finding 35b).
+
+**`.aConPres` — Connector presets.** XML. Each element is
+`<ExID>` (module, 0–7 plus `88`), `<ID>` (0–159), `<ElType>` (0–4), `<Mode>`, `<OSCPath>`. The
+Reaper preset carries 1965 elements. This is the element taxonomy the Connector uses, and it maps
+that address space onto OSC paths.
+
+Neither was needed for finding 36, but both are the obvious starting point for any further
+config-block work.
 
 ## Implications for the sidecar
 
