@@ -75,6 +75,10 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 34b | A deliberate press resolves early and reports **real** duration | Confirmed on hardware |
 | 34c | The processing sits **below the protocol layer** — preset-independent | Confirmed on hardware |
 | 34d | The resolve delay in milliseconds | Unknown |
+| 35 | Colour reaches **only configured elements** — index is a config slot | Confirmed on hardware |
+| 35a | Classes `b2` and `a2` address no dials | Confirmed on hardware (negative) |
+| 35b | Firmware runs an **idle animation** that reclaims the LEDs | Confirmed on hardware |
+| 35c | Whether provisioning a 4th element makes index `03` live | Unknown |
 
 ## Findings
 
@@ -958,6 +962,53 @@ Until those are replayed, firmware-processed events are all we get.
 4. **Layout is where this gets decided.** Which buttons carry double-click is a design choice with
    a latency cost attached, and it should be made deliberately rather than because the checkbox was
    available.
+
+### 35. Colour addressing is config-dependent — Confirmed on hardware
+
+Finding 33 established that `08 2a 0a b6 <index> 00 <R> <G> <B>` sets dial colour, using indices
+`00`, `01` and `02`. Those three were taken from the Connector's traffic, where they corresponded
+to `/dial/1/rgb`, `/dial/9/rgb` and `/dial/0/rgb` — the three mappings the operator had authored.
+
+**The index space is not physical position.** Sweeping `0x00`–`0x11` under class `b6`, with a
+session properly opened, lit **only dials 1, 9 and master** — exactly the three configured
+elements. The other fourteen dials stayed dark at every index.
+
+An earlier scan (`hidrgbscan`) had lit nothing at all, which was a tooling fault rather than a
+result: it never opened a session, and the device ignores colour writes until
+`08 2a 2b 29 2c 28` is acknowledged.
+
+**Other classes reach no dials.** Sweeping the same range under `b2` and `a2` lit nothing. `b0`
+was not swept — it produced a write stall on Monday and is left alone deliberately.
+
+**The Connector was closed throughout**, so the association is not its runtime doing. It is stored
+on the device, presumably in the 2064-byte configuration block of finding 25.
+
+### 35b. The firmware reclaims the LEDs
+
+The device runs its own idle animation — all dial RGB cycling smoothly together, the "screen
+saver" the operator has described since the first day. It is firmware-generated: it ran during
+these sweeps with nothing else driving the surface.
+
+That makes colour a matter of **ownership, not just addressing**. A host that paints a dial and
+stops will have it taken back. Anything that wants to hold a colour must either keep asserting it,
+or find whatever disables the idle animation — which is not known, and is a plausible candidate
+for one of the config-block settings.
+
+### What this means for a device profile
+
+1. **`index N` cannot be assumed to be dial N.** The mapping is allocation order within the
+   device's configuration, and on an unprovisioned unit most indices address nothing.
+2. **There is no read-back.** No command is known that reports which elements are live, so
+   discovery is not something software can do — lighting an index and asking a human is the only
+   method available, which is not a runtime option.
+3. **Provisioning becomes a documented prerequisite.** Configure all 17 elements once, record the
+   index order, and ship that as part of the profile. Tedious and one-time, but it makes colour
+   deterministic.
+4. **Holding a colour needs continuous assertion** until the idle animation can be disabled.
+
+**The decisive confirmation is cheap and not yet done (35c):** provision a fourth element — map
+`/dial/2/rgb` in the Connector — and re-run the `b6` sweep. If index `03` then lights dial 2, the
+mechanism is proven and indices are allocated in configuration order.
 
 ## Implications for the sidecar
 

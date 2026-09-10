@@ -83,6 +83,15 @@ fn main() -> R<()> {
         "clickprobe" => clickprobe(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(45)),
         "oscscan" => oscscan(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(45)),
         "rawprobe" => rawprobe(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(45)),
+        "rgbmap" => rgbmap(
+            args.get(2)
+                .and_then(|s| u8::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+                .unwrap_or(0xb6),
+            args.get(3)
+                .and_then(|s| u8::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+                .unwrap_or(0x11),
+            args.get(4).and_then(|s| s.parse().ok()).unwrap_or(900),
+        ),
         _ => {
             eprintln!("usage: d700 [list | mon <secs> | lcd <text> | sweep | leds]");
             Ok(())
@@ -3946,5 +3955,66 @@ fn rawprobe(secs: u64) -> R<()> {
         v.len()
     );
     println!("sees the raw switch, and the gap is the firmware's added latency.");
+    Ok(())
+}
+
+/// Map the HID colour element index space to physical dials.
+///
+/// The earlier `hidrgbscan` lit nothing because it never opened a session -
+/// the device ignores colour writes until `08 2a 2b 29 2c 28` is acknowledged.
+/// This opens one first, then walks the index space as a visible sweep: if the
+/// mapping is sequential the operator sees a light travel across the surface,
+/// which identifies it far faster than reporting 18 separate observations.
+///
+/// Pacing is ~25 ms between writes (field notes finding 33: bursts stall the
+/// device), and `0xb0` is never sent - it is the class that produced a stall.
+fn rgbmap(class: u8, last: u8, dwell: u64) -> R<()> {
+    if class == 0xb0 {
+        return Err("0xb0 stalled the device once; refusing to send it".into());
+    }
+    let api = hidapi::HidApi::new()?;
+    let path = api
+        .device_list()
+        .find(|d| d.vendor_id() == 0x04D8 && d.product_id() == 0xE44E)
+        .map(|d| d.path().to_owned())
+        .ok_or("no D700 HID interface - close the Configurator and Connector")?;
+    let dev = api.open_path(&path)?;
+
+    dev.write(&[0x08, 0x2a, 0x2b, 0x29, 0x2c, 0x28, 0x00, 0x00, 0x00])?;
+    sleep(Duration::from_millis(300));
+    println!("session opened");
+
+    let set = |idx: u8, r: u8, g: u8, b: u8| -> R<()> {
+        dev.write(&[0x08, 0x2a, 0x0a, class, idx, 0x00, r, g, b])?;
+        sleep(Duration::from_millis(25));
+        Ok(())
+    };
+
+    // Blank the whole candidate range first, so only the swept index is lit.
+    for idx in 0..=last {
+        set(idx, 0, 0, 0)?;
+    }
+    println!(
+        "blanked 0x00..=0x{last:02X}
+"
+    );
+    sleep(Duration::from_millis(400));
+
+    println!("sweeping class 0x{class:02X}, one index at a time, {dwell}ms each");
+    println!(
+        "watch for a light travelling across the surface
+"
+    );
+    for idx in 0..=last {
+        set(idx, 255, 255, 255)?;
+        println!("  index 0x{idx:02X} ({idx:2})");
+        sleep(Duration::from_millis(dwell));
+        set(idx, 0, 0, 0)?;
+    }
+    println!(
+        "
+Did a light sweep across? If so, in what order, and how many"
+    );
+    println!("distinct elements lit? Which index was the MASTER dial?");
     Ok(())
 }
