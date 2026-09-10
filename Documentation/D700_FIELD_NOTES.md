@@ -84,6 +84,10 @@ The same discipline as `OSC_FIELD_NOTES.md` applies, and the same verification v
 | 36d | Master dial colours at note `0x38` (F3, its knob-press note) | Confirmed on hardware |
 | 36e | Only **17 elements have RGB**; other buttons are single-colour LEDs | Confirmed on hardware |
 | 36f | Colour is **preset-independent** (Mackie and Universal identical) | Confirmed on hardware |
+| 37 | **Native display: 3 rows of 12/12/8 chars** — not the MCU 2×7 | Confirmed on hardware |
+| 37a | Separate **track-number** field, SysEx `0x17` | Confirmed on hardware |
+| 38 | **VU metering** — channel pressure, 12 levels, `0x0F` resets peak | Confirmed on hardware |
+| 39 | **Encoder rings** — CC, channel selects mode, value 0–127 | Confirmed on hardware |
 | 36a | `.aPres` files are the 2048-byte config block in hex | Confirmed |
 | 36b | `.aConPres` is XML mapping `(ExID, ID, ElType)` to OSC paths | Confirmed |
 
@@ -1128,6 +1132,81 @@ that address space onto OSC paths.
 
 Neither was needed for finding 36, but both are the obvious starting point for any further
 config-block work.
+
+### 37. The native display protocol — Confirmed on hardware
+
+**The MCU `0x12` scribble path is a compatibility shim, not the real display interface.** Asparion's
+own Bitwig script (`Dxxx_display.js`) uses three different commands, under the same
+`F0 00 00 66 14` header:
+
+```
+rows 0,1:   F0 00 00 66 14 1A <pos> <row+1> <12 chars> F7      pos = strip * 12
+row 2:      F0 00 00 66 14 19 <pos> <8 chars>          F7      pos = strip * 8
+track no:   F0 00 00 66 14 17 00 <8 bytes>             F7      one byte per strip
+```
+
+`SINGLE_DISPLAY_WIDTH = 12`, `SINGLE_DISPLAY_WIDTH_THIRD = 8`. Note the row byte on `0x1a` is
+**1-based** on the wire (`row + 1` in their code).
+
+| | MCU `0x12` | native |
+| --- | --- | --- |
+| Rows | 2 | **3** |
+| Characters per strip | 7 + 7 = 14 | **12 + 12 + 8 = 32** |
+| Track number | steals characters from a row | **its own field** |
+| Per bank | 112 | **256** |
+
+This resolves the open question from finding 16 — the display modules physically showed more than
+two lines and `0x12` could not reach them, because two rows of 56 is all that command addresses.
+The third row was never unreachable; we were using the wrong command.
+
+**Practically it doubles what a layout can say.** Under `0x12` a strip chooses between a name *or*
+a value in seven characters. With 12/12/8 it carries an unabbreviated name, a full value with
+units, and a tag row for processing state or group membership — with the channel number in a
+separate field rather than eating into the name.
+
+### 38. VU metering — Confirmed on hardware
+
+Standard MCU channel pressure, 12 levels:
+
+```
+D0 <(strip << 4) | level>       level 0..11
+D0 <(strip << 4) | 0x0F>        resets peak hold
+```
+
+Asparion's script rate-limits to 5 fps (`vuMeterLastSend`, 200 ms) and gates it on transport play.
+Higher rates work; 18 fps was smooth here with no ill effects, but their limit is a reasonable
+default given the surface has no need for more.
+
+### 39. Encoder rings — Confirmed on hardware
+
+The ring uses **the same channel-as-selector trick as colour** (`sendValueToVpot`):
+
+```
+B0 <0x30+n> <value>     mode NONE
+B1 <0x30+n> <value>     mode PAN     — fills outward from centre
+B2 <0x30+n> <value>     mode NORMAL  — fills from the left
+```
+
+**Value is 0–127**, not MCU's 11 positions — their parameter observers use 128 steps. So the rings
+are far finer than the MCU convention suggests, which is why they read as smooth rather than
+stepped.
+
+Note this differs from the MCU encoding recorded in finding 4, where the mode lives in the high
+nibble of the *value* byte. Asparion put it in the MIDI channel instead, consistent with how they
+handle colour. Both appear to work; the native form gives the full 0–127 range.
+
+### 40. Where all of this came from
+
+Findings 36–39 — colour, the three-row display, metering and the rings — were **read out of
+Asparion's published Bitwig control script in under an hour**, not discovered by probing.
+
+Two days of hardware work before that produced the hazards (findings 5d, 23, 33), the double-click
+timing behaviour (34), preset drift (13) and the HID channel (24–33). Those genuinely needed
+hardware: they are behaviours, not protocol, and no published file describes them.
+
+But the **protocol** was written down and shipped the whole time. The lesson for the next surface
+is to read the vendor's DAW packages first and probe afterwards, because the two answer different
+questions and the reading is very much cheaper.
 
 ## Implications for the sidecar
 

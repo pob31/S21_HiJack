@@ -95,6 +95,8 @@ fn main() -> R<()> {
         "mrgb" => mrgb(),
         "masterrgb" => masterrgb(),
         "allrgb" => allrgb(),
+        "nativedisp" => nativedisp(),
+        "meters" => meters(),
         _ => {
             eprintln!("usage: d700 [list | mon <secs> | lcd <text> | sweep | leds]");
             Ok(())
@@ -4262,5 +4264,205 @@ holding 15s - which blocks actually coloured?"
         }
     }
     println!("cleared");
+    Ok(())
+}
+
+/// The D700's NATIVE display protocol, from Asparion's Bitwig script
+/// (`Dxxx_display.js`). Far larger than the MCU `0x12` scribble path.
+///
+/// ```text
+/// rows 0,1:  F0 00 00 66 14 1A <pos> <row+1> <12 chars> F7    pos = strip * 12
+/// row 2:     F0 00 00 66 14 19 <pos> <8 chars>          F7    pos = strip * 8
+/// track no:  F0 00 00 66 14 17 00 <8 bytes>             F7    one per strip
+/// ```
+///
+/// `SINGLE_DISPLAY_WIDTH = 12`, `SINGLE_DISPLAY_WIDTH_THIRD = 8`, so a strip
+/// carries **32 characters over three rows**, against 14 via MCU `0x12`.
+fn nativedisp() -> R<()> {
+    let ports = out_ports()?;
+    let mut conns: Vec<_> = ports.iter().filter_map(|n| open_out(n).ok()).collect();
+    if conns.is_empty() {
+        return Err("no D700 MIDI output".into());
+    }
+
+    fn pad(t: &str, n: usize) -> Vec<u8> {
+        let mut v: Vec<u8> = t.bytes().take(n).collect();
+        while v.len() < n {
+            v.push(b' ');
+        }
+        v
+    }
+
+    // rows 0 and 1: command 0x1a, 12 chars, row index is 1-based on the wire
+    let row01 = |c: &mut midir::MidiOutputConnection, strip: u8, row: u8, t: &str| -> R<()> {
+        let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x1A, strip * 12, row + 1];
+        m.extend(pad(t, 12));
+        m.push(0xF7);
+        c.send(&m)?;
+        Ok(())
+    };
+    // row 2: command 0x19, 8 chars, no row byte
+    let row2 = |c: &mut midir::MidiOutputConnection, strip: u8, t: &str| -> R<()> {
+        let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x19, strip * 8];
+        m.extend(pad(t, 8));
+        m.push(0xF7);
+        c.send(&m)?;
+        Ok(())
+    };
+    // track numbers: command 0x17, one byte per strip
+    let tracknos = |c: &mut midir::MidiOutputConnection, nos: &[u8; 8]| -> R<()> {
+        let mut m = vec![0xF0, 0x00, 0x00, 0x66, 0x14, 0x17, 0x00];
+        m.extend(nos.iter().copied());
+        m.push(0xF7);
+        c.send(&m)?;
+        Ok(())
+    };
+
+    let bank1: [(&str, &str, &str); 8] = [
+        ("Kick In", "-6.2 dB", "GATE"),
+        ("Snare Top", "-3.0 dB", "COMP"),
+        ("Hi-Hat", "-12.4 dB", ""),
+        ("Bass DI", "-4.8 dB", "COMP"),
+        ("Gtr Stage L", "-8.1 dB", ""),
+        ("Gtr Stage R", "-8.1 dB", ""),
+        ("Keys Stereo", "-5.5 dB", ""),
+        ("Lead Vox", "0.0 dB", "DEESS"),
+    ];
+    let bank2: [(&str, &str, &str); 8] = [
+        ("Aux 1 Mon", "-10.0 dB", "IEM"),
+        ("Aux 2 Mon", "-14.2 dB", "IEM"),
+        ("Aux 3 Wedge", "-8.8 dB", ""),
+        ("Aux 4 Wedge", "-6.0 dB", ""),
+        ("Group Drums", "-2.1 dB", "BUS"),
+        ("Group Band", "-2.1 dB", "BUS"),
+        ("Matrix 1", "-18.0 dB", ""),
+        ("Main LR", "0.0 dB", "MAIN"),
+    ];
+
+    for (bank, c) in conns.iter_mut().enumerate() {
+        let rows = if bank == 0 { &bank1 } else { &bank2 };
+        for (i, (name, value, tag)) in rows.iter().enumerate() {
+            row01(c, i as u8, 0, name)?;
+            row01(c, i as u8, 1, value)?;
+            row2(c, i as u8, tag)?;
+            sleep(Duration::from_millis(15));
+        }
+        let base = (bank * 8 + 1) as u8;
+        let nos: [u8; 8] = std::array::from_fn(|i| base + i as u8);
+        tracknos(c, &nos)?;
+        println!("bank {} written: 3 rows + track numbers", bank + 1);
+    }
+
+    println!(
+        "
+row 0 = name (12 chars), row 1 = level (12), row 2 = tag (8)"
+    );
+    println!("track numbers 1-16 across the two banks");
+    println!(
+        "
+Did all THREE rows fill, and do the track numbers show?"
+    );
+    Ok(())
+}
+
+/// Level metering and encoder-ring display, from Asparion's Bitwig script.
+///
+/// **VU meters** — standard MCU channel pressure, 12 levels:
+/// ```text
+/// D0 <(strip << 4) | level>     level 0..11
+/// D0 <(strip << 4) | 0x0F>      resets peak hold
+/// ```
+///
+/// **Encoder rings** — the MIDI channel selects the display mode, exactly the
+/// same trick as colour (`sendValueToVpot`):
+/// ```text
+/// B0 <0x30+n> <value>    mode NONE
+/// B1 <0x30+n> <value>    mode PAN     (fill outward from centre)
+/// B2 <0x30+n> <value>    mode NORMAL  (fill from the left)
+/// ```
+/// Value is **0..127**, not MCU's 11 positions — their observer uses 128 steps.
+fn meters() -> R<()> {
+    let ports = out_ports()?;
+    let mut conns: Vec<_> = ports.iter().filter_map(|n| open_out(n).ok()).collect();
+    if conns.is_empty() {
+        return Err("no D700 MIDI output".into());
+    }
+
+    let ring = |c: &mut midir::MidiOutputConnection, n: u8, mode: u8, v: u8| -> R<()> {
+        c.send(&[0xB0 | mode, 0x30 | n, v])?;
+        Ok(())
+    };
+    let vu = |c: &mut midir::MidiOutputConnection, strip: u8, level: u8| -> R<()> {
+        c.send(&[0xD0, (strip << 4) | (level & 0x0F)])?;
+        Ok(())
+    };
+
+    println!("1/3  ring modes — sweeping 0..127 in each mode");
+    for (mode, name) in [
+        (0u8, "NONE"),
+        (1, "PAN (from centre)"),
+        (2, "NORMAL (from left)"),
+    ] {
+        println!("     mode {mode}: {name}");
+        for v in (0..=127u8).step_by(2) {
+            for c in conns.iter_mut() {
+                for n in 0..8u8 {
+                    ring(c, n, mode, v)?;
+                }
+            }
+            sleep(Duration::from_millis(18));
+        }
+        for c in conns.iter_mut() {
+            for n in 0..8u8 {
+                ring(c, n, mode, 0)?;
+            }
+        }
+        sleep(Duration::from_millis(500));
+    }
+
+    println!(
+        "
+2/3  VU meters — a bouncing level on every strip"
+    );
+    for step in 0..170u32 {
+        for (bank, c) in conns.iter_mut().enumerate() {
+            for strip in 0..8u8 {
+                let pos = (bank * 8 + strip as usize) as f32;
+                let phase = (step as f32) / 6.0 - pos * 0.45;
+                let lvl = ((phase.sin() + 1.0) / 2.0 * 11.0) as u8;
+                vu(c, strip, lvl)?;
+            }
+        }
+        sleep(Duration::from_millis(55));
+    }
+
+    println!(
+        "
+3/3  meters and rings together, mode NORMAL"
+    );
+    for step in 0..170u32 {
+        for (bank, c) in conns.iter_mut().enumerate() {
+            for strip in 0..8u8 {
+                let pos = (bank * 8 + strip as usize) as f32;
+                let phase = (step as f32) / 6.0 - pos * 0.45;
+                let s = (phase.sin() + 1.0) / 2.0;
+                vu(c, strip, (s * 11.0) as u8)?;
+                ring(c, strip, 2, (s * 127.0) as u8)?;
+            }
+        }
+        sleep(Duration::from_millis(55));
+    }
+
+    for c in conns.iter_mut() {
+        for n in 0..8u8 {
+            ring(c, n, 2, 0)?;
+            let _ = c.send(&[0xD0, (n << 4) | 0x0F]); // reset peak hold
+            let _ = c.send(&[0xD0, n << 4]);
+        }
+    }
+    println!(
+        "
+done — did the rings sweep in three modes, and the meters bounce?"
+    );
     Ok(())
 }
