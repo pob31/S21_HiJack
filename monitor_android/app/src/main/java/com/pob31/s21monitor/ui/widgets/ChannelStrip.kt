@@ -38,6 +38,8 @@ fun SendStrip(
     onPan: (Float) -> Unit,
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
+    onLevelTouch: (Boolean) -> Unit = {},
+    onPanTouch: (Boolean) -> Unit = {},
 ) {
     StripFrame(
         title = send.name.ifEmpty { "In ${send.input}" },
@@ -51,6 +53,7 @@ fun SendStrip(
             active = send.on,
             onDb = onLevel,
             modifier = Modifier.fillMaxWidth().weight(1f),
+            onTouch = onLevelTouch,
         )
         Text(
             panLabel(send.pan),
@@ -59,7 +62,12 @@ fun SendStrip(
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
-        PanControl(pan = send.pan, onPan = onPan, modifier = Modifier.fillMaxWidth())
+        PanControl(
+            pan = send.pan,
+            onPan = onPan,
+            modifier = Modifier.fillMaxWidth(),
+            onTouch = onPanTouch,
+        )
         ToggleButton(
             label = "ON",
             active = send.on,
@@ -77,6 +85,7 @@ fun AuxStrip(
     onFader: (Float) -> Unit,
     onMute: () -> Unit,
     modifier: Modifier = Modifier,
+    onFaderTouch: (Boolean) -> Unit = {},
 ) {
     StripFrame(
         title = aux.name.ifEmpty { "Aux ${aux.aux}" },
@@ -90,6 +99,7 @@ fun AuxStrip(
             active = !aux.mute,
             onDb = onFader,
             modifier = Modifier.fillMaxWidth().weight(1f),
+            onTouch = onFaderTouch,
         )
         ToggleButton(
             label = "MUTE",

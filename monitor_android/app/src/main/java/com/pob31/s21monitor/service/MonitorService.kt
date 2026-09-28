@@ -79,6 +79,9 @@ class MonitorService : Service() {
     private val outbound = OutboundQueue(RESEND_AFTER_MS)
     private val wakeSender = Channel<Unit>(Channel.CONFLATED)
 
+    /** Controls in use, whose incoming values are ignored (audit A5). */
+    private val holds = ControlHolds(HOLD_AFTER_RELEASE_MS)
+
     @Volatile private var running = false
     @Volatile private var lastRxMs = 0L
 
@@ -262,23 +265,37 @@ class MonitorService : Service() {
         lastRxMs = System.currentTimeMillis()
         if (!_state.value.connected) _state.update { it.copy(connected = true) }
 
+        // A control the musician is using keeps its own value (audit A5).
+        val now = SystemClock.elapsedRealtime()
         when (val ev = MonitorProtocol.parse(msg)) {
-            is Inbound.SendFull ->
-                updateSend(ev.input, ev.aux) { it.copy(level = ev.level, pan = ev.pan, on = ev.on) }
+            is Inbound.SendFull -> updateSend(ev.input, ev.aux) { s ->
+                s.copy(
+                    level = holds.pick(Control.SendLevel(ev.input, ev.aux), now, s.level, ev.level),
+                    pan = holds.pick(Control.SendPan(ev.input, ev.aux), now, s.pan, ev.pan),
+                    on = holds.pick(Control.SendOn(ev.input, ev.aux), now, s.on, ev.on),
+                )
+            }
 
             is Inbound.SendEcho -> _state.update { st ->
                 st.withSendEcho(ev.input, ev.aux) { s ->
                     when (ev.param) {
-                        "level" -> s.copy(level = MonitorProtocol.asFloat(ev.arg))
-                        "pan" -> s.copy(pan = MonitorProtocol.asFloat(ev.arg))
-                        "on" -> s.copy(on = MonitorProtocol.asBool(ev.arg))
+                        "level" -> s.copy(level = holds.pick(
+                            Control.SendLevel(ev.input, ev.aux), now, s.level, MonitorProtocol.asFloat(ev.arg)))
+                        "pan" -> s.copy(pan = holds.pick(
+                            Control.SendPan(ev.input, ev.aux), now, s.pan, MonitorProtocol.asFloat(ev.arg)))
+                        "on" -> s.copy(on = holds.pick(
+                            Control.SendOn(ev.input, ev.aux), now, s.on, MonitorProtocol.asBool(ev.arg)))
                         else -> s
                     }
                 }
             }
 
-            is Inbound.AuxStrip ->
-                updateAux(ev.aux) { it.copy(fader = ev.fader, mute = ev.mute) }
+            is Inbound.AuxStrip -> updateAux(ev.aux) { a ->
+                a.copy(
+                    fader = holds.pick(Control.AuxFader(ev.aux), now, a.fader, ev.fader),
+                    mute = holds.pick(Control.AuxMute(ev.aux), now, a.mute, ev.mute),
+                )
+            }
 
             is Inbound.NameInput -> {
                 inputNames[ev.input] = ev.name
@@ -314,27 +331,36 @@ class MonitorService : Service() {
 
     // ── Commands from the UI (via the binder) — optimistic local update + send ──
 
+    /** A finger went down on, or lifted off, [control] (audit A5). */
+    fun touch(control: Control, down: Boolean) =
+        holds.touch(control, down, SystemClock.elapsedRealtime())
+
     fun setSendLevel(input: Int, aux: Int, value: Float) {
+        holds.changed(Control.SendLevel(input, aux), SystemClock.elapsedRealtime())
         updateSend(input, aux) { it.copy(level = value) }
         creds?.let { send(MonitorProtocol.sendLevel(it.name, input, aux), OscFloat(value), resend = true) }
     }
 
     fun setSendPan(input: Int, aux: Int, value: Float) {
+        holds.changed(Control.SendPan(input, aux), SystemClock.elapsedRealtime())
         updateSend(input, aux) { it.copy(pan = value) }
         creds?.let { send(MonitorProtocol.sendPan(it.name, input, aux), OscFloat(value), resend = true) }
     }
 
     fun setSendOn(input: Int, aux: Int, on: Boolean) {
+        holds.changed(Control.SendOn(input, aux), SystemClock.elapsedRealtime())
         updateSend(input, aux) { it.copy(on = on) }
         creds?.let { send(MonitorProtocol.sendOn(it.name, input, aux), OscBool(on), resend = true) }
     }
 
     fun setAuxFader(aux: Int, value: Float) {
+        holds.changed(Control.AuxFader(aux), SystemClock.elapsedRealtime())
         updateAux(aux) { it.copy(fader = value) }
         creds?.let { send(MonitorProtocol.auxFader(it.name, aux), OscFloat(value), resend = true) }
     }
 
     fun setAuxMute(aux: Int, mute: Boolean) {
+        holds.changed(Control.AuxMute(aux), SystemClock.elapsedRealtime())
         updateAux(aux) { it.copy(mute = mute) }
         creds?.let { send(MonitorProtocol.auxMute(it.name, aux), OscBool(mute), resend = true) }
     }
@@ -435,6 +461,8 @@ class MonitorService : Service() {
         private const val TAG = "MonitorService"
         /** How long a control must be still before its value is resent. */
         private const val RESEND_AFTER_MS = 250L
+        /** How long a control keeps ignoring incoming values after release. */
+        private const val HOLD_AFTER_RELEASE_MS = 300L
         private const val NOTIFICATION_ID = 8521
         private const val CHANNEL_ID = "s21_monitor_service"
         private const val HEARTBEAT_MS = 10_000L

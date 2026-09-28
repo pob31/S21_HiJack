@@ -75,13 +75,16 @@ fun VerticalFader(
     active: Boolean,
     onDb: (Float) -> Unit,
     modifier: Modifier = Modifier,
+    /** true when a drag starts, false when it ends (audit A5). */
+    onTouch: (Boolean) -> Unit = {},
 ) {
     var heightPx by remember { mutableFloatStateOf(1f) }
     val frac = dbToFraction(db)
     // The gesture below outlives recompositions, so it reads the level and the
-    // callback through these instead of keeping the first ones (audit A1).
+    // callbacks through these instead of keeping the first ones (audit A1).
     val currentDb by rememberUpdatedState(db)
     val currentOnDb by rememberUpdatedState(onDb)
+    val currentOnTouch by rememberUpdatedState(onTouch)
 
     Box(
         modifier
@@ -93,25 +96,42 @@ fun VerticalFader(
                 var startDb = 0f
                 var travelY = 0f
                 var lastDb = 0f
-                detectVerticalDragGestures(
-                    onDragStart = {
-                        startDb = currentDb
-                        travelY = 0f
-                        lastDb = dragDb(startDb, 0f, heightPx)
-                    },
-                    onVerticalDrag = { change, dragAmount ->
-                        change.consume()
-                        travelY += dragAmount
-                        val v = dragDb(startDb, travelY, heightPx)
-                        // Send only when the level moves: not while pinned at
-                        // an end of travel, and not for a downward drag on a
-                        // fader that's off (that would send the −80 dB floor).
-                        if (v != lastDb) {
-                            lastDb = v
-                            currentOnDb(v)
-                        }
-                    },
-                )
+                var dragging = false
+                fun release() {
+                    if (dragging) {
+                        dragging = false
+                        currentOnTouch(false)
+                    }
+                }
+                try {
+                    detectVerticalDragGestures(
+                        onDragStart = {
+                            dragging = true
+                            currentOnTouch(true)
+                            startDb = currentDb
+                            travelY = 0f
+                            lastDb = dragDb(startDb, 0f, heightPx)
+                        },
+                        onDragEnd = { release() },
+                        onDragCancel = { release() },
+                        onVerticalDrag = { change, dragAmount ->
+                            change.consume()
+                            travelY += dragAmount
+                            val v = dragDb(startDb, travelY, heightPx)
+                            // Send only when the level moves: not while pinned
+                            // at an end of travel, and not for a downward drag
+                            // on a fader that's off (that would send the
+                            // −80 dB floor).
+                            if (v != lastDb) {
+                                lastDb = v
+                                currentOnDb(v)
+                            }
+                        },
+                    )
+                } finally {
+                    // The strip left the screen mid-drag.
+                    release()
+                }
             },
         contentAlignment = Alignment.BottomCenter,
     ) {
@@ -144,10 +164,13 @@ fun PanControl(
     pan: Float,
     onPan: (Float) -> Unit,
     modifier: Modifier = Modifier,
+    /** true when a drag starts, false when it ends (audit A5). */
+    onTouch: (Boolean) -> Unit = {},
 ) {
     var widthPx by remember { mutableFloatStateOf(1f) }
     // The gestures below outlive recompositions (audit A1).
     val currentOnPan by rememberUpdatedState(onPan)
+    val currentOnTouch by rememberUpdatedState(onTouch)
 
     fun setFromX(x: Float) {
         val f = (x / widthPx).coerceIn(0f, 1f)
@@ -162,13 +185,31 @@ fun PanControl(
             .background(Panel2)
             .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
             .pointerInput(Unit) {
-                detectHorizontalDragGestures(
-                    onDragStart = { setFromX(it.x) },
-                    onHorizontalDrag = { change, _ ->
-                        change.consume()
-                        setFromX(change.position.x)
-                    },
-                )
+                var dragging = false
+                fun release() {
+                    if (dragging) {
+                        dragging = false
+                        currentOnTouch(false)
+                    }
+                }
+                try {
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            dragging = true
+                            currentOnTouch(true)
+                            setFromX(it.x)
+                        },
+                        onDragEnd = { release() },
+                        onDragCancel = { release() },
+                        onHorizontalDrag = { change, _ ->
+                            change.consume()
+                            setFromX(change.position.x)
+                        },
+                    )
+                } finally {
+                    // The strip left the screen mid-drag.
+                    release()
+                }
             }
             .pointerInput(Unit) {
                 detectTapGestures(onDoubleTap = { currentOnPan(0f) })

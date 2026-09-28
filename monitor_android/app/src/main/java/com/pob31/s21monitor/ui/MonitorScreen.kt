@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pob31.s21monitor.model.MonitorUiState
+import com.pob31.s21monitor.service.Control
 import com.pob31.s21monitor.service.MonitorService
 import com.pob31.s21monitor.ui.theme.Accent
 import com.pob31.s21monitor.ui.theme.Bg
@@ -243,6 +244,8 @@ private fun MyMix(state: MonitorUiState, selectedAux: Int?, service: MonitorServ
                     onLevel = { service.setSendLevel(send.input, send.aux, it) },
                     onPan = { service.setSendPan(send.input, send.aux, it) },
                     onToggle = { service.setSendOn(send.input, send.aux, !send.on) },
+                    onLevelTouch = { service.touch(Control.SendLevel(send.input, send.aux), it) },
+                    onPanTouch = { service.touch(Control.SendPan(send.input, send.aux), it) },
                 )
             }
         }
@@ -266,6 +269,7 @@ private fun MyAux(state: MonitorUiState, service: MonitorService) {
                     aux = aux,
                     onFader = { service.setAuxFader(a, it) },
                     onMute = { service.setAuxMute(a, !aux.mute) },
+                    onFaderTouch = { service.touch(Control.AuxFader(a), it) },
                 )
             }
         }

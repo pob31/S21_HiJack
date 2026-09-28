@@ -492,15 +492,16 @@ impl MonitorEngine {
     ) {
         let state = self.state.read().await;
 
-        // Skip entirely if nothing changed since last poll
+        // Skip entirely if nothing changed since the last complete poll.
         let current_gen = state.generation();
         if current_gen == *last_generation {
             return;
         }
-        *last_generation = current_gen;
 
         let now = std::time::Instant::now();
         let min_interval = std::time::Duration::from_millis(50); // 20Hz per parameter
+        // Set when the rate limit holds a change back for a later poll.
+        let mut deferred = false;
 
         // Collect all auxes and inputs of interest from connected clients
         let mut auxes_of_interest = std::collections::HashSet::new();
@@ -524,6 +525,7 @@ impl MonitorEngine {
         }
 
         if auxes_of_interest.is_empty() {
+            *last_generation = current_gen;
             return;
         }
 
@@ -571,6 +573,7 @@ impl MonitorEngine {
                 // Per-parameter 20Hz rate limit
                 if let Some(last_push) = last_push_times.get(&key) {
                     if now.duration_since(*last_push) < min_interval {
+                        deferred = true;
                         continue;
                     }
                 }
@@ -614,6 +617,7 @@ impl MonitorEngine {
             // Per-parameter 20Hz rate limit
             if let Some(last_push) = last_aux_push_times.get(&aux) {
                 if now.duration_since(*last_push) < min_interval {
+                    deferred = true;
                     continue;
                 }
             }
@@ -622,6 +626,14 @@ impl MonitorEngine {
             last_aux_push_times.insert(aux, now);
 
             self.publish(MonitorStateEvent::AuxState { aux, fader, mute });
+        }
+
+        // Record this generation as seen only once nothing is held back, so a
+        // deferred change goes out on a later poll even if the desk is quiet
+        // by then. It used to be recorded up front, and the last value of a
+        // fast move could wait for the 10 s heartbeat snapshot (audit A5).
+        if !deferred {
+            *last_generation = current_gen;
         }
     }
 }
@@ -922,5 +934,79 @@ mod tests {
             )
             .await;
         assert_eq!(state.read().await.parameter_count(), 1);
+    }
+
+    /// Audit A5. A change the 20 Hz rate limit holds back is pushed on a
+    /// later poll even when nothing else changes. It used to wait for the
+    /// next unrelated state change or the 10 s snapshot, so a phone could
+    /// sit on a level from the middle of a fast move.
+    #[tokio::test]
+    async fn a_rate_limited_change_is_pushed_without_further_changes() {
+        let local_sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sender = OscSender::new(local_sock, "127.0.0.1:1".parse().unwrap());
+        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
+        let (events, mut rx) = broadcast::channel(64);
+        let engine = MonitorEngine::new(state.clone(), sender, events);
+        let mut mgr = MonitorManager::new();
+        let mut client = MonitorClient::new("A".into(), vec![1], vec![5]);
+        client.endpoint = Some(ClientEndpoint::Udp("127.0.0.1:9".parse().unwrap()));
+        client.last_seen = Some(Instant::now());
+        mgr.add_client(client);
+
+        let mut sends = HashMap::new();
+        let mut auxes = HashMap::new();
+        let mut generation = 0;
+        let mut send_times = HashMap::new();
+        let mut aux_times = HashMap::new();
+        let level = ParameterAddress {
+            channel: ChannelId::Input(5),
+            parameter: ParameterPath::SendLevel(1),
+        };
+        // Polls once and returns the levels pushed for input 5 → aux 1.
+        macro_rules! poll {
+            () => {{
+                engine
+                    .poll_and_push_state_changes(
+                        &mut sends,
+                        &mut auxes,
+                        &mut generation,
+                        &mut send_times,
+                        &mut aux_times,
+                        &mgr,
+                    )
+                    .await;
+                let mut pushed = Vec::new();
+                while let Ok(event) = rx.try_recv() {
+                    if let MonitorStateEvent::SendState {
+                        input: 5,
+                        aux: 1,
+                        level,
+                        ..
+                    } = event
+                    {
+                        pushed.push(level);
+                    }
+                }
+                pushed
+            }};
+        }
+
+        state
+            .write()
+            .await
+            .update(level.clone(), ParameterValue::Float(-60.0));
+        assert_eq!(poll!(), vec![-60.0]);
+
+        // The move's last value lands inside the 50 ms window: held back.
+        state
+            .write()
+            .await
+            .update(level.clone(), ParameterValue::Float(-70.0));
+        assert!(poll!().is_empty());
+
+        // Nothing else changes, yet it still goes out once the window ends.
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        assert_eq!(poll!(), vec![-70.0]);
+        assert!(poll!().is_empty());
     }
 }
