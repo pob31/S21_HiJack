@@ -42,6 +42,12 @@ pub struct MonitorTabState {
     /// Last-good aux reference rows `(aux_number, name)`. Same rationale: the
     /// table renders from this snapshot, refreshed only when the lock is free.
     pub aux_ref_cache: Vec<(u16, String)>,
+    /// Monitor profiles as last read, sorted by name, and how many are
+    /// connected. Refreshed only when the manager's lock is free: the monitor
+    /// engine holds it for every command and poll, and a blocking read here
+    /// stalled the whole UI under load (audit M8).
+    clients_cache: Vec<MonitorClient>,
+    connected_cache: usize,
 }
 
 /// Draw the Monitor tab.
@@ -55,6 +61,10 @@ pub fn draw_monitor_tab(
     web_port: u16,
 ) {
     let is_connected = connected.load(Ordering::Relaxed);
+    if let Ok(mgr) = monitor_manager.try_read() {
+        tab.clients_cache = mgr.sorted_clients().into_iter().cloned().collect();
+        tab.connected_cache = mgr.connected_count();
+    }
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -127,9 +137,8 @@ pub fn draw_monitor_tab(
                                 );
                             });
 
-                            let mgr = runtime.block_on(monitor_manager.read());
-                            let connected_count = mgr.connected_count();
-                            let total_count = mgr.clients.len();
+                            let connected_count = tab.connected_cache;
+                            let total_count = tab.clients_cache.len();
 
                             ui.add_space(6.0);
                             ui.horizontal(|ui| {
@@ -213,8 +222,6 @@ pub fn draw_monitor_tab(
                                     // row) so it never shifts this card around.
                                 }
                             }
-
-                            drop(mgr);
                         });
 
                         ui.add_space(8.0);
@@ -385,8 +392,8 @@ pub fn draw_monitor_tab(
                         theme::card_frame().show(ui, |ui| {
                             theme::section_heading(ui, "Clients");
 
-                            let mgr = runtime.block_on(monitor_manager.read());
-                            let clients = mgr.sorted_clients();
+                            let clients_owned = tab.clients_cache.clone();
+                            let clients: Vec<&MonitorClient> = clients_owned.iter().collect();
 
                             if clients.is_empty() {
                                 ui.label(
@@ -611,7 +618,6 @@ pub fn draw_monitor_tab(
                                     ui.add_space(4.0);
                                 }
 
-                                drop(mgr);
                                 if let Some(id) = to_remove {
                                     let mgr_clone = monitor_manager.clone();
                                     runtime.spawn(async move {
@@ -702,9 +708,9 @@ pub fn draw_monitor_tab(
     //    the Monitor-tab layout. Opened by the "QR" button on a client row. ──
     if let Some(id) = tab.qr_for {
         let info = {
-            let mgr = runtime.block_on(monitor_manager.read());
-            mgr.clients
-                .get(&id)
+            tab.clients_cache
+                .iter()
+                .find(|c| c.id == id)
                 .map(|c| (c.name.clone(), c.pin.clone()))
         };
         match info {

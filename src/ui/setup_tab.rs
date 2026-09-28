@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -2032,6 +2032,15 @@ pub fn draw_setup_tab(
     setup.show_advanced_panel = open;
 }
 
+/// The address to bind from the Setup tab's local IP field: blank means every
+/// interface. `None` if, once trimmed, it isn't an IP address (audit M3).
+fn bind_ip_from(field: &str) -> Option<IpAddr> {
+    match field.trim() {
+        "" => Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+        ip => ip.parse().ok(),
+    }
+}
+
 /// Disconnect from the console: cancel all tasks and reset state.
 pub(crate) fn do_disconnect(
     connected: &Arc<AtomicBool>,
@@ -2186,16 +2195,35 @@ pub(crate) fn start_connection(
         ));
         return;
     }
-    let ipad_ip_str = setup.ipad_ip.clone();
-    let bind_ip_str = if setup.local_ip.is_empty() {
-        "0.0.0.0".to_string()
+    // IPs are trimmed and parsed here, up front: a stray space or an IPv6
+    // literal used to reach an `.expect()` in the connect task (audit M3).
+    // Only Mode 3 uses the iPad's IP; elsewhere it's a placeholder.
+    let ipad_ip: IpAddr = if operating_mode == OperatingMode::Mode3 {
+        match setup.ipad_ip.trim().parse() {
+            Ok(ip) => ip,
+            Err(_) => {
+                setup.status_message = Some(StatusMessage::with_help(
+                    "Invalid iPad IP address",
+                    HelpKey::SetupWarnInvalidIpadIp,
+                ));
+                return;
+            }
+        }
     } else {
-        setup.local_ip.clone()
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED)
     };
+    let Some(bind_ip) = bind_ip_from(&setup.local_ip) else {
+        setup.status_message = Some(StatusMessage::with_help(
+            "Invalid local IP address",
+            HelpKey::SetupWarnInvalidLocalIp,
+        ));
+        return;
+    };
+    let local_ip = setup.local_ip.trim();
     // Derive interface name from local_ip if not explicitly set (e.g., after loading a show file)
     let iface_name = setup.interface_name.clone().or_else(|| {
-        if !setup.local_ip.is_empty() {
-            net_interfaces::interface_for_ip(&setup.local_ip)
+        if !local_ip.is_empty() {
+            net_interfaces::interface_for_ip(local_ip)
         } else {
             None
         }
@@ -2208,9 +2236,8 @@ pub(crate) fn start_connection(
     let monitor_port: u16 = setup.monitor_port.parse().unwrap_or(0);
     let web_port: u16 = setup.web_port.parse().unwrap_or(0);
 
-    let console_addr_str = format!("{}:{}", setup.console_ip, console_port);
-    let console_addr: SocketAddr = match console_addr_str.parse() {
-        Ok(a) => a,
+    let console_addr = match setup.console_ip.trim().parse::<IpAddr>() {
+        Ok(ip) => SocketAddr::new(ip, console_port),
         Err(_) => {
             setup.status_message = Some(StatusMessage::with_help(
                 "Invalid console address",
@@ -2219,13 +2246,8 @@ pub(crate) fn start_connection(
             return;
         }
     };
-    let bind_ip = bind_ip_str.as_str();
-    let local_addr: SocketAddr = format!("{bind_ip}:{local_port}")
-        .parse()
-        .expect("Invalid local address");
-    let trigger_addr: SocketAddr = format!("{bind_ip}:{trigger_port}")
-        .parse()
-        .expect("Invalid trigger address");
+    let local_addr = SocketAddr::new(bind_ip, local_port);
+    let trigger_addr = SocketAddr::new(bind_ip, trigger_port);
 
     setup.status_message = Some("Connecting...".into());
 
@@ -2259,7 +2281,6 @@ pub(crate) fn start_connection(
     let conn_flag = connected.clone();
     let tx = ui_tx.clone();
     let ctx = egui_ctx.clone();
-    let console_ip = setup.console_ip.clone();
     let send_pace_us = send_pace_us.clone();
     let progress = progress.clone();
     let monitor_allow_cidrs = setup.monitor_allow_cidrs.clone();
@@ -2277,7 +2298,10 @@ pub(crate) fn start_connection(
             Ok(c) => c,
             Err(e) => {
                 error!("Connection failed: {e}");
-                let _ = tx.send(UiEvent::ConnectionFailed(e.to_string()));
+                let _ = tx.send(UiEvent::ConnectionFailed {
+                    token: token.clone(),
+                    message: e.to_string(),
+                });
                 if let Some(ctx) = ctx.get() {
                     ctx.request_repaint();
                 }
@@ -2385,6 +2409,11 @@ pub(crate) fn start_connection(
         // Set it here (not only in run_loop) so a reconnect can't flash the
         // previous session's green for a frame before run_loop resets it.
         st.write().await.health = ConnectionHealth::Connecting;
+        // Disconnect may have come while the socket was being set up.
+        if token.is_cancelled() {
+            info!("Connection cancelled before it came up");
+            return;
+        }
         conn_flag.store(true, Ordering::Relaxed);
 
         // Create SnapshotEngine (mut so we can set iPad sender before wrapping in Arc).
@@ -2423,12 +2452,8 @@ pub(crate) fn start_connection(
         let mut app_ipad_sender: Option<IpadSender> = None;
 
         if operating_mode.uses_ipad_protocol() && ipad_console_port > 0 {
-            let console_ipad_addr: SocketAddr = format!("{}:{}", console_ip, ipad_console_port)
-                .parse()
-                .expect("Invalid console iPad address");
-            let local_ipad_addr: SocketAddr = format!("{bind_ip_str}:{ipad_local_port}")
-                .parse()
-                .expect("Invalid local iPad address");
+            let console_ipad_addr = SocketAddr::new(console_addr.ip(), ipad_console_port);
+            let local_ipad_addr = SocketAddr::new(bind_ip, ipad_local_port);
 
             match operating_mode {
                 OperatingMode::Mode2 => {
@@ -2471,14 +2496,9 @@ pub(crate) fn start_connection(
                     // Two-socket proxy:
                     // Socket 1 (console-side): bind to ipad_local_port, send to console:ipad_console_port
                     // Socket 2 (iPad-side): bind to ipad_listen_port, send to iPad:ipad_reply_port
-                    let ipad_listener_addr: SocketAddr =
-                        format!("{bind_ip_str}:{ipad_listen_port}")
-                            .parse()
-                            .expect("Invalid iPad listen address");
-                    // IP is guaranteed non-empty (validated in start_connection).
-                    let ipad_target: SocketAddr = format!("{}:{}", ipad_ip_str, ipad_reply_port)
-                        .parse()
-                        .expect("Invalid iPad target address");
+                    let ipad_listener_addr = SocketAddr::new(bind_ip, ipad_listen_port);
+                    // Parsed and required for Mode 3 in start_connection.
+                    let ipad_target = SocketAddr::new(ipad_ip, ipad_reply_port);
 
                     match ipad_connection::connect_mode3_proxy(
                         console_ipad_addr,
@@ -2559,7 +2579,12 @@ pub(crate) fn start_connection(
         // use them. This is the missing wire-up: the App fields used to be
         // initialised to `None` and never populated, so Run / Recall buttons
         // looked enabled but silently no-oped at runtime.
-        if let Ok(mut slot) = pending.lock() {
+        // Not if Disconnect has cancelled this connection meanwhile, e.g.
+        // during the iPad handshake (audit M2). Checked under the slot's lock
+        // so a cancelled connection can't overwrite a newer one's engines.
+        if let Ok(mut slot) = pending.lock()
+            && !token.is_cancelled()
+        {
             *slot = Some(crate::ui::PendingEngines {
                 sender: Some(manager.sender()),
                 snapshot_engine: engine.clone(),
@@ -2567,6 +2592,7 @@ pub(crate) fn start_connection(
                 ipad_sender: app_ipad_sender.clone(),
                 console_tx: sidecar_tx,
                 daemon: daemon.clone(),
+                token: token.clone(),
             });
         }
 
@@ -2839,7 +2865,9 @@ pub(crate) fn start_connection(
             drop(monitor_rx);
         }
 
-        let _ = tx.send(UiEvent::ConnectionEstablished);
+        let _ = tx.send(UiEvent::ConnectionEstablished {
+            token: token.clone(),
+        });
         if let Some(ctx) = ctx.get() {
             ctx.request_repaint();
         }
@@ -2907,14 +2935,18 @@ pub(crate) fn start_pad_connection(
         }
     };
 
-    let bind_ip_str = if setup.local_ip.is_empty() {
-        "0.0.0.0".to_string()
-    } else {
-        setup.local_ip.clone()
+    // Parsed up front, as in start_connection (audit M3).
+    let Some(bind_ip) = bind_ip_from(&setup.local_ip) else {
+        setup.status_message = Some(StatusMessage::with_help(
+            "Invalid local IP address",
+            HelpKey::SetupWarnInvalidLocalIp,
+        ));
+        return;
     };
+    let local_ip = setup.local_ip.trim();
     let iface_name = setup.interface_name.clone().or_else(|| {
-        if !setup.local_ip.is_empty() {
-            net_interfaces::interface_for_ip(&setup.local_ip)
+        if !local_ip.is_empty() {
+            net_interfaces::interface_for_ip(local_ip)
         } else {
             None
         }
@@ -2923,9 +2955,8 @@ pub(crate) fn start_pad_connection(
         setup.interface_name = iface_name.clone();
     }
 
-    let console_addr_str = format!("{}:{}", setup.console_ip, console_port);
-    let console_addr: SocketAddr = match console_addr_str.parse() {
-        Ok(a) => a,
+    let console_addr = match setup.console_ip.trim().parse::<IpAddr>() {
+        Ok(ip) => SocketAddr::new(ip, console_port),
         Err(_) => {
             setup.status_message = Some(StatusMessage::with_help(
                 "Invalid console address",
@@ -2934,10 +2965,7 @@ pub(crate) fn start_pad_connection(
             return;
         }
     };
-    let bind_ip = bind_ip_str.as_str();
-    let local_addr: SocketAddr = format!("{bind_ip}:{local_port}")
-        .parse()
-        .expect("Invalid local address");
+    let local_addr = SocketAddr::new(bind_ip, local_port);
 
     setup.status_message = Some("Connecting...".into());
 
@@ -2982,7 +3010,10 @@ pub(crate) fn start_pad_connection(
             Ok(c) => c,
             Err(e) => {
                 error!("Pad connection failed: {e}");
-                let _ = tx.send(UiEvent::ConnectionFailed(e.to_string()));
+                let _ = tx.send(UiEvent::ConnectionFailed {
+                    token: token.clone(),
+                    message: e.to_string(),
+                });
                 if let Some(ctx) = ctx.get() {
                     ctx.request_repaint();
                 }
@@ -3066,7 +3097,10 @@ pub(crate) fn start_pad_connection(
             // cancel so it releases now rather than at the next connect.
             token.cancel();
             conn_flag.store(false, Ordering::Relaxed);
-            let _ = tx.send(UiEvent::ConnectionFailed(e.to_string()));
+            let _ = tx.send(UiEvent::ConnectionFailed {
+                token: token.clone(),
+                message: e.to_string(),
+            });
             if let Some(ctx) = ctx.get() {
                 ctx.request_repaint();
             }
@@ -3110,7 +3144,10 @@ pub(crate) fn start_pad_connection(
         macro_eng.set_recall_progress(progress.outbound.clone());
         let macro_eng = Arc::new(macro_eng);
 
-        if let Ok(mut slot) = pending.lock() {
+        // Checked again under the slot's lock: see start_connection (audit M2).
+        if let Ok(mut slot) = pending.lock()
+            && !token.is_cancelled()
+        {
             *slot = Some(crate::ui::PendingEngines {
                 // No GP socket exists on this console.
                 sender: None,
@@ -3119,10 +3156,13 @@ pub(crate) fn start_pad_connection(
                 ipad_sender: Some(pad_sender.clone()),
                 console_tx: console_tx.clone(),
                 daemon: daemon.clone(),
+                token: token.clone(),
             });
         }
 
-        let _ = tx.send(UiEvent::ConnectionEstablished);
+        let _ = tx.send(UiEvent::ConnectionEstablished {
+            token: token.clone(),
+        });
         if let Some(ctx) = ctx.get() {
             ctx.request_repaint();
         }
@@ -3782,6 +3822,27 @@ mod tests {
 
     /// The unsaved-changes check (audit H8) compares fingerprints of
     /// `build_show_file` output. An unchanged show must fingerprint the same
+    /// Audit M3: the local IP field is trimmed and validated instead of
+    /// reaching an `.expect()` in the connect task.
+    #[test]
+    fn local_ip_field_is_trimmed_and_validated() {
+        use std::net::Ipv6Addr;
+        assert_eq!(bind_ip_from(""), Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
+        assert_eq!(bind_ip_from("   "), Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
+        assert_eq!(
+            bind_ip_from(" 192.168.1.5 "),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)))
+        );
+        // Used to panic: `format!("{ip}:{port}")` is no socket address for v6.
+        assert_eq!(bind_ip_from("::1"), Some(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert_eq!(
+            SocketAddr::new(bind_ip_from("::1").unwrap(), 8000).to_string(),
+            "[::1]:8000"
+        );
+        assert_eq!(bind_ip_from("192.168.1"), None);
+        assert_eq!(bind_ip_from("console.local"), None);
+    }
+
     /// however the managers were filled, and an edit must not.
     #[tokio::test]
     async fn unsaved_check_is_stable_until_an_edit() {

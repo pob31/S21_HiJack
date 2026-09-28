@@ -365,6 +365,10 @@ pub struct GangsTabState {
     /// own toggling (and the edit flow) owns the state.
     pub collapse_initialized: bool,
     pub status_message: Option<StatusMessage>,
+    /// The gangs as last read, sorted for display. `None` until the first
+    /// read. Refreshed only when the lock is free, so drawing never waits
+    /// on it (audit M8).
+    groups_cache: Option<Vec<GangGroup>>,
 }
 
 impl Default for GangsTabState {
@@ -379,6 +383,7 @@ impl Default for GangsTabState {
             form_collapsed: false,
             collapse_initialized: false,
             status_message: None,
+            groups_cache: None,
         }
     }
 }
@@ -401,15 +406,22 @@ pub fn draw_gangs_tab(
     // area auto_shrink(false) consuming the residual height. Without
     // this split, the form would scroll out of view as the gang list
     // grew, forcing the operator to scroll back up to add or edit.
-    let mgr = runtime.block_on(gang_manager.read());
-    let active_count = mgr.groups.values().filter(|g| g.enabled).count();
-    let total_count = mgr.groups.len();
+    //
+    // The gang manager is read without waiting: the inbound path takes it for
+    // every console change, and a blocking read here stalled the whole UI,
+    // GO included, under load (audit M8). A busy frame shows the last copy.
+    if let Ok(mgr) = gang_manager.try_read() {
+        tab.groups_cache = Some(mgr.sorted_groups().into_iter().cloned().collect());
+    }
+    let groups: Vec<GangGroup> = tab.groups_cache.clone().unwrap_or_default();
+    let active_count = groups.iter().filter(|g| g.enabled).count();
+    let total_count = groups.len();
 
     // First time the tab is shown this session: start expanded if there are no
     // gangs yet (so the operator can build one straight away), collapsed if the
     // session already has gangs (so the list below is front-and-centre). After
     // this one-shot the operator's toggling / the edit flow owns the state.
-    if !tab.collapse_initialized {
+    if !tab.collapse_initialized && tab.groups_cache.is_some() {
         tab.collapse_initialized = true;
         tab.form_collapsed = total_count > 0;
     }
@@ -751,9 +763,6 @@ pub fn draw_gangs_tab(
                     let scroll_w = ui.available_width();
                     ui.set_min_width(scroll_w);
                     ui.set_max_width(scroll_w);
-
-                    let groups: Vec<GangGroup> = mgr.sorted_groups().into_iter().cloned().collect();
-                    drop(mgr);
 
                     if groups.is_empty() {
                         ui.label(

@@ -321,6 +321,10 @@ pub struct HiJackApp {
     pub ipad_sender: Option<IpadSender>,
     /// Cancellation token for all connection-related tasks.
     pub cancel_token: Option<CancellationToken>,
+    /// The connection the installed engines (`sender`, `snapshot_engine`, …)
+    /// came from, so a late `Disconnected` can tell them apart from a newer
+    /// connection's (audit M1).
+    engines_token: Option<CancellationToken>,
 
     // Tab state
     pub active_tab: Tab,
@@ -563,6 +567,7 @@ impl HiJackApp {
             sender: None,
             ipad_sender: None,
             cancel_token: None,
+            engines_token: None,
 
             active_tab: Tab::Setup,
             setup,
@@ -962,6 +967,11 @@ impl HiJackApp {
             .ok()
             .and_then(|mut slot| slot.take());
         if let Some(p) = pending {
+            // Disconnect came after these were published (audit M2).
+            if p.token.is_cancelled() {
+                return;
+            }
+            self.engines_token = Some(p.token);
             // `None` on a Pad-only session: SD/Quantum bind no GP socket.
             self.sender = p.sender;
             self.snapshot_engine = Some(p.snapshot_engine);
@@ -1123,26 +1133,52 @@ impl HiJackApp {
         self.pickup_pending_engines();
         while let Ok(event) = self.ui_rx.try_recv() {
             match event {
-                UiEvent::ConnectionEstablished => {
+                // Both are ignored once their connection has been cancelled:
+                // Disconnect was pressed meanwhile (audit M1/M2).
+                UiEvent::ConnectionEstablished { token } => {
+                    if token.is_cancelled() {
+                        continue;
+                    }
                     self.connected.store(true, Ordering::Relaxed);
                     self.setup.status_message = Some("Connected to console".into());
                 }
-                UiEvent::ConnectionFailed(msg) => {
+                UiEvent::ConnectionFailed { token, message } => {
+                    if token.is_cancelled() {
+                        continue;
+                    }
                     self.connected.store(false, Ordering::Relaxed);
                     self.setup.status_message = Some(StatusMessage::with_help(
-                        format!("Connection failed: {msg}"),
+                        format!("Connection failed: {message}"),
                         HelpKey::SetupWarnConnectionFailed,
                     ));
                 }
                 UiEvent::Disconnected => {
+                    // `do_disconnect` has already cancelled and dropped the
+                    // connection's token; this event only tidies up after it.
+                    // Engines belonging to a cancelled connection go. A fast
+                    // reconnect's engines may already be installed: keep them.
+                    if self.engines_token.as_ref().is_none_or(|t| t.is_cancelled()) {
+                        self.engines_token = None;
+                        self.sender = None;
+                        self.ipad_sender = None;
+                        self.snapshot_engine = None;
+                        self.macro_engine = None;
+                        // Sidecar service: no console link → no sends.
+                        let _ = self.sidecar_senders_tx.send(None);
+                    }
+                    // A newer connection has started since this Disconnect (a
+                    // macro running [Disconnect, Connect] in one go): its
+                    // token, flag and status are not this event's to clear.
+                    // Clearing its token used to orphan it (audit M1).
+                    if self
+                        .cancel_token
+                        .as_ref()
+                        .is_some_and(|t| !t.is_cancelled())
+                    {
+                        continue;
+                    }
                     self.connected.store(false, Ordering::Relaxed);
-                    self.sender = None;
-                    self.ipad_sender = None;
-                    self.snapshot_engine = None;
-                    self.macro_engine = None;
                     self.cancel_token = None;
-                    // Sidecar service: no console link → no sends.
-                    let _ = self.sidecar_senders_tx.send(None);
                     if let Ok(mut slot) = self.pending_engines.lock() {
                         slot.take();
                     }

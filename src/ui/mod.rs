@@ -63,13 +63,24 @@ pub struct PendingEngines {
     /// This connection's shared state, handed to the sidecar service so a
     /// hardware move runs the full operator-change chain (audit H7).
     pub daemon: crate::console::connection::DaemonState,
+    /// The connection these engines belong to. The pickup drops them if it
+    /// has been cancelled since (audit M2).
+    pub token: tokio_util::sync::CancellationToken,
 }
 
 /// Events sent from async tasks back to the UI thread.
 #[derive(Debug)]
 pub enum UiEvent {
-    ConnectionEstablished,
-    ConnectionFailed(String),
+    /// Carries its connection's token: the UI ignores the event if that
+    /// connection has been cancelled since (audit M1/M2).
+    ConnectionEstablished {
+        token: tokio_util::sync::CancellationToken,
+    },
+    /// As `ConnectionEstablished`, ignored once its connection is cancelled.
+    ConnectionFailed {
+        token: tokio_util::sync::CancellationToken,
+        message: String,
+    },
     Disconnected,
     SnapshotCaptured {
         name: String,

@@ -403,6 +403,8 @@ pub enum HelpKey {
     SetupWarnInvalidIpadLocalPort,
     SetupWarnIpadIpRequired,
     SetupWarnInvalidConsoleAddr,
+    SetupWarnInvalidLocalIp,
+    SetupWarnInvalidIpadIp,
     SetupWarnFilePathRequired,
     SetupWarnConnectionFailed,
     SetupWarnShowFileError,
@@ -1688,6 +1690,16 @@ fn meta(key: HelpKey) -> HelpMeta {
             "The console IP address is not valid. Enter a numeric address such as \
              192.168.1.10.",
         ),
+        SetupWarnInvalidLocalIp => (
+            "setup.warn_invalid_local_ip",
+            "The local IP address is not valid. Pick a network interface, or clear \
+             the field to use every interface.",
+        ),
+        SetupWarnInvalidIpadIp => (
+            "setup.warn_invalid_ipad_ip",
+            "The iPad IP address is not valid. Enter the numeric address the DiGiCo \
+             iPad app shows, such as 192.168.1.20.",
+        ),
         SetupWarnFilePathRequired => (
             "setup.warn_file_path_required",
             "Enter or pick a show-file path first.",
@@ -2158,6 +2170,8 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::SetupWarnInvalidIpadLocalPort,
     HelpKey::SetupWarnIpadIpRequired,
     HelpKey::SetupWarnInvalidConsoleAddr,
+    HelpKey::SetupWarnInvalidLocalIp,
+    HelpKey::SetupWarnInvalidIpadIp,
     HelpKey::SetupWarnFilePathRequired,
     HelpKey::SetupWarnConnectionFailed,
     HelpKey::SetupWarnShowFileError,
