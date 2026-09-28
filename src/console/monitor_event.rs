@@ -56,7 +56,8 @@ pub enum MonitorStateEvent {
         snapshot: ClientStateSnapshot,
     },
     /// A single send field changed, command-driven. Echoed to every connected
-    /// client permitted for `aux`, **except** the originating `source`.
+    /// client permitted for `aux` with `input` visible, **except** the
+    /// originating `source`.
     /// UDP path: `/monitor/state/send/{input}/{aux}/{level|pan|on}` `[value]`.
     SendEcho {
         source: ClientEndpoint,
@@ -184,8 +185,11 @@ async fn dispatch_udp(
                 ParameterValue::Int(i) => vec![OscType::Int(i)],
                 ParameterValue::String(s) => vec![OscType::String(s)],
             };
-            // Legacy echo recipient rule: connected + aux-permitted, excluding
-            // the source. Note it deliberately does NOT test `visible_inputs`.
+            // Echo recipients: connected clients permitted this send (aux and
+            // input), excluding the source. The input check matters: a client
+            // that got a send it can't see would grow a strip for it, and the
+            // Android app used to shift every later strip onto its
+            // neighbour's input (audit A1).
             let mgr = manager.read().await;
             for client in mgr.clients.values() {
                 let Some(ClientEndpoint::Udp(addr)) = client.endpoint else {
@@ -194,7 +198,7 @@ async fn dispatch_udp(
                 if client.endpoint == Some(source) {
                     continue;
                 }
-                if !client.is_connected() || !client.permitted_auxes.contains(&aux) {
+                if !client.is_connected() || !client.is_permitted(input, aux) {
                     continue;
                 }
                 let _ = sender.send_to(addr, &path, args.clone()).await;
@@ -409,6 +413,52 @@ mod tests {
         assert_eq!(
             msg(&recv_osc(&sock_b).await.unwrap()).0,
             "/monitor/state/send/7/1"
+        );
+    }
+
+    /// Audit A1. An echo reaches only clients that can see its input. It
+    /// used to reach every client permitted the aux, and the Android app then
+    /// grew a strip for the hidden input and shifted the rest of the row.
+    #[tokio::test]
+    async fn udp_echo_skips_clients_that_cannot_see_the_input() {
+        let sock_src = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sock_sees = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sock_hidden = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let mut mgr = MonitorManager::new();
+        for (name, sock, inputs) in [
+            ("Src", &sock_src, vec![]),
+            ("Sees", &sock_sees, vec![4, 5]),
+            ("Hidden", &sock_hidden, vec![1, 2, 3]),
+        ] {
+            let mut c = MonitorClient::new(name.into(), vec![1], inputs);
+            c.endpoint = Some(ClientEndpoint::Udp(sock.local_addr().unwrap()));
+            c.last_seen = Some(Instant::now());
+            mgr.add_client(c);
+        }
+        let manager = Arc::new(RwLock::new(mgr));
+        let (sender, _rx) = MonitorServer::start("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let (tx, rx) = broadcast::channel(64);
+        tokio::spawn(run_udp_fanout(rx, sender, manager));
+
+        tx.send(MonitorStateEvent::SendEcho {
+            source: ClientEndpoint::Udp(sock_src.local_addr().unwrap()),
+            input: 5,
+            aux: 1,
+            param: SendParam::Level,
+            value: ParameterValue::Float(-6.0),
+        })
+        .unwrap();
+
+        let got = recv_osc(&sock_sees)
+            .await
+            .expect("a client that sees input 5 gets the echo");
+        assert_eq!(msg(&got).0, "/monitor/state/send/5/1/level");
+        assert!(
+            recv_osc(&sock_hidden).await.is_none(),
+            "a client that can't see input 5 must not get its echo"
         );
     }
 }

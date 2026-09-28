@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -234,12 +235,16 @@ private fun MyMix(state: MonitorUiState, selectedAux: Int?, service: MonitorServ
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         sends.forEach { send ->
-            SendStrip(
-                send = send,
-                onLevel = { service.setSendLevel(send.input, send.aux, it) },
-                onPan = { service.setSendPan(send.input, send.aux, it) },
-                onToggle = { service.setSendOn(send.input, send.aux, !send.on) },
-            )
+            // Keyed by the send, so a strip never inherits another send's
+            // gesture state when the aux changes or a strip is added (audit A1).
+            key(send.input, send.aux) {
+                SendStrip(
+                    send = send,
+                    onLevel = { service.setSendLevel(send.input, send.aux, it) },
+                    onPan = { service.setSendPan(send.input, send.aux, it) },
+                    onToggle = { service.setSendOn(send.input, send.aux, !send.on) },
+                )
+            }
         }
     }
 }
@@ -255,12 +260,14 @@ private fun MyAux(state: MonitorUiState, service: MonitorService) {
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         auxes.forEach { a ->
-            val aux = state.auxes[a] ?: com.pob31.s21monitor.model.AuxState(a)
-            AuxStrip(
-                aux = aux,
-                onFader = { service.setAuxFader(a, it) },
-                onMute = { service.setAuxMute(a, !aux.mute) },
-            )
+            key(a) {
+                val aux = state.auxes[a] ?: com.pob31.s21monitor.model.AuxState(a)
+                AuxStrip(
+                    aux = aux,
+                    onFader = { service.setAuxFader(a, it) },
+                    onMute = { service.setAuxMute(a, !aux.mute) },
+                )
+            }
         }
     }
 }

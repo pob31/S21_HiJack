@@ -40,6 +40,16 @@ data class MonitorUiState(
 
     fun sendsForAux(aux: Int): List<SendState> =
         sends.values.filter { it.aux == aux }.sortedBy { it.input }
+
+    /** This state with another client's echoed change applied to the send
+     *  (input, aux). An echo for a send this client doesn't already have is
+     *  ignored: it would add a strip for an input this musician can't see,
+     *  in among their own strips (audit A1). */
+    fun withSendEcho(input: Int, aux: Int, transform: (SendState) -> SendState): MonitorUiState {
+        val key = input to aux
+        val send = sends[key] ?: return this
+        return copy(sends = sends + (key to transform(send)))
+    }
 }
 
 /** Inaudible floor / "off" sentinel, matching the daemon + Flutter client. */

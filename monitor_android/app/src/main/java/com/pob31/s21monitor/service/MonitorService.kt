@@ -180,12 +180,14 @@ class MonitorService : Service() {
             is Inbound.SendFull ->
                 updateSend(ev.input, ev.aux) { it.copy(level = ev.level, pan = ev.pan, on = ev.on) }
 
-            is Inbound.SendEcho -> updateSend(ev.input, ev.aux) { s ->
-                when (ev.param) {
-                    "level" -> s.copy(level = MonitorProtocol.asFloat(ev.arg))
-                    "pan" -> s.copy(pan = MonitorProtocol.asFloat(ev.arg))
-                    "on" -> s.copy(on = MonitorProtocol.asBool(ev.arg))
-                    else -> s
+            is Inbound.SendEcho -> _state.update { st ->
+                st.withSendEcho(ev.input, ev.aux) { s ->
+                    when (ev.param) {
+                        "level" -> s.copy(level = MonitorProtocol.asFloat(ev.arg))
+                        "pan" -> s.copy(pan = MonitorProtocol.asFloat(ev.arg))
+                        "on" -> s.copy(on = MonitorProtocol.asBool(ev.arg))
+                        else -> s
+                    }
                 }
             }
 

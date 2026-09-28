@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,22 +36,38 @@ import com.pob31.s21monitor.ui.theme.Warn
 import kotlin.math.max
 import kotlin.math.min
 
-/** Fader dB range (matches the web/Flutter clients). */
+/** Fader dB range, with a linear taper. (The web client's floor is −60 dB.) */
 const val FADER_MIN_DB = -80f
 const val FADER_MAX_DB = 10f
 
 fun dbToFraction(db: Float): Float =
     ((db - FADER_MIN_DB) / (FADER_MAX_DB - FADER_MIN_DB)).coerceIn(0f, 1f)
 
-fun fractionToDb(f: Float): Float =
-    FADER_MIN_DB + f.coerceIn(0f, 1f) * (FADER_MAX_DB - FADER_MIN_DB)
-
 fun formatDb(db: Float): String = if (db <= -59f) "-inf" else "%.1f dB".format(db)
 
 /**
+ * The level during a relative fader drag: [startDb], the level when the drag
+ * began, moved by the finger's vertical travel since, where the fader's full
+ * height spans the full dB range. [travelY] is in px and positive downwards
+ * (screen y), so dragging up raises the level. A start below the fader's
+ * floor (the daemon's −150 dB "off") counts as the floor.
+ */
+fun dragDb(startDb: Float, travelY: Float, heightPx: Float): Float {
+    val start = if (startDb.isFinite()) startDb.coerceIn(FADER_MIN_DB, FADER_MAX_DB) else FADER_MIN_DB
+    val span = FADER_MAX_DB - FADER_MIN_DB
+    return (start - travelY / heightPx.coerceAtLeast(1f) * span).coerceIn(FADER_MIN_DB, FADER_MAX_DB)
+}
+
+/**
  * Vertical fader — a dark track filled bottom-up with the web monitor's blue
- * gradient. Drag (or touch) anywhere on the track to set the level. Dimmed
- * when [active] is false (off / muted).
+ * gradient. Dimmed when [active] is false (off / muted).
+ *
+ * Dragging is relative, like the web client's fader: the level moves by the
+ * finger's travel from wherever it was, and never jumps to where the finger
+ * lands (audit A2). A drag starts only if the finger passes the touch slop
+ * vertically before the strip row's scroller sees as much horizontal travel,
+ * so a mostly horizontal swipe still scrolls the row (the web client's
+ * direction lock).
  */
 @Composable
 fun VerticalFader(
@@ -61,11 +78,10 @@ fun VerticalFader(
 ) {
     var heightPx by remember { mutableFloatStateOf(1f) }
     val frac = dbToFraction(db)
-
-    fun setFromY(y: Float) {
-        val f = (1f - y / heightPx).coerceIn(0f, 1f)
-        onDb(fractionToDb(f))
-    }
+    // The gesture below outlives recompositions, so it reads the level and the
+    // callback through these instead of keeping the first ones (audit A1).
+    val currentDb by rememberUpdatedState(db)
+    val currentOnDb by rememberUpdatedState(onDb)
 
     Box(
         modifier
@@ -74,11 +90,26 @@ fun VerticalFader(
             .background(FaderTrack)
             .onSizeChanged { heightPx = it.height.toFloat().coerceAtLeast(1f) }
             .pointerInput(Unit) {
+                var startDb = 0f
+                var travelY = 0f
+                var lastDb = 0f
                 detectVerticalDragGestures(
-                    onDragStart = { setFromY(it.y) },
-                    onVerticalDrag = { change, _ ->
+                    onDragStart = {
+                        startDb = currentDb
+                        travelY = 0f
+                        lastDb = dragDb(startDb, 0f, heightPx)
+                    },
+                    onVerticalDrag = { change, dragAmount ->
                         change.consume()
-                        setFromY(change.position.y)
+                        travelY += dragAmount
+                        val v = dragDb(startDb, travelY, heightPx)
+                        // Send only when the level moves: not while pinned at
+                        // an end of travel, and not for a downward drag on a
+                        // fader that's off (that would send the −80 dB floor).
+                        if (v != lastDb) {
+                            lastDb = v
+                            currentOnDb(v)
+                        }
                     },
                 )
             },
@@ -115,10 +146,12 @@ fun PanControl(
     modifier: Modifier = Modifier,
 ) {
     var widthPx by remember { mutableFloatStateOf(1f) }
+    // The gestures below outlive recompositions (audit A1).
+    val currentOnPan by rememberUpdatedState(onPan)
 
     fun setFromX(x: Float) {
         val f = (x / widthPx).coerceIn(0f, 1f)
-        onPan((f * 2f - 1f).coerceIn(-1f, 1f))
+        currentOnPan((f * 2f - 1f).coerceIn(-1f, 1f))
     }
 
     Canvas(
@@ -138,7 +171,7 @@ fun PanControl(
                 )
             }
             .pointerInput(Unit) {
-                detectTapGestures(onDoubleTap = { onPan(0f) })
+                detectTapGestures(onDoubleTap = { currentOnPan(0f) })
             },
     ) {
         val w = size.width

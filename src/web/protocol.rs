@@ -289,9 +289,9 @@ pub fn event_to_server_msg(
             param,
             value,
         } => {
-            // Echo: skip the source; aux permission only (no visible filter),
-            // matching the legacy echo semantics.
-            if *source == me || !perms.permits_aux(*aux) {
+            // Echo: skip the source, and anything this client can't see
+            // (same rule as the UDP fan-out; audit A1).
+            if *source == me || !perms.permits_aux(*aux) || !perms.input_visible(*input) {
                 return None;
             }
             Some(match param {
@@ -527,5 +527,9 @@ mod tests {
                 ..
             })
         ));
+
+        // Echo of an input this client can't see: dropped (audit A1).
+        let narrow = perms("A", vec![1], vec![3, 4]);
+        assert!(event_to_server_msg(&echo_from_other, me, &narrow).is_none());
     }
 }
