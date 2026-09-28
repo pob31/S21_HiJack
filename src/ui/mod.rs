@@ -149,14 +149,17 @@ pub enum UiEvent {
     PaletteRevert {
         palette_id: uuid::Uuid,
     },
+    /// A show was opened from `from`; saves now go to `save_path` (the same
+    /// file, or the original show's for a recovered backup).
     /// `ConnectionSettings` is boxed to keep the enum's largest variant
     /// small enough not to trip `clippy::large_enum_variant` — the struct
     /// has many `String`/`Vec<String>` fields and grows over time.
-    ShowFileLoaded(
-        String,
-        Option<Box<crate::persistence::show_file::ConnectionSettings>>,
-        crate::model::recall_scope::ConsoleRecallConfig,
-    ),
+    ShowFileLoaded {
+        from: String,
+        save_path: String,
+        conn: Option<Box<crate::persistence::show_file::ConnectionSettings>>,
+        recall: crate::model::recall_scope::ConsoleRecallConfig,
+    },
     /// A save finished. `fingerprint` is the edit fingerprint of what was
     /// written, which becomes the "no unsaved changes" baseline.
     ShowFileSaved {

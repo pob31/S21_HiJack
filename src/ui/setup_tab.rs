@@ -31,7 +31,6 @@ use crate::model::pan_link::PanLinkBindings;
 use crate::model::parameter::PROTOCOL_COVERAGE;
 use crate::model::recall_progress::ProgressBars;
 use crate::model::recall_scope::ConsoleRecallConfig;
-use crate::model::snapshot::CueList;
 use crate::model::state::{ConnectionHealth, ConsoleState};
 use crate::model::sync_direction::{SharedSyncDirection, SnapshotSyncDirection};
 use crate::model::ui_mode::{ColorTheme, UiMode};
@@ -686,9 +685,8 @@ pub fn draw_setup_tab(
     // helper spawns a task and reports progress via `ui_tx`, so this
     // returns immediately and the rest of the frame proceeds normally.
     if let Some(path) = setup.pending_initial_load.take() {
-        setup.show_file_path = path.display().to_string();
+        let save_path = path.display().to_string();
         load_show_file(
-            setup,
             state,
             cue_manager,
             macro_manager,
@@ -699,6 +697,8 @@ pub fn draw_setup_tab(
             stream_deck_config,
             sidecar_config,
             connected,
+            path,
+            save_path,
             runtime,
             ui_tx,
         );
@@ -3264,7 +3264,7 @@ pub(crate) async fn build_show_file(
     let sidecar = sidecar_config.read().await.clone();
 
     ShowFile {
-        version: 18,
+        version: crate::persistence::show_file::SHOW_FORMAT_VERSION,
         app_version: crate::version::APP_VERSION.to_string(),
         console_config,
         connection,
@@ -3284,9 +3284,129 @@ pub(crate) async fn build_show_file(
     }
 }
 
+/// Everything a show file fills, as the Open and New tasks hold it.
+#[derive(Clone)]
+struct ShowTargets {
+    state: Arc<RwLock<ConsoleState>>,
+    cue_manager: Arc<RwLock<CueManager>>,
+    macro_manager: Arc<RwLock<MacroManager>>,
+    monitor_manager: Arc<RwLock<MonitorManager>>,
+    palette_manager: Arc<RwLock<PaletteManager>>,
+    gang_manager: Arc<RwLock<GangManager>>,
+    pan_link_bindings: Arc<RwLock<PanLinkBindings>>,
+    stream_deck_config: Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
+    sidecar_config: Arc<RwLock<crate::model::sidecar::SidecarConfig>>,
+}
+
+/// Replace every manager's content with `show`'s, so nothing of the previous
+/// show survives. Open and New both go through here: New used to clear only
+/// the cues, snapshots, macros and palettes, and the old gangs, pan link,
+/// monitor profiles, Stream Deck and sidecar setups carried into the new
+/// show (audit M4). The console config is taken only when
+/// `take_console_config`, since a connected desk is authoritative. Returns
+/// the parts the UI thread applies itself.
+async fn apply_show(
+    show: ShowFile,
+    t: &ShowTargets,
+    take_console_config: bool,
+) -> (ConnectionSettings, ConsoleRecallConfig) {
+    let mut mgr = t.cue_manager.write().await;
+    mgr.replace_cue_list(show.cue_list);
+    mgr.snapshots.clear();
+    for snap in show.snapshots {
+        mgr.snapshots.insert(snap.id, snap);
+    }
+    mgr.scope_templates.clear();
+    for tmpl in show.scope_templates {
+        mgr.scope_templates.insert(tmpl.id, tmpl);
+    }
+    // External-trigger targets + user templates (v17).
+    mgr.osc_targets.clear();
+    for target in show.osc_targets {
+        mgr.osc_targets.insert(target.id, target);
+    }
+    mgr.trigger_templates.clear();
+    for tmpl in show.trigger_templates {
+        mgr.trigger_templates.insert(tmpl.id, tmpl);
+    }
+    // Direct field writes bypass the manager's hooked mutators —
+    // invalidate the look-ahead recall cache explicitly.
+    mgr.bump_model_gen();
+    drop(mgr);
+
+    // Restore macros
+    let mut mmgr = t.macro_manager.write().await;
+    mmgr.macros.clear();
+    for macro_def in show.macros {
+        mmgr.macros.insert(macro_def.id, macro_def);
+    }
+    drop(mmgr);
+
+    // Restore palettes (EQ, Compressor, Gate)
+    let mut pmgr = t.palette_manager.write().await;
+    pmgr.palettes.clear();
+    for palette in show.palettes {
+        pmgr.palettes.insert(palette.id, palette);
+    }
+    pmgr.bump_model_gen();
+    drop(pmgr);
+
+    // Restore monitor clients
+    let mut monmgr = t.monitor_manager.write().await;
+    monmgr.clients.clear();
+    for client in show.monitor_clients {
+        monmgr.clients.insert(client.id, client);
+    }
+    drop(monmgr);
+
+    // Restore gang groups
+    let mut gmgr = t.gang_manager.write().await;
+    gmgr.groups.clear();
+    for group in show.gang_groups {
+        gmgr.groups.insert(group.id, group);
+    }
+    drop(gmgr);
+
+    // Restore pan link bindings
+    {
+        let mut pl = t.pan_link_bindings.write().await;
+        *pl = show.pan_link;
+    }
+
+    // Restore Stream Deck config (device + per-button maps).
+    // The engine will pick up the new state on the next
+    // frame via the UI's Connect/Disconnect logic.
+    {
+        let mut sd = t.stream_deck_config.write().await;
+        *sd = show.stream_deck;
+    }
+
+    // Restore fader sidecar bindings + master enable. The
+    // sidecar service reads this shared config each event,
+    // so the new table takes effect immediately.
+    {
+        let mut sc = t.sidecar_config.write().await;
+        *sc = show.sidecar;
+    }
+
+    // Restore console config (channel counts, plus_mode, bus
+    // split) so offline editing works. Skip if already
+    // connected — the live console is authoritative.
+    if take_console_config {
+        let mut s = t.state.write().await;
+        s.config = show.console_config.clone();
+    }
+
+    (show.connection, show.console_recall)
+}
+
+/// Open the show at `path`. `save_path` is where saves go afterwards: `path`
+/// itself, or for a backup being recovered, the original show's path. The
+/// Setup tab's path changes only once the load succeeds; after a failed load
+/// it still names the file of the show in memory, so the next save can't
+/// write that show over the file that failed (audit M6).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn load_show_file(
-    setup: &mut SetupTabState,
     state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
@@ -3297,131 +3417,33 @@ pub(crate) fn load_show_file(
     stream_deck_config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
     sidecar_config: &Arc<RwLock<crate::model::sidecar::SidecarConfig>>,
     connected: &Arc<AtomicBool>,
+    path: std::path::PathBuf,
+    save_path: String,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    // If no path, open a file dialog (seeded with the last-used folder).
-    if setup.show_file_path.is_empty() {
-        let dlg = seed_last_open_dir(
-            rfd::FileDialog::new()
-                .add_filter("Show files", &["s21show", "json"])
-                .add_filter("All files", &["*"]),
-            setup,
-        );
-        if let Some(path) = dlg.pick_file() {
-            remember_last_open_dir(setup, &path);
-            setup.show_file_path = path.display().to_string();
-        } else {
-            return;
-        }
-    }
-
-    let path = std::path::PathBuf::from(&setup.show_file_path);
-    let st = state.clone();
-    let cue_mgr = cue_manager.clone();
-    let macro_mgr = macro_manager.clone();
-    let mon_mgr = monitor_manager.clone();
-    let pmgr_arc = palette_manager.clone();
-    let gang_mgr = gang_manager.clone();
-    let pl_bindings = pan_link_bindings.clone();
-    let sd_config = stream_deck_config.clone();
-    let sc_config = sidecar_config.clone();
+    let targets = ShowTargets {
+        state: state.clone(),
+        cue_manager: cue_manager.clone(),
+        macro_manager: macro_manager.clone(),
+        monitor_manager: monitor_manager.clone(),
+        palette_manager: palette_manager.clone(),
+        gang_manager: gang_manager.clone(),
+        pan_link_bindings: pan_link_bindings.clone(),
+        stream_deck_config: stream_deck_config.clone(),
+        sidecar_config: sidecar_config.clone(),
+    };
     let conn_flag = connected.clone();
     let tx = ui_tx.clone();
-    let path_str = setup.show_file_path.clone();
+    let path_str = path.display().to_string();
 
     runtime.spawn(async move {
         match ShowFile::load(&path).await {
             Ok(show) => {
-                let mut mgr = cue_mgr.write().await;
-                mgr.replace_cue_list(show.cue_list);
-                mgr.snapshots.clear();
-                for snap in show.snapshots {
-                    mgr.snapshots.insert(snap.id, snap);
-                }
-                mgr.scope_templates.clear();
-                for tmpl in show.scope_templates {
-                    mgr.scope_templates.insert(tmpl.id, tmpl);
-                }
-                // External-trigger targets + user templates (v17).
-                mgr.osc_targets.clear();
-                for target in show.osc_targets {
-                    mgr.osc_targets.insert(target.id, target);
-                }
-                mgr.trigger_templates.clear();
-                for tmpl in show.trigger_templates {
-                    mgr.trigger_templates.insert(tmpl.id, tmpl);
-                }
-                // Direct field writes bypass the manager's hooked mutators —
-                // invalidate the look-ahead recall cache explicitly.
-                mgr.bump_model_gen();
-                drop(mgr);
-
-                // Restore macros
-                let mut mmgr = macro_mgr.write().await;
-                mmgr.macros.clear();
-                for macro_def in show.macros {
-                    mmgr.macros.insert(macro_def.id, macro_def);
-                }
-                drop(mmgr);
-
-                // Restore palettes (EQ, Compressor, Gate)
-                let mut pmgr = pmgr_arc.write().await;
-                pmgr.palettes.clear();
-                for palette in show.palettes {
-                    pmgr.palettes.insert(palette.id, palette);
-                }
-                pmgr.bump_model_gen();
-                drop(pmgr);
-
-                // Restore monitor clients
-                let mut monmgr = mon_mgr.write().await;
-                monmgr.clients.clear();
-                for client in show.monitor_clients {
-                    monmgr.clients.insert(client.id, client);
-                }
-                drop(monmgr);
-
-                // Restore gang groups
-                let mut gmgr = gang_mgr.write().await;
-                gmgr.groups.clear();
-                for group in show.gang_groups {
-                    gmgr.groups.insert(group.id, group);
-                }
-                drop(gmgr);
-
-                // Restore pan link bindings
-                {
-                    let mut pl = pl_bindings.write().await;
-                    *pl = show.pan_link;
-                }
-
-                // Restore Stream Deck config (device + per-button maps).
-                // The engine will pick up the new state on the next
-                // frame via the UI's Connect/Disconnect logic.
-                {
-                    let mut sd = sd_config.write().await;
-                    *sd = show.stream_deck;
-                }
-
-                // Restore fader sidecar bindings + master enable. The
-                // sidecar service reads this shared config each event,
-                // so the new table takes effect immediately.
-                {
-                    let mut sc = sc_config.write().await;
-                    *sc = show.sidecar;
-                }
-
-                // Restore console config (channel counts, plus_mode, bus
-                // split) so offline editing works. Skip if already
-                // connected — the live console is authoritative.
-                if !conn_flag.load(Ordering::Relaxed) {
-                    let mut s = st.write().await;
-                    s.config = show.console_config.clone();
-                }
+                let (conn, recall) =
+                    apply_show(show, &targets, !conn_flag.load(Ordering::Relaxed)).await;
 
                 info!("Show file loaded: {path_str}");
-
                 // Backup-on-load: copy the exact on-disk bytes into the
                 // `.s21backups/` subfolder (keep the last few). Best-effort —
                 // a failure here must never block a successful load.
@@ -3440,13 +3462,12 @@ pub(crate) fn load_show_file(
                     Err(e) => tracing::warn!(error = %e, "Backup-on-load: re-read failed"),
                 }
 
-                let conn = show.connection;
-                let recall = show.console_recall;
-                let _ = tx.send(UiEvent::ShowFileLoaded(
-                    path_str,
-                    Some(Box::new(conn)),
+                let _ = tx.send(UiEvent::ShowFileLoaded {
+                    from: path_str,
+                    save_path,
+                    conn: Some(Box::new(conn)),
                     recall,
-                ));
+                });
             }
             Err(e) => {
                 error!("Load failed for {path_str}: {e}");
@@ -3467,39 +3488,39 @@ pub(crate) fn load_show_file(
     });
 }
 
-/// Start an empty show: clear the cue list, snapshots, scope templates, OSC
-/// targets, trigger templates, macros and palettes, and forget the file path.
-/// Reports `UiEvent::NewShowCreated` once the managers are cleared.
+/// Start an empty show: everything a show file holds is emptied, through the
+/// same step as Open (audit M4), and the file path is forgotten. The console
+/// config stays: it describes the desk, not the show.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn new_show(
     setup: &mut SetupTabState,
+    state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
+    monitor_manager: &Arc<RwLock<MonitorManager>>,
     palette_manager: &Arc<RwLock<PaletteManager>>,
+    gang_manager: &Arc<RwLock<GangManager>>,
+    pan_link_bindings: &Arc<RwLock<PanLinkBindings>>,
+    stream_deck_config: &Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
+    sidecar_config: &Arc<RwLock<crate::model::sidecar::SidecarConfig>>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    let cue_mgr = cue_manager.clone();
-    let macro_mgr = macro_manager.clone();
-    let pmgr_arc = palette_manager.clone();
+    let targets = ShowTargets {
+        state: state.clone(),
+        cue_manager: cue_manager.clone(),
+        macro_manager: macro_manager.clone(),
+        monitor_manager: monitor_manager.clone(),
+        palette_manager: palette_manager.clone(),
+        gang_manager: gang_manager.clone(),
+        pan_link_bindings: pan_link_bindings.clone(),
+        stream_deck_config: stream_deck_config.clone(),
+        sidecar_config: sidecar_config.clone(),
+    };
     let tx = ui_tx.clone();
     runtime.spawn(async move {
-        let mut mgr = cue_mgr.write().await;
-        mgr.replace_cue_list(CueList::default());
-        mgr.snapshots.clear();
-        mgr.scope_templates.clear();
-        mgr.osc_targets.clear();
-        mgr.trigger_templates.clear();
-        // Direct field writes bypass the manager's hooked mutators —
-        // invalidate the look-ahead recall cache explicitly.
-        mgr.bump_model_gen();
-        drop(mgr);
-        let mut mmgr = macro_mgr.write().await;
-        mmgr.macros.clear();
-        drop(mmgr);
-        let mut pmgr = pmgr_arc.write().await;
-        pmgr.palettes.clear();
-        pmgr.bump_model_gen();
-        drop(pmgr);
+        let empty = ShowFile::new(crate::model::config::ConsoleConfig::default());
+        apply_show(empty, &targets, false).await;
         let _ = tx.send(UiEvent::NewShowCreated);
     });
     setup.show_file_path.clear();
@@ -3819,9 +3840,89 @@ fn draw_first_run_popup(ui: &mut egui::Ui, setup: &mut SetupTabState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::snapshot::CueList;
 
     /// The unsaved-changes check (audit H8) compares fingerprints of
     /// `build_show_file` output. An unchanged show must fingerprint the same
+    /// Audit M4: New empties everything a show file holds. It used to clear
+    /// only the cues, snapshots, macros and palettes, so the old gangs, pan
+    /// link, monitor profiles and hardware setups were saved into the new show.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_show_leaves_nothing_of_the_old_show() {
+        use crate::model::channel::ChannelId;
+        use crate::model::gang::GangGroup;
+        use crate::model::monitor::MonitorClient;
+        use crate::model::parameter::ParameterSection;
+        use crate::model::sidecar::SidecarConfig;
+        use crate::model::streamdeck::StreamDeckConfig;
+
+        let state = Arc::new(RwLock::new(ConsoleState::new(
+            crate::model::config::ConsoleConfig::default(),
+        )));
+        let cues = Arc::new(RwLock::new(CueManager::new(CueList::default())));
+        let macros = Arc::new(RwLock::new(MacroManager::new()));
+        let monitors = Arc::new(RwLock::new(MonitorManager::new()));
+        let palettes = Arc::new(RwLock::new(PaletteManager::new()));
+        let gangs = Arc::new(RwLock::new(GangManager::new()));
+        let pan_link = Arc::new(RwLock::new(PanLinkBindings::default()));
+        let stream_deck: Arc<RwLock<StreamDeckConfig>> = Arc::new(RwLock::new(Default::default()));
+        let sidecar: Arc<RwLock<SidecarConfig>> = Arc::new(RwLock::new(Default::default()));
+
+        monitors
+            .write()
+            .await
+            .add_client(MonitorClient::new("Drums".into(), vec![1], vec![]));
+        gangs.write().await.add_group(GangGroup::new(
+            "Kick".into(),
+            vec![ChannelId::Input(1), ChannelId::Input(2)],
+            std::collections::HashSet::from([ParameterSection::FaderMutePan]),
+        ));
+        pan_link.write().await.active.insert((1, 2));
+        stream_deck.write().await.enabled = true;
+        sidecar.write().await.enabled = true;
+
+        let mut setup = SetupTabState::new(
+            "192.168.1.1",
+            8000,
+            8001,
+            53000,
+            OperatingMode::Mode1,
+            None,
+            0,
+            0,
+            0,
+            &crate::persistence::preferences::AppPreferences::default(),
+        );
+        setup.show_file_path = "old.s21show".into();
+        let (tx, rx) = std::sync::mpsc::channel();
+        new_show(
+            &mut setup,
+            &state,
+            &cues,
+            &macros,
+            &monitors,
+            &palettes,
+            &gangs,
+            &pan_link,
+            &stream_deck,
+            &sidecar,
+            &tokio::runtime::Handle::current(),
+            &tx,
+        );
+        let event =
+            tokio::task::spawn_blocking(move || rx.recv_timeout(std::time::Duration::from_secs(2)))
+                .await
+                .unwrap();
+        assert!(matches!(event, Ok(UiEvent::NewShowCreated)), "{event:?}");
+
+        assert!(setup.show_file_path.is_empty());
+        assert!(monitors.read().await.clients.is_empty());
+        assert!(gangs.read().await.groups.is_empty());
+        assert_eq!(*pan_link.read().await, PanLinkBindings::default());
+        assert!(!stream_deck.read().await.enabled);
+        assert!(!sidecar.read().await.enabled);
+    }
+
     /// Audit M3: the local IP field is trimmed and validated instead of
     /// reaching an `.expect()` in the connect task.
     #[test]

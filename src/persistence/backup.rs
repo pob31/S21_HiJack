@@ -109,13 +109,20 @@ impl RecoveryCandidate {
 }
 
 /// Sanitize a show file's stem to a filesystem- and parse-safe token.
-/// Keeps `[A-Za-z0-9._-]`, replaces everything else with `_`.
+/// Keeps `[A-Za-z0-9._-]` and replaces everything else with `_`.
+///
+/// When that changed the name, a short hash of the original is appended, so
+/// "My Show" and "My_Show", or two Cyrillic names of the same length, no
+/// longer share one series and prune each other's copies (audit M7). A name
+/// that needed no change keeps its bare stem, so its existing copies still
+/// match. (Copies made for a changed name before this fix keep the old stem
+/// and are no longer listed for it.)
 fn sanitized_stem(show_path: &Path) -> String {
-    let raw = show_path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "untitled".to_string());
-    let cleaned: String = raw
+    let Some(raw) = show_path.file_stem() else {
+        return "untitled".to_string();
+    };
+    let raw_str = raw.to_string_lossy();
+    let cleaned: String = raw_str
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
@@ -127,9 +134,19 @@ fn sanitized_stem(show_path: &Path) -> String {
         .collect();
     if cleaned.is_empty() {
         "untitled".to_string()
-    } else {
+    } else if cleaned == raw_str {
         cleaned
+    } else {
+        format!("{cleaned}-{:08x}", fnv1a32(raw.as_encoded_bytes()))
     }
+}
+
+/// 32-bit FNV-1a: unlike `DefaultHasher`, the same on every build and
+/// platform, which a name written to disk needs.
+fn fnv1a32(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0x811c_9dc5, |h, &b| {
+        (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+    })
 }
 
 /// Stand-in show path for autosaving a show that has never been saved, so its
@@ -316,10 +333,27 @@ mod tests {
 
     #[test]
     fn sanitized_stem_strips_illegal_chars() {
+        // A changed name carries a hash of the original (fixed: it's on disk).
         let p = PathBuf::from("/shows/My Show #1!.s21show");
-        assert_eq!(sanitized_stem(&p), "My_Show__1_");
+        assert_eq!(sanitized_stem(&p), "My_Show__1_-31663fab");
         let ok = PathBuf::from("/shows/Set_2-Final.v3.s21show");
         assert_eq!(sanitized_stem(&ok), "Set_2-Final.v3");
+    }
+
+    /// Audit M7: names that sanitize alike keep separate series, so one
+    /// show's rotation can't delete another's copies.
+    #[test]
+    fn names_that_sanitize_alike_get_different_stems() {
+        let stem = |name: &str| sanitized_stem(&PathBuf::from(format!("/shows/{name}.s21show")));
+        assert_eq!(stem("My_Show"), "My_Show");
+        assert_eq!(stem("My Show"), "My_Show-ac0f14d0");
+        assert_ne!(stem("Сет один"), stem("Сет два!"));
+        assert_ne!(stem("Шоу"), stem("Щоу"));
+        // Still one parseable token.
+        let target =
+            backup_target(&PathBuf::from("/shows/My Show.s21show"), BackupKind::Backup).unwrap();
+        let (_, parsed, _) = parse_name(&target.file_name().unwrap().to_string_lossy()).unwrap();
+        assert_eq!(parsed, "My_Show-ac0f14d0");
     }
 
     #[test]

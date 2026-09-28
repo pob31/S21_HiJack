@@ -263,10 +263,30 @@ pub struct ShowFile {
     pub sidecar: SidecarConfig,
 }
 
+/// The show file format this build writes, and the newest it opens. Bump it
+/// with every format change; there is one constant so a save path can't stamp
+/// a stale number (audit M5).
+pub const SHOW_FORMAT_VERSION: u32 = 19;
+
+/// A load error for text that didn't deserialize. A damaged file (not JSON,
+/// or cut short) is `InvalidData`/`UnexpectedEof`, which the UI treats as
+/// corruption and offers to recover from. Valid JSON this build can't read,
+/// such as a value it doesn't know, is `Other` and reported as it is
+/// (audit M5).
+fn deserialize_error(e: serde_json::Error) -> std::io::Error {
+    use serde_json::error::Category;
+    let kind = match e.classify() {
+        Category::Eof => std::io::ErrorKind::UnexpectedEof,
+        Category::Syntax => std::io::ErrorKind::InvalidData,
+        Category::Data | Category::Io => std::io::ErrorKind::Other,
+    };
+    std::io::Error::new(kind, format!("Deserialize error: {e}"))
+}
+
 impl ShowFile {
     pub fn new(config: ConsoleConfig) -> Self {
         Self {
-            version: 19,
+            version: SHOW_FORMAT_VERSION,
             app_version: crate::version::APP_VERSION.to_string(),
             console_config: config,
             connection: ConnectionSettings::default(),
@@ -372,14 +392,33 @@ impl ShowFile {
     }
 
     /// Load a show file from disk.
+    ///
+    /// A file from a newer format is refused with `Unsupported`: opening it
+    /// would silently drop whatever this build doesn't know, and saving would
+    /// then write the older format over it (audit M5). See
+    /// [`deserialize_error`] for how parse errors are classified.
     pub async fn load(path: &Path) -> std::io::Result<Self> {
         let json = tokio::fs::read_to_string(path).await?;
-        let mut show: ShowFile = serde_json::from_str(&json).map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Deserialize error: {e}"),
-            )
-        })?;
+        Self::from_json(&json)
+    }
+
+    fn from_json(json: &str) -> std::io::Result<Self> {
+        // The version first, on its own: a newer file may not parse in full.
+        #[derive(Deserialize)]
+        struct Header {
+            version: u32,
+        }
+        let header: Header = serde_json::from_str(json).map_err(deserialize_error)?;
+        if header.version > SHOW_FORMAT_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "this show was saved by a newer version of S21_HiJack (show format {};                      this version opens up to {SHOW_FORMAT_VERSION}). Update the app to open it.",
+                    header.version
+                ),
+            ));
+        }
+        let mut show: ShowFile = serde_json::from_str(json).map_err(deserialize_error)?;
         // In-memory cleanup of values that older versions should never have
         // persisted. Non-destructive: the cleaned show is written out the next
         // time the operator saves.
@@ -492,6 +531,45 @@ mod tests {
         let mut fewer = show.clone();
         fewer.snapshots.pop();
         assert_ne!(fewer.edit_fingerprint(), saved);
+    }
+
+    /// Audit M5: a show from a newer format is refused rather than opened
+    /// with its unknown parts dropped (a later save would then write the
+    /// older format over it), and it isn't mistaken for corruption.
+    #[test]
+    fn a_newer_format_is_refused() {
+        let json = format!(
+            r#"{{"version": {}, "a_future_setting": true}}"#,
+            SHOW_FORMAT_VERSION + 1
+        );
+        let err = ShowFile::from_json(&json).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+        assert!(!crate::persistence::backup::is_corruption_error(&err));
+        assert!(err.to_string().contains("newer version"));
+    }
+
+    /// Audit M5: a damaged file is corruption (the UI offers recovery); a
+    /// valid file with a value this build doesn't know is not. It used to be
+    /// reported as "truncated or bad header".
+    #[test]
+    fn parse_errors_are_classified() {
+        use crate::persistence::backup::is_corruption_error;
+        let good = serde_json::to_value(ShowFile::new(ConsoleConfig::default())).unwrap();
+        let text = good.to_string();
+
+        assert!(is_corruption_error(
+            &ShowFile::from_json(&text[..text.len() / 2]).unwrap_err()
+        ));
+        assert!(is_corruption_error(
+            &ShowFile::from_json("not a show").unwrap_err()
+        ));
+
+        let mut odd = good.clone();
+        odd["connection"]["operating_mode"] = serde_json::json!("NoSuchMode");
+        let err = ShowFile::from_json(&odd.to_string()).unwrap_err();
+        assert!(!is_corruption_error(&err), "{err}");
+
+        assert!(ShowFile::from_json(&text).is_ok());
     }
 
     #[tokio::test]

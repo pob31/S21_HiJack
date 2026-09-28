@@ -450,10 +450,8 @@ impl HiJackApp {
             &prefs,
         );
         if let Some(path) = show_file {
-            // Pre-populate the path field so the UI shows where we
-            // came from, and queue an auto-load on the first frame
-            // the Setup tab draws.
-            setup.show_file_path = path.display().to_string();
+            // Queue an auto-load on the first frame the Setup tab draws. The
+            // path field is filled once the load succeeds (audit M6).
             setup.pending_initial_load = Some(path);
         }
 
@@ -1300,8 +1298,22 @@ impl HiJackApp {
                         }
                     });
                 }
-                UiEvent::ShowFileLoaded(path, conn, recall) => {
-                    self.setup.status_message = Some(format!("Loaded: {path}").into());
+                UiEvent::ShowFileLoaded {
+                    from,
+                    save_path,
+                    conn,
+                    recall,
+                } => {
+                    self.setup.status_message = Some(
+                        if from == save_path {
+                            format!("Loaded: {from}")
+                        } else {
+                            format!("Recovered from {from}. Save writes to {save_path}")
+                        }
+                        .into(),
+                    );
+                    // Only now does the path change (audit M6).
+                    self.setup.show_file_path = save_path;
                     // If this load resolved a recovery, flag it so the dialog
                     // can offer to repair the original path.
                     if let Some(rd) = &mut self.recovery_dialog {
@@ -1421,6 +1433,18 @@ impl HiJackApp {
                     self.saved_fingerprint = Some(fingerprint);
                 }
                 UiEvent::NewShowCreated => {
+                    // A new show's own settings start from the defaults too
+                    // (audit M4); the network settings stay.
+                    let defaults = crate::persistence::show_file::ConnectionSettings::default();
+                    self.auto_update_on_recall
+                        .store(defaults.auto_update_on_recall, Ordering::Relaxed);
+                    self.snapshot_sync_direction
+                        .set(defaults.effective_sync_direction());
+                    self.snapshots.scope_editor.console_recall = Default::default();
+                    // The sidecar's binding table is now empty.
+                    let _ = self
+                        .sidecar_svc_tx
+                        .send(crate::console::sidecar_service::SvcCmd::SyncSurface);
                     self.take_saved_baseline();
                 }
                 UiEvent::ShowFileError(msg) => {
@@ -2103,9 +2127,14 @@ impl HiJackApp {
                 self.recovery_dialog = None;
             }
             Action::Load(path) => {
-                self.setup.show_file_path = path.display().to_string();
+                // Saves keep going to the original, not into `.s21backups/`
+                // where rotation would delete them (audit M6).
+                let save_path = self
+                    .recovery_dialog
+                    .as_ref()
+                    .map(|rd| rd.original_path.clone())
+                    .unwrap_or_default();
                 super::setup_tab::load_show_file(
-                    &mut self.setup,
                     &self.state,
                     &self.cue_manager,
                     &self.macro_manager,
@@ -2116,6 +2145,8 @@ impl HiJackApp {
                     &self.stream_deck_config,
                     &self.sidecar_config,
                     &self.connected,
+                    path,
+                    save_path,
                     &self.runtime,
                     &self.ui_tx,
                 );
@@ -2440,9 +2471,9 @@ impl HiJackApp {
     fn carry_out_show_action(&mut self, action: super::setup_tab::ShowAction) {
         match action {
             super::setup_tab::ShowAction::Open(path) => {
-                self.setup.show_file_path = path.display().to_string();
+                // The path field changes once the load succeeds (audit M6).
+                let save_path = path.display().to_string();
                 super::setup_tab::load_show_file(
-                    &mut self.setup,
                     &self.state,
                     &self.cue_manager,
                     &self.macro_manager,
@@ -2453,15 +2484,23 @@ impl HiJackApp {
                     &self.stream_deck_config,
                     &self.sidecar_config,
                     &self.connected,
+                    path,
+                    save_path,
                     &self.runtime,
                     &self.ui_tx,
                 );
             }
             super::setup_tab::ShowAction::New => super::setup_tab::new_show(
                 &mut self.setup,
+                &self.state,
                 &self.cue_manager,
                 &self.macro_manager,
+                &self.monitor_manager,
                 &self.palette_manager,
+                &self.gang_manager,
+                &self.pan_link_bindings,
+                &self.stream_deck_config,
+                &self.sidecar_config,
                 &self.runtime,
                 &self.ui_tx,
             ),
