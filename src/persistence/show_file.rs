@@ -16,6 +16,7 @@ use crate::model::snapshot::{CueList, ScopeTemplate, Snapshot};
 use crate::model::streamdeck::StreamDeckConfig;
 use crate::model::sync_direction::SnapshotSyncDirection;
 use crate::model::ui_mode::UiMode;
+use crate::persistence::atomic_write::write_atomically;
 
 /// Connection settings persisted in the show file.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -287,41 +288,16 @@ impl ShowFile {
 
     /// Save the show file to disk as JSON.
     ///
-    /// Atomic-replace: writes to `<path>.tmp`, fsyncs, then renames over the
-    /// destination. A crash mid-save leaves the previous file intact; the
-    /// orphan `.tmp` is best-effort cleaned up on error.
+    /// Atomic-replace via [`write_atomically`]: a crash or failed write
+    /// mid-save leaves the previous file intact.
     pub async fn save(&self, path: &Path) -> std::io::Result<()> {
-        use tokio::io::AsyncWriteExt;
-
         let json = serde_json::to_string_pretty(self).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("Serialize error: {e}"),
             )
         })?;
-
-        let mut tmp_os = path.as_os_str().to_owned();
-        tmp_os.push(".tmp");
-        let tmp_path = std::path::PathBuf::from(tmp_os);
-
-        let write_result: std::io::Result<()> = async {
-            let mut file = tokio::fs::File::create(&tmp_path).await?;
-            file.write_all(json.as_bytes()).await?;
-            file.sync_all().await?;
-            Ok(())
-        }
-        .await;
-
-        if let Err(e) = write_result {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(e);
-        }
-
-        if let Err(e) = tokio::fs::rename(&tmp_path, path).await {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(e);
-        }
-        Ok(())
+        write_atomically(path, json.into_bytes()).await
     }
 
     /// Load a show file from disk.

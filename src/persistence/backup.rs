@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 
+use crate::persistence::atomic_write::write_atomically;
 use crate::persistence::show_file::ShowFile;
 
 /// How often an autosave may be written, at most.
@@ -171,16 +172,15 @@ fn parse_name(file_name: &str) -> Option<(BackupKind, String, DateTime<Utc>)> {
 /// Write `bytes` to a timestamped safety copy of `show_path`, then prune the
 /// series for that kind down to its keep-limit.
 ///
-/// Uses `.tmp` + rename for the same atomicity guarantee as
-/// [`ShowFile::save`]. Best-effort rotation: a delete that fails (e.g. a file
-/// held open by an AV scanner on Windows) is logged and skipped.
+/// Written with [`write_atomically`], the same atomic replace as
+/// [`ShowFile::save`]; a failed write is an error, and rotation doesn't run.
+/// Best-effort rotation: a delete that fails (e.g. a file held open by an AV
+/// scanner on Windows) is logged and skipped.
 pub async fn write_and_rotate(
     show_path: &Path,
     kind: BackupKind,
     bytes: &[u8],
 ) -> std::io::Result<PathBuf> {
-    use tokio::io::AsyncWriteExt;
-
     let dir = backup_dir(show_path).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -196,25 +196,7 @@ pub async fn write_and_rotate(
         )
     })?;
 
-    let mut tmp_os = target.as_os_str().to_owned();
-    tmp_os.push(".tmp");
-    let tmp_path = PathBuf::from(tmp_os);
-
-    let write_result: std::io::Result<()> = async {
-        let mut file = tokio::fs::File::create(&tmp_path).await?;
-        file.write_all(bytes).await?;
-        file.sync_all().await?;
-        Ok(())
-    }
-    .await;
-    if let Err(e) = write_result {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(e);
-    }
-    if let Err(e) = tokio::fs::rename(&tmp_path, &target).await {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(e);
-    }
+    write_atomically(&target, bytes.to_vec()).await?;
 
     let stem = sanitized_stem(show_path);
     rotate(&dir, kind, &stem, kind.keep()).await;

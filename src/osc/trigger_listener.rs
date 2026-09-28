@@ -99,8 +99,8 @@ async fn listen_loop(
                             }
                             continue;
                         }
-                        match rosc::decoder::decode_udp(&buf[..size]) {
-                            Ok((_, packet)) => {
+                        match crate::osc::decode_udp_bounded(&buf[..size]) {
+                            Ok(packet) => {
                                 process_trigger_packet(packet, src, &tx, &socket).await;
                             }
                             Err(e) => {
