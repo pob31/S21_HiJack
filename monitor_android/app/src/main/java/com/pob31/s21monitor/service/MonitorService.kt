@@ -10,6 +10,8 @@ import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.pob31.s21monitor.R
 import com.pob31.s21monitor.data.CredentialsStore
@@ -26,7 +28,9 @@ import com.pob31.s21monitor.osc.OscFloat
 import com.pob31.s21monitor.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,9 +38,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -47,7 +53,8 @@ import java.util.concurrent.TimeUnit
  * exists. Architecture mirrors the WFS-DIY remote's OscService: started +
  * bound, START_STICKY, a dedicated receive thread draining into a queue, a
  * coroutine processing loop, and state exposed as a [StateFlow] the Compose UI
- * collects directly (no IPC).
+ * collects directly (no IPC). Outbound packets go through an [OutboundQueue]
+ * drained by one sender coroutine.
  *
  * One difference from WFS-DIY: the daemon replies to the *source* address of
  * our packets, so we send and receive on a single shared socket (bound to an
@@ -57,7 +64,6 @@ class MonitorService : Service() {
 
     private val binder = LocalBinder()
     private val job = SupervisorJob()
-    private val scope = CoroutineScope(Dispatchers.IO + job)
 
     private val _state = MutableStateFlow(MonitorUiState())
     val state: StateFlow<MonitorUiState> = _state.asStateFlow()
@@ -65,6 +71,13 @@ class MonitorService : Service() {
     private var creds: Credentials? = null
     private var socket: DatagramSocket? = null
     private var receiveThread: Thread? = null
+    /** The current link's coroutines; cancelled by [stopLink]. */
+    private var link: Job? = null
+
+    /** Packets for the link's single sender, which sends them in order
+     *  (audit A3). [wakeSender] tells it there is something to send. */
+    private val outbound = OutboundQueue(RESEND_AFTER_MS)
+    private val wakeSender = Channel<Unit>(Channel.CONFLATED)
 
     @Volatile private var running = false
     @Volatile private var lastRxMs = 0L
@@ -85,7 +98,13 @@ class MonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        goForeground()
+        if (!goForeground()) {
+            // Android won't let the service into the foreground right now,
+            // e.g. on a sticky restart while the app is in the background.
+            // Stop instead of crashing; opening the app starts it again.
+            stopSelf()
+            return START_NOT_STICKY
+        }
         val c = CredentialsStore.load(this)
         if (c == null) {
             stopSelf()
@@ -96,14 +115,52 @@ class MonitorService : Service() {
         return START_STICKY
     }
 
-    private fun goForeground() {
+    /**
+     * Enters the foreground as a `connectedDevice` service, which, unlike
+     * `dataSync`, has no daily time limit on Android 15+ (audit A4). Returns
+     * false if Android refuses: `ForegroundServiceStartNotAllowedException`
+     * when started from the background, or a `SecurityException`.
+     */
+    private fun goForeground(): Boolean {
         val notification = buildNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            @Suppress("DEPRECATION")
-            startForeground(NOTIFICATION_ID, notification)
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "Couldn't start in the foreground", e)
+            false
         }
+    }
+
+    /**
+     * Android 15+ calls this when a foreground service type with a time limit
+     * runs out. `connectedDevice` has none, so this is a safety net: end the
+     * link and stop, rather than be killed for overrunning (audit A4), and
+     * leave a notification saying so.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        stopLink()
+        stopForeground(STOP_FOREGROUND_DETACH)
+        getSystemService(NotificationManager::class.java).notify(
+            NOTIFICATION_ID,
+            NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle(getString(R.string.app_name))
+                .setContentText("Android stopped the monitor link. Open the app to reconnect.")
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentIntent(openAppIntent())
+                .setAutoCancel(true)
+                .build(),
+        )
+        stopSelf()
     }
 
     private fun startNetworking(c: Credentials) {
@@ -115,12 +172,16 @@ class MonitorService : Service() {
         sock.soTimeout = 1000
         socket = sock
 
+        val linkJob = SupervisorJob(job)
+        link = linkJob
+        val scope = CoroutineScope(Dispatchers.IO + linkJob)
+
         val queue = LinkedBlockingQueue<ByteArray>(1024)
 
         // Receive thread: blocking reads, copy + enqueue, drop oldest if full.
         receiveThread = Thread({
             val buf = ByteArray(8192)
-            while (running) {
+            while (running && !sock.isClosed) {
                 val pkt = DatagramPacket(buf, buf.size)
                 try {
                     sock.receive(pkt)
@@ -142,6 +203,31 @@ class MonitorService : Service() {
             while (isActive && running) {
                 val data = queue.poll(200, TimeUnit.MILLISECONDS) ?: continue
                 OscCodec.decode(data)?.let { onInbound(it) }
+            }
+        }
+
+        // Sender: the only place packets leave, so they go out in the order
+        // they were queued (audit A3). The daemon's address is resolved once
+        // per link, not per packet.
+        scope.launch {
+            var daemon: InetSocketAddress? = null
+            while (isActive) {
+                when (val wait = outbound.msUntilNextResend(SystemClock.elapsedRealtime())) {
+                    null -> wakeSender.receive()
+                    0L -> {}
+                    else -> withTimeoutOrNull(wait) { wakeSender.receive() }
+                }
+                val packets = outbound.take(SystemClock.elapsedRealtime())
+                if (packets.isEmpty()) continue
+                // Unresolvable for now: drop this batch; the heartbeat retries.
+                val to = daemon ?: resolve(c)?.also { daemon = it } ?: continue
+                for (bytes in packets) {
+                    try {
+                        sock.send(DatagramPacket(bytes, bytes.size, to))
+                    } catch (e: Exception) {
+                        // transient network error — the resend and heartbeat recover
+                    }
+                }
             }
         }
 
@@ -230,53 +316,64 @@ class MonitorService : Service() {
 
     fun setSendLevel(input: Int, aux: Int, value: Float) {
         updateSend(input, aux) { it.copy(level = value) }
-        creds?.let { send(MonitorProtocol.sendLevel(it.name, input, aux), OscFloat(value)) }
+        creds?.let { send(MonitorProtocol.sendLevel(it.name, input, aux), OscFloat(value), resend = true) }
     }
 
     fun setSendPan(input: Int, aux: Int, value: Float) {
         updateSend(input, aux) { it.copy(pan = value) }
-        creds?.let { send(MonitorProtocol.sendPan(it.name, input, aux), OscFloat(value)) }
+        creds?.let { send(MonitorProtocol.sendPan(it.name, input, aux), OscFloat(value), resend = true) }
     }
 
     fun setSendOn(input: Int, aux: Int, on: Boolean) {
         updateSend(input, aux) { it.copy(on = on) }
-        creds?.let { send(MonitorProtocol.sendOn(it.name, input, aux), OscBool(on)) }
+        creds?.let { send(MonitorProtocol.sendOn(it.name, input, aux), OscBool(on), resend = true) }
     }
 
     fun setAuxFader(aux: Int, value: Float) {
         updateAux(aux) { it.copy(fader = value) }
-        creds?.let { send(MonitorProtocol.auxFader(it.name, aux), OscFloat(value)) }
+        creds?.let { send(MonitorProtocol.auxFader(it.name, aux), OscFloat(value), resend = true) }
     }
 
     fun setAuxMute(aux: Int, mute: Boolean) {
         updateAux(aux) { it.copy(mute = mute) }
-        creds?.let { send(MonitorProtocol.auxMute(it.name, aux), OscBool(mute)) }
+        creds?.let { send(MonitorProtocol.auxMute(it.name, aux), OscBool(mute), resend = true) }
     }
 
     /** Stop the link and the service entirely (UI's "shut down" action). */
     fun shutdown() {
-        running = false
+        stopLink()
         stopSelf()
     }
 
-    private fun send(address: String, vararg args: OscArg) {
-        val c = creds ?: return
-        val sock = socket ?: return
+    /**
+     * Queues a packet for the link's sender. [resend] marks a control value:
+     * it is sent once more after it stops changing (see [OutboundQueue]).
+     */
+    private fun send(address: String, vararg args: OscArg, resend: Boolean = false) {
+        if (!running) return
         val bytes = OscCodec.encode(address, args.toList())
-        scope.launch {
-            try {
-                val addr = InetAddress.getByName(c.host)
-                sock.send(DatagramPacket(bytes, bytes.size, addr, c.port))
-            } catch (e: Exception) {
-                // transient network error — heartbeat/watchdog will recover
-            }
-        }
+        outbound.offer(address, bytes, SystemClock.elapsedRealtime(), resend)
+        wakeSender.trySend(Unit)
+    }
+
+    private fun resolve(c: Credentials): InetSocketAddress? =
+        runCatching { InetSocketAddress(InetAddress.getByName(c.host), c.port) }.getOrNull()
+
+    /** Ends the current link: its coroutines, receive thread and socket. */
+    private fun stopLink() {
+        running = false
+        link?.cancel()
+        link = null
+        receiveThread?.interrupt()
+        receiveThread = null
+        runCatching { socket?.close() }
+        socket = null
+        outbound.clear()
+        if (_state.value.connected) _state.update { it.copy(connected = false) }
     }
 
     override fun onDestroy() {
-        running = false
-        receiveThread?.interrupt()
-        runCatching { socket?.close() }
+        stopLink()
         job.cancel()
         super.onDestroy()
     }
@@ -303,12 +400,16 @@ class MonitorService : Service() {
             .notify(NOTIFICATION_ID, buildNotification())
     }
 
-    private fun buildNotification(): Notification {
+    private fun openAppIntent(): PendingIntent {
         val tapIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        val pending = PendingIntent.getActivity(this, 0, tapIntent, flags)
+        return PendingIntent.getActivity(this, 0, tapIntent, flags)
+    }
+
+    private fun buildNotification(): Notification {
+        val pending = openAppIntent()
 
         val s = _state.value
         val label = s.console.ifEmpty { "console" }
@@ -331,6 +432,9 @@ class MonitorService : Service() {
     }
 
     companion object {
+        private const val TAG = "MonitorService"
+        /** How long a control must be still before its value is resent. */
+        private const val RESEND_AFTER_MS = 250L
         private const val NOTIFICATION_ID = 8521
         private const val CHANNEL_ID = "s21_monitor_service"
         private const val HEARTBEAT_MS = 10_000L

@@ -33,10 +33,13 @@ they contend on the Gradle lock.
 
 - `osc/` — `OscCodec` (big-endian OSC 1.0, a port of the Flutter client's codec)
   and `MonitorProtocol` (the address builders + inbound parser; the wire contract).
-- `service/MonitorService` — foreground service (`dataSync`) that owns a single
-  shared UDP socket (the daemon replies to the source port), a receive thread →
-  queue → coroutine processing loop, a 10 s heartbeat + 15 s watchdog, and state
-  as a `StateFlow` the UI collects. Modeled on the WFS-DIY remote's `OscService`.
+- `service/MonitorService` — foreground service (`connectedDevice`, which has no
+  daily time limit on Android 15+, unlike `dataSync`) that owns a single shared
+  UDP socket (the daemon replies to the source port), a receive thread → queue →
+  coroutine processing loop, one sender coroutine draining an `OutboundQueue`
+  (in order, latest value per address, final value resent after 250 ms), a 10 s
+  heartbeat + 15 s watchdog, and state as a `StateFlow` the UI collects. Modeled
+  on the WFS-DIY remote's `OscService`.
 - `discovery/Discovery` — broadcast `/monitor/discover`, collect
   `/monitor/discovered` (captures the daemon's host from the reply source).
 - `data/CredentialsStore` — SharedPreferences profile (name / host / port).
