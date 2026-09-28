@@ -247,7 +247,15 @@ async fn run_loop(
             }
 
             // Process incoming OSC messages
-            Some(msg) = rx.recv() => {
+            msg = rx.recv() => {
+                // The receive loop only stops when cancelled; if it ever ends
+                // otherwise, say so rather than keep running deaf (audit M9).
+                let Some(msg) = msg else {
+                    warn!("GP OSC receive loop ended — marking link Lost");
+                    set_health(&daemon.state, ConnectionHealth::Lost).await;
+                    daemon.recall_progress.finish();
+                    return;
+                };
                 if daemon.offline_mode.load(Ordering::Relaxed) {
                     debug!(path = %msg.path, "Inbound OSC dropped (offline mode)");
                     continue;
@@ -367,10 +375,6 @@ async fn run_loop(
                 debug!(count, "State mirror parameter count");
             }
 
-            else => {
-                info!("Message channel closed, shutting down");
-                break;
-            }
         }
     }
 }

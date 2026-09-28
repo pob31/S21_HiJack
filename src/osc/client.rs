@@ -96,7 +96,13 @@ impl OscClient {
         };
 
         // Spawn the receive loop with cancellation support
-        tokio::spawn(receive_loop(socket, tx, log, cancel));
+        tokio::spawn(receive_loop(
+            socket,
+            self.console_addr.ip(),
+            tx,
+            log,
+            cancel,
+        ));
 
         (sender, rx)
     }
@@ -261,8 +267,12 @@ pub(crate) fn format_osc_args(args: &[OscType]) -> String {
 
 /// Background receive loop: reads UDP packets, decodes OSC, and forwards to channel.
 /// Exits cleanly when the CancellationToken is cancelled, dropping the socket.
+///
+/// Only packets from `console_ip` are taken, and receive errors never end the
+/// loop; see [`recv_error_pause`] (audit M9).
 async fn receive_loop(
     socket: std::sync::Arc<UdpSocket>,
+    console_ip: std::net::IpAddr,
     tx: mpsc::Sender<ReceivedOscMessage>,
     log: Option<OscLog>,
     cancel: CancellationToken,
@@ -276,7 +286,14 @@ async fn receive_loop(
             }
             result = socket.recv_from(&mut buf) => {
                 match result {
-                    Ok((size, _src)) => {
+                    Ok((size, src)) => {
+                        // Anyone on the LAN could otherwise inject values,
+                        // including a `/digico/snapshots/fire` that drives
+                        // follow mode (audit M9).
+                        if src.ip() != console_ip {
+                            debug!(%src, "GP OSC: ignored a packet from a host other than the console");
+                            continue;
+                        }
                         match crate::osc::decode_udp_tolerant(&buf[..size]) {
                             Some(packet) => {
                                 // Forward under cancellation: if the consumer
@@ -301,8 +318,12 @@ async fn receive_loop(
                         }
                     }
                     Err(e) => {
-                        error!("UDP receive error: {e}");
-                        break;
+                        if let Some(pause) = recv_error_pause(&e) {
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                _ = tokio::time::sleep(pause) => {}
+                            }
+                        }
                     }
                 }
             }
@@ -310,6 +331,24 @@ async fn receive_loop(
     }
     // Drop socket Arc ref so the port can be freed
     drop(socket);
+}
+
+/// How a UDP receive loop handles a receive error: it logs it and keeps
+/// listening, after the returned pause, if any. Ending the loop stopped all
+/// inbound for the rest of the session (audit M9).
+///
+/// On Windows an ICMP "port unreachable" for an earlier send (the desk
+/// rebooting, say) is reported as a reset on the next receive, although the
+/// socket is fine: that needs no pause. Anything else gets a short one, so a
+/// persistent error can't spin.
+pub(crate) fn recv_error_pause(e: &std::io::Error) -> Option<std::time::Duration> {
+    if e.kind() == std::io::ErrorKind::ConnectionReset {
+        debug!("UDP receive: connection reset reported (peer unreachable?)");
+        None
+    } else {
+        error!("UDP receive error: {e}");
+        Some(std::time::Duration::from_millis(100))
+    }
 }
 
 /// Recursively process an OSC packet (message or bundle).
@@ -340,5 +379,75 @@ async fn process_packet(
                 Box::pin(process_packet(p, tx, log)).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Audit M9: the GP link takes packets only from the console. Another
+    /// host on the LAN could otherwise inject values, snapshot fires included.
+    #[tokio::test]
+    async fn packets_from_other_hosts_are_ignored() {
+        // The console is "at" 127.0.0.2; the stranger sends from 127.0.0.1.
+        // (Only the stranger needs a socket, which every OS allows.)
+        let console: SocketAddr = "127.0.0.2:9".parse().unwrap();
+        let client = OscClient::new("127.0.0.1:0".parse().unwrap(), console, None)
+            .await
+            .unwrap();
+        let local = client.socket.local_addr().unwrap();
+        let (_sender, mut rx) = client.into_parts();
+
+        let stranger = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let packet = rosc::encoder::encode(&OscPacket::Message(OscMessage {
+            addr: "/digico/snapshots/fire".into(),
+            args: vec![OscType::Int(3)],
+        }))
+        .unwrap();
+        stranger.send_to(&packet, local).await.unwrap();
+
+        let got = tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await;
+        assert!(got.is_err(), "a stranger's packet got through: {got:?}");
+    }
+
+    /// The control for the test above: the console's own packets arrive.
+    #[tokio::test]
+    async fn packets_from_the_console_are_taken() {
+        let console = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client = OscClient::new(
+            "127.0.0.1:0".parse().unwrap(),
+            console.local_addr().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        let local = client.socket.local_addr().unwrap();
+        let (_sender, mut rx) = client.into_parts();
+
+        let packet = rosc::encoder::encode(&OscPacket::Message(OscMessage {
+            addr: "/console/pong".into(),
+            args: vec![],
+        }))
+        .unwrap();
+        console.send_to(&packet, local).await.unwrap();
+
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("the console's packet should arrive")
+            .unwrap();
+        assert_eq!(got.path, "/console/pong");
+    }
+
+    /// Audit M9: a receive error never ends the loop; only a reset, which
+    /// Windows reports for an unreachable peer, skips the pause.
+    #[test]
+    fn receive_errors_keep_the_loop_going() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(
+            recv_error_pause(&Error::from(ErrorKind::ConnectionReset)),
+            None
+        );
+        assert!(recv_error_pause(&Error::from(ErrorKind::Other)).is_some());
     }
 }

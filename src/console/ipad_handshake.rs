@@ -326,8 +326,14 @@ pub(crate) fn apply_config_message(config: &mut ConsoleConfig, msg: &IpadConfigM
             let count = *count;
             match channel_type.as_str() {
                 "Input_Channels" | "Channels" => config.input_channel_count = count,
-                "Aux_Outputs" => config.aux_output_count = count,
-                "Group_Outputs" => config.group_output_count = count,
+                "Aux_Outputs" => {
+                    config.aux_output_count = count;
+                    reconcile_bus_counts(config);
+                }
+                "Group_Outputs" => {
+                    config.group_output_count = count;
+                    reconcile_bus_counts(config);
+                }
                 "Matrix_Outputs" => config.matrix_output_count = count,
                 "Matrix_Inputs" => config.matrix_input_count = count,
                 "Control_Groups" => config.control_group_count = count,
@@ -352,7 +358,60 @@ pub(crate) fn apply_config_message(config: &mut ConsoleConfig, msg: &IpadConfigM
         },
         IpadConfigMessage::OutputTypes { types } => {
             config.mix_output_types = types.clone();
+            reconcile_bus_counts(config);
         }
+    }
+}
+
+/// Take the aux/group split from the bus types when the counts are the pool.
+///
+/// An S21 reports its whole pool of mix buses as both the aux and the group
+/// count: 17 and 17 for 8 auxes and 9 groups in the captured handshake
+/// (`Documentation/iPad_handshake.txt`), with `/Console/Aux_Outputs/types`
+/// giving the split. Stored as they came, 17/17 overwrote the GP counts and
+/// group 17 collided with the master bus (audit M10). So once the types are
+/// known and either count is the pool size, the counts come from the types.
+/// A console that reports true per-type counts is left as it reported.
+/// (Inferred from the capture; to confirm on a desk with another split.)
+fn reconcile_bus_counts(config: &mut ConsoleConfig) {
+    let Ok(pool) = u16::try_from(config.mix_output_types.len()) else {
+        return;
+    };
+    if pool == 0 || (config.aux_output_count != pool && config.group_output_count != pool) {
+        return;
+    }
+    let aux = config.mix_output_types.iter().filter(|&&t| t).count() as u16;
+    config.aux_output_count = aux;
+    config.group_output_count = pool - aux;
+}
+
+/// Merge what a Mode 2 handshake learned into the live config. Only the iPad
+/// protocol reports the bus types and modes and the console's name, and
+/// Mode 2 used to log the name and drop the rest, so Pan Link never learned an
+/// aux's mode (audit M11). The other channel counts stay the GP link's; the
+/// aux/group split follows the types.
+pub fn merge_handshake_config(live: &mut ConsoleConfig, handshake: &ConsoleConfig) {
+    if !handshake.console_name.is_empty() {
+        live.console_name = handshake.console_name.clone();
+        live.console_serial = handshake.console_serial.clone();
+    }
+    if handshake.session_filename.is_some() {
+        live.session_filename = handshake.session_filename.clone();
+    }
+    if !handshake.input_modes.is_empty() {
+        live.input_modes = handshake.input_modes.clone();
+    }
+    if !handshake.mix_output_modes.is_empty() {
+        live.mix_output_modes = handshake.mix_output_modes.clone();
+    }
+    if !handshake.group_modes.is_empty() {
+        live.group_modes = handshake.group_modes.clone();
+    }
+    if !handshake.mix_output_types.is_empty() {
+        live.mix_output_types = handshake.mix_output_types.clone();
+        let aux = live.mix_output_types.iter().filter(|&&t| t).count();
+        live.aux_output_count = aux as u16;
+        live.group_output_count = (live.mix_output_types.len() - aux) as u16;
     }
 }
 
@@ -585,6 +644,87 @@ mod tests {
         assert_eq!(result.config.console_name, ""); // No name received
         assert!(result.layout_banks.is_empty());
         assert_eq!(result.current_snapshot, None);
+    }
+
+    fn count(channel_type: &str, count: u16) -> IpadConfigMessage {
+        IpadConfigMessage::ChannelCount {
+            channel_type: channel_type.into(),
+            count,
+        }
+    }
+
+    /// The captured S21 split: 8 auxes, then 9 groups.
+    fn captured_types() -> IpadConfigMessage {
+        IpadConfigMessage::OutputTypes {
+            types: (0..17).map(|i| i < 8).collect(),
+        }
+    }
+
+    /// Audit M10: in the captured handshake the desk reports its 17-bus pool
+    /// as both the aux and the group count, and the types give the split.
+    /// Replies in the capture's order: group count, types, then aux count.
+    #[test]
+    fn pool_counts_take_the_split_from_the_types() {
+        let mut config = ConsoleConfig::default();
+        for msg in [
+            count("Group_Outputs", 17),
+            captured_types(),
+            count("Aux_Outputs", 17),
+        ] {
+            apply_config_message(&mut config, &msg);
+        }
+        assert_eq!((config.aux_output_count, config.group_output_count), (8, 9));
+
+        // Types first, counts after: the same result.
+        let mut config = ConsoleConfig::default();
+        for msg in [
+            captured_types(),
+            count("Aux_Outputs", 17),
+            count("Group_Outputs", 17),
+        ] {
+            apply_config_message(&mut config, &msg);
+        }
+        assert_eq!((config.aux_output_count, config.group_output_count), (8, 9));
+    }
+
+    /// A console that reports true per-type counts keeps them.
+    #[test]
+    fn per_type_counts_are_kept() {
+        let mut config = ConsoleConfig::default();
+        for msg in [
+            captured_types(),
+            count("Aux_Outputs", 8),
+            count("Group_Outputs", 9),
+        ] {
+            apply_config_message(&mut config, &msg);
+        }
+        assert_eq!((config.aux_output_count, config.group_output_count), (8, 9));
+    }
+
+    /// Audit M11: Mode 2 keeps what only its handshake reports.
+    #[test]
+    fn mode2_handshake_config_is_merged() {
+        let mut live = ConsoleConfig::default();
+        live.input_channel_count = 60;
+        let mut handshake = ConsoleConfig::default();
+        handshake.console_name = "S21".into();
+        handshake.input_channel_count = 48; // the GP link's count wins
+        handshake.mix_output_modes = vec![ChannelMode::Mono, ChannelMode::Stereo];
+        handshake.mix_output_types = vec![true, false, true, false];
+
+        merge_handshake_config(&mut live, &handshake);
+
+        assert_eq!(live.console_name, "S21");
+        assert_eq!(live.input_channel_count, 60);
+        assert_eq!(live.mix_output_modes, handshake.mix_output_modes);
+        assert_eq!(live.mix_output_types, handshake.mix_output_types);
+        assert_eq!((live.aux_output_count, live.group_output_count), (2, 2));
+
+        // A handshake that learned nothing changes nothing.
+        let before = live.clone();
+        merge_handshake_config(&mut live, &ConsoleConfig::default());
+        assert_eq!(live.mix_output_types, before.mix_output_types);
+        assert_eq!(live.console_name, before.console_name);
     }
 
     #[test]

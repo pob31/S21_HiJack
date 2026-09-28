@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, trace, warn};
 
 use super::client::{ReceivedOscMessage, format_osc_args};
 use crate::model::osc_log::OscLog;
@@ -64,7 +64,7 @@ impl IpadClient {
             log: None,
         };
 
-        tokio::spawn(receive_loop(socket, tx, cancel));
+        tokio::spawn(receive_loop(socket, self.console_addr.ip(), tx, cancel));
 
         (sender, rx)
     }
@@ -155,8 +155,12 @@ impl IpadSender {
 
 /// Background receive loop for iPad protocol messages.
 /// Handles both standard OSC and DiGiCo's non-standard bare-path packets.
+///
+/// Only packets from `console_ip` are taken, and receive errors never end the
+/// loop (audit M9; see `client::recv_error_pause`).
 async fn receive_loop(
     socket: std::sync::Arc<UdpSocket>,
+    console_ip: std::net::IpAddr,
     tx: mpsc::Sender<ReceivedOscMessage>,
     cancel: CancellationToken,
 ) {
@@ -173,6 +177,10 @@ async fn receive_loop(
         };
         match recv {
             Ok((size, src)) => {
+                if src.ip() != console_ip {
+                    debug!(%src, "iPad: ignored a packet from a host other than the console");
+                    continue;
+                }
                 if first_message {
                     tracing::info!(%src, size, "iPad: first packet received from {src} ({size} bytes)");
                     first_message = false;
@@ -205,8 +213,12 @@ async fn receive_loop(
                 }
             }
             Err(e) => {
-                error!("iPad UDP receive error: {e}");
-                break;
+                if let Some(pause) = crate::osc::client::recv_error_pause(&e) {
+                    tokio::select! {
+                        () = cancel.cancelled() => break,
+                        () = tokio::time::sleep(pause) => {}
+                    }
+                }
             }
         }
     }

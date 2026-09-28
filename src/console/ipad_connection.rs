@@ -85,9 +85,14 @@ pub async fn connect_mode2(
         "Mode 2: handshake complete"
     );
 
-    // Seed current_console_snapshot from the handshake reply if present.
-    if let Some(n) = handshake_result.current_snapshot {
-        daemon.state.write().await.current_console_snapshot = Some(n);
+    {
+        let mut s = daemon.state.write().await;
+        // What only the iPad protocol reports (audit M11).
+        ipad_handshake::merge_handshake_config(&mut s.config, &handshake_result.config);
+        // Seed current_console_snapshot from the handshake reply if present.
+        if let Some(n) = handshake_result.current_snapshot {
+            s.current_console_snapshot = Some(n);
+        }
     }
 
     // Start background state mirror loop
@@ -199,6 +204,7 @@ pub async fn connect_mode3_proxy(
         proxy_direction(
             cs_c2i,
             is_c2i,
+            console_ipad_addr.ip(),
             ipad_target,
             capture_tx_c2i,
             offline_c2i,
@@ -214,6 +220,7 @@ pub async fn connect_mode3_proxy(
         proxy_direction(
             is_i2c,
             cs_i2c,
+            ipad_target.ip(),
             console_ipad_addr,
             capture_tx_i2c,
             offline_i2c,
@@ -346,8 +353,10 @@ async fn ipad_state_mirror_loop(
     info!("iPad state mirror loop ended");
 }
 
-/// One direction of the Mode 3 raw proxy: recv on `recv_socket`, forward to
-/// `dest` on `send_socket`, then best-effort enqueue a capture.
+/// One direction of the Mode 3 raw proxy: recv on `recv_socket` from `peer`,
+/// forward to `dest` on `send_socket`, then best-effort enqueue a capture.
+/// Packets from any other host are dropped, and receive errors never end the
+/// direction (audit M9).
 ///
 /// Runs as its own task (one per direction) so the two directions never compete
 /// for drain time — forwarding the console's initial flood no longer starves
@@ -358,6 +367,7 @@ async fn ipad_state_mirror_loop(
 async fn proxy_direction(
     recv_socket: std::sync::Arc<tokio::net::UdpSocket>,
     send_socket: std::sync::Arc<tokio::net::UdpSocket>,
+    peer: std::net::IpAddr,
     dest: SocketAddr,
     capture_tx: mpsc::Sender<ProxyCapture>,
     offline_mode: Arc<AtomicBool>,
@@ -380,7 +390,11 @@ async fn proxy_direction(
 
             result = recv_socket.recv_from(&mut buf) => {
                 match result {
-                    Ok((size, _src)) => {
+                    Ok((size, src)) => {
+                        if src.ip() != peer {
+                            debug!(direction, %src, "Proxy: ignored a packet from an unexpected host");
+                            continue;
+                        }
                         if offline_mode.load(Ordering::Relaxed) {
                             debug!(direction, "Mode 3 forward dropped (offline mode)");
                             continue;
@@ -438,12 +452,14 @@ async fn proxy_direction(
                         }
                     }
                     Err(e) => {
-                        // A fatal recv error on one direction tears down the
-                        // whole proxy: cancel so the sibling direction and the
-                        // capture loop exit cleanly too.
-                        warn!(direction, "Proxy recv error: {e}");
-                        cancel.cancel();
-                        break;
+                        // Keep proxying. This used to cancel the connection's
+                        // shared token, taking the GP link down with it.
+                        if let Some(pause) = crate::osc::client::recv_error_pause(&e) {
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                _ = tokio::time::sleep(pause) => {}
+                            }
+                        }
                     }
                 }
             }

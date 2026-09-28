@@ -285,20 +285,14 @@ async fn run_loop(
 ) {
     let wire = crate::model::family::PadWire::new(profile.primary_surface(), profile.pad_quirks);
 
-    let mut queue = {
-        let config = daemon.state.read().await.config.clone();
-        build_enumeration_queue(&config, &profile)
-    };
-    queue.reverse(); // pop() takes from the back, so reverse to keep priority order
-    let total = queue.len();
-    info!(total, "Pad enumeration: starting");
-    daemon.recall_progress.begin(RecallKind::Dump, total);
-
+    let mut queue = start_enumeration(&daemon, &profile).await;
+    let mut total = queue.len();
     let mut in_flight: Option<InFlight> = None;
     let mut skipped = 0usize;
     let mut last_heartbeat = Instant::now();
     let mut heartbeat_outstanding = false;
     let mut misses: u8 = 0;
+    let mut last_inbound = Instant::now();
     let mut ticker = time::interval(TICK);
     ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
 
@@ -315,7 +309,9 @@ async fn run_loop(
             }
             msg = rx.recv() => {
                 let Some(msg) = msg else {
-                    info!("Pad receive channel closed");
+                    // Nothing more can arrive: say so (audit M12).
+                    warn!("Pad receive channel closed — marking link Lost");
+                    set_health(&daemon, ConnectionHealth::Lost).await;
                     daemon.recall_progress.finish();
                     break;
                 };
@@ -325,10 +321,21 @@ async fn run_loop(
                 // Any inbound traffic proves the link is alive.
                 misses = 0;
                 heartbeat_outstanding = false;
+                last_inbound = Instant::now();
                 set_health(&daemon, ConnectionHealth::Connected).await;
 
-                let matched = handle_message(&msg, &daemon, &wire, &osc_log, in_flight.as_ref()).await;
-                if matched {
+                let handled = handle_message(&msg, &daemon, &wire, &osc_log, in_flight.as_ref()).await;
+                if handled.resync {
+                    // The desk changed session, or reported channel counts
+                    // the sweep wasn't built for (a handshake that ended
+                    // early): enumerate again from the top (audit M12).
+                    info!("Pad: console configuration changed — enumerating again");
+                    queue = start_enumeration(&daemon, &profile).await;
+                    total = queue.len();
+                    skipped = 0;
+                    in_flight = None;
+                    send_next_query(&sender, &mut queue, &mut in_flight, &wire).await;
+                } else if handled.answered {
                     in_flight = None;
                     daemon.recall_progress.bump();
                     send_next_query(&sender, &mut queue, &mut in_flight, &wire).await;
@@ -352,7 +359,19 @@ async fn run_loop(
                     }
                 }
 
-                if in_flight.is_none() && queue.is_empty() {
+                if in_flight.is_some() || !queue.is_empty() {
+                    // Enumerating: the queries are the heartbeat. No extra
+                    // ping is sent, since an SD desk drops a query that
+                    // arrives while another is unanswered, so silence counts
+                    // instead: a dead desk used to show Connected for the
+                    // whole sweep (audit M12).
+                    let beats = last_inbound.elapsed().as_millis() / HEARTBEAT_INTERVAL.as_millis();
+                    if beats >= u128::from(HEARTBEAT_MISSES_LOST) {
+                        set_health(&daemon, ConnectionHealth::Lost).await;
+                    } else if beats >= u128::from(HEARTBEAT_MISSES_STALE) {
+                        set_health(&daemon, ConnectionHealth::Stale).await;
+                    }
+                } else {
                     // Enumeration finished — settle into the heartbeat.
                     if daemon.recall_progress.is_active()
                         && daemon.recall_progress.kind() == RecallKind::Dump
@@ -380,6 +399,47 @@ async fn run_loop(
     info!("Pad connection loop ended");
 }
 
+/// Build the enumeration queue from the live config and start the progress bar.
+/// The queue is reversed: `pop()` takes from the back, so this keeps priority
+/// order.
+async fn start_enumeration(
+    daemon: &DaemonState,
+    profile: &ConsoleProfile,
+) -> Vec<ParameterAddress> {
+    let config = daemon.state.read().await.config.clone();
+    let mut queue = build_enumeration_queue(&config, profile);
+    queue.reverse();
+    info!(total = queue.len(), "Pad enumeration: starting");
+    daemon.recall_progress.begin(RecallKind::Dump, queue.len());
+    queue
+}
+
+/// What the enumeration queue is built from: the channel counts. The session
+/// is included too, since loading another session changes every value.
+fn enumeration_shape(config: &ConsoleConfig) -> (Option<String>, [u16; 7]) {
+    (
+        config.session_filename.clone(),
+        [
+            config.input_channel_count,
+            config.aux_output_count,
+            config.group_output_count,
+            config.matrix_output_count,
+            config.matrix_input_count,
+            config.control_group_count,
+            config.graphic_eq_count,
+        ],
+    )
+}
+
+/// What one inbound message meant for the enumeration.
+#[derive(Default)]
+struct Handled {
+    /// It answered the query in flight.
+    answered: bool,
+    /// It changed the session or the channel counts: enumerate again.
+    resync: bool,
+}
+
 /// Send the next queued query, if any.
 async fn send_next_query(
     sender: &IpadSender,
@@ -403,14 +463,14 @@ async fn send_next_query(
     }
 }
 
-/// Process one inbound message. Returns true if it answered `in_flight`.
+/// Process one inbound message.
 async fn handle_message(
     msg: &ReceivedOscMessage,
     daemon: &DaemonState,
     wire: &crate::model::family::PadWire,
     osc_log: &Option<OscLog>,
     in_flight: Option<&InFlight>,
-) -> bool {
+) -> Handled {
     let config = daemon.state.read().await.config.clone();
     let parsed = ipad_parse::parse_pad_message(&msg.path, &msg.args, Some(&config), wire);
 
@@ -424,7 +484,10 @@ async fn handle_message(
         ParsedIpadMessage::ParameterUpdate(addr, value) => {
             let answered = in_flight.is_some_and(|f| f.address == addr);
             inbound::apply_inbound_parameter(daemon, &addr, &value, InboundSource::Pad).await;
-            answered
+            Handled {
+                answered,
+                resync: false,
+            }
         }
         ParsedIpadMessage::SnapshotInfo { current } => {
             let prev = {
@@ -438,17 +501,20 @@ async fn handle_message(
             {
                 let _ = tx.try_send(current);
             }
-            false
+            Handled::default()
         }
         ParsedIpadMessage::ConfigResponse(cfg_msg) => {
             // The desk re-pushes config when the session changes or a bus is
             // reconfigured; follow it so the UI tracks the console live.
             let mut s = daemon.state.write().await;
+            let before = enumeration_shape(&s.config);
             ipad_handshake::apply_config_message(&mut s.config, &cfg_msg);
-            false
+            Handled {
+                answered: false,
+                resync: enumeration_shape(&s.config) != before,
+            }
         }
-        ParsedIpadMessage::MeterValues(_) => false,
-        _ => false,
+        _ => Handled::default(),
     }
 }
 
@@ -608,6 +674,8 @@ mod tests {
         answer_heartbeat: Arc<AtomicBool>,
         /// Watch for a second query arriving while one is still unanswered.
         watch_pacing: bool,
+        /// Clear to make the desk stop answering enumeration queries.
+        answer_queries: Arc<AtomicBool>,
     }
 
     impl Default for DeskScript {
@@ -617,6 +685,7 @@ mod tests {
                 reply_delay: Duration::ZERO,
                 answer_heartbeat: Arc::new(AtomicBool::new(true)),
                 watch_pacing: false,
+                answer_queries: Arc::new(AtomicBool::new(true)),
             }
         }
     }
@@ -712,6 +781,11 @@ mod tests {
                 continue;
             }
             if target == "/Console/Name" && !script.answer_heartbeat.load(Ordering::Relaxed) {
+                continue;
+            }
+            if target.starts_with("/Input_Channels/")
+                && !script.answer_queries.load(Ordering::Relaxed)
+            {
                 continue;
             }
 
@@ -1045,7 +1119,7 @@ mod tests {
             "the skipped query still has to advance the progress count"
         );
 
-        // Steady state: the heartbeat only starts once the sweep is done.
+        // Steady state: the heartbeat pings only once the sweep is done.
         await_desk(
             &h.desk,
             "a heartbeat after the last enumeration query",
@@ -1107,6 +1181,51 @@ mod tests {
             ConnectionHealth::Connected,
             Duration::from_secs(15),
         )
+        .await;
+    }
+
+    /// Audit M12: a desk that dies mid-sweep goes Stale while the sweep is
+    /// still running. The heartbeat only ran once the sweep was done, so the
+    /// link showed Connected for the rest of it.
+    #[tokio::test]
+    async fn a_desk_that_stops_answering_mid_sweep_goes_stale() {
+        let answering = Arc::new(AtomicBool::new(true));
+        let h = connect_to_scripted_desk(DeskScript {
+            answer_queries: answering.clone(),
+            answer_heartbeat: answering.clone(),
+            ..DeskScript::default()
+        })
+        .await;
+        answering.store(false, Ordering::Relaxed);
+
+        await_health(&h.state, ConnectionHealth::Stale, Duration::from_secs(20)).await;
+        assert!(
+            h.daemon.recall_progress.snapshot().active,
+            "the sweep should still be running when the link goes Stale"
+        );
+    }
+
+    /// Audit M12: loading another session on the desk enumerates again. The
+    /// module doc promised it; the queue was built once.
+    #[tokio::test]
+    async fn a_session_change_enumerates_again() {
+        const PROBE: &str = "/Input_Channels/1/fader/?";
+        let h = connect_to_scripted_desk(DeskScript::default()).await;
+        await_enumeration(&h.daemon, Duration::from_secs(30)).await;
+        assert_eq!(desk_saw(&h.desk.log, PROBE).len(), 1);
+
+        let app = h.desk.log.lock().unwrap().app_addr.unwrap();
+        send_from_desk(
+            &h.desk.sock,
+            app,
+            "/Console/Session/Filename",
+            vec![OscType::String("Other.ses".into())],
+        )
+        .await;
+
+        await_desk(&h.desk, "a second sweep", Duration::from_secs(30), |log| {
+            log.received.iter().filter(|(p, _)| p == PROBE).count() == 2
+        })
         .await;
     }
 

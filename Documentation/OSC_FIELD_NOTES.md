@@ -62,6 +62,7 @@ Used consistently in the findings below:
 | 10 | Multiband Dyn1 Mid/High swapped on the Pad wire | Confirmed on hardware | S21 |
 | 11 | Enumeration pacing and heartbeat timings | Assumed (our choice) | SD / Quantum |
 | 12 | An S21 volunteers aux/group counts that were never asked for | Confirmed on hardware (S21); unknown elsewhere | S21 |
+| 13 | An S21 reports its whole mix-bus pool as both the aux and the group count | Inferred from a capture | S21 |
 
 ---
 
@@ -479,6 +480,35 @@ leave both counts at their defaults: the app would mirror, scope and enumerate t
 number of aux and group buses, with no error anywhere — the counts would simply look
 plausible and be wrong. Worth an explicit check in the first hardware session: confirm the
 reported aux/group counts match the desk.
+
+---
+
+### 13. An S21 reports its whole mix-bus pool as both the aux and the group count
+
+**Claim.** On the iPad protocol, `/Console/Aux_Outputs` and `/Console/Group_Outputs` both
+carry the size of the shared mix-bus pool, not the number of buses of each type. The split
+comes from `/Console/Aux_Outputs/types` (1 = aux, 0 = group). The captured desk answers
+`17` and `17` with types `1×8, 0×9`, and the iPad then queries `Aux_Outputs` 1–8 and
+`Group_Outputs` 9–17. This refines finding 12: the counts arrive, but they are the pool.
+
+**Source and attribution.** Inferred from the captured iPad handshake
+(`Documentation/iPad_handshake.txt`) during the 2026-09-28 audit (M10). Not measured
+against a desk with a different split.
+
+**Status.** Inferred from a capture (not confirmed on hardware).
+
+**Firmware / console.** S21, firmware not recorded.
+
+**Date.** 28 Sep 2026.
+
+**Code that relies on it.** `src/console/ipad_handshake.rs` — `reconcile_bus_counts`: once
+the types are known and either count equals the pool size, the aux and group counts are
+taken from the types. A console that reports per-type counts is left as reported.
+
+**Consequence if wrong.** If a desk does report per-type counts that happen to equal the
+pool size (a pool that is all aux, say), the result is the same; otherwise the aux/group
+counts shown and scoped would be wrong. Worth checking in the next hardware session: change
+an aux to a group on the desk and compare the reported counts and types.
 
 ---
 
