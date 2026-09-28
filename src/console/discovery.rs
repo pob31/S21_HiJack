@@ -25,9 +25,15 @@ pub fn apply_channel_counts(
     config.matrix_output_count = matrices;
     config.plus_mode = PlusMode::from_input_count(inputs);
 
-    // Generate default mix_output_types if not already populated (e.g. from
-    // iPad handshake). First `aux` buses are aux, remaining are group.
-    if config.mix_output_types.is_empty() {
+    // Generate the default layout (first `aux` buses are aux, the rest group)
+    // unless the existing one agrees with these counts. The iPad handshake
+    // reports the real, possibly interleaved, split, so a layout with the
+    // right number of auxes is kept. One from an old show file or from before
+    // the desk was reconfigured used to be kept too, numbering every bus
+    // write wrongly for the whole session (audit H1).
+    let known_auxes = config.mix_output_types.iter().filter(|&&t| t).count();
+    let known_groups = config.mix_output_types.len() - known_auxes;
+    if known_auxes != aux as usize || known_groups < groups as usize {
         config.mix_output_types = std::iter::repeat_n(true, aux as usize)
             .chain(std::iter::repeat_n(false, groups as usize))
             .collect();
@@ -97,5 +103,31 @@ mod tests {
     fn reject_unknown_type() {
         let mut config = ConsoleConfig::default();
         assert!(!apply_channel_count(&mut config, "foobar", 5));
+    }
+
+    /// A layout restored from a show made on an 8-aux desk must not survive
+    /// counts saying the desk now has 10 auxes (audit H1).
+    #[test]
+    fn channel_counts_replace_a_stale_bus_layout() {
+        let mut config = ConsoleConfig {
+            mix_output_types: (0..24).map(|i| i < 8).collect(),
+            ..ConsoleConfig::default()
+        };
+        apply_channel_counts(&mut config, 48, 10, 14, 10, 8, 1);
+        let expected: Vec<bool> = (0..24).map(|i| i < 10).collect();
+        assert_eq!(config.mix_output_types, expected);
+    }
+
+    /// An interleaved layout from the iPad handshake that agrees with the
+    /// counts is the desk's real split and is kept.
+    #[test]
+    fn channel_counts_keep_a_matching_bus_layout() {
+        let interleaved = vec![true, false, true, false, true, false];
+        let mut config = ConsoleConfig {
+            mix_output_types: interleaved.clone(),
+            ..ConsoleConfig::default()
+        };
+        apply_channel_counts(&mut config, 48, 3, 3, 10, 8, 1);
+        assert_eq!(config.mix_output_types, interleaved);
     }
 }

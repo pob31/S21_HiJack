@@ -300,6 +300,77 @@ impl ShowFile {
         write_atomically(path, json.into_bytes()).await
     }
 
+    /// Fingerprint of the show content the operator edits, used to tell
+    /// whether there are unsaved changes (audit H8). The same content gives
+    /// the same value within one run of the app.
+    ///
+    /// Left out, because none of it is the operator's work:
+    /// - the console config, which the desk rewrites on every connect;
+    /// - the connection settings, which are also kept in preferences;
+    /// - the version fields;
+    /// - the Stream Deck step cursors, which advance as buttons are pressed
+    ///   during a show, and the empty buttons added when a bigger deck is
+    ///   plugged in.
+    ///
+    /// Collections are sorted by id first, so the order the managers' hash
+    /// maps happen to iterate in can't make an unchanged show look changed.
+    pub fn edit_fingerprint(&self) -> u64 {
+        use std::hash::Hasher;
+
+        fn by_id<T, K: Ord>(items: &[T], id: impl Fn(&T) -> K) -> Vec<&T> {
+            let mut sorted: Vec<&T> = items.iter().collect();
+            sorted.sort_by_key(|item| id(item));
+            sorted
+        }
+
+        let mut stream_deck = self.stream_deck.clone();
+        for button in &mut stream_deck.buttons {
+            button.current_step = 0;
+        }
+        while stream_deck
+            .buttons
+            .last()
+            .is_some_and(|b| b.steps.is_empty())
+        {
+            stream_deck.buttons.pop();
+        }
+
+        let content = (
+            by_id(&self.scope_templates, |t| t.id),
+            by_id(&self.snapshots, |s| s.id),
+            &self.cue_list,
+            by_id(&self.macros, |m| m.id),
+            by_id(&self.palettes, |p| p.id),
+            by_id(&self.monitor_clients, |c| c.id),
+            by_id(&self.gang_groups, |g| g.id),
+            &self.console_recall,
+            &self.pan_link,
+            &stream_deck,
+            by_id(&self.osc_targets, |t| t.id),
+            by_id(&self.trigger_templates, |t| t.id),
+            &self.sidecar,
+        );
+
+        /// Feeds serialized bytes straight into the hasher, so a large show
+        /// isn't built up as one JSON buffer first.
+        struct HashWriter<'a>(&'a mut std::collections::hash_map::DefaultHasher);
+        impl std::io::Write for HashWriter<'_> {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.write(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // Can't fail: `save` serializes the same types, and the writer
+        // never errors.
+        let _ = serde_json::to_writer(HashWriter(&mut hasher), &content);
+        hasher.finish()
+    }
+
     /// Load a show file from disk.
     pub async fn load(path: &Path) -> std::io::Result<Self> {
         let json = tokio::fs::read_to_string(path).await?;
@@ -364,6 +435,64 @@ impl ShowFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn show_with_two_snapshots() -> ShowFile {
+        use crate::model::snapshot::{SnapshotData, SnapshotKind};
+        let mut show = ShowFile::new(ConsoleConfig::default());
+        for name in ["A", "B"] {
+            show.snapshots.push(Snapshot::new(
+                name.into(),
+                ScopeTemplate::new("S".into(), vec![]),
+                SnapshotData::new(),
+                SnapshotKind::ApplyOnSave,
+            ));
+        }
+        show.cue_list
+            .cues
+            .push(crate::model::snapshot::Cue::new(1.0, "One".into()));
+        show
+    }
+
+    /// Audit H8: the unsaved-changes check sees edits, and nothing else.
+    #[test]
+    fn edit_fingerprint_tracks_edits_only() {
+        let show = show_with_two_snapshots();
+        let saved = show.edit_fingerprint();
+
+        // Not edits: manager order, desk config, connection settings, and
+        // Stream Deck cursors or padding.
+        let mut same = show.clone();
+        same.snapshots.reverse();
+        same.console_config.aux_output_count = 12;
+        same.connection.console_ip = "10.0.0.9".into();
+        same.version = 1;
+        same.stream_deck.buttons = vec![
+            crate::model::streamdeck::StreamDeckButton {
+                steps: vec![crate::model::streamdeck::StreamDeckStep {
+                    macro_id: uuid::Uuid::nil(),
+                    color: crate::model::streamdeck::StepColor::BLACK,
+                }],
+                current_step: 0,
+            },
+            Default::default(),
+        ];
+        let mut padded = show.clone();
+        padded.stream_deck.buttons = same.stream_deck.buttons.clone();
+        let with_buttons = padded.edit_fingerprint();
+        same.stream_deck.buttons[0].current_step = 3;
+        same.stream_deck.buttons.push(Default::default());
+        assert_eq!(same.edit_fingerprint(), with_buttons);
+        padded.stream_deck.buttons.truncate(1);
+        assert_eq!(padded.edit_fingerprint(), with_buttons);
+
+        // Edits.
+        let mut renamed = show.clone();
+        renamed.cue_list.cues[0].name = "Uno".into();
+        assert_ne!(renamed.edit_fingerprint(), saved);
+        let mut fewer = show.clone();
+        fewer.snapshots.pop();
+        assert_ne!(fewer.edit_fingerprint(), saved);
+    }
 
     #[tokio::test]
     async fn save_load_round_trip() {

@@ -15,14 +15,16 @@
 //! Marks come from the OSC dispatcher whenever an inbound parameter update
 //! actually changes the live state value. Echoes from our own writes
 //! (snapshot recalls, cue fires, monitor sends) would otherwise pollute the
-//! dirty set, so the snapshot/recall paths bracket their writes with
-//! `begin_suppression()` / `end_suppression()` calls. Marks made while
-//! suppression is active are discarded.
+//! dirty set, so the snapshot/recall paths hold a [`SuppressionGuard`] from
+//! [`DirtyTracker::suppress`] while they write. Marks made while suppression
+//! is active are discarded.
 //!
 //! Granularity is per-`ParameterPath` per-`ChannelId`, matching the scope
 //! editor's matrix cells.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::channel::ChannelId;
 use super::parameter::{ParameterAddress, ParameterPath, ParameterSection};
@@ -32,13 +34,14 @@ use super::parameter::{ParameterAddress, ParameterPath, ParameterSection};
 #[derive(Debug, Default)]
 pub struct DirtyTracker {
     dirty: HashMap<ChannelId, HashSet<ParameterPath>>,
-    /// While non-zero, `mark()` is a no-op. Bracket suppression around any
+    /// While non-zero, `mark()` is a no-op. Suppression brackets any
     /// daemon-initiated writes (snapshot recall, cue fire, macro playback, …)
     /// so console echoes don't pollute the dirty set. A depth counter — not a
     /// bool — so overlapping brackets (e.g. a macro running while a cue
     /// recalls) can nest safely: suppression only lifts when the LAST bracket
-    /// closes.
-    suppress_depth: u32,
+    /// closes. Shared with each [`SuppressionGuard`] so the guard can close
+    /// its bracket on drop without the tracker's lock.
+    suppress_depth: Arc<AtomicU32>,
     /// Bumps on every state change (mark, clear, suppression toggle that
     /// affects content). The scope editor caches the last-seen generation so
     /// it knows when to re-pull the dirty set into its selections in
@@ -108,27 +111,28 @@ impl DirtyTracker {
         &self.dirty
     }
 
-    /// Begin suppression — every subsequent `mark` is a no-op until the
-    /// matching `end_suppression` closes this bracket. Brackets nest: each
-    /// `begin` increments a depth counter and each `end` decrements it, so
-    /// overlapping suppressors (cue recall + macro playback) can't turn
-    /// marks back on while the other is still writing.
-    pub fn begin_suppression(&mut self) {
-        self.suppress_depth += 1;
-    }
-
-    /// End one suppression bracket. Marks take effect again only once every
-    /// open bracket has ended. Saturates at zero so an unbalanced `end`
-    /// can't underflow.
-    pub fn end_suppression(&mut self) {
-        self.suppress_depth = self.suppress_depth.saturating_sub(1);
+    /// Begin suppression. Every `mark` is a no-op until the returned guard
+    /// is dropped. Guards nest, so overlapping suppressors (cue recall +
+    /// macro playback) can't turn marks back on while the other is still
+    /// writing.
+    ///
+    /// The bracket closes on drop, so a recall that panics or whose future
+    /// is cancelled still ends it. With a separate begin/end pair, a panic
+    /// in between left suppression on for good, which silently disabled pan
+    /// link, the palette absorb loop and cue auto-save (audit H3).
+    #[must_use = "suppression ends when the guard is dropped"]
+    pub fn suppress(&mut self) -> SuppressionGuard {
+        self.suppress_depth.fetch_add(1, Ordering::SeqCst);
+        SuppressionGuard {
+            depth: Arc::clone(&self.suppress_depth),
+        }
     }
 
     /// True while the tracker is suppressing marks. The pan link engine
     /// uses this as a "recall in progress" guard so it doesn't fight
     /// snapshot/cue/macro recalls.
     pub fn is_suppressed(&self) -> bool {
-        self.suppress_depth > 0
+        self.suppress_depth.load(Ordering::SeqCst) > 0
     }
 
     /// True if any cell is currently dirty.
@@ -139,6 +143,19 @@ impl DirtyTracker {
     /// Monotonic counter the UI watches to decide when to refresh.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+}
+
+/// One open suppression bracket on a [`DirtyTracker`]. See
+/// [`DirtyTracker::suppress`].
+#[derive(Debug)]
+pub struct SuppressionGuard {
+    depth: Arc<AtomicU32>,
+}
+
+impl Drop for SuppressionGuard {
+    fn drop(&mut self) {
+        self.depth.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -212,12 +229,12 @@ mod tests {
     #[test]
     fn suppression_blocks_mark() {
         let mut t = DirtyTracker::new();
-        t.begin_suppression();
+        let guard = t.suppress();
         t.mark(&addr(1, ParameterPath::Fader));
         assert!(!t.has_any());
         assert_eq!(t.generation(), 0);
 
-        t.end_suppression();
+        drop(guard);
         t.mark(&addr(1, ParameterPath::Fader));
         assert!(t.has_any());
         assert_eq!(t.generation(), 1);
@@ -227,28 +244,31 @@ mod tests {
     fn suppression_nests_and_lifts_only_on_last_end() {
         let mut t = DirtyTracker::new();
         // Two overlapping brackets (e.g. macro playback + cue recall).
-        t.begin_suppression();
-        t.begin_suppression();
-        t.end_suppression(); // first bracket closes — still suppressed
+        let first = t.suppress();
+        let last = t.suppress();
+        drop(first); // first bracket closes — still suppressed
         assert!(t.is_suppressed());
         t.mark(&addr(1, ParameterPath::Fader));
         assert!(!t.has_any());
 
-        t.end_suppression(); // last bracket closes — marks work again
+        drop(last); // last bracket closes — marks work again
         assert!(!t.is_suppressed());
         t.mark(&addr(1, ParameterPath::Fader));
         assert!(t.has_any());
     }
 
     #[test]
-    fn unbalanced_end_suppression_saturates() {
+    fn a_panic_while_suppressed_still_ends_the_bracket() {
         let mut t = DirtyTracker::new();
-        t.end_suppression(); // no open bracket — must not underflow
+        let guard = t.suppress();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = guard;
+            panic!("recall blew up mid-bracket");
+        }));
+        assert!(result.is_err());
         assert!(!t.is_suppressed());
-        t.begin_suppression();
-        assert!(t.is_suppressed());
-        t.end_suppression();
-        assert!(!t.is_suppressed());
+        t.mark(&addr(1, ParameterPath::Fader));
+        assert!(t.has_any());
     }
 
     #[test]

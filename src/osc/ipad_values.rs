@@ -52,7 +52,9 @@ fn interpolate(
 ) -> f32 {
     let first = &table[0];
     let last = &table[table.len() - 1];
-    if x <= key(first) {
+    // NaN fails every comparison below and would fall through to the top of
+    // the table (+10 dB). The bottom is the safe reading.
+    if x.is_nan() || x <= key(first) {
         return val(first);
     }
     if x >= key(last) {
@@ -137,6 +139,13 @@ mod tests {
         assert!((db_to_normalized(FADER_INF_DB - 100.0) - 0.0).abs() < 1e-6);
         assert!((normalized_to_db(2.0) - 10.0).abs() < 1e-6);
         assert!((normalized_to_db(-1.0) - FADER_INF_DB).abs() < 1e-6);
+    }
+
+    #[test]
+    fn nan_reads_as_the_bottom_of_the_table() {
+        // NaN used to fall through every comparison to +10 dB.
+        assert_eq!(normalized_to_db(f32::NAN), FADER_INF_DB);
+        assert_eq!(db_to_normalized(f32::NAN), 0.0);
     }
 
     #[test]

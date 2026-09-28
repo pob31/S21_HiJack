@@ -16,7 +16,9 @@ use crate::console::macro_manager::MacroManager;
 use crate::console::palette_manager::PaletteManager;
 use crate::model::channel::ChannelId;
 use crate::model::macro_def::{MacroDef, MacroStep, MacroStepKind, MacroStepMode};
-use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterSection, ParameterValue};
+use crate::model::parameter::{
+    ParameterAddress, ParameterPath, ParameterSection, ParameterValue, parse_finite_f32,
+};
 use crate::model::state::ConsoleState;
 
 /// State for the Macros tab.
@@ -2179,9 +2181,9 @@ fn build_step_kind(
                 StepModeChoice::Fixed => {
                     MacroStepMode::Fixed(parse_parameter_value(&macros_state.add_step_value))
                 }
-                StepModeChoice::Relative => {
-                    MacroStepMode::Relative(macros_state.add_step_value.parse().unwrap_or(0.0))
-                }
+                StepModeChoice::Relative => MacroStepMode::Relative(
+                    parse_finite_f32(&macros_state.add_step_value).unwrap_or(0.0),
+                ),
             };
             Some(MacroStepKind::Parameter {
                 address: ParameterAddress { channel, parameter },
@@ -2355,7 +2357,7 @@ fn apply_step_action(
                                     MacroStepMode::Fixed(value)
                                 }
                                 StepModeChoice::Relative => {
-                                    let offset: f32 = value_str.parse().unwrap_or(0.0);
+                                    let offset = parse_finite_f32(&value_str).unwrap_or(0.0);
                                     MacroStepMode::Relative(offset)
                                 }
                             };
@@ -3154,6 +3156,40 @@ fn virtual_kind_label(kind: elgato_streamdeck::info::Kind) -> &'static str {
 /// back to the show file. Step changes refresh the LCD label +
 /// background asynchronously via the engine.
 #[allow(clippy::too_many_arguments)]
+/// Apply `edit` to one Stream Deck button, then refresh its LCD with the
+/// now-next step. The config lock is released before the macro manager is
+/// read: holding one while waiting on the other is what formed the H4
+/// lock-order cycles.
+async fn edit_button_and_refresh(
+    config: Arc<RwLock<crate::model::streamdeck::StreamDeckConfig>>,
+    macro_manager: Arc<RwLock<MacroManager>>,
+    engine: Arc<crate::console::streamdeck_engine::StreamDeckEngine>,
+    button_idx: usize,
+    edit: impl FnOnce(&mut crate::model::streamdeck::StreamDeckButton),
+) {
+    let next = {
+        let mut cfg_w = config.write().await;
+        let Some(b) = cfg_w.buttons.get_mut(button_idx) else {
+            return;
+        };
+        edit(b);
+        b.next_step().map(|s| (s.macro_id, s.color))
+    };
+    let label = match next {
+        Some((macro_id, _)) => macro_manager
+            .read()
+            .await
+            .get_macro(&macro_id)
+            .map(|m| m.name.clone())
+            .unwrap_or_default(),
+        None => String::new(),
+    };
+    let bg = next
+        .map(|(_, color)| color)
+        .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
+    engine.refresh_button(button_idx as u8, label, bg);
+}
+
 fn draw_streamdeck_step_list(
     ui: &mut egui::Ui,
     button_idx: usize,
@@ -3256,76 +3292,55 @@ fn draw_streamdeck_step_list(
         let cfg = config.clone();
         let mgr = macro_manager.clone();
         let eng = engine.clone();
-        runtime.spawn(async move {
-            let mut cfg_w = cfg.write().await;
-            if let Some(b) = cfg_w.buttons.get_mut(button_idx) {
+        runtime.spawn(edit_button_and_refresh(
+            cfg,
+            mgr,
+            eng,
+            button_idx,
+            move |b| {
                 if idx < b.steps.len() {
                     b.steps.remove(idx);
                     if b.current_step as usize >= b.steps.len() {
                         b.current_step = 0;
                     }
                 }
-                let mgr_r = mgr.read().await;
-                let next = b.next_step();
-                let label = next
-                    .and_then(|s| mgr_r.get_macro(&s.macro_id).map(|m| m.name.clone()))
-                    .unwrap_or_default();
-                let bg = next
-                    .map(|s| s.color)
-                    .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
-                drop(mgr_r);
-                eng.refresh_button(button_idx as u8, label, bg);
-            }
-        });
+            },
+        ));
     }
 
     if let Some((from, to)) = move_from_to {
         let cfg = config.clone();
         let mgr = macro_manager.clone();
         let eng = engine.clone();
-        runtime.spawn(async move {
-            let mut cfg_w = cfg.write().await;
-            if let Some(b) = cfg_w.buttons.get_mut(button_idx) {
+        runtime.spawn(edit_button_and_refresh(
+            cfg,
+            mgr,
+            eng,
+            button_idx,
+            move |b| {
                 if from < b.steps.len() && to < b.steps.len() {
                     let item = b.steps.remove(from);
                     b.steps.insert(to, item);
                 }
-                let mgr_r = mgr.read().await;
-                let next = b.next_step();
-                let label = next
-                    .and_then(|s| mgr_r.get_macro(&s.macro_id).map(|m| m.name.clone()))
-                    .unwrap_or_default();
-                let bg = next
-                    .map(|s| s.color)
-                    .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
-                drop(mgr_r);
-                eng.refresh_button(button_idx as u8, label, bg);
-            }
-        });
+            },
+        ));
     }
 
     if let Some((idx, new_color)) = color_change {
         let cfg = config.clone();
         let mgr = macro_manager.clone();
         let eng = engine.clone();
-        runtime.spawn(async move {
-            let mut cfg_w = cfg.write().await;
-            if let Some(b) = cfg_w.buttons.get_mut(button_idx) {
+        runtime.spawn(edit_button_and_refresh(
+            cfg,
+            mgr,
+            eng,
+            button_idx,
+            move |b| {
                 if let Some(s) = b.steps.get_mut(idx) {
                     s.color = new_color;
                 }
-                let mgr_r = mgr.read().await;
-                let next = b.next_step();
-                let label = next
-                    .and_then(|s| mgr_r.get_macro(&s.macro_id).map(|m| m.name.clone()))
-                    .unwrap_or_default();
-                let bg = next
-                    .map(|s| s.color)
-                    .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
-                drop(mgr_r);
-                eng.refresh_button(button_idx as u8, label, bg);
-            }
-        });
+            },
+        ));
     }
 
     if user_swatches != user_swatches_initial {
@@ -3826,7 +3841,7 @@ fn parse_parameter_value(s: &str) -> ParameterValue {
             return ParameterValue::Int(i);
         }
     }
-    if let Ok(f) = s.parse::<f32>() {
+    if let Some(f) = parse_finite_f32(s) {
         return ParameterValue::Float(f);
     }
     ParameterValue::String(s.to_string())

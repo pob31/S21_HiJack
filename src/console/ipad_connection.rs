@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::model::osc_log::OscLog;
@@ -54,17 +54,24 @@ impl From<ipad_handshake::HandshakeError> for IpadConnectionError {
 /// Connects to the console's iPad remote port, performs the handshake,
 /// and returns a sender for sending iPad-only commands.
 /// Also starts a background loop to mirror iPad protocol state.
+///
+/// `cancel` is the connection's token. Cancelling it stops the receive loop
+/// (freeing the port) and the mirror loop. Without it, every Disconnect left
+/// both running, still writing the mirror and propagating gangs and pan link
+/// through the old senders, and every reconnect added another pair
+/// (audit H2).
 pub async fn connect_mode2(
     console_ipad_addr: SocketAddr,
     local_addr: SocketAddr,
     daemon: DaemonState,
+    cancel: CancellationToken,
     interface_name: Option<&str>,
     osc_log: Option<OscLog>,
-) -> Result<(IpadSender, HandshakeResult, JoinHandle<()>), IpadConnectionError> {
+) -> Result<(IpadSender, HandshakeResult), IpadConnectionError> {
     info!(%console_ipad_addr, "Mode 2: connecting to console iPad port...");
 
     let client = IpadClient::new(local_addr, console_ipad_addr, interface_name).await?;
-    let (mut sender, mut rx) = client.into_parts();
+    let (mut sender, mut rx) = client.into_parts_with_cancel(cancel.clone());
     // Outbound iPad sends (handshake + engine writes) appear in the OSC Log.
     sender.set_log(osc_log.clone());
 
@@ -84,12 +91,9 @@ pub async fn connect_mode2(
     }
 
     // Start background state mirror loop
-    let log_clone = osc_log.clone();
-    let handle = tokio::spawn(async move {
-        ipad_state_mirror_loop(rx, daemon, log_clone).await;
-    });
+    tokio::spawn(ipad_state_mirror_loop(rx, daemon, osc_log, cancel));
 
-    Ok((sender, handshake_result, handle))
+    Ok((sender, handshake_result))
 }
 
 /// Mode 3: Two-socket iPad proxy.
@@ -266,9 +270,19 @@ async fn ipad_state_mirror_loop(
     mut rx: tokio::sync::mpsc::Receiver<ReceivedOscMessage>,
     daemon: DaemonState,
     osc_log: Option<OscLog>,
+    cancel: CancellationToken,
 ) {
     info!("iPad state mirror loop started");
-    while let Some(msg) = rx.recv().await {
+    loop {
+        // `biased`: once cancelled, stop even if messages are still queued.
+        let msg = tokio::select! {
+            biased;
+            () = cancel.cancelled() => break,
+            msg = rx.recv() => match msg {
+                Some(msg) => msg,
+                None => break,
+            },
+        };
         if daemon.offline_mode.load(Ordering::Relaxed) {
             debug!(path = %msg.path, "iPad mirror: dropped (offline mode)");
             continue;
@@ -592,5 +606,56 @@ mod tests {
             phase: "config".into(),
         });
         assert!(hs_err.to_string().contains("config"));
+    }
+
+    /// After Disconnect the Mode 2 mirror loop must stop, even while messages
+    /// keep arriving. It used to run forever, writing the mirror and
+    /// propagating through the old senders (audit H2).
+    #[tokio::test]
+    async fn mirror_loop_stops_when_the_connection_is_cancelled() {
+        use crate::model::channel::ChannelId;
+        use crate::model::config::ConsoleConfig;
+        use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
+        use crate::model::state::ConsoleState;
+        use rosc::OscType;
+        use tokio::sync::RwLock;
+
+        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
+        let daemon =
+            crate::console::connection::test_support::daemon_with_state(state.clone()).await;
+        let (tx, rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(ipad_state_mirror_loop(rx, daemon, None, cancel.clone()));
+
+        let fader = |db: f32| ReceivedOscMessage {
+            path: "/Input_Channels/1/fader".into(),
+            args: vec![OscType::Float(db)],
+        };
+        let addr = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+
+        // Live: a message reaches the mirror.
+        tx.send(fader(-10.0)).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while state.read().await.get(&addr) != Some(&ParameterValue::Float(-10.0)) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the live loop should mirror the fader");
+
+        // Disconnect: the loop ends and drops its receiver.
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("the mirror loop should end once cancelled")
+            .unwrap();
+        assert!(tx.send(fader(-20.0)).await.is_err());
+        assert_eq!(
+            state.read().await.get(&addr),
+            Some(&ParameterValue::Float(-10.0))
+        );
     }
 }

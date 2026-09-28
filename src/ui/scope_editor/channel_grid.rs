@@ -20,6 +20,7 @@ use super::state::{
 use crate::model::channel::ChannelId;
 use crate::model::config::ConsoleConfig;
 use crate::model::parameter::{ParameterPath, ParameterSection, TimingCategory};
+use crate::model::snapshot::CategoryTiming;
 use crate::ui::help::{HelpKey, help};
 use crate::ui::theme;
 
@@ -619,7 +620,7 @@ fn draw_body_grid(
                             if selected {
                                 state.nudge_timing_selection(state.edit_mode, delta);
                             } else {
-                                let nv = (val + delta).clamp(0.0, 30.0);
+                                let nv = CategoryTiming::clamp_secs(val + delta);
                                 let t = state.channel_timings.entry(key).or_default();
                                 match state.edit_mode {
                                     ScopeEditMode::PreWait => t.pre_wait_secs = nv,

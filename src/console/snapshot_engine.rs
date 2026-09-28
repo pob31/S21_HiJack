@@ -659,22 +659,23 @@ impl SnapshotEngine {
         }
     }
 
-    /// Helper: bracket an async operation with begin/end suppression on the
-    /// dirty tracker, if one is attached. Used internally by recall paths.
-    /// Clears the dirty set on the way out so the operator's "what's
-    /// changed since the last recall" view is correctly anchored to this
-    /// recall.
+    /// Helper: hold dirty-tracker suppression around an async operation, if
+    /// a tracker is attached. Used internally by recall paths. Clears the
+    /// dirty set on the way out so the operator's "what's changed since the
+    /// last recall" view is correctly anchored to this recall. If `body`
+    /// panics or this future is dropped, the guard still ends suppression.
     async fn with_dirty_suppression<F, R>(&self, body: F) -> R
     where
         F: std::future::Future<Output = R>,
     {
-        if let Some(dirty) = &self.dirty_tracker {
-            dirty.write().await.begin_suppression();
-        }
+        let guard = match &self.dirty_tracker {
+            Some(dirty) => Some(dirty.write().await.suppress()),
+            None => None,
+        };
         let result = body.await;
         if let Some(dirty) = &self.dirty_tracker {
             let mut t = dirty.write().await;
-            t.end_suppression();
+            drop(guard);
             t.clear();
         }
         result
@@ -1147,6 +1148,11 @@ impl SnapshotEngine {
                 debug!(%addr, "Recall skip: iPad-only parameter (no iPad sender)");
                 false
             }
+            SendOutcome::NonFinite => {
+                *skipped += 1;
+                warn!(%addr, "Recall skip: non-finite value");
+                false
+            }
         }
     }
 
@@ -1582,9 +1588,9 @@ impl SnapshotEngine {
                 let timing = cat
                     .map(|c| scope_ref.timing_for(&channel, c))
                     .unwrap_or_default();
-                let pre_wait = Duration::from_secs_f32(timing.pre_wait_secs);
+                let pre_wait = timing.pre_wait();
                 let fade_time = if cat.map(|c| c.supports_fade()).unwrap_or(false) {
-                    Duration::from_secs_f32(timing.fade_time_secs)
+                    timing.fade_time()
                 } else {
                     Duration::ZERO
                 };
@@ -1597,7 +1603,7 @@ impl SnapshotEngine {
             // (pre_wait + fade) is what the progress countdown reads back as the
             // live max(pre_wait + fade). `max_span` is tracked even without a
             // registry so the timed progress bar still spans the right window.
-            let mute_span = Duration::from_secs_f32(mute_timing.pre_wait_secs);
+            let mute_span = mute_timing.pre_wait();
             if mute_change.is_some() {
                 max_span = max_span.max(mute_span);
             }
@@ -1934,7 +1940,7 @@ impl SnapshotEngine {
                         let mute_addrs: Vec<ParameterAddress> =
                             mute_change.iter().map(|mc| mc.addr.clone()).collect();
                         cancellable_pre_wait(
-                            Duration::from_secs_f32(mute_timing.pre_wait_secs),
+                            mute_timing.pre_wait(),
                             &mute_addrs,
                             &reg,
                             gen_id,
@@ -2026,7 +2032,7 @@ impl SnapshotEngine {
                             let mute_addrs: Vec<ParameterAddress> =
                                 mute_change.iter().map(|mc| mc.addr.clone()).collect();
                             cancellable_pre_wait(
-                                Duration::from_secs_f32(mute_timing.pre_wait_secs),
+                                mute_timing.pre_wait(),
                                 &mute_addrs,
                                 &reg,
                                 gen_id,
@@ -2275,7 +2281,7 @@ impl SnapshotEngine {
                 *skipped += 1;
                 false
             }
-            SendOutcome::NoEncoding | SendOutcome::NoPadSender => {
+            SendOutcome::NoEncoding | SendOutcome::NoPadSender | SendOutcome::NonFinite => {
                 *skipped += 1;
                 false
             }
@@ -2705,11 +2711,11 @@ mod tests {
             .write()
             .await
             .update(addr.clone(), ParameterValue::Float(-5.0));
-        {
+        let _predecessor_bracket = {
             let mut d = dirty.write().await;
             d.mark(&addr);
-            d.begin_suppression(); // a predecessor recall's bracket is open
-        }
+            d.suppress() // a predecessor recall's bracket is open
+        };
 
         let count = engine.auto_save_previous_snapshot(next_id).await;
 
@@ -3663,6 +3669,68 @@ mod tests {
             .await;
 
         assert!(!dirty.read().await.has_any());
+    }
+
+    /// A NaN or negative timing (typed into the scope editor, or set by any
+    /// other path) used to panic in `Duration::from_secs_f32` mid-recall,
+    /// leaving dirty suppression on for good (audit H3). It now reads as
+    /// zero: the recall completes and suppression ends.
+    #[tokio::test]
+    async fn timed_recall_with_unusable_timings_completes_and_ends_suppression() {
+        use crate::model::snapshot::CategoryTiming;
+
+        let (engine, state, dirty) = setup_test_with_dirty().await;
+        let fader = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        let mute = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Mute,
+        };
+        state
+            .write()
+            .await
+            .update(fader.clone(), ParameterValue::Float(0.0));
+
+        let mut channel_scope = ChannelScope::from_sections(
+            ChannelId::Input(1),
+            HashSet::from([ParameterSection::FaderMutePan]),
+        );
+        channel_scope.category_timings.insert(
+            TimingCategory::Fader,
+            CategoryTiming {
+                pre_wait_secs: f32::NAN,
+                fade_time_secs: f32::INFINITY,
+            },
+        );
+        channel_scope.category_timings.insert(
+            TimingCategory::Mute,
+            CategoryTiming {
+                pre_wait_secs: -1.0,
+                fade_time_secs: f32::NAN,
+            },
+        );
+        let scope = ScopeTemplate::new("Timed".into(), vec![channel_scope]);
+        let values = HashMap::from([
+            (fader, ParameterValue::Float(-5.0)),
+            (mute, ParameterValue::Bool(true)),
+        ]);
+        let snapshot = Snapshot::new(
+            "Snap".into(),
+            scope,
+            SnapshotData { values },
+            SnapshotKind::ApplyOnSave,
+        );
+        let cue = crate::model::snapshot::Cue::new(1.0, "Cue".into()).with_snapshot_id(snapshot.id);
+
+        let result = engine
+            .recall_cue(&cue, Some(&snapshot), &no_palettes(), false)
+            .await;
+
+        assert!(!result.cancelled);
+        assert!(result.parameters_sent >= 2, "{result:?}");
+        assert!(!dirty.read().await.is_suppressed());
     }
 
     // ── Integration tests: trigger → resolve → recall ──────────────

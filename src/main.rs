@@ -194,6 +194,44 @@ fn main() {
     }
 }
 
+/// Load the show named on the command line for headless mode.
+///
+/// Headless used to ignore the argument, so on the Pi deployment every
+/// manager started empty and `/cue/go` and `/snapshot/recall` did nothing,
+/// with no warning (audit H6). A file that fails to load now stops the
+/// daemon with the reason, rather than running a show that silently isn't
+/// there. Running with no file is allowed but warned about.
+async fn load_headless_show(
+    path: Option<&std::path::Path>,
+) -> Option<persistence::show_file::ShowFile> {
+    let Some(path) = path else {
+        warn!(
+            "No show file given: cues, snapshots, macros, palettes and gangs are empty, \
+             so cue and snapshot triggers will do nothing. Pass the .s21show path as the \
+             last argument."
+        );
+        return None;
+    };
+    match persistence::show_file::ShowFile::load(path).await {
+        Ok(show) => {
+            info!(
+                path = %path.display(),
+                cues = show.cue_list.cues.len(),
+                snapshots = show.snapshots.len(),
+                macros = show.macros.len(),
+                palettes = show.palettes.len(),
+                gangs = show.gang_groups.len(),
+                "Show file loaded"
+            );
+            Some(show)
+        }
+        Err(e) => {
+            error!(path = %path.display(), "Failed to load show file: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Run in headless mode — the original daemon behavior.
 async fn run_headless(args: Args) {
     let console_addr: SocketAddr = format!("{}:{}", args.console_ip, args.console_port)
@@ -207,10 +245,30 @@ async fn run_headless(args: Args) {
         .parse()
         .expect("Invalid local address");
 
+    // Load the show before anything connects, so every manager starts
+    // populated and the console config is right from the first message.
+    let show = load_headless_show(args.show_file.as_deref()).await;
+
     // Set up macro, monitor, and gang systems
-    let macro_manager = Arc::new(RwLock::new(MacroManager::new()));
-    let monitor_manager = Arc::new(RwLock::new(MonitorManager::new()));
-    let gang_manager = Arc::new(RwLock::new(GangManager::new()));
+    let mut macros = MacroManager::new();
+    let mut monitors = MonitorManager::new();
+    let mut gangs = GangManager::new();
+    let mut pan_link = model::pan_link::PanLinkBindings::default();
+    if let Some(show) = &show {
+        macros.macros = show.macros.iter().map(|m| (m.id, m.clone())).collect();
+        monitors.clients = show
+            .monitor_clients
+            .iter()
+            .map(|c| (c.id, c.clone()))
+            .collect();
+        for group in &show.gang_groups {
+            gangs.add_group(group.clone());
+        }
+        pan_link = show.pan_link.clone();
+    }
+    let macro_manager = Arc::new(RwLock::new(macros));
+    let monitor_manager = Arc::new(RwLock::new(monitors));
+    let gang_manager = Arc::new(RwLock::new(gangs));
     // Phase C: dirty tracker for "select modified" / "auto-preselect modified".
     let dirty_tracker = Arc::new(RwLock::new(model::dirty_tracker::DirtyTracker::new()));
 
@@ -218,7 +276,10 @@ async fn run_headless(args: Args) {
     // loop. Headless doesn't load AppPreferences (no UI), so the console
     // family comes from the loaded show file or stays at the S-series default.
     let state = {
-        let config = model::config::ConsoleConfig::default();
+        let config = show
+            .as_ref()
+            .map(|s| s.console_config.clone())
+            .unwrap_or_default();
         Arc::new(RwLock::new(model::state::ConsoleState::new(config)))
     };
     let client = match osc::client::OscClient::new(local_addr, console_addr, None).await {
@@ -232,7 +293,7 @@ async fn run_headless(args: Args) {
 
     let gang_engine = Arc::new(RwLock::new(GangEngine::new(state.clone(), sender.clone())));
 
-    let pan_link_bindings = Arc::new(RwLock::new(model::pan_link::PanLinkBindings::default()));
+    let pan_link_bindings = Arc::new(RwLock::new(pan_link));
     let pan_link_engine = Arc::new(RwLock::new(PanLinkEngine::new(
         state.clone(),
         sender.clone(),
@@ -287,8 +348,26 @@ async fn run_headless(args: Args) {
     let mode = OperatingMode::from_cli(&args.mode).unwrap_or_default();
 
     // Set up snapshot, macro, and palette systems
-    let cue_manager = Arc::new(RwLock::new(CueManager::new(CueList::default())));
-    let palette_manager = Arc::new(RwLock::new(PaletteManager::new()));
+    let mut cues = CueManager::new(CueList::default());
+    let mut palettes = PaletteManager::new();
+    if let Some(show) = &show {
+        cues.replace_cue_list(show.cue_list.clone());
+        cues.snapshots = show.snapshots.iter().map(|s| (s.id, s.clone())).collect();
+        cues.scope_templates = show
+            .scope_templates
+            .iter()
+            .map(|t| (t.id, t.clone()))
+            .collect();
+        cues.osc_targets = show.osc_targets.iter().map(|t| (t.id, t.clone())).collect();
+        cues.trigger_templates = show
+            .trigger_templates
+            .iter()
+            .map(|t| (t.id, t.clone()))
+            .collect();
+        palettes.palettes = show.palettes.iter().map(|p| (p.id, p.clone())).collect();
+    }
+    let cue_manager = Arc::new(RwLock::new(cues));
+    let palette_manager = Arc::new(RwLock::new(palettes));
     // Shared pacing: same Arc handed to both engines. Headless mode
     // doesn't load AppPreferences (no UI), so start at zero — pacing
     // is mainly a UI-tweakable affordance for live operation.
@@ -301,6 +380,17 @@ async fn run_headless(args: Args) {
     snapshot_engine.set_automation_override(automation_override.clone());
     snapshot_engine.set_sent_log(sent_log.clone());
     snapshot_engine.set_profile(profile.clone());
+    // The recall behaviour the show was saved with, as the UI applies it.
+    // Network settings stay with the command line.
+    snapshot_engine.set_cue_manager(cue_manager.clone());
+    if let Some(show) = &show {
+        let sync_direction = model::sync_direction::SharedSyncDirection::default();
+        sync_direction.set(show.connection.effective_sync_direction());
+        snapshot_engine.set_sync_direction(sync_direction);
+        snapshot_engine.set_auto_update_flag(Arc::new(std::sync::atomic::AtomicBool::new(
+            show.connection.auto_update_on_recall,
+        )));
+    }
     // Look-ahead recall cache: pre-resolves the next cues' recall data in
     // the idle time between cues — matters most on the small SBC targets
     // headless mode is built for. Managers bump it on edits; the engine
@@ -373,12 +463,13 @@ async fn run_headless(args: Args) {
                     console_ipad_addr,
                     ipad_local,
                     daemon.clone(),
+                    cancel_token.clone(),
                     None,
                     None, // headless: no OSC Log
                 )
                 .await
                 {
-                    Ok((ipad_sender, result, _handle)) => {
+                    Ok((ipad_sender, result)) => {
                         info!(
                             name = %result.config.console_name,
                             "Mode 2: iPad protocol connected"

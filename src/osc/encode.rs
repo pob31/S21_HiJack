@@ -54,13 +54,28 @@ pub fn encode_parameter_query(addr: &ParameterAddress) -> Option<(String, Vec<Os
     Some((format!("/channel/{ch_num}/{suffix}"), Vec::new()))
 }
 
-/// Encode a parameter address and value into a GP OSC path and args.
-/// Returns None for iPad-only parameters.
+/// Encode a parameter address and value into a GP OSC path and args,
+/// assuming the default 8-aux bus split. Returns None for iPad-only
+/// parameters. See [`encode_parameter_with_config`].
 pub fn encode_parameter(
     addr: &ParameterAddress,
     value: &ParameterValue,
 ) -> Option<(String, Vec<OscType>)> {
-    let ch_num = addr.channel.to_gp_osc_number()?;
+    encode_parameter_with_config(addr, value, None)
+}
+
+/// Encode a parameter for the desk's actual aux/group bus split
+/// (`ConsoleConfig::mix_output_types`), the inverse of the config-aware
+/// parser. Returns None for iPad-only parameters and for channels outside
+/// the GP number space or their type's range.
+pub fn encode_parameter_with_config(
+    addr: &ParameterAddress,
+    value: &ParameterValue,
+    mix_output_types: Option<&[bool]>,
+) -> Option<(String, Vec<OscType>)> {
+    let ch_num = addr
+        .channel
+        .to_gp_osc_number_with_config(mix_output_types)?;
     let suffix = addr.parameter.to_gp_osc_suffix()?;
     let path = format!("/channel/{ch_num}/{suffix}");
     let args = vec![value_to_osc_type(&addr.parameter, value)];

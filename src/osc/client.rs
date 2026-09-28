@@ -92,12 +92,47 @@ impl OscClient {
             console_addr: self.console_addr,
             log: log.clone(),
             offline_mode: None,
+            bus_layout: GpBusLayout::default(),
         };
 
         // Spawn the receive loop with cancellation support
         tokio::spawn(receive_loop(socket, tx, log, cancel));
 
         (sender, rx)
+    }
+}
+
+/// The desk's aux/group bus split (`ConsoleConfig::mix_output_types`) as the
+/// GP send path sees it. Shared by every clone of one [`OscSender`], so each
+/// engine's writes number buses with the same layout the inbound parser uses
+/// (audit H1). The connection's state-mirror loop publishes it from the
+/// config; it stays empty until discovery.
+#[derive(Clone, Default)]
+pub struct GpBusLayout(Arc<std::sync::RwLock<Arc<[bool]>>>);
+
+impl GpBusLayout {
+    /// The current layout, or `None` before one is known (the 8-aux default
+    /// split then applies, as it does when parsing).
+    pub fn get(&self) -> Option<Arc<[bool]>> {
+        let types = self
+            .0
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        (!types.is_empty()).then_some(types)
+    }
+
+    /// Publish a layout. Returns true if it differs from the previous one.
+    pub fn set(&self, types: &[bool]) -> bool {
+        let mut current = self
+            .0
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if **current == *types {
+            return false;
+        }
+        *current = types.into();
+        true
     }
 }
 
@@ -111,6 +146,8 @@ pub struct OscSender {
     /// Shared with the inbound dispatcher and the iPad sender so the
     /// app can freeze all OSC traffic in both directions.
     offline_mode: Option<Arc<AtomicBool>>,
+    /// The bus split outbound parameter writes are numbered with.
+    bus_layout: GpBusLayout,
 }
 
 impl OscSender {
@@ -121,6 +158,7 @@ impl OscSender {
             console_addr,
             log: None,
             offline_mode: None,
+            bus_layout: GpBusLayout::default(),
         }
     }
 
@@ -135,6 +173,7 @@ impl OscSender {
             console_addr,
             log: Some(log),
             offline_mode: None,
+            bus_layout: GpBusLayout::default(),
         }
     }
 
@@ -142,6 +181,11 @@ impl OscSender {
     /// `send` becomes a no-op without touching the socket or logging.
     pub fn set_offline_flag(&mut self, flag: Arc<AtomicBool>) {
         self.offline_mode = Some(flag);
+    }
+
+    /// The bus layout shared by this sender and all its clones.
+    pub fn bus_layout(&self) -> &GpBusLayout {
+        &self.bus_layout
     }
 
     /// Send an OSC message to the console.

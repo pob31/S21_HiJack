@@ -2177,6 +2177,16 @@ impl ParameterValue {
         }
     }
 
+    /// False only for a `Float` holding NaN or an infinity. Such a value must
+    /// not reach the mirror, the desk or a show file: serde_json writes it as
+    /// `null` and then refuses to read it back (audit H3).
+    pub fn is_finite(&self) -> bool {
+        match self {
+            ParameterValue::Float(f) => f.is_finite(),
+            _ => true,
+        }
+    }
+
     /// Linearly interpolate between self and target at position t (0.0..=1.0).
     /// Returns None if types don't match or interpolation is not meaningful.
     pub fn lerp(&self, target: &ParameterValue, t: f32) -> Option<ParameterValue> {
@@ -2192,6 +2202,14 @@ impl ParameterValue {
             _ => None,
         }
     }
+}
+
+/// Parse a number typed by the operator, refusing NaN and the infinities.
+/// Rust's float parser accepts `"nan"`, `"inf"` and `"infinity"` in any case,
+/// so a plain `parse::<f32>()` lets them into cue numbers, timings, macro
+/// values and trigger args (audit H3). Surrounding whitespace is ignored.
+pub fn parse_finite_f32(s: &str) -> Option<f32> {
+    s.trim().parse::<f32>().ok().filter(|v| v.is_finite())
 }
 
 /// Floored dB interpolation for fader-family levels (see [`FADER_FADE_FLOOR_DB`]).

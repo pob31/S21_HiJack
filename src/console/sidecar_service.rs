@@ -30,10 +30,12 @@
 //! then drops both directions while the MIDI connection and port scans
 //! stay warm, so re-enable is instant and starts with a sync sweep.
 //!
-//! An operator moving a hardware fader mid-recall needs no special
-//! wiring here: the console echoes our send, `process_message` runs
-//! `automation_registry::maybe_override`, and the un-matched value
-//! registers as an operator override — same as touching the desk.
+//! ## Operator changes
+//! A hardware move is an operator change, so after sending it the service
+//! runs `inbound::apply_operator_change`: the same chain as a move on the
+//! desk (mirror, dirty mark, override of a running fade, gangs, pan link,
+//! macro learn). It can't rely on the console's echo for that: GP OSC
+//! doesn't echo, and the iPad link's echo is screened as our own write.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -43,6 +45,7 @@ use tokio::sync::{RwLock, mpsc, watch};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::console::connection::DaemonState;
 use crate::console::console_tx::ConsoleTx;
 use crate::console::cue_manager::CueManager;
 use crate::console::sidecar_decode::{DecodeState, HwEvent, decode, event_matches};
@@ -84,6 +87,16 @@ pub enum SvcCmd {
     SyncSurface,
 }
 
+/// The live console connection as the sidecar sees it.
+#[derive(Clone)]
+pub struct SidecarLink {
+    /// Write path to the desk.
+    pub tx: ConsoleTx,
+    /// The connection's shared state, so a hardware move runs the same
+    /// operator-change chain as a move on the desk.
+    pub daemon: DaemonState,
+}
+
 /// Everything the service task needs. All handles are shared with the
 /// app; the receivers are owned.
 pub struct SidecarDeps {
@@ -93,9 +106,9 @@ pub struct SidecarDeps {
     pub hw_rx: mpsc::UnboundedReceiver<HwEvent>,
     /// UI commands (sync requests).
     pub svc_rx: mpsc::UnboundedReceiver<SvcCmd>,
-    /// Live console write path, rewired after each (re)connect from
+    /// Live console link, rewired after each (re)connect from
     /// `pickup_pending_engines`; `None` while disconnected.
-    pub senders: watch::Receiver<Option<ConsoleTx>>,
+    pub senders: watch::Receiver<Option<SidecarLink>>,
     /// For resolving `RawOsc { target_id }` against the show's targets.
     pub cue_manager: Arc<RwLock<CueManager>>,
     /// Learn capture shared with the Sidecar tab.
@@ -303,7 +316,7 @@ async fn send_console_value(deps: &SidecarDeps, rt: &mut Runtime, b: &SidecarBin
     let BindingTarget::ConsoleParameter { address } = &b.target else {
         return;
     };
-    let Some(tx) = deps.senders.borrow().clone() else {
+    let Some(link) = deps.senders.borrow().clone() else {
         // No console link — nothing sensible to do with the move.
         return;
     };
@@ -315,18 +328,11 @@ async fn send_console_value(deps: &SidecarDeps, rt: &mut Runtime, b: &SidecarBin
 
     rt.sent_to_console
         .insert(address.clone(), (v, Instant::now()));
-    if tx
-        .send_parameter(address, &ParameterValue::Float(v))
-        .await
-        .is_sent()
-    {
-        // Optimistic mirror update (fade-engine precedent): the UI
-        // reflects the move immediately; the console's echo then
-        // matches both this value and the suppression entry above.
-        deps.state
-            .write()
-            .await
-            .update(address.clone(), ParameterValue::Float(v));
+    if link.tx.send_parameter(address, &value).await.is_sent() {
+        // An operator change: updates the mirror (so the UI reflects the
+        // move at once) and runs the rest of the chain. The console's echo
+        // then matches both this value and the suppression entry above.
+        crate::console::inbound::apply_operator_change(&link.daemon, address, &value).await;
     } else {
         debug!(%address, "Sidecar console send failed to encode");
     }
@@ -571,8 +577,9 @@ mod tests {
     struct Harness {
         hw_tx: mpsc::UnboundedSender<HwEvent>,
         svc_tx: mpsc::UnboundedSender<SvcCmd>,
-        senders_tx: watch::Sender<Option<ConsoleTx>>,
+        senders_tx: watch::Sender<Option<SidecarLink>>,
         state: Arc<RwLock<ConsoleState>>,
+        daemon: DaemonState,
         motor_log: Arc<StdMutex<Vec<(ControlSelector, u16)>>>,
         /// Socket standing in for the console.
         console_sock: UdpSocket,
@@ -589,12 +596,17 @@ mod tests {
 
         let (hw_tx, hw_rx) = mpsc::unbounded_channel();
         let (svc_tx, svc_rx) = mpsc::unbounded_channel();
-        let (senders_tx, senders_rx) = watch::channel(Some(ConsoleTx::new(sender)));
 
         let config = Arc::new(RwLock::new(config));
         let state = Arc::new(RwLock::new(ConsoleState::new(
             crate::model::config::ConsoleConfig::default(),
         )));
+        let daemon =
+            crate::console::connection::test_support::daemon_with_state(state.clone()).await;
+        let (senders_tx, senders_rx) = watch::channel(Some(SidecarLink {
+            tx: ConsoleTx::new(sender),
+            daemon: daemon.clone(),
+        }));
         let motor_log: Arc<StdMutex<Vec<(ControlSelector, u16)>>> =
             Arc::new(StdMutex::new(Vec::new()));
         let motor_log_clone = motor_log.clone();
@@ -619,6 +631,7 @@ mod tests {
             svc_tx,
             senders_tx,
             state,
+            daemon,
             motor_log,
             console_sock,
             _task: task,
@@ -636,6 +649,63 @@ mod tests {
             rosc::OscPacket::Message(m) => Some((m.addr, m.args)),
             _ => None,
         }
+    }
+
+    /// Audit H7. A sidecar move is an operator change: it propagates
+    /// through gangs and marks the cell dirty, like a move on the desk. It
+    /// used to update only the mirror.
+    #[tokio::test]
+    async fn fader_move_runs_the_operator_change_chain() {
+        use crate::model::channel::ChannelId;
+        use crate::model::gang::{GangGroup, GangMode};
+        use crate::model::parameter::ParameterSection;
+
+        let cfg = SidecarConfig {
+            enabled: true,
+            bindings: vec![pb_binding(1, 12)],
+        };
+        let h = harness(cfg).await;
+        let mut gang = GangGroup::new(
+            "12+13".into(),
+            vec![ChannelId::Input(12), ChannelId::Input(13)],
+            HashSet::from([ParameterSection::FaderMutePan]),
+        );
+        gang.mode = GangMode::Relative;
+        h.daemon.gang_manager.write().await.add_group(gang);
+        {
+            let mut s = h.state.write().await;
+            s.update(fader_addr(12), ParameterValue::Float(-20.0));
+            s.update(fader_addr(13), ParameterValue::Float(-20.0));
+        }
+
+        // 75% travel = unity: Input 12 goes up 20 dB.
+        h.hw_tx
+            .send(HwEvent::PitchBend {
+                channel: 1,
+                value: 12287,
+            })
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(ParameterValue::Float(v)) =
+                    h.state.read().await.get(&fader_addr(13)).cloned()
+                    && v.abs() < 0.1
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the gang sibling should follow the sidecar move");
+        assert!(
+            h.daemon.dirty_tracker.read().await.is_dirty(
+                &ChannelId::Input(12),
+                &crate::model::parameter::ParameterPath::Fader
+            ),
+            "the moved fader should be marked dirty"
+        );
     }
 
     #[tokio::test]
@@ -845,7 +915,12 @@ mod tests {
         let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let client = OscClient::new(local, console_addr, None).await.unwrap();
         let (sender, _rx) = client.into_parts();
-        h.senders_tx.send(Some(ConsoleTx::new(sender))).unwrap();
+        h.senders_tx
+            .send(Some(SidecarLink {
+                tx: ConsoleTx::new(sender),
+                daemon: h.daemon.clone(),
+            }))
+            .unwrap();
 
         tokio::time::timeout(Duration::from_millis(500), async {
             loop {
@@ -880,7 +955,14 @@ mod tests {
         let (sender, _rx) = client.into_parts();
         let (hw_tx, hw_rx) = mpsc::unbounded_channel();
         let (_svc_tx, svc_rx) = mpsc::unbounded_channel();
-        let (_senders_tx, senders_rx) = watch::channel(Some(ConsoleTx::new(sender)));
+        let state = Arc::new(RwLock::new(ConsoleState::new(
+            crate::model::config::ConsoleConfig::default(),
+        )));
+        let (_senders_tx, senders_rx) = watch::channel(Some(SidecarLink {
+            tx: ConsoleTx::new(sender),
+            daemon: crate::console::connection::test_support::daemon_with_state(state.clone())
+                .await,
+        }));
         let learn = Arc::new(StdMutex::new(LearnShared::default()));
         LearnShared::arm(&learn);
         let deps = SidecarDeps {
@@ -888,9 +970,7 @@ mod tests {
                 enabled: true,
                 bindings: vec![pb_binding(1, 12)],
             })),
-            state: Arc::new(RwLock::new(ConsoleState::new(
-                crate::model::config::ConsoleConfig::default(),
-            ))),
+            state,
             hw_rx,
             svc_rx,
             senders: senders_rx,

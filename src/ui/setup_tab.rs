@@ -167,6 +167,21 @@ pub struct SetupTabState {
     /// version footer. Updated by `UiEvent::UpdateCheckResult`. Runtime-only;
     /// starts `Unknown`, flips to `Checking` while a lookup is in flight.
     pub update_status: crate::version::UpdateStatus,
+    /// Open or New requested from this tab. The app checks for unsaved
+    /// changes before carrying it out. Runtime-only.
+    pub pending_show_action: Option<ShowAction>,
+    /// Save tasks still running, so quitting can wait for them instead of
+    /// cancelling a save half-way. Runtime-only.
+    pub save_tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+/// A show-level action that would replace the current show.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShowAction {
+    /// Load this file.
+    Open(std::path::PathBuf),
+    /// Start an empty show.
+    New,
 }
 
 impl SetupTabState {
@@ -243,6 +258,8 @@ impl SetupTabState {
             console_ip_warning_dismissed: false,
             pending_initial_load: None,
             update_status: crate::version::UpdateStatus::Unknown,
+            pending_show_action: None,
+            save_tasks: Vec::new(),
         }
     }
 }
@@ -367,7 +384,10 @@ pub fn truncate_show_path(path: &str) -> String {
 /// yet or the remembered folder no longer exists (e.g. an unplugged USB stick),
 /// in which case rfd falls back to its own default. Callers that already pin a
 /// directory (Save As… seeding from the current show path) should not call this.
-fn seed_last_open_dir(mut dlg: rfd::FileDialog, setup: &SetupTabState) -> rfd::FileDialog {
+pub(crate) fn seed_last_open_dir(
+    mut dlg: rfd::FileDialog,
+    setup: &SetupTabState,
+) -> rfd::FileDialog {
     if let Some(dir) = setup.last_open_dir.as_ref()
         && dir.is_dir()
     {
@@ -381,7 +401,7 @@ fn seed_last_open_dir(mut dlg: rfd::FileDialog, setup: &SetupTabState) -> rfd::F
 /// preferences (cross-platform path string). No-op when the path has no parent
 /// or the folder is already the remembered one, so we don't rewrite the prefs
 /// file on every pick within the same directory.
-fn remember_last_open_dir(setup: &mut SetupTabState, path: &std::path::Path) {
+pub(crate) fn remember_last_open_dir(setup: &mut SetupTabState, path: &std::path::Path) {
     let Some(dir) = path.parent() else {
         return;
     };
@@ -1430,13 +1450,9 @@ pub fn draw_setup_tab(
                         );
                         if let Some(path) = dlg.pick_file() {
                             remember_last_open_dir(setup, &path);
-                            setup.show_file_path = path.display().to_string();
-                            load_show_file(
-                                setup, state, cue_manager, macro_manager,
-                                monitor_manager, palette_manager, gang_manager,
-                                pan_link_bindings, stream_deck_config, sidecar_config,
-                                connected, runtime, ui_tx,
-                            );
+                            // Carried out by the app once it has checked for
+                            // unsaved changes (audit H8).
+                            setup.pending_show_action = Some(ShowAction::Open(path));
                         }
                     }
                     ui.add_space(4.0);
@@ -1546,30 +1562,9 @@ pub fn draw_setup_tab(
                             theme::LONG_PRESS_DURATION_MS,
                             new_hover,
                         ) {
-                            let cue_mgr = cue_manager.clone();
-                            let macro_mgr = macro_manager.clone();
-                            let pmgr_arc = palette_manager.clone();
-                            runtime.spawn(async move {
-                                let mut mgr = cue_mgr.write().await;
-                                mgr.cue_list = CueList::default();
-                                mgr.snapshots.clear();
-                                mgr.scope_templates.clear();
-                                mgr.osc_targets.clear();
-                                mgr.trigger_templates.clear();
-                                // Direct field writes bypass the manager's
-                                // hooked mutators — invalidate the look-ahead
-                                // recall cache explicitly.
-                                mgr.bump_model_gen();
-                                drop(mgr);
-                                let mut mmgr = macro_mgr.write().await;
-                                mmgr.macros.clear();
-                                drop(mmgr);
-                                let mut pmgr = pmgr_arc.write().await;
-                                pmgr.palettes.clear();
-                                pmgr.bump_model_gen();
-                            });
-                            setup.show_file_path.clear();
-                            setup.status_message = Some("New show created".into());
+                            // Carried out by the app once it has checked for
+                            // unsaved changes (audit H8). See `new_show`.
+                            setup.pending_show_action = Some(ShowAction::New);
                         }
                     });
                 });
@@ -2441,12 +2436,13 @@ pub(crate) fn start_connection(
                         console_ipad_addr,
                         local_ipad_addr,
                         daemon.clone(),
+                        token.clone(),
                         iface_name.as_deref(),
                         Some(ipad_log.clone()),
                     )
                     .await
                     {
-                        Ok((ipad_sender, result, _handle)) => {
+                        Ok((ipad_sender, result)) => {
                             info!(
                                 name = %result.config.console_name,
                                 "UI Mode 2: iPad protocol connected"
@@ -2570,6 +2566,7 @@ pub(crate) fn start_connection(
                 macro_engine: macro_eng.clone(),
                 ipad_sender: app_ipad_sender.clone(),
                 console_tx: sidecar_tx,
+                daemon: daemon.clone(),
             });
         }
 
@@ -3121,6 +3118,7 @@ pub(crate) fn start_pad_connection(
                 macro_engine: macro_eng.clone(),
                 ipad_sender: Some(pad_sender.clone()),
                 console_tx: console_tx.clone(),
+                daemon: daemon.clone(),
             });
         }
 
@@ -3168,7 +3166,12 @@ pub(crate) fn connection_settings_from_setup(
 }
 
 /// Gather the full session state from the manager Arcs into a `ShowFile`.
-/// Acquires read locks internally; shared by manual Save and autosave.
+/// Shared by manual Save and autosave.
+///
+/// Each lock is taken, copied from and released before the next. Holding
+/// all nine at once put this in two lock-order cycles, one with the inbound
+/// gang path and one with the Stream Deck refresh, either of which could
+/// freeze the UI, inbound and save together (audit H4).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn build_show_file(
     state: &Arc<RwLock<ConsoleState>>,
@@ -3183,34 +3186,61 @@ pub(crate) async fn build_show_file(
     connection: ConnectionSettings,
     console_recall: ConsoleRecallConfig,
 ) -> ShowFile {
-    let state_guard = state.read().await;
-    let mgr = cue_manager.read().await;
-    let mmgr = macro_manager.read().await;
-    let monmgr = monitor_manager.read().await;
-    let pmgr = palette_manager.read().await;
-    let gmgr = gang_manager.read().await;
-    let pl = pan_link_bindings.read().await;
-    let sd = stream_deck_config.read().await;
-    let sc = sidecar_config.read().await;
+    let console_config = state.read().await.config.clone();
+    let (scope_templates, snapshots, cue_list, osc_targets, trigger_templates) = {
+        let mgr = cue_manager.read().await;
+        (
+            mgr.scope_templates.values().cloned().collect(),
+            mgr.snapshots.values().cloned().collect(),
+            mgr.cue_list.clone(),
+            mgr.osc_targets.values().cloned().collect(),
+            mgr.trigger_templates.values().cloned().collect(),
+        )
+    };
+    let macros = macro_manager
+        .read()
+        .await
+        .macros
+        .values()
+        .cloned()
+        .collect();
+    let monitor_clients = monitor_manager
+        .read()
+        .await
+        .clients
+        .values()
+        .cloned()
+        .collect();
+    let palettes = palette_manager
+        .read()
+        .await
+        .palettes
+        .values()
+        .cloned()
+        .collect();
+    let gang_groups = gang_manager.read().await.groups.values().cloned().collect();
+    let pan_link = pan_link_bindings.read().await.clone();
+    let stream_deck = stream_deck_config.read().await.clone();
+    let sidecar = sidecar_config.read().await.clone();
 
     ShowFile {
         version: 18,
         app_version: crate::version::APP_VERSION.to_string(),
-        console_config: state_guard.config.clone(),
+        console_config,
         connection,
-        scope_templates: mgr.scope_templates.values().cloned().collect(),
-        snapshots: mgr.snapshots.values().cloned().collect(),
-        cue_list: mgr.cue_list.clone(),
-        macros: mmgr.macros.values().cloned().collect(),
-        palettes: pmgr.palettes.values().cloned().collect(),
-        monitor_clients: monmgr.clients.values().cloned().collect(),
-        gang_groups: gmgr.groups.values().cloned().collect(),
+        scope_templates,
+        snapshots,
+        cue_list,
+        macros,
+        palettes,
+        monitor_clients,
+        gang_groups,
         console_recall,
-        pan_link: pl.clone(),
-        stream_deck: sd.clone(),
-        osc_targets: mgr.osc_targets.values().cloned().collect(),
-        trigger_templates: mgr.trigger_templates.values().cloned().collect(),
-        sidecar: sc.clone(),
+        pan_link,
+        stream_deck,
+        osc_targets,
+        trigger_templates,
+        sidecar,
     }
 }
 
@@ -3264,7 +3294,7 @@ pub(crate) fn load_show_file(
         match ShowFile::load(&path).await {
             Ok(show) => {
                 let mut mgr = cue_mgr.write().await;
-                mgr.cue_list = show.cue_list;
+                mgr.replace_cue_list(show.cue_list);
                 mgr.snapshots.clear();
                 for snap in show.snapshots {
                     mgr.snapshots.insert(snap.id, snap);
@@ -3397,6 +3427,45 @@ pub(crate) fn load_show_file(
     });
 }
 
+/// Start an empty show: clear the cue list, snapshots, scope templates, OSC
+/// targets, trigger templates, macros and palettes, and forget the file path.
+/// Reports `UiEvent::NewShowCreated` once the managers are cleared.
+pub(crate) fn new_show(
+    setup: &mut SetupTabState,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    macro_manager: &Arc<RwLock<MacroManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
+    runtime: &tokio::runtime::Handle,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+) {
+    let cue_mgr = cue_manager.clone();
+    let macro_mgr = macro_manager.clone();
+    let pmgr_arc = palette_manager.clone();
+    let tx = ui_tx.clone();
+    runtime.spawn(async move {
+        let mut mgr = cue_mgr.write().await;
+        mgr.replace_cue_list(CueList::default());
+        mgr.snapshots.clear();
+        mgr.scope_templates.clear();
+        mgr.osc_targets.clear();
+        mgr.trigger_templates.clear();
+        // Direct field writes bypass the manager's hooked mutators —
+        // invalidate the look-ahead recall cache explicitly.
+        mgr.bump_model_gen();
+        drop(mgr);
+        let mut mmgr = macro_mgr.write().await;
+        mmgr.macros.clear();
+        drop(mmgr);
+        let mut pmgr = pmgr_arc.write().await;
+        pmgr.palettes.clear();
+        pmgr.bump_model_gen();
+        drop(pmgr);
+        let _ = tx.send(UiEvent::NewShowCreated);
+    });
+    setup.show_file_path.clear();
+    setup.status_message = Some("New show created".into());
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn save_show_file(
     setup: &mut SetupTabState,
@@ -3440,7 +3509,7 @@ pub(crate) fn save_show_file(
     let conn_settings =
         connection_settings_from_setup(setup, auto_update_on_recall, sync_direction);
 
-    runtime.spawn(async move {
+    let task = runtime.spawn(async move {
         let show = build_show_file(
             &st,
             &cue_mgr,
@@ -3455,11 +3524,15 @@ pub(crate) fn save_show_file(
             console_recall,
         )
         .await;
+        let fingerprint = show.edit_fingerprint();
 
         match show.save(&path).await {
             Ok(()) => {
                 info!("Show file saved: {path_str}");
-                let _ = tx.send(UiEvent::ShowFileSaved(path_str));
+                let _ = tx.send(UiEvent::ShowFileSaved {
+                    path: path_str,
+                    fingerprint,
+                });
             }
             Err(e) => {
                 error!("Save failed for {path_str}: {e}");
@@ -3467,6 +3540,9 @@ pub(crate) fn save_show_file(
             }
         }
     });
+    // Kept so quitting can wait for the save to land (audit H8).
+    setup.save_tasks.retain(|t| !t.is_finished());
+    setup.save_tasks.push(task);
 }
 
 /// Kick off a GitHub "latest release" check on a background thread, flipping
@@ -3703,6 +3779,68 @@ fn draw_first_run_popup(ui: &mut egui::Ui, setup: &mut SetupTabState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The unsaved-changes check (audit H8) compares fingerprints of
+    /// `build_show_file` output. An unchanged show must fingerprint the same
+    /// however the managers were filled, and an edit must not.
+    #[tokio::test]
+    async fn unsaved_check_is_stable_until_an_edit() {
+        use crate::model::macro_def::MacroDef;
+
+        // Everything but the macros is shared, as in the app (a fresh
+        // `CueList` gets a fresh id, which *is* a different show).
+        let state = Arc::new(RwLock::new(ConsoleState::new(
+            crate::model::config::ConsoleConfig::default(),
+        )));
+        let cues = Arc::new(RwLock::new(CueManager::new(CueList::default())));
+        let monitors = Arc::new(RwLock::new(MonitorManager::new()));
+        let palettes = Arc::new(RwLock::new(PaletteManager::new()));
+        let gangs = Arc::new(RwLock::new(GangManager::new()));
+        let pan_link = Arc::new(RwLock::new(PanLinkBindings::default()));
+        let stream_deck = Arc::new(RwLock::new(Default::default()));
+        let sidecar = Arc::new(RwLock::new(Default::default()));
+        let fingerprint = async |macros: &Arc<RwLock<MacroManager>>, console_ip: &str| {
+            let conn = ConnectionSettings {
+                console_ip: console_ip.into(),
+                ..ConnectionSettings::default()
+            };
+            build_show_file(
+                &state,
+                &cues,
+                macros,
+                &monitors,
+                &palettes,
+                &gangs,
+                &pan_link,
+                &stream_deck,
+                &sidecar,
+                conn,
+                ConsoleRecallConfig::default(),
+            )
+            .await
+            .edit_fingerprint()
+        };
+
+        let defs: Vec<MacroDef> = (0..8)
+            .map(|i| MacroDef::new(format!("M{i}"), vec![]))
+            .collect();
+        let forward = Arc::new(RwLock::new(MacroManager::new()));
+        let backward = Arc::new(RwLock::new(MacroManager::new()));
+        for def in &defs {
+            forward.write().await.macros.insert(def.id, def.clone());
+        }
+        for def in defs.iter().rev() {
+            backward.write().await.macros.insert(def.id, def.clone());
+        }
+
+        let saved = fingerprint(&forward, "10.0.0.1").await;
+        assert_eq!(fingerprint(&forward, "10.0.0.1").await, saved);
+        assert_eq!(fingerprint(&backward, "192.168.1.5").await, saved);
+
+        let extra = MacroDef::new("Extra".into(), vec![]);
+        forward.write().await.macros.insert(extra.id, extra);
+        assert_ne!(fingerprint(&forward, "10.0.0.1").await, saved);
+    }
 
     /// The sentinel rule the family selector applies: re-stock a port field
     /// only where it still holds the outgoing family's stock value.

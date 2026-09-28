@@ -19,7 +19,7 @@ use crate::model::cue_trigger::{
     CueTrigger, MidiMessage, OscArg, OscTarget, TriggerAction, TriggerTemplate,
 };
 use crate::model::dirty_tracker::DirtyTracker;
-use crate::model::parameter::{ParameterAddress, ParameterValue};
+use crate::model::parameter::{ParameterAddress, ParameterValue, parse_finite_f32};
 use crate::model::snapshot::{Cue, Snapshot, SnapshotKind};
 use crate::model::state::ConsoleState;
 use crate::model::sync_direction::{SharedSyncDirection, SnapshotSyncDirection};
@@ -677,6 +677,7 @@ pub fn draw_snapshots_tab(
                             if export_resp.clicked() {
                                 qlab_export_full_snapshot(
                                     snap_state,
+                                    console_state,
                                     cue_manager,
                                     palette_manager,
                                     qlab_ip_owned,
@@ -878,7 +879,7 @@ pub fn draw_snapshots_tab(
                         // Parse the current buffers for the Add gate + handler.
                         // A cue needs a number plus at least one target: a local
                         // snapshot, a console row, or an external trigger.
-                        let parsed_num = snap_state.editing_cue_number.trim().parse::<f32>().ok();
+                        let parsed_num = parse_finite_f32(&snap_state.editing_cue_number);
                         let cs_trim = snap_state.editing_console_snapshot.trim();
                         let parsed_row: Option<i32> =
                             if cs_trim.is_empty() { None } else { cs_trim.parse().ok() };
@@ -1155,7 +1156,7 @@ pub fn draw_snapshots_tab(
                         // ── Save: apply edits (incl. rename) to selected cue ──
                         if save_clicked {
                             if let Some(cue_id) = snap_state.selected_cue_id {
-                                let parsed_num = snap_state.editing_cue_number.trim().parse::<f32>().ok();
+                                let parsed_num = parse_finite_f32(&snap_state.editing_cue_number);
                                 let parsed_row: Option<i32> = if snap_state.editing_console_snapshot.trim().is_empty() {
                                     None
                                 } else {
@@ -2004,7 +2005,7 @@ fn parse_osc_args(s: &str) -> Vec<OscArg> {
                     return OscArg::Int(i);
                 }
             }
-            if let Ok(f) = tok.parse::<f32>() {
+            if let Some(f) = parse_finite_f32(tok) {
                 return OscArg::Float(f);
             }
             OscArg::Str(tok.to_string())
@@ -2469,6 +2470,7 @@ pub fn recall_snapshot_by_id(
 /// channel — Phase D doesn't have a dedicated event variant).
 fn qlab_export_full_snapshot(
     snap_state: &mut SnapshotsTabState,
+    console_state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
     palette_manager: &Arc<RwLock<PaletteManager>>,
     qlab_ip: String,
@@ -2482,6 +2484,7 @@ fn qlab_export_full_snapshot(
     };
     let cue_mgr = cue_manager.clone();
     let pal_mgr = palette_manager.clone();
+    let st = console_state.clone();
     let tx = ui_tx.clone();
 
     runtime.spawn(async move {
@@ -2496,7 +2499,10 @@ fn qlab_export_full_snapshot(
         let palettes = pmgr.palettes.clone();
         drop(pmgr);
 
-        let sequence = build_snapshot_cues(&snapshot, &palettes, qlab_patch);
+        // The cues carry GP bus numbers, so they need the desk's bus split.
+        let layout = st.read().await.config.mix_output_types.clone();
+        let layout = (!layout.is_empty()).then_some(layout);
+        let sequence = build_snapshot_cues(&snapshot, &palettes, qlab_patch, layout.as_deref());
         let child_count = sequence.network_cues.len();
 
         match QLabClient::new(&qlab_ip, qlab_port).await {

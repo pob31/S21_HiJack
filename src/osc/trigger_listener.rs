@@ -173,7 +173,7 @@ pub(crate) fn parse_trigger_message(
             // Accept both INT and FLOAT for cue number
             let number = match args.first() {
                 Some(OscType::Int(n)) => *n as f32,
-                Some(OscType::Float(f)) => *f,
+                Some(OscType::Float(f)) if f.is_finite() => *f,
                 _ => {
                     warn!("Trigger /cue/fire: missing or invalid cue number argument");
                     return None;

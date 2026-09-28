@@ -52,6 +52,17 @@ impl CueManager {
         self.model_gen = Some(cache);
     }
 
+    /// Replace the whole cue list (New, Open). The playhead and the
+    /// last-recalled snapshot belong to the old list, so both reset. Assigning
+    /// `cue_list` directly used to leave the playhead pointing past the end
+    /// of a shorter list, and the UI crashed on the next frame (audit H5).
+    pub fn replace_cue_list(&mut self, cue_list: CueList) {
+        self.cue_list = cue_list;
+        self.current_cue_index = None;
+        self.last_recalled_snapshot_id = None;
+        self.bump_model_gen();
+    }
+
     /// Notify the look-ahead recall cache that cue/snapshot/scope data
     /// changed. Also used by callers that mutate the pub fields directly
     /// (show load, new show, palette link editing). Harmless no-op when no
@@ -142,7 +153,9 @@ impl CueManager {
                 warn!("Already at first cue");
                 return None;
             }
-            Some(i) => i - 1,
+            // `min` keeps a playhead left past the end of the list on the
+            // last cue instead of indexing out of bounds.
+            Some(i) => i.min(self.cue_list.cues.len()) - 1,
         };
 
         self.current_cue_index = Some(prev);
@@ -209,7 +222,8 @@ impl CueManager {
 
     /// Get the current cue (if any).
     pub fn current_cue(&self) -> Option<&Cue> {
-        self.current_cue_index.map(|i| &self.cue_list.cues[i])
+        self.current_cue_index
+            .and_then(|i| self.cue_list.cues.get(i))
     }
 
     /// Get the current cue number (for QLab /cue/current response).
@@ -250,11 +264,9 @@ impl CueManager {
         info!(cue_number = cue.cue_number, name = %cue.name, "Added cue");
         self.cue_list.cues.push(cue);
         // Keep cues sorted by cue number
-        self.cue_list.cues.sort_by(|a, b| {
-            a.cue_number
-                .partial_cmp(&b.cue_number)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        self.cue_list
+            .cues
+            .sort_by(|a, b| a.cue_number.total_cmp(&b.cue_number));
         self.bump_model_gen();
     }
 
@@ -439,11 +451,9 @@ impl CueManager {
             false
         };
         if updated && cue_number.is_some() {
-            self.cue_list.cues.sort_by(|a, b| {
-                a.cue_number
-                    .partial_cmp(&b.cue_number)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+            self.cue_list
+                .cues
+                .sort_by(|a, b| a.cue_number.total_cmp(&b.cue_number));
         }
         if updated {
             self.bump_model_gen();
@@ -481,6 +491,49 @@ mod tests {
 
         // At the end
         assert!(mgr.go_next().is_none());
+    }
+
+    /// The operator is on cue 3 and chooses New or opens a shorter show.
+    /// The UI reads `current_cue()` every frame; a stale index used to crash
+    /// it (audit H5).
+    #[test]
+    fn replacing_the_cue_list_resets_the_playhead() {
+        let mut mgr = CueManager::new(CueList::default());
+        for n in 1..=3 {
+            mgr.add_cue(make_cue(n as f32, "Cue"));
+        }
+        mgr.go_next();
+        mgr.go_next();
+        mgr.go_next();
+        mgr.set_last_recalled(Uuid::new_v4());
+
+        let mut shorter = CueList::default();
+        shorter.cues.push(make_cue(10.0, "Only"));
+        mgr.replace_cue_list(shorter);
+
+        assert!(mgr.current_cue().is_none());
+        assert!(mgr.last_recalled().is_none());
+        assert!((mgr.go_next().unwrap().cue_number - 10.0).abs() < 0.001);
+    }
+
+    /// Even with the list swapped behind the manager's back (the field is
+    /// public), reading or stepping the playhead must not index past the end.
+    #[test]
+    fn a_stale_playhead_never_panics() {
+        let mut mgr = CueManager::new(CueList::default());
+        for n in 1..=3 {
+            mgr.add_cue(make_cue(n as f32, "Cue"));
+        }
+        mgr.go_next();
+        mgr.go_next();
+        mgr.go_next();
+        mgr.cue_list.cues.truncate(1);
+
+        assert!(mgr.current_cue().is_none());
+        assert!(mgr.current_cue_number().is_none());
+        assert!(mgr.next_cue().is_none());
+        assert!(mgr.go_next().is_none());
+        assert!((mgr.go_previous().unwrap().cue_number - 1.0).abs() < 0.001);
     }
 
     #[test]

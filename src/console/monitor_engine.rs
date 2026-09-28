@@ -232,6 +232,10 @@ impl MonitorEngine {
         value: ParameterValue,
         manager: &MonitorManager,
     ) {
+        if !value.is_finite() {
+            warn!(name = %client_name, aux_ch, "Monitor aux: non-finite value refused");
+            return;
+        }
         let client = match manager.find_by_name(client_name) {
             Some(c) => c,
             None => {
@@ -282,6 +286,13 @@ impl MonitorEngine {
         value: ParameterValue,
         manager: &MonitorManager,
     ) {
+        // NaN or ±inf from a phone (OSC) or a browser (JSON `1e39` parses as
+        // an infinite f32) would otherwise land in the mirror before the send
+        // is refused (audit H3).
+        if !value.is_finite() {
+            warn!(name = %client_name, input_ch, aux_ch, "Monitor send change: non-finite value refused");
+            return;
+        }
         // Validate, and capture the originating endpoint so the echo can skip
         // the source. `update_last_seen` ran just before this, so a connected
         // client has its endpoint set.
@@ -853,5 +864,63 @@ mod tests {
             recv_path(&client_a).await.is_none(),
             "source A must not receive its own echo"
         );
+    }
+
+    /// NaN or ±inf from a monitor client is refused before the optimistic
+    /// mirror write (audit H3). A finite value still goes through, so the
+    /// test can't pass by rejecting everything.
+    #[tokio::test]
+    async fn non_finite_monitor_values_never_reach_the_mirror() {
+        let local_sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sender = OscSender::new(local_sock, "127.0.0.1:1".parse().unwrap());
+        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
+        let (events, _rx) = broadcast::channel(16);
+        let engine = MonitorEngine::new(state.clone(), sender, events);
+        let mut mgr = MonitorManager::new();
+        mgr.add_client(MonitorClient::new("A".into(), vec![1], vec![]));
+        let endpoint = ClientEndpoint::Udp("127.0.0.1:9".parse().unwrap());
+
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for cmd in [
+                MonitorCommand::SetSendLevel {
+                    client_name: "A".into(),
+                    input_ch: 5,
+                    aux_ch: 1,
+                    value: bad,
+                    endpoint,
+                },
+                MonitorCommand::SetSendPan {
+                    client_name: "A".into(),
+                    input_ch: 5,
+                    aux_ch: 1,
+                    value: bad,
+                    endpoint,
+                },
+                MonitorCommand::SetAuxFader {
+                    client_name: "A".into(),
+                    aux_ch: 1,
+                    value: bad,
+                    endpoint,
+                },
+            ] {
+                engine.handle_command(cmd, &mut mgr, true).await;
+            }
+        }
+        assert_eq!(state.read().await.parameter_count(), 0);
+
+        engine
+            .handle_command(
+                MonitorCommand::SetSendLevel {
+                    client_name: "A".into(),
+                    input_ch: 5,
+                    aux_ch: 1,
+                    value: -6.0,
+                    endpoint,
+                },
+                &mut mgr,
+                true,
+            )
+            .await;
+        assert_eq!(state.read().await.parameter_count(), 1);
     }
 }

@@ -28,8 +28,12 @@ MIDI port choice machine-bound (`AppPreferences::sidecar_midi`).
 Notes:
 - TotalGain (fader + CG sum, read-only) is rejected as a binding target and
   never reaches learn (dropped in `connection::process_message`).
-- A hardware move during a timed recall registers as an operator override via
-  the existing `automation_registry` echo path — no special wiring.
+- A hardware move is an operator change. After sending it, the service runs
+  `inbound::apply_operator_change`, the same chain as a move on the desk: it
+  cancels a running fade on that parameter, propagates through gangs and pan
+  link, marks the cell dirty and is recorded by macro learn. The console's
+  echo can't do this: GP OSC doesn't echo, and the iPad link's echo is
+  screened as our own write.
 - Headless mode does not construct the sidecar (prefs aren't loaded there);
   see the comment near the MidiEngine construction in `main.rs`.
 
@@ -42,9 +46,9 @@ Notes:
 3. **Drive** — hardware fader moves console CH12 with unity at ~3/4 travel;
    console fader move drives the motor back. Watch the OSC log for loops
    (there must be none).
-4. **Touch + recall** — hold fader 1 while recalling a cue with a timed fade
-   on CH12: the fade releases CH12 (operator override), the motor stays under
-   the hand; release → motor snaps to console truth.
+4. **Touch + recall** — recall a cue with a timed fade on CH12, then grab and
+   move fader 1 while it runs: the fade releases CH12 (operator override) and
+   the motor stays under the hand; release → motor snaps to console truth.
 5. **Console wins** — rocker OFF; park the hardware fader somewhere silly;
    rocker ON → motor snaps back to the console value; the console never
    received the silly position.

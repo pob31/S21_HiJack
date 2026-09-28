@@ -169,6 +169,9 @@ async fn run_loop(
     // never show the optimistic green "Idle" state from the heartbeat below.
     let mut ever_confirmed = false;
 
+    // A layout restored from the show file applies until discovery replaces it.
+    publish_bus_layout(&sender, &daemon.state.read().await.config);
+
     // Step 1: Query channel counts and wait for the reply before requesting
     // the full state dump. This ensures the config is populated so the UI
     // can display the correct channel counts and send counts.
@@ -278,6 +281,8 @@ async fn run_loop(
 
             // Idle / ping / recovery tick
             _ = tick_interval.tick() => {
+                // Picks up a layout the iPad link reported since the last tick.
+                publish_bus_layout(&sender, &daemon.state.read().await.config);
                 let now = Instant::now();
                 let idle_for = now.duration_since(last_inbound_at);
 
@@ -379,6 +384,16 @@ async fn send_system(sender: &OscSender, cmd: SystemCommand) {
     }
 }
 
+/// Publish the config's aux/group bus split to the GP sender, whose clones
+/// number every outbound bus write with it (audit H1). Called at start-up,
+/// when channel counts arrive, and on every tick, which also picks up a
+/// layout reported over the iPad link.
+fn publish_bus_layout(sender: &OscSender, config: &crate::model::config::ConsoleConfig) {
+    if sender.bus_layout().set(&config.mix_output_types) {
+        info!(layout = ?config.mix_output_types, "GP bus layout updated");
+    }
+}
+
 /// Update the connection-health field on shared state.
 async fn set_health(state: &Arc<RwLock<ConsoleState>>, health: ConnectionHealth) {
     let mut s = state.write().await;
@@ -462,6 +477,7 @@ async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender
                 *matrices,
                 *master,
             );
+            publish_bus_layout(sender, &s.config);
         }
         ParsedOscMessage::DiscoveryCount {
             channel_type,

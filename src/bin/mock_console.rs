@@ -90,8 +90,21 @@ impl MockConsole {
         }
     }
 
-    async fn handle_message(&self, path: &str, _args: &[OscType], src: SocketAddr) {
+    async fn handle_message(&self, path: &str, args: &[OscType], src: SocketAddr) {
         debug!(path, %src, "Received");
+
+        // Report parameter writes by the channel they land on under this
+        // mock's bus split, so a daemon's bus numbering can be checked
+        // against a non-default split (e.g. `--auxes 10 --groups 14`).
+        if let Some(rest) = path.strip_prefix("/channel/")
+            && let Some((n, param)) = rest.split_once('/')
+            && let Ok(n) = n.parse::<u8>()
+            && !args.is_empty()
+        {
+            let channel = self.channel_name(n);
+            info!(%channel, param, ?args, "Write from {src}");
+            return;
+        }
 
         match path {
             "/console/channel/counts" => {
@@ -112,21 +125,36 @@ impl MockConsole {
         }
     }
 
-    /// Send channel count responses.
-    /// Format: /console/channel/counts/{type} with INT arg.
-    /// NOTE: This is our best guess — to be validated on real hardware.
+    /// Reply to a counts query in the positional form a real S21+ uses:
+    /// `/console/channel/counts <inputs> <aux> <groups> <control_groups>
+    /// <matrices> <master>`.
     async fn send_channel_counts(&self, dest: SocketAddr) {
-        let counts = [
-            ("input", self.config.inputs as i32),
-            ("aux", self.config.auxes as i32),
-            ("group", self.config.groups as i32),
-            ("matrix", self.config.matrices as i32),
-            ("control_group", self.config.control_groups as i32),
-        ];
+        let c = &self.config;
+        let counts = [c.inputs, c.auxes, c.groups, c.control_groups, c.matrices, 1];
+        let args = counts.iter().map(|&n| OscType::Int(n.into())).collect();
+        self.send_osc(dest, "/console/channel/counts", args).await;
+    }
 
-        for (type_name, count) in counts {
-            let path = format!("/console/channel/counts/{type_name}");
-            self.send_osc(dest, &path, vec![OscType::Int(count)]).await;
+    /// First GP OSC number of the group buses. Buses 70–93 are one pool,
+    /// auxes first, so the groups start right after the last aux.
+    fn first_group_number(&self) -> i32 {
+        70 + i32::from(self.config.auxes)
+    }
+
+    /// Name a GP OSC channel number under this mock's configuration.
+    fn channel_name(&self, n: u8) -> String {
+        let c = &self.config;
+        let n16 = u16::from(n);
+        let first_group = self.first_group_number() as u16;
+        match n16 {
+            1..=60 if n <= c.inputs => format!("Input {n}"),
+            70..=93 if n16 < first_group => format!("Aux {}", n16 - 69),
+            70..=93 if n16 < first_group + u16::from(c.groups) => {
+                format!("Group {}", n16 - first_group + 1)
+            }
+            110..=119 if n16 - 109 <= u16::from(c.control_groups) => format!("CG {}", n16 - 109),
+            120..=127 if n16 - 119 <= u16::from(c.matrices) => format!("Matrix {}", n16 - 119),
+            _ => format!("unassigned GP channel {n}"),
         }
     }
 
@@ -149,9 +177,9 @@ impl MockConsole {
             msg_count += 4;
         }
 
-        // Group outputs: OSC 78–(78+N-1)
+        // Group outputs: straight after the auxes in the shared bus pool
         for i in 1..=self.config.groups {
-            let ch = 77 + i as i32;
+            let ch = self.first_group_number() - 1 + i as i32;
             self.send_channel_state(dest, ch, &format!("Group {i}"))
                 .await;
             msg_count += 4;

@@ -26,6 +26,9 @@ pub enum InboundSource {
     GpOsc,
     /// The iPad/Pad protocol — Mode 2 direct link or Mode 3 proxy capture.
     Pad,
+    /// Hardware the daemon drives itself (the fader sidecar). See
+    /// [`apply_operator_change`].
+    Sidecar,
 }
 
 // Post-recall / layer-change fader reports jitter by a few tenths of a dB; the
@@ -100,6 +103,38 @@ pub async fn apply_inbound_parameter(
     value: &ParameterValue,
     source: InboundSource,
 ) {
+    // Echo of our own engine write? (iPad/Pad link only — GP doesn't echo.)
+    // Such a value is the desk confirming OUR send, not an operator move, so
+    // it must not cancel automation or propagate through gangs / pan link.
+    let is_own_echo = daemon.sent_log.is_echo(addr, value);
+    apply_parameter_change(daemon, addr, value, source, is_own_echo).await;
+}
+
+/// An operator move made on hardware the daemon drives itself (the fader
+/// sidecar), already sent to the desk. Runs the same chain as a move on the
+/// desk, so it cancels a running fade on that parameter, propagates through
+/// gangs and pan link, marks the cell dirty and is recorded by macro learn.
+///
+/// Sidecar moves used to update only the mirror: GP OSC doesn't echo, and the
+/// iPad link's echo is screened as our own write, so the chain never ran for
+/// them (audit H7). The echo check is skipped here for the same reason: the
+/// send has just put this value in the sent-value log.
+pub async fn apply_operator_change(
+    daemon: &DaemonState,
+    addr: &ParameterAddress,
+    value: &ParameterValue,
+) {
+    apply_parameter_change(daemon, addr, value, InboundSource::Sidecar, false).await;
+}
+
+/// The chain behind [`apply_inbound_parameter`] and [`apply_operator_change`].
+async fn apply_parameter_change(
+    daemon: &DaemonState,
+    addr: &ParameterAddress,
+    value: &ParameterValue,
+    source: InboundSource,
+    is_own_echo: bool,
+) {
     // TotalGain (GP OSC `total/gain`) is a console-derived, read-only
     // monitor value (post-fader + CG sum). It can't be written back or
     // meaningfully recalled, so drop it on receipt before it pollutes
@@ -125,11 +160,6 @@ pub async fn apply_inbound_parameter(
     // the dirty set either.
     let in_console_load =
         crate::console::snapshot_engine::console_load_active(&daemon.console_load_suppression);
-
-    // Echo of our own engine write? (iPad/Pad link only — GP doesn't echo.)
-    // Such a value is the desk confirming OUR send, not an operator move, so
-    // it must not cancel automation or propagate through gangs / pan link.
-    let is_own_echo = daemon.sent_log.is_echo(addr, value);
 
     // Mark this cell dirty IF the value actually changed. The dirty
     // tracker is suppression-aware, so echoes from snapshot recall
@@ -171,13 +201,24 @@ pub async fn apply_inbound_parameter(
     }
 
     // Gang propagation — before macro recording so the engineer's
-    // original change is what gets recorded, not ganged echoes.
+    // original change is what gets recorded, not ganged echoes. Works from a
+    // copy of the relevant gangs, with the manager's lock already released:
+    // holding it across the propagation's state locks and sends deadlocked
+    // against autosave plus a queued gang edit (audit H4).
     if !in_console_load && !is_own_echo {
-        let mut engine = daemon.gang_engine.write().await;
-        let manager = daemon.gang_manager.read().await;
-        engine
-            .process_gang_update(addr, value, old_value.as_ref(), &manager)
-            .await;
+        let gangs = daemon
+            .gang_manager
+            .read()
+            .await
+            .snapshot_for_channel(&addr.channel);
+        if !gangs.groups.is_empty() {
+            daemon
+                .gang_engine
+                .write()
+                .await
+                .process_gang_update(addr, value, old_value.as_ref(), &gangs)
+                .await;
+        }
     }
 
     // Pan link propagation — runs after gangs so a gang-driven
@@ -187,10 +228,13 @@ pub async fn apply_inbound_parameter(
         engine.process_pan_update(addr, value).await;
     }
 
-    // Feed into macro learn mode if recording
-    let mut mgr = daemon.macro_manager.write().await;
-    if mgr.is_recording() {
-        mgr.record_change(addr.clone(), value.clone());
+    // Feed into macro learn mode if recording. Checked under a read lock so
+    // the common case doesn't queue a write on every inbound message.
+    if daemon.macro_manager.read().await.is_recording() {
+        let mut mgr = daemon.macro_manager.write().await;
+        if mgr.is_recording() {
+            mgr.record_change(addr.clone(), value.clone());
+        }
     }
 }
 
@@ -457,5 +501,68 @@ mod tests {
         let state = daemon.state.read().await;
         assert_eq!(state.get(&mute(1)), Some(&ParameterValue::Bool(true)));
         assert_eq!(state.get(&mute(2)), None);
+    }
+
+    /// Audit H4(a). Gang propagation used to hold the gang manager's read
+    /// lock while it waited on the state lock. With autosave holding `state`
+    /// and a gang edit queued for the manager's write lock, nothing could
+    /// move. Park a propagation on the state lock and check that a gang edit
+    /// still gets the write lock.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gang_propagation_does_not_hold_the_gang_manager_lock() {
+        use std::time::Duration;
+
+        fn fader(n: u16) -> ParameterAddress {
+            ParameterAddress {
+                channel: ChannelId::Input(n),
+                parameter: ParameterPath::Fader,
+            }
+        }
+
+        let (daemon, _sent_log) = gang_test_daemon().await;
+        for gang in daemon.gang_manager.write().await.groups.values_mut() {
+            gang.mode = crate::model::gang::GangMode::Relative;
+        }
+        {
+            let mut s = daemon.state.write().await;
+            s.update(fader(1), f(-20.0));
+            s.update(fader(2), f(-20.0));
+        }
+
+        // Hold the move at the dirty tracker, which it takes after writing
+        // the mirror and before gang propagation.
+        let dirty_gate = daemon.dirty_tracker.write().await;
+        let d = daemon.clone();
+        let inbound = tokio::spawn(async move {
+            apply_inbound_parameter(&d, &fader(1), &f(-10.0), InboundSource::GpOsc).await;
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while daemon.state.read().await.get(&fader(1)) != Some(&f(-10.0)) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the move should reach the mirror");
+
+        // "Autosave" holds the state lock; the move then propagates and
+        // parks on it when it writes the sibling back to the mirror.
+        let autosave = daemon.state.read().await;
+        drop(dirty_gate);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let gang_edit =
+            tokio::time::timeout(Duration::from_secs(1), daemon.gang_manager.write()).await;
+        assert!(
+            gang_edit.is_ok(),
+            "a gang edit must not wait on a propagation that is waiting on state"
+        );
+        drop(gang_edit);
+        drop(autosave);
+
+        tokio::time::timeout(Duration::from_secs(2), inbound)
+            .await
+            .expect("the move should finish once state is free")
+            .unwrap();
+        assert_eq!(daemon.state.read().await.get(&fader(2)), Some(&f(-10.0)));
     }
 }

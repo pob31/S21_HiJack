@@ -40,6 +40,7 @@ use crate::console::console_tx::ConsoleTx;
 use crate::model::channel::ChannelId;
 use crate::model::config::ChannelMode;
 use crate::model::dirty_tracker::DirtyTracker;
+use crate::model::gang::GangGroup;
 use crate::model::pan_link::PanLinkBindings;
 use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterSection, ParameterValue};
 use crate::model::state::ConsoleState;
@@ -162,6 +163,24 @@ impl PanLinkEngine {
             return Vec::new();
         }
 
+        // Copy the gangs before taking the state lock, and never hold both:
+        // the inbound path used to take them in the opposite order, and the
+        // pair could deadlock with a queued writer on either (audit H4).
+        let moved = ChannelId::Input(input_n);
+        let (pan_gangs, sends_gangs): (Vec<GangGroup>, Vec<GangGroup>) = {
+            let gm = self.gang_manager.read().await;
+            let copy = |section| {
+                gm.find_gangs_for_channel_and_section(&moved, &section)
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            };
+            (
+                copy(ParameterSection::FaderMutePan),
+                copy(ParameterSection::Sends),
+            )
+        };
+
         let state = self.state.read().await;
         let mix_modes = state.config.mix_output_modes.clone();
         let mix_types = state.config.mix_output_types.clone();
@@ -192,14 +211,8 @@ impl PanLinkEngine {
         let mut seen: HashSet<u16> = HashSet::new();
         seen.insert(input_n);
         {
-            let gm = self.gang_manager.read().await;
-
             // FaderMutePan-shared fan-out (sibling's own main pan).
-            let pan_gangs = gm.find_gangs_for_channel_and_section(
-                &ChannelId::Input(input_n),
-                &ParameterSection::FaderMutePan,
-            );
-            for gang in pan_gangs {
+            for gang in &pan_gangs {
                 if gang.paused {
                     continue;
                 }
@@ -232,12 +245,8 @@ impl PanLinkEngine {
             // Relies on the routing-section guard already baked into
             // `find_gangs_for_channel_and_section` — same-channel-type
             // members only.
-            let sends_gangs = gm.find_gangs_for_channel_and_section(
-                &ChannelId::Input(input_n),
-                &ParameterSection::Sends,
-            );
             let a_pan = ParameterPath::Pan.clamp_value(new_value.clone());
-            for gang in sends_gangs {
+            for gang in &sends_gangs {
                 if gang.paused {
                     continue;
                 }
@@ -514,7 +523,7 @@ mod tests {
     async fn skips_during_recall_suppression() {
         let engine = make_engine();
         engine.bindings.write().await.set_active(1, 5, true);
-        engine.dirty_tracker.write().await.begin_suppression();
+        let _suppressed = engine.dirty_tracker.write().await.suppress();
 
         let writes = engine
             .compute_pan_writes(&pan_addr(1), &ParameterValue::Float(0.5))

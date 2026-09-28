@@ -132,6 +132,17 @@ fn sanitized_stem(show_path: &Path) -> String {
     }
 }
 
+/// Stand-in show path for autosaving a show that has never been saved, so its
+/// autosaves land in `<config dir>/s21_hijack/untitled/.s21backups/` (audit
+/// H8). `None` if the platform has no config directory.
+pub fn untitled_autosave_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| {
+        d.join("s21_hijack")
+            .join("untitled")
+            .join("untitled.s21show")
+    })
+}
+
 /// The `.s21backups/` folder next to `show_path`. `None` only if the show path
 /// has no parent component.
 pub fn backup_dir(show_path: &Path) -> Option<PathBuf> {

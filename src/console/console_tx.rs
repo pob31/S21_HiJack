@@ -126,6 +126,10 @@ pub enum SendOutcome {
     NoPadSender,
     /// Neither dialect can encode this parameter.
     NoEncoding,
+    /// The value was NaN or infinite, so nothing was sent. The parsers drop
+    /// these at the edge; this is the backstop for any that slip past
+    /// (audit H3).
+    NonFinite,
 }
 
 impl SendOutcome {
@@ -266,9 +270,13 @@ impl ConsoleTx {
         addr: &ParameterAddress,
         value: &ParameterValue,
     ) -> SendOutcome {
+        if !value.is_finite() {
+            return SendOutcome::NonFinite;
+        }
         if self.has_gp()
             && let Some(gp) = &self.gp
-            && let Some((path, args)) = encode::encode_parameter(addr, value)
+            && let Some((path, args)) =
+                encode::encode_parameter_with_config(addr, value, gp.bus_layout().get().as_deref())
         {
             return match gp.send(&path, args).await {
                 Ok(()) => SendOutcome::SentGp,
@@ -315,6 +323,7 @@ impl ConsoleTx {
             SendOutcome::NoPadSender => {
                 debug!(%addr, "{ctx}: iPad-only parameter, no iPad sender wired")
             }
+            SendOutcome::NonFinite => warn!(%addr, %value, "{ctx}: refused a non-finite value"),
         }
         outcome.is_sent()
     }
@@ -391,6 +400,57 @@ mod tests {
             .send_parameter(&pad_only_addr(), &ParameterValue::Float(0.0))
             .await;
         assert_eq!(outcome, SendOutcome::SentPad);
+    }
+
+    /// On a 10-aux / 14-group desk, Group 1 is bus 80. Sends used to assume
+    /// 8 auxes and put it on 78, which is Aux 9 (audit H1).
+    #[tokio::test]
+    async fn gp_writes_follow_the_published_bus_layout() {
+        let desk = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client = crate::osc::client::OscClient::new(
+            "127.0.0.1:0".parse().unwrap(),
+            desk.local_addr().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        let (sender, _rx) = client.into_parts();
+        // An engine's clone, taken before the layout is known, still sees it.
+        let tx = ConsoleTx::new(sender.clone());
+        let ten_aux: Vec<bool> = (0..24).map(|i| i < 10).collect();
+        assert!(sender.bus_layout().set(&ten_aux));
+
+        let group1 = ParameterAddress {
+            channel: ChannelId::Group(1),
+            parameter: ParameterPath::Fader,
+        };
+        assert!(
+            tx.send_parameter(&group1, &ParameterValue::Float(-5.0))
+                .await
+                .is_sent()
+        );
+
+        let mut buf = [0u8; 512];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), desk.recv_from(&mut buf))
+            .await
+            .expect("the desk should receive the write")
+            .unwrap();
+        let (_, packet) = rosc::decoder::decode_udp(&buf[..n]).unwrap();
+        let rosc::OscPacket::Message(msg) = packet else {
+            panic!("expected a message");
+        };
+        assert_eq!(msg.addr, "/channel/80/fader");
+    }
+
+    #[tokio::test]
+    async fn non_finite_values_are_never_sent() {
+        let tx = ConsoleTx::with_pad(gp_sender().await, Some(pad_sender().await));
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for addr in [gp_addr(), pad_only_addr()] {
+                let outcome = tx.send_parameter(&addr, &ParameterValue::Float(bad)).await;
+                assert_eq!(outcome, SendOutcome::NonFinite, "{bad} to {addr}");
+            }
+        }
     }
 
     // ── SentLog ─────────────────────────────────────────────────────────

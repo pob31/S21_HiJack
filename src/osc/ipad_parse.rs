@@ -193,7 +193,9 @@ fn try_parse_config(path: &str, args: &[OscType]) -> Option<IpadConfigMessage> {
                 modes,
             })
         }
-        p if p.ends_with("/types") => {
+        // Only the aux list carries the bus split. Any other `/types` path
+        // used to overwrite it too (audit H1).
+        "/Console/Aux_Outputs/types" => {
             // Output types: /Console/Aux_Outputs/types  INT INT INT ...
             let types: Vec<bool> = args
                 .iter()
@@ -370,7 +372,7 @@ fn extract_string(arg: &OscType) -> Option<String> {
 fn extract_u8(arg: &OscType) -> Option<u8> {
     match arg {
         OscType::Int(i) => u8::try_from(*i).ok(),
-        OscType::Float(f) => u8::try_from(*f as i32).ok(),
+        OscType::Float(f) if f.is_finite() => u8::try_from(*f as i32).ok(),
         _ => None,
     }
 }
@@ -378,7 +380,7 @@ fn extract_u8(arg: &OscType) -> Option<u8> {
 fn extract_u16(arg: &OscType) -> Option<u16> {
     match arg {
         OscType::Int(i) => u16::try_from(*i).ok(),
-        OscType::Float(f) => u16::try_from(*f as i32).ok(),
+        OscType::Float(f) if f.is_finite() => u16::try_from(*f as i32).ok(),
         _ => None,
     }
 }
@@ -386,7 +388,7 @@ fn extract_u16(arg: &OscType) -> Option<u16> {
 fn extract_i32(arg: &OscType) -> Option<i32> {
     match arg {
         OscType::Int(i) => Some(*i),
-        OscType::Float(f) => Some(*f as i32),
+        OscType::Float(f) if f.is_finite() => Some(*f as i32),
         OscType::Long(l) => Some(*l as i32),
         _ => None,
     }
@@ -394,27 +396,31 @@ fn extract_i32(arg: &OscType) -> Option<i32> {
 
 fn extract_f32(arg: &OscType) -> Option<f32> {
     match arg {
-        OscType::Float(f) => Some(*f),
+        OscType::Float(f) if f.is_finite() => Some(*f),
         OscType::Int(i) => Some(*i as f32),
         _ => None,
     }
 }
 
+/// NaN and the infinities are dropped here, at the edge, so they never reach
+/// the mirror (audit H3). A double is checked after narrowing: `1e39` is
+/// finite as an f64 but infinite as an f32.
 fn extract_float(arg: &OscType) -> Option<ParameterValue> {
-    match arg {
-        OscType::Float(f) => Some(ParameterValue::Float(*f)),
-        OscType::Double(d) => Some(ParameterValue::Float(*d as f32)),
-        OscType::Int(i) => Some(ParameterValue::Float(*i as f32)),
-        OscType::Long(l) => Some(ParameterValue::Float(*l as f32)),
-        _ => None,
-    }
+    let f = match arg {
+        OscType::Float(f) => *f,
+        OscType::Double(d) => *d as f32,
+        OscType::Int(i) => *i as f32,
+        OscType::Long(l) => *l as f32,
+        _ => return None,
+    };
+    f.is_finite().then_some(ParameterValue::Float(f))
 }
 
 fn extract_int(arg: &OscType) -> Option<ParameterValue> {
     match arg {
         OscType::Int(i) => Some(ParameterValue::Int(*i)),
         OscType::Long(l) => Some(ParameterValue::Int(*l as i32)),
-        OscType::Float(f) => Some(ParameterValue::Int(*f as i32)),
+        OscType::Float(f) if f.is_finite() => Some(ParameterValue::Int(*f as i32)),
         _ => None,
     }
 }
@@ -423,7 +429,7 @@ fn extract_bool(arg: &OscType) -> Option<ParameterValue> {
     match arg {
         OscType::Bool(b) => Some(ParameterValue::Bool(*b)),
         OscType::Int(i) => Some(ParameterValue::Bool(*i != 0)),
-        OscType::Float(f) => Some(ParameterValue::Bool(*f != 0.0)),
+        OscType::Float(f) if f.is_finite() => Some(ParameterValue::Bool(*f != 0.0)),
         _ => None,
     }
 }
@@ -442,6 +448,40 @@ mod tests {
                 assert_eq!(val, ParameterValue::Float(-10.0));
             }
             _ => panic!("Expected ParameterUpdate, got {result:?}"),
+        }
+    }
+
+    #[test]
+    fn non_finite_values_are_dropped() {
+        for arg in [
+            OscType::Float(f32::NAN),
+            OscType::Float(f32::INFINITY),
+            OscType::Double(1e39),
+        ] {
+            for path in [
+                "/Input_Channels/1/fader",
+                "/Input_Channels/1/mute",
+                "/Input_Channels/1/Channel_Input/polarity",
+            ] {
+                let result = parse_ipad_message(path, std::slice::from_ref(&arg));
+                assert!(
+                    matches!(result, ParsedIpadMessage::Unknown(_)),
+                    "{path} {arg:?} parsed as {result:?}"
+                );
+            }
+        }
+        let meters = parse_ipad_message(
+            "/Meters/values",
+            &[
+                OscType::Int(1),
+                OscType::Float(f32::NAN),
+                OscType::Int(2),
+                OscType::Float(-3.0),
+            ],
+        );
+        match meters {
+            ParsedIpadMessage::MeterValues(v) => assert_eq!(v, vec![(2, -3.0)]),
+            other => panic!("Expected MeterValues, got {other:?}"),
         }
     }
 

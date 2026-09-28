@@ -209,7 +209,8 @@ async fn run_fade(
         };
     }
 
-    let total_duration = Duration::from_secs_f32(fade_time_secs);
+    // A NaN or negative fade time reads as an instant fade rather than a panic.
+    let total_duration = crate::model::snapshot::secs_to_duration(fade_time_secs);
     let start = time::Instant::now();
     let mut steps_sent = 0usize;
 

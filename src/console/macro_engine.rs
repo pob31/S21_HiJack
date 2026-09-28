@@ -136,21 +136,23 @@ impl MacroEngine {
     /// When `macro_def.mark_dirty` is false, dirty tracking is suppressed
     /// for the duration of execution and the dirty set is cleared afterward.
     pub async fn execute(&self, macro_def: &MacroDef) -> MacroExecutionResult {
-        let suppress = !macro_def.mark_dirty;
-        if suppress {
-            if let Some(dirty) = &self.dirty_tracker {
-                dirty.write().await.begin_suppression();
-            }
-        }
+        let dirty = self
+            .dirty_tracker
+            .as_ref()
+            .filter(|_| !macro_def.mark_dirty);
+        // Held until the macro finishes; dropping it (even on a panic or a
+        // cancelled future) ends suppression.
+        let guard = match dirty {
+            Some(d) => Some(d.write().await.suppress()),
+            None => None,
+        };
 
         let result = self.execute_inner(macro_def).await;
 
-        if suppress {
-            if let Some(dirty) = &self.dirty_tracker {
-                let mut t = dirty.write().await;
-                t.end_suppression();
-                t.clear();
-            }
+        if let Some(d) = dirty {
+            let mut t = d.write().await;
+            drop(guard);
+            t.clear();
         }
 
         result

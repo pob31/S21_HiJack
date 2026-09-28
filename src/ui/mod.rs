@@ -60,6 +60,9 @@ pub struct PendingEngines {
     /// by the connect task, so the pickup hands it over rather than rebuilding
     /// one — and a Pad-only session can hand over a GP-less path.
     pub console_tx: crate::console::console_tx::ConsoleTx,
+    /// This connection's shared state, handed to the sidecar service so a
+    /// hardware move runs the full operator-change chain (audit H7).
+    pub daemon: crate::console::connection::DaemonState,
 }
 
 /// Events sent from async tasks back to the UI thread.
@@ -143,8 +146,16 @@ pub enum UiEvent {
         Option<Box<crate::persistence::show_file::ConnectionSettings>>,
         crate::model::recall_scope::ConsoleRecallConfig,
     ),
-    ShowFileSaved(String),
+    /// A save finished. `fingerprint` is the edit fingerprint of what was
+    /// written, which becomes the "no unsaved changes" baseline.
+    ShowFileSaved {
+        path: String,
+        fingerprint: u64,
+    },
     ShowFileError(String),
+    /// New finished clearing the show, so the UI can take a fresh
+    /// "no unsaved changes" baseline.
+    NewShowCreated,
     /// An autosave write task finished. `wrote` is false when the content
     /// fingerprint was unchanged (nothing written). Carries the new
     /// fingerprint so the UI updates its dedup baseline and clears the

@@ -21,24 +21,39 @@ pub enum ChannelId {
     MatrixInput(u16),  // 1–10
 }
 
+/// GP OSC numbers 70–93 are one pool of 24 buses, split between auxes and
+/// groups by the desk's configuration (`ConsoleConfig::mix_output_types`).
+const GP_FIRST_BUS: usize = 70;
+const GP_BUS_COUNT: usize = 24;
+/// The split assumed when the desk's layout isn't known yet: 8 aux, 16 group.
+const GP_DEFAULT_AUX_COUNT: usize = 8;
+
 impl ChannelId {
-    /// Convert to the GP OSC unified channel number.
-    /// Returns None for channel types not in the GP OSC number space, or for
-    /// channel numbers past its `u8` range (SD/Quantum-sized channels have no
-    /// GP OSC representation — the S series never exceeds it).
+    /// Convert to the GP OSC unified channel number, assuming the default
+    /// 8-aux bus split. See [`Self::to_gp_osc_number_with_config`].
     pub fn to_gp_osc_number(&self) -> Option<u8> {
-        // `checked_add` before the narrowing: the offset addition is done in
-        // u16, and a channel number near u16::MAX (reachable from the Macros
-        // tab's free-text channel field) would otherwise overflow — panicking
-        // in debug builds and wrapping into a *valid-looking* GP number in
-        // release, which would address the wrong channel on the desk.
-        let offset = |base: u16, n: &u16| n.checked_add(base).and_then(|v| u8::try_from(v).ok());
+        self.to_gp_osc_number_with_config(None)
+    }
+
+    /// Convert to the GP OSC unified channel number: the exact inverse of
+    /// [`Self::from_gp_osc_number_with_config`] for the same bus layout.
+    ///
+    /// Aux n and Group n are the n-th aux or group bus in `mix_output_types`.
+    /// Always assuming 8 auxes (Aux n → 69+n, Group n → 77+n) sent writes to
+    /// the wrong bus on any other split (audit H1).
+    ///
+    /// Returns None for channel types outside the GP OSC number space and for
+    /// numbers outside their type's range, so an out-of-range channel can't
+    /// land on another type's number ("CG 11" used to encode as Matrix 1).
+    pub fn to_gp_osc_number_with_config(&self, mix_output_types: Option<&[bool]>) -> Option<u8> {
+        // Every range here tops out at 127, so the narrowing can't truncate.
+        let within = |n: u16, max: u16, base: u16| (1..=max).contains(&n).then(|| (base + n) as u8);
         match self {
-            ChannelId::Input(n) => u8::try_from(*n).ok(), // 1–60
-            ChannelId::Aux(n) => offset(69, n),           // Aux 1 → 70
-            ChannelId::Group(n) => offset(77, n),         // Group 1 → 78
-            ChannelId::Matrix(n) => offset(119, n),       // Matrix 1 → 120
-            ChannelId::ControlGroup(n) => offset(109, n), // CG 1 → 110
+            ChannelId::Input(n) => within(*n, 60, 0),
+            ChannelId::Aux(n) => gp_bus_number(true, *n, mix_output_types),
+            ChannelId::Group(n) => gp_bus_number(false, *n, mix_output_types),
+            ChannelId::ControlGroup(n) => within(*n, 10, 109), // CG 1 → 110
+            ChannelId::Matrix(n) => within(*n, 8, 119),        // Matrix 1 → 120
             // GraphicEq and MatrixInput are not in the GP OSC number space
             ChannelId::GraphicEq(_) | ChannelId::MatrixInput(_) => None,
         }
@@ -202,6 +217,28 @@ impl ChannelId {
     }
 }
 
+/// GP OSC number of the `n`-th (1-based) aux (`aux == true`) or group bus.
+/// With a layout, that is the `n`-th matching entry of `mix_output_types`;
+/// without one, the default split (Aux 1–8 → 70–77, Group 1–16 → 78–93).
+/// Mirrors the bus arm of `from_gp_osc_number_with_config`.
+fn gp_bus_number(aux: bool, n: u16, mix_output_types: Option<&[bool]>) -> Option<u8> {
+    let n = usize::from(n).checked_sub(1)?;
+    let bus = match mix_output_types {
+        Some(types) => {
+            types
+                .iter()
+                .take(GP_BUS_COUNT)
+                .enumerate()
+                .filter(|&(_, &is_aux)| is_aux == aux)
+                .nth(n)?
+                .0
+        }
+        None if aux => (n < GP_DEFAULT_AUX_COUNT).then_some(n)?,
+        None => (n < GP_BUS_COUNT - GP_DEFAULT_AUX_COUNT).then_some(GP_DEFAULT_AUX_COUNT + n)?,
+    };
+    u8::try_from(GP_FIRST_BUS + bus).ok()
+}
+
 /// Split an iPad path (after leading /) into (channel_type, number) and the remaining path.
 /// E.g. "Input_Channels/1/fader" → (("Input_Channels", "1"), "/fader")
 fn split_ipad_prefix(path: &str) -> Option<((&str, &str), &str)> {
@@ -301,6 +338,112 @@ mod tests {
                 None,
                 "{ch:?} must have no GP OSC number"
             );
+        }
+    }
+
+    /// A 10-aux / 14-group desk. Encoding used to assume 8 auxes, so Aux 9
+    /// and Group 1 both went to bus 78 (audit H1).
+    #[test]
+    fn gp_osc_number_follows_the_bus_layout() {
+        let ten_aux: Vec<bool> = (0..24).map(|i| i < 10).collect();
+        let layout = Some(ten_aux.as_slice());
+        assert_eq!(
+            ChannelId::Aux(9).to_gp_osc_number_with_config(layout),
+            Some(78)
+        );
+        assert_eq!(
+            ChannelId::Aux(10).to_gp_osc_number_with_config(layout),
+            Some(79)
+        );
+        assert_eq!(
+            ChannelId::Group(1).to_gp_osc_number_with_config(layout),
+            Some(80)
+        );
+        assert_eq!(
+            ChannelId::Group(14).to_gp_osc_number_with_config(layout),
+            Some(93)
+        );
+        assert_eq!(
+            ChannelId::Aux(11).to_gp_osc_number_with_config(layout),
+            None
+        );
+        assert_eq!(
+            ChannelId::Group(15).to_gp_osc_number_with_config(layout),
+            None
+        );
+
+        // Interleaved, as the iPad handshake can report it.
+        let mixed = [true, false, true, false];
+        let layout = Some(mixed.as_slice());
+        assert_eq!(
+            ChannelId::Aux(2).to_gp_osc_number_with_config(layout),
+            Some(72)
+        );
+        assert_eq!(
+            ChannelId::Group(2).to_gp_osc_number_with_config(layout),
+            Some(73)
+        );
+        assert_eq!(
+            ChannelId::Group(3).to_gp_osc_number_with_config(layout),
+            None
+        );
+    }
+
+    #[test]
+    fn gp_osc_number_rejects_out_of_range_numbers() {
+        // Each of these used to land on another type's number.
+        assert_eq!(ChannelId::ControlGroup(11).to_gp_osc_number(), None); // was Matrix 1
+        assert_eq!(ChannelId::Aux(9).to_gp_osc_number(), None); // was Group 1
+        assert_eq!(ChannelId::Input(61).to_gp_osc_number(), None);
+        assert_eq!(ChannelId::Matrix(9).to_gp_osc_number(), None);
+        assert_eq!(ChannelId::Group(17).to_gp_osc_number(), None);
+        for ch in [
+            ChannelId::Input(0),
+            ChannelId::Aux(0),
+            ChannelId::Group(0),
+            ChannelId::ControlGroup(0),
+            ChannelId::Matrix(0),
+        ] {
+            assert_eq!(ch.to_gp_osc_number(), None, "{ch:?}");
+        }
+    }
+
+    mod gp_layout_props {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_channel() -> impl Strategy<Value = ChannelId> {
+            prop_oneof![
+                (0u16..70).prop_map(ChannelId::Input),
+                (0u16..30).prop_map(ChannelId::Aux),
+                (0u16..30).prop_map(ChannelId::Group),
+                (0u16..15).prop_map(ChannelId::ControlGroup),
+                (0u16..12).prop_map(ChannelId::Matrix),
+            ]
+        }
+
+        fn arb_layout() -> impl Strategy<Value = Option<Vec<bool>>> {
+            proptest::option::of(proptest::collection::vec(any::<bool>(), 0..=30))
+        }
+
+        proptest! {
+            /// Encoding and parsing are exact inverses under any layout,
+            /// in both directions.
+            #[test]
+            fn encode_is_the_inverse_of_parse(ch in arb_channel(), layout in arb_layout()) {
+                let layout = layout.as_deref();
+                if let Some(n) = ch.to_gp_osc_number_with_config(layout) {
+                    prop_assert_eq!(ChannelId::from_gp_osc_number_with_config(n, layout), Some(ch));
+                }
+            }
+
+            #[test]
+            fn parse_is_the_inverse_of_encode(n in 0u8..=255, layout in arb_layout()) {
+                let layout = layout.as_deref();
+                if let Some(ch) = ChannelId::from_gp_osc_number_with_config(n, layout) {
+                    prop_assert_eq!(ch.to_gp_osc_number_with_config(layout), Some(n));
+                }
+            }
         }
     }
 

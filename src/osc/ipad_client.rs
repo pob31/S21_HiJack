@@ -177,19 +177,15 @@ async fn receive_loop(
                     tracing::info!(%src, size, "iPad: first packet received from {src} ({size} bytes)");
                     first_message = false;
                 }
-                match crate::osc::decode_udp_tolerant(&buf[..size]) {
-                    Some(packet) => {
-                        process_packet(packet, &tx).await;
-                    }
+                let delivered = match crate::osc::decode_udp_tolerant(&buf[..size]) {
+                    Some(packet) => process_packet(packet, &tx).await,
                     None => {
                         // DiGiCo iPad protocol may use non-standard encoding:
                         // bare path + null (no type tag) for queries.
                         // Try to parse as bare path with optional inline args.
                         if let Some(msg) = parse_digico_packet(&buf[..size]) {
                             debug!(path = msg.path, "iPad recv: DiGiCo non-standard packet");
-                            if tx.send(msg).await.is_err() {
-                                error!("iPad OSC receive channel closed");
-                            }
+                            tx.send(msg).await.is_ok()
                         } else {
                             let hex: String = buf[..size.min(32)]
                                 .iter()
@@ -197,8 +193,15 @@ async fn receive_loop(
                                 .collect::<Vec<_>>()
                                 .join(" ");
                             warn!(%src, size, %hex, "iPad: unrecognized packet format");
+                            true
                         }
                     }
+                };
+                // Nobody is reading any more (the mirror loop ended). Stop
+                // rather than keep the port bound for nothing (audit H2).
+                if !delivered {
+                    tracing::info!("iPad OSC receive channel closed — stopping receive loop");
+                    break;
                 }
             }
             Err(e) => {
@@ -236,9 +239,11 @@ fn parse_digico_packet(data: &[u8]) -> Option<ReceivedOscMessage> {
                 // Try to parse as numeric values, fall back to string
                 let mut osc_args = Vec::new();
                 for part in trimmed.split_whitespace() {
+                    // `parse::<f32>` also accepts "nan" and "inf"; those
+                    // stay strings so no NaN reaches the mirror (audit H3).
                     if let Ok(i) = part.parse::<i32>() {
                         osc_args.push(OscType::Int(i));
-                    } else if let Ok(f) = part.parse::<f32>() {
+                    } else if let Some(f) = crate::model::parameter::parse_finite_f32(part) {
                         osc_args.push(OscType::Float(f));
                     } else {
                         osc_args.push(OscType::String(part.to_string()));
@@ -261,7 +266,8 @@ fn parse_digico_packet(data: &[u8]) -> Option<ReceivedOscMessage> {
     })
 }
 
-async fn process_packet(packet: OscPacket, tx: &mpsc::Sender<ReceivedOscMessage>) {
+/// Forward a packet's messages. Returns false once the channel has closed.
+async fn process_packet(packet: OscPacket, tx: &mpsc::Sender<ReceivedOscMessage>) -> bool {
     match packet {
         OscPacket::Message(msg) => {
             trace!(path = msg.addr, "Received iPad OSC message");
@@ -269,14 +275,15 @@ async fn process_packet(packet: OscPacket, tx: &mpsc::Sender<ReceivedOscMessage>
                 path: msg.addr,
                 args: msg.args,
             };
-            if tx.send(received).await.is_err() {
-                error!("iPad OSC receive channel closed");
-            }
+            tx.send(received).await.is_ok()
         }
         OscPacket::Bundle(bundle) => {
             for p in bundle.content {
-                Box::pin(process_packet(p, tx)).await;
+                if !Box::pin(process_packet(p, tx)).await {
+                    return false;
+                }
             }
+            true
         }
     }
 }
@@ -326,5 +333,21 @@ mod fuzz_tests {
             data.extend_from_slice(&tail);
             let _ = parse_digico_packet(&data);
         }
+    }
+
+    /// Inline "nan" and "inf" parse as f32 but must stay strings, so the
+    /// value parser drops them instead of the mirror storing NaN (audit H3).
+    #[test]
+    fn inline_nan_and_inf_are_not_floats() {
+        let msg = parse_digico_packet(b"/a\0\0nan inf -Infinity 1.5").unwrap();
+        assert_eq!(
+            msg.args,
+            vec![
+                OscType::String("nan".into()),
+                OscType::String("inf".into()),
+                OscType::String("-Infinity".into()),
+                OscType::Float(1.5),
+            ]
+        );
     }
 }

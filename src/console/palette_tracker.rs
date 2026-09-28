@@ -242,7 +242,7 @@ mod tests {
     #[tokio::test]
     async fn does_not_absorb_while_recall_suppression_active() {
         let (state, cues, pmgr, dirty, load, pid, _addr) = setup().await;
-        dirty.write().await.begin_suppression();
+        let suppressed = dirty.write().await.suppress();
         absorb_once(&state, &cues, &pmgr, &dirty, &load).await;
         assert_eq!(
             working_count(&pmgr, &pid).await,
@@ -250,7 +250,7 @@ mod tests {
             "mid-recall mirror values must not be folded into palettes (bleed)"
         );
         // Once the recall bracket closes, a later tick absorbs normally.
-        dirty.write().await.end_suppression();
+        drop(suppressed);
         absorb_once(&state, &cues, &pmgr, &dirty, &load).await;
         assert_eq!(working_count(&pmgr, &pid).await, 1);
     }

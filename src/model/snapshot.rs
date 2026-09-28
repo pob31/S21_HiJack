@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -91,18 +92,59 @@ impl ScopeTemplate {
     }
 }
 
+/// Longest pre-wait or fade the scope editor offers, in seconds.
+pub const MAX_TIMING_SECS: f32 = 30.0;
+
 /// Per-category pre-wait and fade timing for snapshot recalls.
 /// Stored per-channel per-category on `ChannelScope`.
+///
+/// Both fields are clamped on load. A show saved with a NaN timing holds
+/// `null` there, which a plain `f32` field refuses, so the whole show used to
+/// fail to load (audit H3).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CategoryTiming {
     /// Delay before this category starts (seconds). Default 0.0.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "timing_secs")]
     pub pre_wait_secs: f32,
     /// Fade duration for continuous params in this category (seconds).
     /// Ignored for `TimingCategory::Mute` (always instant after pre-wait).
     /// Default 0.0 (instant).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "timing_secs")]
     pub fade_time_secs: f32,
+}
+
+impl CategoryTiming {
+    /// Clamp a seconds value to `0.0..=MAX_TIMING_SECS`. NaN reads as zero.
+    pub fn clamp_secs(secs: f32) -> f32 {
+        if secs.is_nan() {
+            0.0
+        } else {
+            secs.clamp(0.0, MAX_TIMING_SECS)
+        }
+    }
+
+    /// The pre-wait as a `Duration`, zero if the stored value is unusable.
+    pub fn pre_wait(&self) -> Duration {
+        secs_to_duration(self.pre_wait_secs)
+    }
+
+    /// The fade time as a `Duration`, zero if the stored value is unusable.
+    pub fn fade_time(&self) -> Duration {
+        secs_to_duration(self.fade_time_secs)
+    }
+}
+
+/// Seconds to `Duration`. `Duration::from_secs_f32` panics on a negative,
+/// NaN or out-of-range value, which mid-recall used to leave dirty
+/// suppression stuck on (audit H3). Here any of those reads as zero.
+pub fn secs_to_duration(secs: f32) -> Duration {
+    Duration::try_from_secs_f32(secs).unwrap_or(Duration::ZERO)
+}
+
+/// Load a timing field: `null` (a NaN, as serde_json writes it) reads as zero
+/// and anything else is clamped by [`CategoryTiming::clamp_secs`].
+fn timing_secs<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    Ok(Option::<f32>::deserialize(d)?.map_or(0.0, CategoryTiming::clamp_secs))
 }
 
 /// Which parameters are in scope for a specific channel.
@@ -646,6 +688,36 @@ impl Cue {
 mod tests {
     use super::*;
     use crate::model::parameter::ParameterPath;
+
+    #[test]
+    fn unusable_timings_load_clamped() {
+        // `null` is how serde_json writes a NaN; a plain f32 field refused it
+        // and the whole show failed to load (audit H3). `1e39` reads as an
+        // infinite f32.
+        let t: CategoryTiming =
+            serde_json::from_str(r#"{"pre_wait_secs": null, "fade_time_secs": 1e39}"#).unwrap();
+        assert_eq!(t.pre_wait_secs, 0.0);
+        assert_eq!(t.fade_time_secs, MAX_TIMING_SECS);
+        let t: CategoryTiming =
+            serde_json::from_str(r#"{"pre_wait_secs": -2.5, "fade_time_secs": 1.25}"#).unwrap();
+        assert_eq!(
+            t,
+            CategoryTiming {
+                pre_wait_secs: 0.0,
+                fade_time_secs: 1.25
+            }
+        );
+        let t: CategoryTiming = serde_json::from_str("{}").unwrap();
+        assert_eq!(t, CategoryTiming::default());
+    }
+
+    #[test]
+    fn unusable_seconds_read_as_a_zero_duration() {
+        for secs in [f32::NAN, f32::INFINITY, -1.0, 1e30] {
+            assert_eq!(secs_to_duration(secs), Duration::ZERO, "{secs}");
+        }
+        assert_eq!(secs_to_duration(1.5), Duration::from_millis(1500));
+    }
 
     #[test]
     fn resolve_recall_uses_working_overlay() {

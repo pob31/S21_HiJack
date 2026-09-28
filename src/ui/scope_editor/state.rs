@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::model::channel::ChannelId;
 use crate::model::config::ConsoleConfig;
-use crate::model::parameter::{ParameterPath, ParameterSection, TimingCategory};
+use crate::model::parameter::{ParameterPath, ParameterSection, TimingCategory, parse_finite_f32};
 use crate::model::recall_scope::ConsoleRecallConfig;
 use crate::model::snapshot::{CategoryTiming, ChannelScope, ScopeTemplate};
 use crate::ui::recall_scope_popup::RecallScopePopupState;
@@ -518,10 +518,10 @@ impl ScopeEditorState {
             let t = timings.entry((ch.clone(), *cat)).or_default();
             match mode {
                 ScopeEditMode::PreWait => {
-                    t.pre_wait_secs = (t.pre_wait_secs + delta).clamp(0.0, 30.0)
+                    t.pre_wait_secs = CategoryTiming::clamp_secs(t.pre_wait_secs + delta)
                 }
                 ScopeEditMode::Fade => {
-                    t.fade_time_secs = (t.fade_time_secs + delta).clamp(0.0, 30.0)
+                    t.fade_time_secs = CategoryTiming::clamp_secs(t.fade_time_secs + delta)
                 }
                 ScopeEditMode::Scope => {}
             }
@@ -531,7 +531,7 @@ impl ScopeEditorState {
     /// Parse a seconds value from the numeric box: `.`-decimal, clamped to the
     /// cell range `0.0..=30.0`. `None` on unparseable input.
     pub fn parse_timing_secs(s: &str) -> Option<f32> {
-        s.trim().parse::<f32>().ok().map(|v| v.clamp(0.0, 30.0))
+        parse_finite_f32(s).map(CategoryTiming::clamp_secs)
     }
 
     // ─── Row toggles (one path across many channels) ────────────────
@@ -1430,6 +1430,10 @@ mod tests {
         assert_eq!(ScopeEditorState::parse_timing_secs("-4"), Some(0.0));
         assert_eq!(ScopeEditorState::parse_timing_secs("abc"), None);
         assert_eq!(ScopeEditorState::parse_timing_secs(""), None);
+        // Rust's float parser accepts these; `clamp` used to pass NaN through.
+        for bad in ["nan", "NaN", "inf", "-inf", "infinity", "1e39"] {
+            assert_eq!(ScopeEditorState::parse_timing_secs(bad), None, "{bad}");
+        }
     }
 
     #[test]

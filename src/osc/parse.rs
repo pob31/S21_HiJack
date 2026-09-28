@@ -107,7 +107,7 @@ pub fn parse_gp_osc_with_config(
 fn extract_u16(arg: &OscType) -> Option<u16> {
     match arg {
         OscType::Int(i) => u16::try_from(*i).ok(),
-        OscType::Float(f) => u16::try_from(*f as i32).ok(),
+        OscType::Float(f) if f.is_finite() => u16::try_from(*f as i32).ok(),
         _ => None,
     }
 }
@@ -116,7 +116,7 @@ fn extract_i32(arg: &OscType) -> Option<i32> {
     match arg {
         OscType::Int(i) => Some(*i),
         OscType::Long(l) => Some(*l as i32),
-        OscType::Float(f) => Some(*f as i32),
+        OscType::Float(f) if f.is_finite() => Some(*f as i32),
         _ => None,
     }
 }
@@ -178,21 +178,25 @@ fn extract_value(parameter: &ParameterPath, args: &[OscType]) -> Option<Paramete
     }
 }
 
+/// NaN and the infinities are dropped here, at the edge, so they never reach
+/// the mirror (audit H3). A double is checked after narrowing: `1e39` is
+/// finite as an f64 but infinite as an f32.
 fn extract_float(arg: &OscType) -> Option<ParameterValue> {
-    match arg {
-        OscType::Float(f) => Some(ParameterValue::Float(*f)),
-        OscType::Double(d) => Some(ParameterValue::Float(*d as f32)),
-        OscType::Int(i) => Some(ParameterValue::Float(*i as f32)),
-        OscType::Long(l) => Some(ParameterValue::Float(*l as f32)),
-        _ => None,
-    }
+    let f = match arg {
+        OscType::Float(f) => *f,
+        OscType::Double(d) => *d as f32,
+        OscType::Int(i) => *i as f32,
+        OscType::Long(l) => *l as f32,
+        _ => return None,
+    };
+    f.is_finite().then_some(ParameterValue::Float(f))
 }
 
 fn extract_int(arg: &OscType) -> Option<ParameterValue> {
     match arg {
         OscType::Int(i) => Some(ParameterValue::Int(*i)),
         OscType::Long(l) => Some(ParameterValue::Int(*l as i32)),
-        OscType::Float(f) => Some(ParameterValue::Int(*f as i32)),
+        OscType::Float(f) if f.is_finite() => Some(ParameterValue::Int(*f as i32)),
         _ => None,
     }
 }
@@ -201,7 +205,7 @@ fn extract_bool(arg: &OscType) -> Option<ParameterValue> {
     match arg {
         OscType::Bool(b) => Some(ParameterValue::Bool(*b)),
         OscType::Int(i) => Some(ParameterValue::Bool(*i != 0)),
-        OscType::Float(f) => Some(ParameterValue::Bool(*f != 0.0)),
+        OscType::Float(f) if f.is_finite() => Some(ParameterValue::Bool(*f != 0.0)),
         _ => None,
     }
 }
@@ -221,6 +225,26 @@ mod tests {
                 assert_eq!(val, ParameterValue::Float(-10.0));
             }
             _ => panic!("Expected ParameterUpdate"),
+        }
+    }
+
+    #[test]
+    fn non_finite_values_are_dropped() {
+        // `1e39` is finite as an f64 and infinite once narrowed to f32.
+        for arg in [
+            OscType::Float(f32::NAN),
+            OscType::Float(f32::INFINITY),
+            OscType::Float(f32::NEG_INFINITY),
+            OscType::Double(1e39),
+            OscType::Double(f64::NAN),
+        ] {
+            for path in ["/channel/1/fader", "/channel/1/mute", "/channel/1/polarity"] {
+                let result = parse_gp_osc(path, std::slice::from_ref(&arg));
+                assert!(
+                    matches!(result, ParsedOscMessage::Unknown(_)),
+                    "{path} {arg:?} parsed as {result:?}"
+                );
+            }
         }
     }
 

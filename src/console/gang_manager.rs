@@ -48,6 +48,22 @@ impl GangManager {
         sorted
     }
 
+    /// A copy holding only the enabled gangs that contain `channel`, which is
+    /// everything gang propagation needs for a change on that channel. The
+    /// inbound path propagates from this copy so it doesn't hold the
+    /// manager's lock while it takes state locks and sends. Holding it formed
+    /// a deadlock cycle with autosave and a queued gang edit (audit H4).
+    pub fn snapshot_for_channel(&self, channel: &ChannelId) -> GangManager {
+        GangManager {
+            groups: self
+                .groups
+                .iter()
+                .filter(|(_, g)| g.enabled && g.contains_channel(channel))
+                .map(|(id, g)| (*id, g.clone()))
+                .collect(),
+        }
+    }
+
     /// Find all enabled gangs that contain this channel AND link this section.
     /// This is the hot-path lookup called on every parameter update.
     pub fn find_gangs_for_channel_and_section(

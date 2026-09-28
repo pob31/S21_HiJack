@@ -288,7 +288,7 @@ pub struct HiJackApp {
     /// Live console write path for the sidecar service — `Some` after each
     /// (re)connect, `None` on disconnect. Fed from `pickup_pending_engines`.
     pub sidecar_senders_tx:
-        tokio::sync::watch::Sender<Option<crate::console::console_tx::ConsoleTx>>,
+        tokio::sync::watch::Sender<Option<crate::console::sidecar_service::SidecarLink>>,
     /// Learn capture shared between the Sidecar tab and the service.
     pub sidecar_learn: Arc<std::sync::Mutex<crate::console::sidecar_learn::LearnShared>>,
     /// Sidecar tab UI state.
@@ -351,6 +351,14 @@ pub struct HiJackApp {
     /// the confirmation modal. Runtime-only.
     pub close_confirmed: bool,
 
+    /// Edit fingerprint of the show as last saved, loaded or created (see
+    /// `ShowFile::edit_fingerprint`); the show has unsaved changes when the
+    /// current one differs. `None` until the first frame takes it.
+    /// Runtime-only.
+    saved_fingerprint: Option<u64>,
+    /// The "unsaved changes" modal, while it is up. Runtime-only.
+    unsaved_prompt: Option<UnsavedPrompt>,
+
     /// In-flight "Apply Scope to Snapshot" request from the scope editor, if
     /// any. Driven each frame by `process_scope_apply`. Runtime-only.
     scope_apply_pending: Option<PendingScopeApply>,
@@ -367,6 +375,8 @@ pub struct HiJackApp {
     pub generation_changed_at: std::time::Instant,
     /// True while an autosave write task is in flight (prevents overlap).
     pub autosave_in_flight: Arc<AtomicBool>,
+    /// The latest autosave task, so quitting can wait for it.
+    autosave_task: Option<tokio::task::JoinHandle<()>>,
     /// Active corruption-recovery modal, if any.
     pub recovery_dialog: Option<RecoveryDialog>,
 
@@ -569,6 +579,8 @@ impl HiJackApp {
             show_cue_list_popup: false,
             confirm_close: false,
             close_confirmed: false,
+            saved_fingerprint: None,
+            unsaved_prompt: None,
             scope_apply_pending: None,
 
             last_autosave_at: std::time::Instant::now(),
@@ -576,6 +588,7 @@ impl HiJackApp {
             last_seen_generation: 0,
             generation_changed_at: std::time::Instant::now(),
             autosave_in_flight: Arc::new(AtomicBool::new(false)),
+            autosave_task: None,
             recovery_dialog: None,
             monitors: crate::platform::enumerate(),
             last_monitor_px: None,
@@ -961,7 +974,12 @@ impl HiJackApp {
             // task built it, so it already shares this connection's sent-value
             // log (sidecar writes are screened from gang/pan propagation when
             // the console echoes them) and its console profile.
-            let _ = self.sidecar_senders_tx.send(Some(p.console_tx));
+            let _ =
+                self.sidecar_senders_tx
+                    .send(Some(crate::console::sidecar_service::SidecarLink {
+                        tx: p.console_tx,
+                        daemon: p.daemon,
+                    }));
         }
     }
 
@@ -1259,6 +1277,8 @@ impl HiJackApp {
                         .sidecar_svc_tx
                         .send(crate::console::sidecar_service::SvcCmd::SyncSurface);
                     self.snapshots.scope_editor.console_recall = recall;
+                    // The loaded show is the new "no unsaved changes" baseline.
+                    self.take_saved_baseline();
                     if let Some(c) = &conn {
                         self.auto_update_on_recall
                             .store(c.auto_update_on_recall, Ordering::Relaxed);
@@ -1360,8 +1380,12 @@ impl HiJackApp {
                         }
                     }
                 }
-                UiEvent::ShowFileSaved(path) => {
+                UiEvent::ShowFileSaved { path, fingerprint } => {
                     self.setup.status_message = Some(format!("Saved: {path}").into());
+                    self.saved_fingerprint = Some(fingerprint);
+                }
+                UiEvent::NewShowCreated => {
+                    self.take_saved_baseline();
                 }
                 UiEvent::ShowFileError(msg) => {
                     self.setup.status_message = Some(StatusMessage::with_help(
@@ -1717,23 +1741,28 @@ impl HiJackApp {
                     "Stream Deck: macro engine not initialised — connect to console first".into(),
                 ));
             }
-            // Refresh the LCD with the new next-to-fire label + color.
-            let (label, bg) = {
-                let cfg_r = cfg.read().await;
-                let mgr = macro_mgr.read().await;
-                let next = cfg_r.buttons.get(button_idx).and_then(|b| b.next_step());
-                let label = next
-                    .map(|s| {
-                        mgr.get_macro(&s.macro_id)
-                            .map(|m| m.name.clone())
-                            .unwrap_or_else(|| "(deleted)".into())
-                    })
-                    .unwrap_or_default();
-                let bg = next
-                    .map(|s| s.color)
-                    .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
-                (label, bg)
+            // Refresh the LCD with the new next-to-fire label + color. The
+            // config lock is released before the macro manager is taken
+            // (never hold both; audit H4).
+            let next = cfg
+                .read()
+                .await
+                .buttons
+                .get(button_idx)
+                .and_then(|b| b.next_step())
+                .map(|s| (s.macro_id, s.color));
+            let label = match next {
+                Some((macro_id, _)) => macro_mgr
+                    .read()
+                    .await
+                    .get_macro(&macro_id)
+                    .map(|m| m.name.clone())
+                    .unwrap_or_else(|| "(deleted)".into()),
+                None => String::new(),
             };
+            let bg = next
+                .map(|(_, color)| color)
+                .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
             sd_engine.refresh_button(button_idx as u8, label, bg);
         });
     }
@@ -1752,23 +1781,35 @@ impl HiJackApp {
         let cfg = self.stream_deck_config.clone();
         let macro_mgr = self.macro_manager.clone();
         self.runtime.block_on(async move {
-            let mut cfg_w = cfg.write().await;
-            if cfg_w.buttons.len() < count {
-                cfg_w.buttons.resize_with(count, Default::default);
-            }
+            // Copy what's needed from the config and release it before
+            // taking the macro manager. Holding the config's write lock while
+            // waiting on the macro manager formed a cycle with
+            // `build_show_file` and the inbound path (audit H4).
+            let steps: Vec<_> = {
+                let mut cfg_w = cfg.write().await;
+                if cfg_w.buttons.len() < count {
+                    cfg_w.buttons.resize_with(count, Default::default);
+                }
+                (0..count)
+                    .map(|i| {
+                        let next = cfg_w.buttons.get(i).and_then(|b| b.next_step());
+                        next.map(|s| (s.macro_id, s.color))
+                    })
+                    .collect()
+            };
             let mgr = macro_mgr.read().await;
-            (0..count)
-                .map(|i| {
-                    let next = cfg_w.buttons.get(i).and_then(|b| b.next_step());
+            steps
+                .into_iter()
+                .map(|next| {
                     let label = next
-                        .map(|s| {
-                            mgr.get_macro(&s.macro_id)
+                        .map(|(macro_id, _)| {
+                            mgr.get_macro(&macro_id)
                                 .map(|m| m.name.clone())
                                 .unwrap_or_else(|| "(deleted)".into())
                         })
                         .unwrap_or_default();
                     let bg = next
-                        .map(|s| s.color)
+                        .map(|(_, color)| color)
                         .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
                     (label, bg)
                 })
@@ -1783,11 +1824,23 @@ impl HiJackApp {
     fn maybe_autosave(&mut self) {
         use crate::persistence::backup;
 
-        // Skip unnamed shows and while a recovery dialog is open (don't
-        // autosave over an unrecovered corrupt session).
-        if self.setup.show_file_path.is_empty() || self.recovery_dialog.is_some() {
+        // Skip while a recovery dialog is open (don't autosave over an
+        // unrecovered corrupt session).
+        if self.recovery_dialog.is_some() {
             return;
         }
+        // An untitled show autosaves into a scratch folder, so hours of
+        // offline cue building survive a crash (audit H8). It used to be
+        // skipped entirely.
+        let untitled = self.setup.show_file_path.is_empty();
+        let path = if untitled {
+            match backup::untitled_autosave_path() {
+                Some(p) => p,
+                None => return,
+            }
+        } else {
+            std::path::PathBuf::from(&self.setup.show_file_path)
+        };
         let now = std::time::Instant::now();
 
         // Sample generation; a held lock means a write is in flight → not quiet.
@@ -1830,7 +1883,7 @@ impl HiJackApp {
             self.snapshot_sync_direction.get(),
         );
         let console_recall = self.snapshots.scope_editor.console_recall.clone();
-        let path = std::path::PathBuf::from(&self.setup.show_file_path);
+        let baseline = self.saved_fingerprint;
 
         let st = self.state.clone();
         let cue_mgr = self.cue_manager.clone();
@@ -1849,7 +1902,7 @@ impl HiJackApp {
         self.autosave_in_flight.store(true, Ordering::Relaxed);
         self.last_autosave_at = now;
 
-        self.runtime.spawn(async move {
+        self.autosave_task = Some(self.runtime.spawn(async move {
             // Re-check suppression now that we're scheduled — a recall may
             // have started in the gap. If so, abort without writing.
             if dirty.read().await.is_suppressed() {
@@ -1875,6 +1928,16 @@ impl HiJackApp {
                 console_recall,
             )
             .await;
+
+            // An untitled show nobody has touched has nothing to protect.
+            if untitled && baseline == Some(show.edit_fingerprint()) {
+                let _ = tx.send(UiEvent::AutosaveCompleted {
+                    fingerprint: prev_fp,
+                    wrote: false,
+                });
+                in_flight.store(false, Ordering::Relaxed);
+                return;
+            }
 
             let json = match serde_json::to_vec_pretty(&show) {
                 Ok(j) => j,
@@ -1909,7 +1972,7 @@ impl HiJackApp {
 
             let _ = tx.send(UiEvent::AutosaveCompleted { fingerprint, wrote });
             in_flight.store(false, Ordering::Relaxed);
-        });
+        }));
     }
 
     /// Render the corruption-recovery modal, if open, and act on the
@@ -2050,14 +2113,6 @@ impl HiJackApp {
         }
     }
 
-    /// Confirmation modal for closing the app while the console link is live.
-    ///
-    /// The close itself is intercepted in `update` (vetoed with
-    /// `ViewportCommand::CancelClose`, `confirm_close` raised) only while
-    /// `connected`, so a disconnected app still quits instantly. "Quit"
-    /// re-issues the close — now allowed through by `close_confirmed` — and
-    /// "Stay connected" simply dismisses the modal. The modal's backdrop blocks
-    /// the rest of the UI until the operator chooses.
     /// Drive the deferred "Apply Scope to Snapshot" state machine one frame.
     ///
     /// `Evaluate` runs the widen check on uncontended `try_read`s (retrying next
@@ -2225,6 +2280,15 @@ impl HiJackApp {
         });
     }
 
+    /// Confirmation modal for closing the app while the console link is live
+    /// and nothing is unsaved (unsaved changes get `draw_unsaved_prompt`,
+    /// which also mentions the link).
+    ///
+    /// The close itself is intercepted in `update` (vetoed with
+    /// `ViewportCommand::CancelClose`, `confirm_close` raised). "Quit"
+    /// re-issues the close — now allowed through by `close_confirmed` — and
+    /// "Stay connected" simply dismisses the modal. The modal's backdrop blocks
+    /// the rest of the UI until the operator chooses.
     fn draw_close_confirm(&mut self, ctx: &egui::Context) {
         if !self.confirm_close {
             return;
@@ -2290,7 +2354,299 @@ impl HiJackApp {
     }
 }
 
+impl HiJackApp {
+    /// Edit fingerprint of the show as it is now (`ShowFile::edit_fingerprint`).
+    /// Blocks the UI thread on the manager locks, so it only runs on an
+    /// explicit action (close, Open, New) or right after a load, save or New.
+    /// `None` if the locks stay busy for 2 s.
+    fn current_edit_fingerprint(&self) -> Option<u64> {
+        let build = super::setup_tab::build_show_file(
+            &self.state,
+            &self.cue_manager,
+            &self.macro_manager,
+            &self.monitor_manager,
+            &self.palette_manager,
+            &self.gang_manager,
+            &self.pan_link_bindings,
+            &self.stream_deck_config,
+            &self.sidecar_config,
+            // Connection settings aren't part of the fingerprint.
+            crate::persistence::show_file::ConnectionSettings::default(),
+            self.snapshots.scope_editor.console_recall.clone(),
+        );
+        let show = self
+            .runtime
+            .block_on(tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                build,
+            ))
+            .ok()?;
+        Some(show.edit_fingerprint())
+    }
+
+    /// Record the show as it is now as the "no unsaved changes" baseline. If
+    /// it can't be read in time, records a value no real show matches, so the
+    /// next close, Open or New asks rather than assuming it's saved.
+    fn take_saved_baseline(&mut self) {
+        self.saved_fingerprint = Some(self.current_edit_fingerprint().unwrap_or(0));
+    }
+
+    /// True if the show differs from what was last saved, loaded or created.
+    /// When the current state can't be read in time, it says yes: asking is
+    /// safer than losing work.
+    fn has_unsaved_changes(&self) -> bool {
+        self.saved_fingerprint
+            .is_some_and(|saved| self.current_edit_fingerprint() != Some(saved))
+    }
+
+    /// Carry out an Open or New from the Setup tab (after the unsaved-changes
+    /// check).
+    fn carry_out_show_action(&mut self, action: super::setup_tab::ShowAction) {
+        match action {
+            super::setup_tab::ShowAction::Open(path) => {
+                self.setup.show_file_path = path.display().to_string();
+                super::setup_tab::load_show_file(
+                    &mut self.setup,
+                    &self.state,
+                    &self.cue_manager,
+                    &self.macro_manager,
+                    &self.monitor_manager,
+                    &self.palette_manager,
+                    &self.gang_manager,
+                    &self.pan_link_bindings,
+                    &self.stream_deck_config,
+                    &self.sidecar_config,
+                    &self.connected,
+                    &self.runtime,
+                    &self.ui_tx,
+                );
+            }
+            super::setup_tab::ShowAction::New => super::setup_tab::new_show(
+                &mut self.setup,
+                &self.cue_manager,
+                &self.macro_manager,
+                &self.palette_manager,
+                &self.runtime,
+                &self.ui_tx,
+            ),
+        }
+    }
+
+    /// Save the show now, on the UI thread, for the unsaved-changes prompt.
+    /// Asks for a path first if the show has none. `Ok(false)` means the
+    /// operator cancelled the file dialog.
+    fn save_blocking(&mut self) -> Result<bool, String> {
+        if self.setup.show_file_path.is_empty() {
+            let dlg = super::setup_tab::seed_last_open_dir(
+                rfd::FileDialog::new()
+                    .add_filter("Show files", &["s21show", "json"])
+                    .set_file_name("show.s21show"),
+                &self.setup,
+            );
+            let Some(path) = dlg.save_file() else {
+                return Ok(false);
+            };
+            super::setup_tab::remember_last_open_dir(&mut self.setup, &path);
+            self.setup.show_file_path = path.display().to_string();
+            super::setup_tab::ensure_show_file_extension(&mut self.setup.show_file_path);
+        }
+        let conn = super::setup_tab::connection_settings_from_setup(
+            &self.setup,
+            self.auto_update_on_recall.load(Ordering::Relaxed),
+            self.snapshot_sync_direction.get(),
+        );
+        let show = self.runtime.block_on(super::setup_tab::build_show_file(
+            &self.state,
+            &self.cue_manager,
+            &self.macro_manager,
+            &self.monitor_manager,
+            &self.palette_manager,
+            &self.gang_manager,
+            &self.pan_link_bindings,
+            &self.stream_deck_config,
+            &self.sidecar_config,
+            conn,
+            self.snapshots.scope_editor.console_recall.clone(),
+        ));
+        let fingerprint = show.edit_fingerprint();
+        let path = std::path::PathBuf::from(&self.setup.show_file_path);
+        match self.runtime.block_on(show.save(&path)) {
+            Ok(()) => {
+                tracing::info!("Show file saved: {}", path.display());
+                self.saved_fingerprint = Some(fingerprint);
+                self.setup.status_message = Some(format!("Saved: {}", path.display()).into());
+                Ok(true)
+            }
+            Err(e) => {
+                tracing::error!("Save failed for {}: {e}", path.display());
+                Err(format!("Save failed: {e}"))
+            }
+        }
+    }
+
+    /// "Unsaved changes" modal, raised before Quit, Open or New would drop
+    /// work that hasn't been saved (audit H8). Save (then continue), continue
+    /// without saving, or cancel.
+    fn draw_unsaved_prompt(&mut self, ctx: &egui::Context) {
+        let Some(prompt) = &self.unsaved_prompt else {
+            return;
+        };
+        let after = prompt.after.clone();
+        let error = prompt.error.clone();
+
+        enum Choice {
+            Waiting,
+            Save,
+            Discard,
+            Cancel,
+        }
+        let mut choice = Choice::Waiting;
+        let untitled = self.setup.show_file_path.is_empty();
+        let connected = self.connected.load(Ordering::Relaxed);
+        let (title, discard_label) = match &after {
+            AfterUnsavedPrompt::Quit => ("Quit with unsaved changes?", "Quit without saving"),
+            AfterUnsavedPrompt::Show(super::setup_tab::ShowAction::Open(_)) => {
+                ("Open another show?", "Open without saving")
+            }
+            AfterUnsavedPrompt::Show(super::setup_tab::ShowAction::New) => {
+                ("Start a new show?", "Discard changes")
+            }
+        };
+
+        egui::Modal::new(egui::Id::new("unsaved_changes_modal")).show(ctx, |ui| {
+            ui.set_min_width(440.0);
+            ui.label(
+                egui::RichText::new(title)
+                    .strong()
+                    .size(super::theme::FONT_SIZE_SECTION)
+                    .color(super::theme::ACCENT_AMBER),
+            );
+            ui.add_space(6.0);
+            ui.label(if untitled {
+                "This show has never been saved. Continuing without saving loses it."
+            } else {
+                "The show has changes that haven't been saved. Continuing without \
+                 saving loses them."
+            });
+            if matches!(after, AfterUnsavedPrompt::Quit) && connected {
+                ui.label("Quitting also drops the console link.");
+            }
+            if untitled
+                && let Some(dir) = crate::persistence::backup::untitled_autosave_path()
+                    .and_then(|p| crate::persistence::backup::backup_dir(&p))
+            {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Untitled shows are autosaved every {} s to {}.",
+                        crate::persistence::backup::AUTOSAVE_INTERVAL.as_secs(),
+                        dir.display()
+                    ))
+                    .weak(),
+                );
+            }
+            if let Some(err) = &error {
+                ui.add_space(6.0);
+                ui.colored_label(super::theme::ACCENT_RED, err);
+            }
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                let save_label = if untitled { "Save As…" } else { "Save" };
+                if ui
+                    .add(super::theme::action_button(
+                        save_label,
+                        super::theme::ACCENT_GREEN,
+                        egui::Vec2::new(120.0, 28.0),
+                    ))
+                    .clicked()
+                {
+                    choice = Choice::Save;
+                }
+                if ui
+                    .add(super::theme::action_button(
+                        discard_label,
+                        super::theme::ACCENT_RED,
+                        egui::Vec2::new(180.0, 28.0),
+                    ))
+                    .clicked()
+                {
+                    choice = Choice::Discard;
+                }
+                if ui
+                    .add(super::theme::action_button(
+                        "Cancel",
+                        super::theme::btn_neutral(),
+                        egui::Vec2::new(100.0, 28.0),
+                    ))
+                    .clicked()
+                {
+                    choice = Choice::Cancel;
+                }
+            });
+        });
+
+        match choice {
+            Choice::Waiting => {}
+            Choice::Cancel => self.unsaved_prompt = None,
+            Choice::Discard => {
+                self.unsaved_prompt = None;
+                self.continue_after_prompt(after, ctx);
+            }
+            Choice::Save => match self.save_blocking() {
+                Ok(true) => {
+                    self.unsaved_prompt = None;
+                    self.continue_after_prompt(after, ctx);
+                }
+                // File dialog cancelled: leave the prompt up.
+                Ok(false) => {}
+                Err(e) => {
+                    if let Some(prompt) = &mut self.unsaved_prompt {
+                        prompt.error = Some(e);
+                    }
+                }
+            },
+        }
+    }
+
+    fn continue_after_prompt(&mut self, after: AfterUnsavedPrompt, ctx: &egui::Context) {
+        match after {
+            AfterUnsavedPrompt::Quit => {
+                self.close_confirmed = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            AfterUnsavedPrompt::Show(action) => self.carry_out_show_action(action),
+        }
+    }
+}
+
 impl eframe::App for HiJackApp {
+    /// Runs after the window closes, before `main` drops the runtime. A save
+    /// or autosave still running then would be cancelled part-way (audit
+    /// H8), so give them a bounded time to land.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let pending: Vec<_> = std::mem::take(&mut self.setup.save_tasks)
+            .into_iter()
+            .chain(self.autosave_task.take())
+            .filter(|task| !task.is_finished())
+            .collect();
+        if pending.is_empty() {
+            return;
+        }
+        tracing::info!(
+            count = pending.len(),
+            "Waiting for saves to finish before exit"
+        );
+        self.runtime.block_on(async move {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+            for task in pending {
+                if tokio::time::timeout_at(deadline, task).await.is_err() {
+                    tracing::warn!("A save was still running at exit and may not have completed");
+                    break;
+                }
+            }
+        });
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Install embedded fonts (Noto Sans Regular primary + NotoSans symbol
         // fallbacks so Unicode arrows / symbols don't tofu) before the style
@@ -2340,14 +2696,24 @@ impl eframe::App for HiJackApp {
         // Drain async events
         self.drain_events();
 
-        // Intercept a window-close request while the console link is live so an
-        // accidental close doesn't silently drop a running show. The first close
-        // is vetoed and a confirmation modal is raised (see `draw_close_confirm`);
-        // once the operator confirms (`close_confirmed`) — or when we're not
-        // connected — the close proceeds normally.
-        if ctx.input(|i| i.viewport().close_requested()) {
-            let connected = self.connected.load(Ordering::Relaxed);
-            if connected && !self.close_confirmed {
+        // The first frame's show is the "no unsaved changes" baseline until a
+        // load, save or New replaces it.
+        if self.saved_fingerprint.is_none() {
+            self.take_saved_baseline();
+        }
+
+        // Intercept a window-close request when it would lose something: unsaved
+        // changes (see `draw_unsaved_prompt`; audit H8), or a live console link
+        // (see `draw_close_confirm`). The close is vetoed and a modal raised;
+        // once the operator confirms (`close_confirmed`) — or when there's
+        // nothing to lose — the close proceeds normally.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.close_confirmed {
+            if self.unsaved_prompt.is_some() || self.confirm_close {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            } else if self.has_unsaved_changes() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.unsaved_prompt = Some(UnsavedPrompt::new(AfterUnsavedPrompt::Quit));
+            } else if self.connected.load(Ordering::Relaxed) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.confirm_close = true;
             }
@@ -3235,6 +3601,15 @@ impl eframe::App for HiJackApp {
             }
         }
 
+        // Open / New from the Setup tab: check for unsaved changes first.
+        if let Some(action) = self.setup.pending_show_action.take() {
+            if self.has_unsaved_changes() {
+                self.unsaved_prompt = Some(UnsavedPrompt::new(AfterUnsavedPrompt::Show(action)));
+            } else {
+                self.carry_out_show_action(action);
+            }
+        }
+
         // Resolve any in-flight scope apply (widen check + confirm modal).
         // Runs every frame — including after the editor window closes — so a
         // request made on the last open frame still completes.
@@ -3249,6 +3624,9 @@ impl eframe::App for HiJackApp {
         // Confirmation modal for quitting while connected to the console.
         self.draw_close_confirm(ctx);
 
+        // "Unsaved changes" modal before Quit / Open / New.
+        self.draw_unsaved_prompt(ctx);
+
         // Cue-list popup (opened from the top-bar "Cues" button).
         super::cue_list_popup::draw_cue_list_popup(
             ctx,
@@ -3260,6 +3638,26 @@ impl eframe::App for HiJackApp {
             &self.runtime,
             &self.ui_tx,
         );
+    }
+}
+
+/// What the "unsaved changes" modal is guarding.
+#[derive(Clone, Debug)]
+enum AfterUnsavedPrompt {
+    Quit,
+    Show(super::setup_tab::ShowAction),
+}
+
+/// The "unsaved changes" modal's state.
+struct UnsavedPrompt {
+    after: AfterUnsavedPrompt,
+    /// Why the last Save from the modal failed, shown in it.
+    error: Option<String>,
+}
+
+impl UnsavedPrompt {
+    fn new(after: AfterUnsavedPrompt) -> Self {
+        Self { after, error: None }
     }
 }
 
