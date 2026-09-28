@@ -244,6 +244,10 @@ pub struct RecordedStep {
     pub elapsed_ms: u32,
 }
 
+/// Most steps one learn-mode recording keeps; later changes are dropped. Far
+/// beyond any real macro, it only bounds a recording left running (audit M18).
+pub const MAX_RECORDED_STEPS: usize = 10_000;
+
 impl MacroRecording {
     pub fn new() -> Self {
         let now = std::time::Instant::now();
@@ -268,6 +272,10 @@ impl MacroRecording {
     /// late echoes too. A genuine A→B→A sequence still records every step,
     /// because the intervening B changes the address's last recorded value.
     pub fn record(&mut self, address: ParameterAddress, value: ParameterValue) {
+        // A bound on a recording left running (audit M18).
+        if self.steps.len() >= MAX_RECORDED_STEPS {
+            return;
+        }
         if let Some(last) = self.last_value_per_address.get(&address) {
             if values_equivalent(last, &value) {
                 return;
@@ -317,6 +325,22 @@ impl MacroRecording {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Audit M18: a recording left running stops growing.
+    #[test]
+    fn recording_is_bounded() {
+        use crate::model::channel::ChannelId;
+        use crate::model::parameter::ParameterPath;
+        let mut rec = MacroRecording::new();
+        let fader = ParameterAddress {
+            channel: ChannelId::Input(1),
+            parameter: ParameterPath::Fader,
+        };
+        for i in 0..MAX_RECORDED_STEPS + 50 {
+            rec.record(fader.clone(), ParameterValue::Float(i as f32));
+        }
+        assert_eq!(rec.step_count(), MAX_RECORDED_STEPS);
+    }
     use crate::model::channel::ChannelId;
     use crate::model::parameter::ParameterPath;
 

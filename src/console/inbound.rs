@@ -229,8 +229,10 @@ async fn apply_parameter_change(
     }
 
     // Feed into macro learn mode if recording. Checked under a read lock so
-    // the common case doesn't queue a write on every inbound message.
-    if daemon.macro_manager.read().await.is_recording() {
+    // the common case doesn't queue a write on every inbound message. Not the
+    // desk echoing our own writes, nor its snapshot-load flood: neither is
+    // the operator, and both used to be recorded (audit M18).
+    if !in_console_load && !is_own_echo && daemon.macro_manager.read().await.is_recording() {
         let mut mgr = daemon.macro_manager.write().await;
         if mgr.is_recording() {
             mgr.record_change(addr.clone(), value.clone());
@@ -457,6 +459,50 @@ mod tests {
             sent_log: sent_log.clone(),
         };
         (daemon, sent_log)
+    }
+
+    /// Audit M18: macro learn records the operator, not the desk echoing
+    /// our own writes or flooding a snapshot load.
+    #[tokio::test]
+    async fn learn_ignores_our_echoes_and_the_console_load_flood() {
+        let (daemon, sent_log) = gang_test_daemon().await;
+        daemon.macro_manager.write().await.start_recording();
+        let steps = || async { daemon.macro_manager.read().await.recording_step_count() };
+
+        // The desk echoing a value we just wrote.
+        sent_log.note_sent(&mute(5), &ParameterValue::Bool(true));
+        apply_inbound_parameter(
+            &daemon,
+            &mute(5),
+            &ParameterValue::Bool(true),
+            InboundSource::Pad,
+        )
+        .await;
+        assert_eq!(steps().await, 0);
+
+        // The desk loading a snapshot.
+        crate::console::snapshot_engine::arm_console_load(&daemon.console_load_suppression);
+        apply_inbound_parameter(
+            &daemon,
+            &mute(6),
+            &ParameterValue::Bool(true),
+            InboundSource::GpOsc,
+        )
+        .await;
+        assert_eq!(steps().await, 0);
+        daemon
+            .console_load_suppression
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+
+        // The operator.
+        apply_inbound_parameter(
+            &daemon,
+            &mute(7),
+            &ParameterValue::Bool(true),
+            InboundSource::GpOsc,
+        )
+        .await;
+        assert_eq!(steps().await, 1);
     }
 
     fn mute(n: u16) -> ParameterAddress {

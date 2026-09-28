@@ -200,7 +200,13 @@ async fn receive_loop(
                                 .map(|b| format!("{b:02x}"))
                                 .collect::<Vec<_>>()
                                 .join(" ");
-                            warn!(%src, size, %hex, "iPad: unrecognized packet format");
+                            static UNKNOWN: crate::logging::LogThrottle =
+                                crate::logging::LogThrottle::new(std::time::Duration::from_secs(
+                                    10,
+                                ));
+                            if let Some(held_back) = UNKNOWN.allow() {
+                                warn!(%src, size, %hex, held_back, "iPad: unrecognized packet format");
+                            }
                             true
                         }
                     }

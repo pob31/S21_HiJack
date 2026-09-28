@@ -95,7 +95,11 @@ async fn listen_loop(
                         if !cidr::ip_allowed(src.ip(), &allowlist) {
                             blocked = blocked.saturating_add(1);
                             if blocked.is_power_of_two() {
-                                warn!(%src, blocked, "Trigger listener: dropped packet (source not in CIDR allowlist)");
+                                static BLOCKED: crate::logging::LogThrottle =
+                                    crate::logging::LogThrottle::new(std::time::Duration::from_secs(10));
+                                if let Some(held_back) = BLOCKED.allow() {
+                                    warn!(%src, blocked, held_back, "Trigger listener: dropped packet (source not in CIDR allowlist)");
+                                }
                             }
                             continue;
                         }
@@ -104,7 +108,11 @@ async fn listen_loop(
                                 process_trigger_packet(packet, src, &tx, &socket).await;
                             }
                             Err(e) => {
-                                warn!("Trigger listener: failed to decode OSC from {src}: {e}");
+                                static DECODE: crate::logging::LogThrottle =
+                                    crate::logging::LogThrottle::new(std::time::Duration::from_secs(10));
+                                if let Some(held_back) = DECODE.allow() {
+                                    warn!(held_back, "Trigger listener: failed to decode OSC from {src}: {e}");
+                                }
                             }
                         }
                     }

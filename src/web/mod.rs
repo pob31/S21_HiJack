@@ -20,7 +20,7 @@ use axum::{
     Router,
     extract::{
         ConnectInfo, State,
-        ws::{Message, WebSocket, WebSocketUpgrade},
+        ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code},
     },
     http::StatusCode,
     middleware::{self, Next},
@@ -57,6 +57,14 @@ pub struct WebContext {
     pub conn_counter: Arc<AtomicU64>,
 }
 
+/// Router state: the shared handles plus the server's shutdown token, which
+/// each WebSocket session watches (audit M17).
+#[derive(Clone)]
+struct ServerState {
+    ctx: WebContext,
+    shutdown: CancellationToken,
+}
+
 /// Start the web monitor server: static page + `/ws`, gated by a source-IP CIDR
 /// allowlist, graceful shutdown on `cancel`. Binds the TCP listener before
 /// returning so bind errors propagate to the caller.
@@ -86,7 +94,10 @@ pub async fn start_web_server(
             Arc::new(allowlist),
             cidr_guard,
         ))
-        .with_state(ctx);
+        .with_state(ServerState {
+            ctx,
+            shutdown: cancel.clone(),
+        });
 
     tokio::spawn(async move {
         // ConnectInfo requires the connect-info make-service so the peer
@@ -120,8 +131,8 @@ async fn cidr_guard(
     }
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(ctx): State<WebContext>) -> Response {
-    ws.on_upgrade(move |socket| handle_ws(socket, ctx))
+async fn ws_handler(ws: WebSocketUpgrade, State(server): State<ServerState>) -> Response {
+    ws.on_upgrade(move |socket| handle_ws(socket, server.ctx, server.shutdown))
 }
 
 /// Serialize a server message to a WebSocket text frame.
@@ -131,14 +142,23 @@ fn text(msg: &protocol::ServerMsg) -> Message {
 
 /// Drive one browser connection: authenticate, then bridge it to the monitor
 /// engine over the shared command channel + event broadcast.
-async fn handle_ws(socket: WebSocket, ctx: WebContext) {
+///
+/// Ends when the server shuts down (`shutdown`), with a Close frame so the
+/// browser reconnects to the next server. Upgraded sessions aren't covered by
+/// the server's graceful shutdown, and used to stay "online" after a
+/// Disconnect, sending into a channel nothing read (audit M17).
+async fn handle_ws(socket: WebSocket, ctx: WebContext, shutdown: CancellationToken) {
     let id = ctx.conn_counter.fetch_add(1, Ordering::Relaxed);
     let endpoint = ClientEndpoint::Ws(id);
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // 1. First frame must be a Hello.
     let (name, pin) = loop {
-        match ws_rx.next().await {
+        let frame = tokio::select! {
+            () = shutdown.cancelled() => return,
+            frame = ws_rx.next() => frame,
+        };
+        match frame {
             Some(Ok(Message::Text(t))) => match serde_json::from_str::<protocol::ClientMsg>(&t) {
                 Ok(protocol::ClientMsg::Hello { name, pin }) => break (name, pin),
                 _ => {
@@ -209,9 +229,22 @@ async fn handle_ws(socket: WebSocket, ctx: WebContext) {
     let perms_w = perms.clone();
     let commands_w = ctx.commands.clone();
     let name_w = perms.name.clone();
+    let shutdown_w = shutdown.clone();
     let mut write = tokio::spawn(async move {
         loop {
-            match events_rx.recv().await {
+            let event = tokio::select! {
+                () = shutdown_w.cancelled() => {
+                    let _ = ws_tx
+                        .send(Message::Close(Some(CloseFrame {
+                            code: close_code::AWAY,
+                            reason: "monitor server stopped".into(),
+                        })))
+                        .await;
+                    break;
+                }
+                event = events_rx.recv() => event,
+            };
+            match event {
                 Ok(ev) => {
                     if let Some(msg) = protocol::event_to_server_msg(&ev, endpoint, &perms_w)
                         && ws_tx.send(text(&msg)).await.is_err()
@@ -238,6 +271,8 @@ async fn handle_ws(socket: WebSocket, ctx: WebContext) {
     // 6. Read loop: socket → commands. Runs until the client goes away.
     loop {
         tokio::select! {
+            // The write task sends the Close frame; wait for it below.
+            () = shutdown.cancelled() => break,
             // If the write task ends (socket send failed), tear down.
             _ = &mut write => break,
             frame = ws_rx.next() => {
@@ -266,6 +301,9 @@ async fn handle_ws(socket: WebSocket, ctx: WebContext) {
         }
     }
 
+    if shutdown.is_cancelled() {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), &mut write).await;
+    }
     write.abort();
     info!(conn = id, name = %perms.name, "WS: monitor client disconnected");
 }
@@ -292,6 +330,60 @@ mod tests {
                 other => panic!("expected a text frame, got {other:?}"),
             }
         }
+    }
+
+    /// Audit M17: a logged-in browser is told when the server shuts down
+    /// (Disconnect), so it reconnects instead of talking into a dead server.
+    #[tokio::test]
+    async fn sessions_close_when_the_server_stops() {
+        let mut mgr = MonitorManager::new();
+        mgr.add_client(MonitorClient::new("Drummer".into(), vec![1], vec![]));
+        let (cmd_tx, _cmd_rx) = mpsc::channel::<MonitorCommand>(64);
+        let (events_tx, _) = broadcast::channel::<MonitorStateEvent>(64);
+        let ctx = WebContext {
+            state: Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default()))),
+            manager: Arc::new(RwLock::new(mgr)),
+            commands: cmd_tx,
+            events: events_tx,
+            offline_mode: Arc::new(AtomicBool::new(false)),
+            conn_counter: Arc::new(AtomicU64::new(0)),
+        };
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let shutdown = CancellationToken::new();
+        start_web_server(addr, shutdown.clone(), Vec::new(), ctx)
+            .await
+            .unwrap();
+
+        let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
+            .await
+            .unwrap();
+        ws.send(TMsg::Text(r#"{"type":"hello","name":"Drummer"}"#.into()))
+            .await
+            .unwrap();
+        assert_eq!(recv_json(&mut ws).await["type"].as_str(), Some("welcome"));
+
+        shutdown.cancel();
+        let closed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match ws.next().await {
+                    Some(Ok(TMsg::Close(frame))) => return frame.map(|f| u16::from(f.code)),
+                    Some(Ok(_)) => continue,
+                    _ => return None,
+                }
+            }
+        })
+        .await
+        .expect("the session should end when the server stops");
+        assert_eq!(
+            closed,
+            Some(1001),
+            "a Close frame saying the server went away"
+        );
     }
 
     /// End-to-end WebSocket gate: Hello → Welcome → State, a fader move flows

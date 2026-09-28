@@ -208,7 +208,11 @@ async fn listen_loop(
                             // Surface at exponentially-spaced thresholds so a
                             // chatty mis-configured peer doesn't flood logs.
                             if blocked.is_power_of_two() {
-                                warn!(%src, blocked, "Monitor server: dropped packet (source not in CIDR allowlist)");
+                                static BLOCKED: crate::logging::LogThrottle =
+                                    crate::logging::LogThrottle::new(std::time::Duration::from_secs(10));
+                                if let Some(held_back) = BLOCKED.allow() {
+                                    warn!(%src, blocked, held_back, "Monitor server: dropped packet (source not in CIDR allowlist)");
+                                }
                             }
                             continue;
                         }
@@ -217,7 +221,11 @@ async fn listen_loop(
                                 process_packet(packet, src, &tx).await;
                             }
                             Err(e) => {
-                                warn!("Monitor server: failed to decode OSC from {src}: {e}");
+                                static DECODE: crate::logging::LogThrottle =
+                                    crate::logging::LogThrottle::new(std::time::Duration::from_secs(10));
+                                if let Some(held_back) = DECODE.allow() {
+                                    warn!(held_back, "Monitor server: failed to decode OSC from {src}: {e}");
+                                }
                             }
                         }
                     }

@@ -398,6 +398,7 @@ impl MacroEngine {
                 let state = self.state.read().await;
                 let current = state.get(address)?;
                 apply_relative_offset(current, *offset)
+                    .map(|v| clamp_relative(&address.parameter, v))
             }
         }
     }
@@ -414,6 +415,23 @@ fn toggle_value(current: &ParameterValue) -> ParameterValue {
         ParameterValue::Int(i) => ParameterValue::Int(if *i == 0 { 1 } else { 0 }),
         ParameterValue::Float(f) => ParameterValue::Float(if *f == 0.0 { 1.0 } else { 0.0 }),
         ParameterValue::String(_) => current.clone(),
+    }
+}
+
+/// Keep a relative step's result within the parameter's range. Repeated steps
+/// used to take pan past ±1 and levels past the top of the fader, and send
+/// that to the desk (audit M18). Pan-family limits come from
+/// `ParameterPath::clamp_value`; fader-driven levels stay between off and
+/// +10 dB, the top of the fader.
+fn clamp_relative(
+    path: &crate::model::parameter::ParameterPath,
+    value: ParameterValue,
+) -> ParameterValue {
+    match path.clamp_value(value) {
+        ParameterValue::Float(f) if path.is_fader_level() => {
+            ParameterValue::Float(f.clamp(crate::model::parameter::FADER_INF_DB, 10.0))
+        }
+        v => v,
     }
 }
 
@@ -534,6 +552,43 @@ mod tests {
         assert_eq!(
             apply_relative_offset(&ParameterValue::Int(10), -3.0),
             Some(ParameterValue::Int(7))
+        );
+    }
+
+    /// Audit M18: relative steps stay within the parameter's range.
+    #[test]
+    fn relative_steps_are_clamped() {
+        use crate::model::parameter::{FADER_INF_DB, ParameterPath};
+        let step = |path: &ParameterPath, from: f32, by: f32| {
+            clamp_relative(
+                path,
+                apply_relative_offset(&ParameterValue::Float(from), by).unwrap(),
+            )
+        };
+        assert_eq!(
+            step(&ParameterPath::Pan, 0.8, 0.5),
+            ParameterValue::Float(1.0)
+        );
+        assert_eq!(
+            step(&ParameterPath::SendPan(1), -0.8, -0.5),
+            ParameterValue::Float(-1.0)
+        );
+        assert_eq!(
+            step(&ParameterPath::Fader, 8.0, 6.0),
+            ParameterValue::Float(10.0)
+        );
+        assert_eq!(
+            step(&ParameterPath::SendLevel(2), -148.0, -6.0),
+            ParameterValue::Float(FADER_INF_DB)
+        );
+        // Within range, or a parameter without a modelled range: unchanged.
+        assert_eq!(
+            step(&ParameterPath::Fader, -10.0, 3.0),
+            ParameterValue::Float(-7.0)
+        );
+        assert_eq!(
+            step(&ParameterPath::EqBandGain(1), 12.0, 10.0),
+            ParameterValue::Float(22.0)
         );
     }
 

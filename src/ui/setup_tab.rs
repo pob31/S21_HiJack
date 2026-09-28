@@ -2702,12 +2702,16 @@ pub(crate) fn start_connection(
         // Start trigger listener (with cancellation so port is freed on disconnect)
         let trigger_allowlist =
             crate::persistence::show_file::parse_cidr_allowlist(&trigger_allow_cidrs);
-        match TriggerListener::start_with_cancel(
-            trigger_addr,
-            token.clone(),
-            iface_name.as_deref(),
-            trigger_allowlist,
-        )
+        // A bad allowlist fails the start like a bind error would (audit M14).
+        match async {
+            TriggerListener::start_with_cancel(
+                trigger_addr,
+                token.clone(),
+                iface_name.as_deref(),
+                trigger_allowlist?,
+            )
+            .await
+        }
         .await
         {
             Ok(mut trigger_rx) => {
@@ -2766,13 +2770,16 @@ pub(crate) fn start_connection(
                 .expect("Invalid monitor address");
             let monitor_allowlist =
                 crate::persistence::show_file::parse_cidr_allowlist(&monitor_allow_cidrs);
-            match MonitorServer::start_with_cancel(
-                monitor_addr,
-                token.clone(),
-                iface_name.as_deref(),
-                monitor_allowlist,
-                monitor_cmd_tx.clone(),
-            )
+            match async {
+                MonitorServer::start_with_cancel(
+                    monitor_addr,
+                    token.clone(),
+                    iface_name.as_deref(),
+                    monitor_allowlist?,
+                    monitor_cmd_tx.clone(),
+                )
+                .await
+            }
             .await
             {
                 Ok(monitor_sender) => {
@@ -2806,8 +2813,10 @@ pub(crate) fn start_connection(
                 offline_mode: offline.clone(),
                 conn_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             };
-            match crate::web::start_web_server(web_addr, token.clone(), web_allowlist, web_ctx)
-                .await
+            match async {
+                crate::web::start_web_server(web_addr, token.clone(), web_allowlist?, web_ctx).await
+            }
+            .await
             {
                 Ok(()) => {
                     info!(port = web_port, "Web server started via UI");

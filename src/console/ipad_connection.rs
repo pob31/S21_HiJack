@@ -410,7 +410,11 @@ async fn proxy_direction(
                                 }
                             }
                             Err(e) => {
-                                warn!(direction, %dest, "Proxy send failed: {e}");
+                                static SEND: crate::logging::LogThrottle =
+                                    crate::logging::LogThrottle::new(Duration::from_secs(10));
+                                if let Some(held_back) = SEND.allow() {
+                                    warn!(direction, %dest, held_back, "Proxy send failed: {e}");
+                                }
                             }
                         }
 

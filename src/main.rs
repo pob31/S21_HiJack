@@ -564,13 +564,17 @@ async fn run_headless(args: Args) {
             .expect("Invalid monitor address");
         let monitor_allowlist =
             persistence::show_file::parse_cidr_allowlist(&args.monitor_allow_cidrs);
-        match MonitorServer::start_with_cancel(
-            monitor_addr,
-            cancel_token.clone(),
-            None,
-            monitor_allowlist,
-            monitor_cmd_tx.clone(),
-        )
+        // A bad allowlist fails the start like a bind error would (audit M14).
+        match async {
+            MonitorServer::start_with_cancel(
+                monitor_addr,
+                cancel_token.clone(),
+                None,
+                monitor_allowlist?,
+                monitor_cmd_tx.clone(),
+            )
+            .await
+        }
         .await
         {
             Ok(monitor_sender) => {
@@ -642,7 +646,11 @@ async fn run_headless(args: Args) {
             offline_mode: offline_mode.clone(),
             conn_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
-        match web::start_web_server(web_addr, cancel_token.clone(), web_allowlist, web_ctx).await {
+        match async {
+            web::start_web_server(web_addr, cancel_token.clone(), web_allowlist?, web_ctx).await
+        }
+        .await
+        {
             Ok(()) => info!(port = args.web_port, "Web server started"),
             Err(e) => error!("Failed to start web server: {e}"),
         }
@@ -654,12 +662,15 @@ async fn run_headless(args: Args) {
         .expect("Invalid trigger address");
 
     let trigger_allowlist = persistence::show_file::parse_cidr_allowlist(&args.trigger_allow_cidrs);
-    let mut trigger_rx = match TriggerListener::start_with_cancel(
-        trigger_addr,
-        cancel_token.clone(),
-        None,
-        trigger_allowlist,
-    )
+    let mut trigger_rx = match async {
+        TriggerListener::start_with_cancel(
+            trigger_addr,
+            cancel_token.clone(),
+            None,
+            trigger_allowlist?,
+        )
+        .await
+    }
     .await
     {
         Ok(rx) => rx,

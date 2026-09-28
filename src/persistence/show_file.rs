@@ -109,12 +109,23 @@ pub struct ConnectionSettings {
     pub ui_mode: UiMode,
 }
 
-/// Parse a list of CIDR strings into `Ipv4Cidr`s, logging and discarding
-/// any invalid entries. Used at startup to materialize the allowlist from
-/// `ConnectionSettings` strings into the typed form the listeners want.
-pub fn parse_cidr_allowlist(raw: &[String]) -> Vec<crate::model::cidr::Ipv4Cidr> {
+/// Parse a list of CIDR strings into `Ipv4Cidr`s, for a listener's source
+/// allowlist. Entries are trimmed; blank ones are ignored, and invalid ones
+/// are logged and skipped.
+///
+/// Fails closed (audit M14): an empty allowlist means "accept every host",
+/// so a list whose entries are all invalid (an IPv6 address, a typo) is an
+/// error rather than an empty list, and the caller doesn't start that
+/// listener. It used to come out empty and let everyone in.
+pub fn parse_cidr_allowlist(raw: &[String]) -> std::io::Result<Vec<crate::model::cidr::Ipv4Cidr>> {
     use std::str::FromStr;
-    raw.iter()
+    let entries: Vec<&str> = raw
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let valid: Vec<_> = entries
+        .iter()
         .filter_map(|s| match crate::model::cidr::Ipv4Cidr::from_str(s) {
             Ok(c) => Some(c),
             Err(e) => {
@@ -122,7 +133,18 @@ pub fn parse_cidr_allowlist(raw: &[String]) -> Vec<crate::model::cidr::Ipv4Cidr>
                 None
             }
         })
-        .collect()
+        .collect();
+    if valid.is_empty() && !entries.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "no valid IPv4 CIDR in the source allowlist ({}); not starting rather \
+                 than accepting every host",
+                entries.join(", ")
+            ),
+        ));
+    }
+    Ok(valid)
 }
 
 fn default_gp_port() -> u16 {
@@ -531,6 +553,25 @@ mod tests {
         let mut fewer = show.clone();
         fewer.snapshots.pop();
         assert_ne!(fewer.edit_fingerprint(), saved);
+    }
+
+    /// Audit M14: an allowlist fails closed. An empty list lets every host
+    /// in, so a configured list with no valid entry is an error, not empty.
+    #[test]
+    fn cidr_allowlist_fails_closed() {
+        let list = |entries: &[&str]| {
+            parse_cidr_allowlist(&entries.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        };
+        // Nothing configured: no restriction, as before.
+        assert!(list(&[]).unwrap().is_empty());
+        assert!(list(&["", "  "]).unwrap().is_empty());
+        // A trailing space no longer invalidates an entry.
+        assert_eq!(list(&["192.168.1.0/24 "]).unwrap().len(), 1);
+        // Invalid entries are skipped when a valid one remains.
+        assert_eq!(list(&["192.168.1.0/24", "fe80::/10"]).unwrap().len(), 1);
+        // All invalid: refused, instead of "accept everything".
+        let err = list(&["fe80::/10", "192.168.1.0/33"]).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     /// Audit M5: a show from a newer format is refused rather than opened

@@ -313,7 +313,11 @@ async fn receive_loop(
                                 }
                             }
                             None => {
-                                warn!("Failed to decode OSC packet");
+                                static DECODE: crate::logging::LogThrottle =
+                                    crate::logging::LogThrottle::new(std::time::Duration::from_secs(10));
+                                if let Some(held_back) = DECODE.allow() {
+                                    warn!(held_back, "Failed to decode OSC packet");
+                                }
                             }
                         }
                     }
@@ -346,7 +350,11 @@ pub(crate) fn recv_error_pause(e: &std::io::Error) -> Option<std::time::Duration
         debug!("UDP receive: connection reset reported (peer unreachable?)");
         None
     } else {
-        error!("UDP receive error: {e}");
+        static RECV: crate::logging::LogThrottle =
+            crate::logging::LogThrottle::new(std::time::Duration::from_secs(10));
+        if let Some(held_back) = RECV.allow() {
+            error!(held_back, "UDP receive error: {e}");
+        }
         Some(std::time::Duration::from_millis(100))
     }
 }

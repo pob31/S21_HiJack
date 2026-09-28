@@ -240,6 +240,10 @@ impl MonitorEngine {
             warn!(name = %client_name, aux_ch, "Monitor aux: non-finite value refused");
             return;
         }
+        if !self.desk_has(None, aux_ch).await {
+            warn!(name = %client_name, aux_ch, "Monitor aux: no such aux on the desk");
+            return;
+        }
         let client = match manager.find_by_name(client_name) {
             Some(c) => c,
             None => {
@@ -280,6 +284,16 @@ impl MonitorEngine {
             .await;
     }
 
+    /// Whether the desk has this input (if given) and aux. A profile with an
+    /// empty `visible_inputs` may name any input, and one past the desk's
+    /// count used to go into the mirror and out to the console regardless
+    /// (audit M15).
+    async fn desk_has(&self, input: Option<u16>, aux: u16) -> bool {
+        let config = &self.state.read().await.config;
+        input.is_none_or(|i| ChannelId::Input(i).is_within_bounds(config))
+            && ChannelId::Aux(aux).is_within_bounds(config)
+    }
+
     /// Process a send parameter change: validate, forward, echo.
     async fn handle_send_change(
         &self,
@@ -295,6 +309,10 @@ impl MonitorEngine {
         // is refused (audit H3).
         if !value.is_finite() {
             warn!(name = %client_name, input_ch, aux_ch, "Monitor send change: non-finite value refused");
+            return;
+        }
+        if !self.desk_has(Some(input_ch), aux_ch).await {
+            warn!(name = %client_name, input_ch, aux_ch, "Monitor send change: no such input or aux on the desk");
             return;
         }
         // Validate, and capture the originating endpoint so the echo can skip
@@ -355,7 +373,8 @@ impl MonitorEngine {
 
         // Determine input range
         let inputs: Vec<u16> = if client.visible_inputs.is_empty() {
-            (1..=60).collect() // All inputs
+            // All the desk's inputs (not a fixed 60: audit M15).
+            (1..=state.config.input_channel_count).collect()
         } else {
             client.visible_inputs.clone()
         };
@@ -534,7 +553,7 @@ impl MonitorEngine {
         }
 
         let inputs: Vec<u16> = if has_all_inputs {
-            (1..=60).collect()
+            (1..=state.config.input_channel_count).collect()
         } else {
             inputs_of_interest.into_iter().collect()
         };
@@ -937,6 +956,46 @@ mod tests {
                 true,
             )
             .await;
+        assert_eq!(state.read().await.parameter_count(), 1);
+    }
+
+    /// Audit M15: a send or aux the desk doesn't have is refused before it
+    /// reaches the mirror, even for a profile that may see every input.
+    #[tokio::test]
+    async fn channels_the_desk_lacks_are_refused() {
+        let local_sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sender = OscSender::new(local_sock, "127.0.0.1:1".parse().unwrap());
+        // The default desk: 48 inputs, 8 auxes.
+        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
+        let (events, _rx) = broadcast::channel(16);
+        let engine = MonitorEngine::new(state.clone(), sender, events);
+        let mut mgr = MonitorManager::new();
+        mgr.add_client(MonitorClient::new("A".into(), vec![1, 12], vec![]));
+        let endpoint = ClientEndpoint::Udp("127.0.0.1:9".parse().unwrap());
+        let level = |input_ch, aux_ch| MonitorCommand::SetSendLevel {
+            client_name: "A".into(),
+            input_ch,
+            aux_ch,
+            value: -6.0,
+            endpoint,
+        };
+
+        for cmd in [
+            level(78, 1), // past the inputs, into GP bus space
+            level(49, 1), // past this desk's 48 inputs
+            level(5, 12), // permitted, but the desk has 8 auxes
+            MonitorCommand::SetAuxFader {
+                client_name: "A".into(),
+                aux_ch: 12,
+                value: -6.0,
+                endpoint,
+            },
+        ] {
+            engine.handle_command(cmd, &mut mgr, true).await;
+        }
+        assert_eq!(state.read().await.parameter_count(), 0);
+
+        engine.handle_command(level(48, 1), &mut mgr, true).await;
         assert_eq!(state.read().await.parameter_count(), 1);
     }
 
