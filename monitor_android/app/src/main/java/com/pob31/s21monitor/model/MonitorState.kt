@@ -26,10 +26,22 @@ data class AuxState(
     val name: String = "",
 )
 
+/** Why the link to the daemon isn't up, when it isn't (audit A7). */
+enum class LinkProblem {
+    /** Nothing has come back from the daemon's address since the link began. */
+    NO_REPLY,
+    /** The daemon replied that it has no monitor profile by this name. */
+    UNKNOWN_NAME,
+    /** The daemon was answering, and has stopped. */
+    LOST,
+}
+
 /** Immutable snapshot the UI renders. Replaced wholesale on each change so
  *  Compose recomposes from a single StateFlow. */
 data class MonitorUiState(
+    /** The daemon is answering and knows this profile; controls are live. */
     val connected: Boolean = false,
+    val problem: LinkProblem? = null,
     val console: String = "",
     val sends: Map<Pair<Int, Int>, SendState> = emptyMap(), // key = (input, aux)
     val auxes: Map<Int, AuxState> = emptyMap(),

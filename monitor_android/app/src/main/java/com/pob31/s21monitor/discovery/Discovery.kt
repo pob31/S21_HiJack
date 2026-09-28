@@ -1,5 +1,6 @@
 package com.pob31.s21monitor.discovery
 
+import android.net.Network
 import com.pob31.s21monitor.osc.MonitorProtocol
 import com.pob31.s21monitor.osc.OscCodec
 import com.pob31.s21monitor.osc.OscString
@@ -23,12 +24,20 @@ object Discovery {
      * for [timeoutMs]. Unlike the Flutter client, this captures the daemon's
      * host from the reply's *source* address and uses the port the daemon
      * reports, so the result is directly usable to connect.
+     *
+     * [network]: the network to probe on. On show Wi-Fi without internet,
+     * Android would otherwise send the broadcast over mobile data (audit A8).
      */
-    suspend fun discover(port: Int = 8025, timeoutMs: Long = 3000): List<Found> =
+    suspend fun discover(
+        port: Int = 8025,
+        timeoutMs: Long = 3000,
+        network: Network? = null,
+    ): List<Found> =
         withContext(Dispatchers.IO) {
             val found = LinkedHashMap<String, Found>()
             runCatching {
                 DatagramSocket().use { sock ->
+                    network?.let { runCatching { it.bindSocket(sock) } }
                     sock.broadcast = true
                     sock.soTimeout = 300
                     val probe = OscCodec.encode(MonitorProtocol.DISCOVER, emptyList())

@@ -18,6 +18,8 @@ object MonitorProtocol {
     fun auxFader(name: String, aux: Int) = "/monitor/$name/aux/$aux/fader"
     fun auxMute(name: String, aux: Int) = "/monitor/$name/aux/$aux/mute"
     const val DISCOVER = "/monitor/discover"
+    /** A query with a one-packet reply, used as a liveness ping (audit A7). */
+    const val PING = "/status/console"
 
     // ── Inbound, parsed ──
     sealed interface Inbound {
@@ -33,6 +35,10 @@ object MonitorProtocol {
         data class NameAux(val aux: Int, val name: String) : Inbound
         /** `/monitor/discovered` `s i` — console name + daemon port. */
         data class Discovered(val console: String, val port: Int) : Inbound
+        /** `/monitor/error` `s s` — e.g. `unknown_client` + the name sent. */
+        data class Error(val kind: String, val name: String) : Inbound
+        /** `/status/console` `i` — the reply to [PING]. */
+        data object Pong : Inbound
     }
 
     fun parse(msg: OscMessage): Inbound? {
@@ -44,6 +50,11 @@ object MonitorProtocol {
             val port = (a.getOrNull(1) as? OscInt)?.value ?: 0
             return Inbound.Discovered(console, port)
         }
+        if (msg.address == "/monitor/error") {
+            val kind = (a.getOrNull(0) as? OscString)?.value ?: return null
+            return Inbound.Error(kind, (a.getOrNull(1) as? OscString)?.value.orEmpty())
+        }
+        if (msg.address == PING) return Inbound.Pong
         if (p.size < 4 || p[1] != "monitor" || p[2] != "state") return null
 
         return when (p[3]) {

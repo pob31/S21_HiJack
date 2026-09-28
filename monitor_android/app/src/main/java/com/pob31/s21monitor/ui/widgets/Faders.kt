@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.dp
+import com.pob31.s21monitor.model.OFF_DB
 import com.pob31.s21monitor.ui.theme.Accent
 import com.pob31.s21monitor.ui.theme.FaderFillBottom
 import com.pob31.s21monitor.ui.theme.FaderFillTop
@@ -36,27 +37,62 @@ import com.pob31.s21monitor.ui.theme.Warn
 import kotlin.math.max
 import kotlin.math.min
 
-/** Fader dB range, with a linear taper. (The web client's floor is −60 dB.) */
-const val FADER_MIN_DB = -80f
+/** The level at the top of the fader. */
 const val FADER_MAX_DB = 10f
 
-fun dbToFraction(db: Float): Float =
-    ((db - FADER_MIN_DB) / (FADER_MAX_DB - FADER_MIN_DB)).coerceIn(0f, 1f)
+/**
+ * The fader law as (travel, dB) breakpoints, travel 0 at the bottom and 1 at
+ * the top: the daemon's hardware-fader law (`FADER_DB_TABLE` in
+ * src/model/sidecar.rs), with unity at 3/4 travel and off ([OFF_DB]) only at
+ * the very bottom (audit A6). Both directions interpolate linearly between
+ * breakpoints.
+ */
+private val FADER_LAW = arrayOf(
+    0.00f to OFF_DB,
+    0.02f to -90f,
+    0.10f to -60f,
+    0.25f to -40f,
+    0.45f to -20f,
+    0.60f to -10f,
+    0.75f to 0f,
+    1.00f to FADER_MAX_DB,
+)
 
-fun formatDb(db: Float): String = if (db <= -59f) "-inf" else "%.1f dB".format(db)
+/** Fader travel for a level. Off, or anything that isn't a finite number,
+ *  is the bottom. */
+fun dbToFraction(db: Float): Float {
+    if (!db.isFinite() || db <= OFF_DB) return 0f
+    for (i in 0 until FADER_LAW.size - 1) {
+        val (f0, d0) = FADER_LAW[i]
+        val (f1, d1) = FADER_LAW[i + 1]
+        if (db <= d1) return f0 + (f1 - f0) * (db - d0) / (d1 - d0)
+    }
+    return 1f
+}
+
+/** The level for a fader travel; the very bottom (or below) is [OFF_DB]. */
+fun fractionToDb(f: Float): Float {
+    if (!(f > 0f)) return OFF_DB
+    for (i in 0 until FADER_LAW.size - 1) {
+        val (f0, d0) = FADER_LAW[i]
+        val (f1, d1) = FADER_LAW[i + 1]
+        if (f <= f1) return d0 + (d1 - d0) * (f - f0) / (f1 - f0)
+    }
+    return FADER_MAX_DB
+}
+
+/** "-inf" only for off; every level that passes signal shows its dB. */
+fun formatDb(db: Float): String = if (dbToFraction(db) == 0f) "-inf" else "%.1f dB".format(db)
 
 /**
  * The level during a relative fader drag: [startDb], the level when the drag
- * began, moved by the finger's vertical travel since, where the fader's full
- * height spans the full dB range. [travelY] is in px and positive downwards
- * (screen y), so dragging up raises the level. A start below the fader's
- * floor (the daemon's −150 dB "off") counts as the floor.
+ * began, moved along the fader law by the finger's vertical travel since,
+ * where the fader's full height is its full travel. [travelY] is in px and
+ * positive downwards (screen y), so dragging up raises the level. Dragging to
+ * the bottom sends off.
  */
-fun dragDb(startDb: Float, travelY: Float, heightPx: Float): Float {
-    val start = if (startDb.isFinite()) startDb.coerceIn(FADER_MIN_DB, FADER_MAX_DB) else FADER_MIN_DB
-    val span = FADER_MAX_DB - FADER_MIN_DB
-    return (start - travelY / heightPx.coerceAtLeast(1f) * span).coerceIn(FADER_MIN_DB, FADER_MAX_DB)
-}
+fun dragDb(startDb: Float, travelY: Float, heightPx: Float): Float =
+    fractionToDb(dbToFraction(startDb) - travelY / heightPx.coerceAtLeast(1f))
 
 /**
  * Vertical fader — a dark track filled bottom-up with the web monitor's blue
@@ -77,6 +113,8 @@ fun VerticalFader(
     modifier: Modifier = Modifier,
     /** true when a drag starts, false when it ends (audit A5). */
     onTouch: (Boolean) -> Unit = {},
+    /** false ignores the finger, e.g. while the link is down (audit A7). */
+    enabled: Boolean = true,
 ) {
     var heightPx by remember { mutableFloatStateOf(1f) }
     val frac = dbToFraction(db)
@@ -92,7 +130,8 @@ fun VerticalFader(
             .clip(RoundedCornerShape(8.dp))
             .background(FaderTrack)
             .onSizeChanged { heightPx = it.height.toFloat().coerceAtLeast(1f) }
-            .pointerInput(Unit) {
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
                 var startDb = 0f
                 var travelY = 0f
                 var lastDb = 0f
@@ -118,10 +157,8 @@ fun VerticalFader(
                             change.consume()
                             travelY += dragAmount
                             val v = dragDb(startDb, travelY, heightPx)
-                            // Send only when the level moves: not while pinned
-                            // at an end of travel, and not for a downward drag
-                            // on a fader that's off (that would send the
-                            // −80 dB floor).
+                            // Send only when the level moves, not while pinned
+                            // at an end of travel.
                             if (v != lastDb) {
                                 lastDb = v
                                 currentOnDb(v)
@@ -166,6 +203,8 @@ fun PanControl(
     modifier: Modifier = Modifier,
     /** true when a drag starts, false when it ends (audit A5). */
     onTouch: (Boolean) -> Unit = {},
+    /** false ignores the finger, e.g. while the link is down (audit A7). */
+    enabled: Boolean = true,
 ) {
     var widthPx by remember { mutableFloatStateOf(1f) }
     // The gestures below outlive recompositions (audit A1).
@@ -184,7 +223,8 @@ fun PanControl(
             .clip(RoundedCornerShape(6.dp))
             .background(Panel2)
             .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
-            .pointerInput(Unit) {
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
                 var dragging = false
                 fun release() {
                     if (dragging) {
@@ -211,7 +251,8 @@ fun PanControl(
                     release()
                 }
             }
-            .pointerInput(Unit) {
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
                 detectTapGestures(onDoubleTap = { currentOnPan(0f) })
             },
     ) {

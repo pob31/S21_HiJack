@@ -7,9 +7,16 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -17,8 +24,11 @@ import com.pob31.s21monitor.R
 import com.pob31.s21monitor.data.CredentialsStore
 import com.pob31.s21monitor.model.AuxState
 import com.pob31.s21monitor.model.Credentials
+import com.pob31.s21monitor.model.LinkProblem
 import com.pob31.s21monitor.model.MonitorUiState
 import com.pob31.s21monitor.model.SendState
+import com.pob31.s21monitor.net.chooseNetwork
+import com.pob31.s21monitor.net.networkOptions
 import com.pob31.s21monitor.osc.MonitorProtocol
 import com.pob31.s21monitor.osc.MonitorProtocol.Inbound
 import com.pob31.s21monitor.osc.OscArg
@@ -83,7 +93,21 @@ class MonitorService : Service() {
     private val holds = ControlHolds(HOLD_AFTER_RELEASE_MS)
 
     @Volatile private var running = false
-    @Volatile private var lastRxMs = 0L
+
+    /** The daemon's address, once resolved. Packets from anywhere else are
+     *  dropped (audit A7). */
+    @Volatile private var daemonAddr: InetSocketAddress? = null
+
+    /** Whether the link is up, and if not why (audit A7). */
+    @Volatile private var tracker = LinkTracker(0, NO_REPLY_AFTER_MS, TIMEOUT_MS)
+
+    /** Keep the CPU and Wi-Fi awake with the screen off (audit A8). */
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+
+    /** Rebinds the socket as networks come and go (audit A8). */
+    private var networkWatch: ConnectivityManager.NetworkCallback? = null
+    private var boundNetwork: Network? = null
 
     /** Input names arrive on their own messages, possibly before the sends —
      *  cache them so sends pick up the right label whenever they appear. */
@@ -179,6 +203,11 @@ class MonitorService : Service() {
         link = linkJob
         val scope = CoroutineScope(Dispatchers.IO + linkJob)
 
+        daemonAddr = null
+        tracker = LinkTracker(SystemClock.elapsedRealtime(), NO_REPLY_AFTER_MS, TIMEOUT_MS)
+        holdAwake()
+        watchNetworks(sock)
+
         val queue = LinkedBlockingQueue<ByteArray>(1024)
 
         // Receive thread: blocking reads, copy + enqueue, drop oldest if full.
@@ -188,6 +217,8 @@ class MonitorService : Service() {
                 val pkt = DatagramPacket(buf, buf.size)
                 try {
                     sock.receive(pkt)
+                    // Only the daemon's packets count (audit A7).
+                    if (pkt.address != daemonAddr?.address) continue
                     val data = pkt.data.copyOf(pkt.length)
                     if (!queue.offer(data)) {
                         queue.poll()
@@ -213,7 +244,6 @@ class MonitorService : Service() {
         // they were queued (audit A3). The daemon's address is resolved once
         // per link, not per packet.
         scope.launch {
-            var daemon: InetSocketAddress? = null
             while (isActive) {
                 when (val wait = outbound.msUntilNextResend(SystemClock.elapsedRealtime())) {
                     null -> wakeSender.receive()
@@ -223,7 +253,10 @@ class MonitorService : Service() {
                 val packets = outbound.take(SystemClock.elapsedRealtime())
                 if (packets.isEmpty()) continue
                 // Unresolvable for now: drop this batch; the heartbeat retries.
-                val to = daemon ?: resolve(c)?.also { daemon = it } ?: continue
+                val to = daemonAddr ?: resolve(c)?.also {
+                    daemonAddr = it
+                    bindToNetwork(sock)
+                } ?: continue
                 for (bytes in packets) {
                     try {
                         sock.send(DatagramPacket(bytes, bytes.size, to))
@@ -238,36 +271,139 @@ class MonitorService : Service() {
         send(MonitorProtocol.connect(c.name))
         send(MonitorProtocol.requestState(c.name))
 
-        // Heartbeat every 10 s (also the connect/keepalive).
+        // Heartbeat every 10 s: the daemon's keepalive for this profile, and
+        // its reply is the profile's full state. Also renews the wake lock.
         scope.launch {
             while (isActive && running) {
                 send(MonitorProtocol.connect(c.name))
+                wakeLock?.acquire(WAKE_LOCK_MS)
                 delay(HEARTBEAT_MS)
             }
         }
 
-        // Watchdog: after 15 s of silence, mark disconnected and re-handshake.
+        // Ping every 2 s: a one-packet reply, so a dropped link shows within
+        // seconds rather than after the next heartbeat (audit A7).
+        scope.launch {
+            while (isActive && running) {
+                delay(PING_MS)
+                send(MonitorProtocol.PING)
+            }
+        }
+
+        // Watchdog: turns silence into NO_REPLY or LOST.
         scope.launch {
             while (isActive && running) {
                 delay(WATCHDOG_MS)
-                val silentFor = System.currentTimeMillis() - lastRxMs
-                if (lastRxMs != 0L && silentFor > TIMEOUT_MS) {
-                    if (_state.value.connected) _state.update { it.copy(connected = false) }
-                    send(MonitorProtocol.connect(c.name))
-                    send(MonitorProtocol.requestState(c.name))
-                }
-                updateNotification()
+                refreshLink(SystemClock.elapsedRealtime())
             }
         }
     }
 
+    /** Publishes the tracker's view of the link when it changes (audit A7). */
+    private fun refreshLink(nowMs: Long) {
+        val status = tracker.status(nowMs)
+        val st = _state.value
+        if (st.connected == status.connected && st.problem == status.problem) return
+        // Back after a drop: anything changed meanwhile needs a fresh snapshot.
+        if (status.connected && st.problem == LinkProblem.LOST) {
+            creds?.let { send(MonitorProtocol.requestState(it.name)) }
+        }
+        _state.update { it.copy(connected = status.connected, problem = status.problem) }
+        updateNotification()
+    }
+
+    /** Keeps the CPU awake so the heartbeat runs with the screen off (the
+     *  daemon drops a client after 30 s of silence), and Wi-Fi out of power
+     *  save (audit A8). The wake lock times out unless the heartbeat renews it,
+     *  so a stuck link can't hold it for ever. */
+    private fun holdAwake() {
+        wakeLock = getSystemService(PowerManager::class.java)
+            ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "S21Monitor:link")
+            ?.apply {
+                setReferenceCounted(false)
+                acquire(WAKE_LOCK_MS)
+            }
+        // HIGH_PERF works with the screen off but does nothing from Android 14;
+        // LOW_LATENCY then helps at least while the screen is on.
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        } else {
+            @Suppress("DEPRECATION")
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        }
+        wifiLock = applicationContext.getSystemService(WifiManager::class.java)
+            ?.createWifiLock(mode, "S21Monitor:link")
+            ?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+    }
+
+    private fun releaseAwake() {
+        wakeLock?.takeIf { it.isHeld }?.release()
+        wakeLock = null
+        wifiLock?.takeIf { it.isHeld }?.release()
+        wifiLock = null
+    }
+
+    /** Rebinds the socket whenever networks come, go or change (audit A8). */
+    private fun watchNetworks(sock: DatagramSocket) {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = bindToNetwork(sock)
+            override fun onLost(network: Network) = bindToNetwork(sock)
+            override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) =
+                bindToNetwork(sock)
+        }
+        // Not only networks with internet: show Wi-Fi often has none.
+        val request = NetworkRequest.Builder()
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        try {
+            cm.registerNetworkCallback(request, callback)
+            networkWatch = callback
+        } catch (e: Exception) {
+            Log.w(TAG, "Couldn't watch networks", e)
+        }
+    }
+
+    /**
+     * Binds the socket to the network that reaches the daemon (see
+     * [chooseNetwork]): on show Wi-Fi without internet, Android would
+     * otherwise send it over mobile data (audit A8).
+     */
+    @Synchronized
+    private fun bindToNetwork(sock: DatagramSocket) {
+        val daemon = daemonAddr?.address ?: return
+        if (sock.isClosed) return
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val pick = chooseNetwork(networkOptions(cm, daemon)) ?: return
+        if (pick == boundNetwork) return
+        try {
+            pick.bindSocket(sock)
+            boundNetwork = pick
+        } catch (e: Exception) {
+            Log.w(TAG, "Couldn't bind the link to $pick", e)
+        }
+    }
+
     private fun onInbound(msg: com.pob31.s21monitor.osc.OscMessage) {
-        lastRxMs = System.currentTimeMillis()
-        if (!_state.value.connected) _state.update { it.copy(connected = true) }
+        val now = SystemClock.elapsedRealtime()
+        val ev = MonitorProtocol.parse(msg)
+        tracker.received(
+            when (ev) {
+                is Inbound.SendFull, is Inbound.SendEcho, is Inbound.AuxStrip,
+                is Inbound.NameInput, is Inbound.NameAux -> Reply.PROFILE
+                is Inbound.Error ->
+                    if (ev.kind == "unknown_client") Reply.UNKNOWN_NAME else Reply.PONG
+                else -> Reply.PONG
+            },
+            now,
+        )
+        refreshLink(now)
 
         // A control the musician is using keeps its own value (audit A5).
-        val now = SystemClock.elapsedRealtime()
-        when (val ev = MonitorProtocol.parse(msg)) {
+        when (ev) {
             is Inbound.SendFull -> updateSend(ev.input, ev.aux) { s ->
                 s.copy(
                     level = holds.pick(Control.SendLevel(ev.input, ev.aux), now, s.level, ev.level),
@@ -310,7 +446,7 @@ class MonitorService : Service() {
 
             is Inbound.Discovered -> _state.update { it.copy(console = ev.console) }
 
-            null -> { /* unrecognised */ }
+            is Inbound.Error, Inbound.Pong, null -> {}
         }
     }
 
@@ -385,7 +521,8 @@ class MonitorService : Service() {
     private fun resolve(c: Credentials): InetSocketAddress? =
         runCatching { InetSocketAddress(InetAddress.getByName(c.host), c.port) }.getOrNull()
 
-    /** Ends the current link: its coroutines, receive thread and socket. */
+    /** Ends the current link: its coroutines, receive thread, socket,
+     *  network watch and locks. */
     private fun stopLink() {
         running = false
         link?.cancel()
@@ -394,8 +531,15 @@ class MonitorService : Service() {
         receiveThread = null
         runCatching { socket?.close() }
         socket = null
+        networkWatch?.let { cb ->
+            runCatching { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(cb) }
+        }
+        networkWatch = null
+        boundNetwork = null
+        daemonAddr = null
+        releaseAwake()
         outbound.clear()
-        if (_state.value.connected) _state.update { it.copy(connected = false) }
+        _state.update { it.copy(connected = false, problem = null) }
     }
 
     override fun onDestroy() {
@@ -439,10 +583,13 @@ class MonitorService : Service() {
 
         val s = _state.value
         val label = s.console.ifEmpty { "console" }
-        val text = if (s.connected) {
-            "Connected to $label as ${creds?.name ?: ""}"
-        } else {
-            "Connecting to $label…"
+        val name = creds?.name.orEmpty()
+        val text = when {
+            s.connected -> "Connected to $label as $name"
+            s.problem == LinkProblem.UNKNOWN_NAME -> "The daemon doesn't know the name \u201c$name\u201d"
+            s.problem == LinkProblem.NO_REPLY -> "No reply from the daemon"
+            s.problem == LinkProblem.LOST -> "Connection lost, retrying…"
+            else -> "Connecting to $label…"
         }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
@@ -466,7 +613,13 @@ class MonitorService : Service() {
         private const val NOTIFICATION_ID = 8521
         private const val CHANNEL_ID = "s21_monitor_service"
         private const val HEARTBEAT_MS = 10_000L
-        private const val WATCHDOG_MS = 5_000L
-        private const val TIMEOUT_MS = 15_000L
+        private const val PING_MS = 2_000L
+        private const val WATCHDOG_MS = 1_000L
+        /** No reply for this long after starting: [LinkProblem.NO_REPLY]. */
+        private const val NO_REPLY_AFTER_MS = 5_000L
+        /** Silent for this long (three missed pings): [LinkProblem.LOST]. */
+        private const val TIMEOUT_MS = 6_000L
+        /** The wake lock's timeout; the heartbeat renews it well before. */
+        private const val WAKE_LOCK_MS = 60_000L
     }
 }

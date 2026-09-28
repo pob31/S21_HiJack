@@ -38,8 +38,10 @@ they contend on the Gradle lock.
   UDP socket (the daemon replies to the source port), a receive thread → queue →
   coroutine processing loop, one sender coroutine draining an `OutboundQueue`
   (in order, latest value per address, final value resent after 250 ms), a 10 s
-  heartbeat + 15 s watchdog, and state as a `StateFlow` the UI collects. Modeled
-  on the WFS-DIY remote's `OscService`.
+  heartbeat, a 2 s ping (`/status/console`) feeding a `LinkTracker` that locks
+  the controls while the link is down, a partial wake lock + Wi-Fi lock, the
+  socket bound to the network that reaches the daemon, and state as a
+  `StateFlow` the UI collects. Modeled on the WFS-DIY remote's `OscService`.
 - `discovery/Discovery` — broadcast `/monitor/discover`, collect
   `/monitor/discovered` (captures the daemon's host from the reply source).
 - `data/CredentialsStore` — SharedPreferences profile (name / host / port).
@@ -48,9 +50,10 @@ they contend on the Gradle lock.
 
 ## To verify against the real desk
 
-- **Fader range/taper** — currently a linear −80…+10 dB map
-  (`FADER_MIN_DB`/`FADER_MAX_DB` in `ui/widgets/Faders.kt`). Adjust if the desk's
-  send/aux levels don't match.
+- **Fader law** — the daemon's hardware-fader table (`FADER_LAW` in
+  `ui/widgets/Faders.kt`, copied from `FADER_DB_TABLE` in `src/model/sidecar.rs`):
+  off at the bottom, unity at 3/4 travel, +10 dB at the top. Calibrate both
+  together if it feels off against the desk.
 - **Screen-off persistence** — if Android kills it when locked, exempt the app
   from battery optimization (some OEMs are aggressive).
 - **Discovery** — broadcast may be blocked on some APs; manual IP entry is the

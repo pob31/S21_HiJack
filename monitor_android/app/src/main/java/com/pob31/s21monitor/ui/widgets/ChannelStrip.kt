@@ -40,6 +40,8 @@ fun SendStrip(
     modifier: Modifier = Modifier,
     onLevelTouch: (Boolean) -> Unit = {},
     onPanTouch: (Boolean) -> Unit = {},
+    /** false locks every control, e.g. while the link is down (audit A7). */
+    enabled: Boolean = true,
 ) {
     StripFrame(
         title = send.name.ifEmpty { "In ${send.input}" },
@@ -54,6 +56,7 @@ fun SendStrip(
             onDb = onLevel,
             modifier = Modifier.fillMaxWidth().weight(1f),
             onTouch = onLevelTouch,
+            enabled = enabled,
         )
         Text(
             panLabel(send.pan),
@@ -67,6 +70,7 @@ fun SendStrip(
             onPan = onPan,
             modifier = Modifier.fillMaxWidth(),
             onTouch = onPanTouch,
+            enabled = enabled,
         )
         ToggleButton(
             label = "ON",
@@ -74,6 +78,7 @@ fun SendStrip(
             activeColor = Accent,
             activeText = OnAccent,
             onClick = onToggle,
+            enabled = enabled,
         )
     }
 }
@@ -86,6 +91,8 @@ fun AuxStrip(
     onMute: () -> Unit,
     modifier: Modifier = Modifier,
     onFaderTouch: (Boolean) -> Unit = {},
+    /** false locks every control, e.g. while the link is down (audit A7). */
+    enabled: Boolean = true,
 ) {
     StripFrame(
         title = aux.name.ifEmpty { "Aux ${aux.aux}" },
@@ -100,6 +107,7 @@ fun AuxStrip(
             onDb = onFader,
             modifier = Modifier.fillMaxWidth().weight(1f),
             onTouch = onFaderTouch,
+            enabled = enabled,
         )
         ToggleButton(
             label = "MUTE",
@@ -107,6 +115,7 @@ fun AuxStrip(
             activeColor = Danger,
             activeText = TextPrimary,
             onClick = onMute,
+            enabled = enabled,
         )
     }
 }
@@ -152,13 +161,14 @@ private fun ToggleButton(
     activeColor: androidx.compose.ui.graphics.Color,
     activeText: androidx.compose.ui.graphics.Color,
     onClick: () -> Unit,
+    enabled: Boolean,
 ) {
     Box(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(6.dp))
             .background(if (active) activeColor else Panel2)
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(vertical = 8.dp),
         contentAlignment = Alignment.Center,
     ) {

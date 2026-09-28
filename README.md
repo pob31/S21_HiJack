@@ -194,6 +194,8 @@ The **native** app connects to the UDP monitor port (`--monitor-port`) with thes
 | `/status/console` | — | Query console connection status (replies to sender) |
 | `/status/clients` | — | Query connected client count (replies to sender) |
 
+A `connect` naming no monitor profile gets `/monitor/error` `["unknown_client", name]` back instead of state, so a client can report a mistyped name.
+
 Permission validation: each client can only touch the auxes assigned to its profile and the inputs the profile makes visible.
 
 ## Project Structure

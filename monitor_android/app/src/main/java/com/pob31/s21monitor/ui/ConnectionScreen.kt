@@ -1,5 +1,6 @@
 package com.pob31.s21monitor.ui
 
+import android.net.ConnectivityManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
@@ -32,6 +34,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pob31.s21monitor.discovery.Discovery
 import com.pob31.s21monitor.model.Credentials
+import com.pob31.s21monitor.net.chooseNetwork
+import com.pob31.s21monitor.net.networkOptions
 import com.pob31.s21monitor.ui.theme.Bg
 import com.pob31.s21monitor.ui.theme.Muted
 import com.pob31.s21monitor.ui.theme.Panel
@@ -49,6 +53,7 @@ fun ConnectionScreen(
     var discovering by remember { mutableStateOf(false) }
     var results by remember { mutableStateOf<List<Discovery.Found>>(emptyList()) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     Column(
         Modifier.fillMaxSize().background(Bg).verticalScroll(rememberScrollState())
@@ -80,7 +85,11 @@ fun ConnectionScreen(
             onClick = {
                 discovering = true
                 scope.launch {
-                    results = Discovery.discover(port.toIntOrNull() ?: 8025)
+                    val cm = context.getSystemService(ConnectivityManager::class.java)
+                    results = Discovery.discover(
+                        port.toIntOrNull() ?: 8025,
+                        network = cm?.let { chooseNetwork(networkOptions(it, null)) },
+                    )
                     discovering = false
                 }
             },

@@ -95,6 +95,14 @@ pub enum MonitorStateEvent {
         endpoint: ClientEndpoint,
         count: i32,
     },
+    /// Reply to a `Connect`/`RequestState` naming no known profile, so the
+    /// client can say so instead of waiting forever (audit A7). UDP path:
+    /// `/monitor/error` `["unknown_client", name]`. WS ignores it: a web
+    /// client's `Hello` already gets an auth error.
+    UnknownClient {
+        endpoint: ClientEndpoint,
+        name: String,
+    },
 }
 
 /// UDP fan-out task: drains the broadcast and reproduces today's OSC packets to
@@ -296,6 +304,21 @@ async fn dispatch_udp(
                 .send_to(addr, "/status/clients", vec![OscType::Int(count)])
                 .await;
         }
+        MonitorStateEvent::UnknownClient { endpoint, name } => {
+            let ClientEndpoint::Udp(addr) = endpoint else {
+                return;
+            };
+            let _ = sender
+                .send_to(
+                    addr,
+                    "/monitor/error",
+                    vec![
+                        OscType::String("unknown_client".into()),
+                        OscType::String(name),
+                    ],
+                )
+                .await;
+        }
     }
 }
 
@@ -414,6 +437,34 @@ mod tests {
             msg(&recv_osc(&sock_b).await.unwrap()).0,
             "/monitor/state/send/7/1"
         );
+    }
+
+    /// Audit A7. The unknown-name reply reaches the client that asked.
+    #[tokio::test]
+    async fn unknown_client_reply_is_an_osc_error() {
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let (sender, _rx) = MonitorServer::start("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let (tx, rx) = broadcast::channel(8);
+        tokio::spawn(run_udp_fanout(
+            rx,
+            sender,
+            Arc::new(RwLock::new(MonitorManager::new())),
+        ));
+
+        tx.send(MonitorStateEvent::UnknownClient {
+            endpoint: ClientEndpoint::Udp(sock.local_addr().unwrap()),
+            name: "Drumer".into(),
+        })
+        .unwrap();
+
+        let got = recv_osc(&sock).await.expect("the asker gets the error");
+        let (path, args) = msg(&got);
+        assert_eq!(path, "/monitor/error");
+        assert!(matches!(args,
+            [OscType::String(kind), OscType::String(name)]
+                if kind == "unknown_client" && name == "Drumer"));
     }
 
     /// Audit A1. An echo reaches only clients that can see its input. It

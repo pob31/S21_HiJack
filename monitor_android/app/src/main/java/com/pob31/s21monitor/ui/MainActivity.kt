@@ -120,7 +120,7 @@ class MainActivity : ComponentActivity() {
 
             svc == null -> Loading()
 
-            else -> MonitorRoute(svc, current.name, onShutdown = {
+            else -> MonitorRoute(svc, current, onShutdown = {
                 forget()
                 creds = null
             })
@@ -128,11 +128,12 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun MonitorRoute(svc: MonitorService, clientName: String, onShutdown: () -> Unit) {
+    private fun MonitorRoute(svc: MonitorService, creds: Credentials, onShutdown: () -> Unit) {
         val state by svc.state.collectAsState()
         MonitorScreen(
             state = state,
-            clientName = clientName,
+            clientName = creds.name,
+            daemon = "${creds.host}:${creds.port}",
             service = svc,
             onShutdown = onShutdown,
         )

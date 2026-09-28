@@ -34,10 +34,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.pob31.s21monitor.model.LinkProblem
 import com.pob31.s21monitor.model.MonitorUiState
 import com.pob31.s21monitor.service.Control
 import com.pob31.s21monitor.service.MonitorService
@@ -56,6 +58,8 @@ import com.pob31.s21monitor.ui.widgets.SendStrip
 fun MonitorScreen(
     state: MonitorUiState,
     clientName: String,
+    /** host:port, for the "no reply" message. */
+    daemon: String,
     service: MonitorService,
     onShutdown: () -> Unit,
 ) {
@@ -74,7 +78,9 @@ fun MonitorScreen(
             console = state.console.ifEmpty { "S21 Monitor" },
             clientName = clientName,
             connected = state.connected,
+            problem = state.problem,
         )
+        state.problem?.let { LinkBanner(it, clientName, daemon) }
         TabsRow(
             tab = tab,
             onTab = { tab = it },
@@ -96,6 +102,7 @@ private fun Header(
     console: String,
     clientName: String,
     connected: Boolean,
+    problem: LinkProblem?,
 ) {
     Row(
         Modifier.fillMaxWidth().background(Panel).padding(horizontal = 14.dp, vertical = 10.dp),
@@ -110,10 +117,35 @@ private fun Header(
                 .background(if (connected) Accent else Danger),
         )
         Text(
-            if (connected) "Connected" else "Connecting…",
+            when {
+                connected -> "Connected"
+                problem == null -> "Connecting…"
+                else -> "Not connected"
+            },
             color = Muted, fontSize = 12.sp,
         )
     }
+}
+
+/** Why the link is down, and what to check (audit A7). */
+@Composable
+private fun LinkBanner(problem: LinkProblem, clientName: String, daemon: String) {
+    Text(
+        when (problem) {
+            LinkProblem.UNKNOWN_NAME ->
+                "This daemon has no monitor profile called “$clientName”. " +
+                    "Check the spelling (Disconnect, then connect again), or ask the engineer to add it."
+            LinkProblem.NO_REPLY ->
+                "No reply from $daemon. Check the address, that this phone is on the show " +
+                    "network, and that monitoring is running on the daemon."
+            LinkProblem.LOST ->
+                "Lost contact with the daemon. Controls are locked until it's back."
+        },
+        color = TextPrimary,
+        fontSize = 13.sp,
+        modifier = Modifier.fillMaxWidth().background(Danger.copy(alpha = 0.25f))
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+    )
 }
 
 @Composable
@@ -231,8 +263,12 @@ private fun MyMix(state: MonitorUiState, selectedAux: Int?, service: MonitorServ
     if (sends.isEmpty()) {
         Empty("Waiting for state from the daemon…"); return
     }
+    // Locked and dimmed while the link is down: a move would change the
+    // screen but not the desk (audit A7).
+    val live = state.connected
     Row(
-        Modifier.fillMaxSize().horizontalScroll(rememberScrollState()).padding(10.dp),
+        Modifier.fillMaxSize().alpha(if (live) 1f else 0.45f)
+            .horizontalScroll(rememberScrollState()).padding(10.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         sends.forEach { send ->
@@ -246,6 +282,7 @@ private fun MyMix(state: MonitorUiState, selectedAux: Int?, service: MonitorServ
                     onToggle = { service.setSendOn(send.input, send.aux, !send.on) },
                     onLevelTouch = { service.touch(Control.SendLevel(send.input, send.aux), it) },
                     onPanTouch = { service.touch(Control.SendPan(send.input, send.aux), it) },
+                    enabled = live,
                 )
             }
         }
@@ -258,8 +295,10 @@ private fun MyAux(state: MonitorUiState, service: MonitorService) {
     if (auxes.isEmpty()) {
         Empty("No aux channels assigned"); return
     }
+    val live = state.connected
     Row(
-        Modifier.fillMaxSize().horizontalScroll(rememberScrollState()).padding(10.dp),
+        Modifier.fillMaxSize().alpha(if (live) 1f else 0.45f)
+            .horizontalScroll(rememberScrollState()).padding(10.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         auxes.forEach { a ->
@@ -270,6 +309,7 @@ private fun MyAux(state: MonitorUiState, service: MonitorService) {
                     onFader = { service.setAuxFader(a, it) },
                     onMute = { service.setAuxMute(a, !aux.mute) },
                     onFaderTouch = { service.touch(Control.AuxFader(a), it) },
+                    enabled = live,
                 )
             }
         }

@@ -345,8 +345,11 @@ pub fn event_to_server_msg(
         } => (*endpoint == me).then_some(ServerMsg::ConsoleStatus {
             connected: *connected,
         }),
-        // UDP-native; browsers don't use discovery or the client-count query.
-        MonitorStateEvent::Discovered { .. } | MonitorStateEvent::ClientCount { .. } => None,
+        // UDP-native: browsers don't use discovery or the client-count query,
+        // and an unknown name is refused at `Hello`.
+        MonitorStateEvent::Discovered { .. }
+        | MonitorStateEvent::ClientCount { .. }
+        | MonitorStateEvent::UnknownClient { .. } => None,
     }
 }
 

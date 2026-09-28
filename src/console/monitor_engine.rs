@@ -87,6 +87,10 @@ impl MonitorEngine {
             } => {
                 if manager.find_by_name(&client_name).is_none() {
                     warn!(name = %client_name, "Monitor connect: unknown client");
+                    self.publish(MonitorStateEvent::UnknownClient {
+                        endpoint,
+                        name: client_name,
+                    });
                     return;
                 }
                 manager.update_last_seen(&client_name, endpoint);
@@ -934,6 +938,39 @@ mod tests {
             )
             .await;
         assert_eq!(state.read().await.parameter_count(), 1);
+    }
+
+    /// Audit A7. A connect naming no profile gets an answer, so the phone
+    /// can say "name not recognised" instead of "Connecting…" forever.
+    #[tokio::test]
+    async fn an_unknown_name_is_told_so() {
+        let local_sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sender = OscSender::new(local_sock, "127.0.0.1:1".parse().unwrap());
+        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
+        let (events, mut rx) = broadcast::channel(16);
+        let engine = MonitorEngine::new(state, sender, events);
+        let mut mgr = MonitorManager::new();
+        mgr.add_client(MonitorClient::new("Drummer".into(), vec![1], vec![]));
+        let endpoint = ClientEndpoint::Udp("127.0.0.1:9".parse().unwrap());
+
+        engine
+            .handle_command(
+                MonitorCommand::Connect {
+                    client_name: "Drumer".into(),
+                    endpoint,
+                },
+                &mut mgr,
+                true,
+            )
+            .await;
+
+        match rx.try_recv() {
+            Ok(MonitorStateEvent::UnknownClient { endpoint: to, name }) => {
+                assert_eq!(to, endpoint);
+                assert_eq!(name, "Drumer");
+            }
+            other => panic!("expected UnknownClient, got {other:?}"),
+        }
     }
 
     /// Audit A5. A change the 20 Hz rate limit holds back is pushed on a
