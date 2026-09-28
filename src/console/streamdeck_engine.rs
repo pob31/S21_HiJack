@@ -15,7 +15,9 @@
 //!   `HiJackApp::drain_events` then dispatches them.
 //!
 //! While idle, the thread re-enumerates devices every 2 s so the UI's
-//! "available devices" combo stays fresh. While connected, it polls
+//! "available devices" combo stays fresh, and reconnects to the device it
+//! was asked for as soon as that device is present: at launch, after a
+//! replug, after a show load (audit M22). While connected, it polls
 //! the device with a short read timeout (50 ms) so commands queued
 //! between reads land on the device promptly.
 //!
@@ -204,6 +206,12 @@ fn run_device_thread(
 
     let mut connected: Option<StreamDeck> = None;
     let mut connected_meta: Option<ConnectedDevice> = None;
+    // The device we're meant to be on, kept across unplugs so it can be
+    // reconnected when it comes back (audit M22).
+    let mut wanted: Option<String> = None;
+    // Key states from the last report: each report carries all of them, and
+    // only a key going down is a press (audit M22).
+    let mut keys_down: Vec<bool> = Vec::new();
     // Pending labels; populated by RefreshAll while disconnected so we
     // can apply them after a successful connect.
     let mut pending_labels: Option<Vec<(String, StepColor)>> = None;
@@ -220,6 +228,7 @@ fn run_device_thread(
             match cmd_rx.try_recv() {
                 Ok(DeviceCmd::Shutdown) => return,
                 Ok(DeviceCmd::Connect(serial)) => {
+                    wanted = Some(serial.clone());
                     if connected_meta.as_ref().map(|c| c.serial.as_str()) == Some(serial.as_str()) {
                         // Already on the requested device.
                         continue;
@@ -232,49 +241,28 @@ fn run_device_thread(
                         }
                         let _ = ui_tx.send(UiEvent::StreamDeckDisconnected);
                     }
-                    match try_connect(&hidapi, &serial) {
-                        Ok((deck, meta)) => {
-                            info!(
-                                serial = %meta.serial,
-                                kind = ?meta.kind,
-                                key_count = meta.key_count,
-                                "Stream Deck connected"
-                            );
-                            // Reset the device so any leftover button images
-                            // from a previous app session are cleared before
-                            // we paint our own.
-                            let _ = deck.reset();
-                            let _ = deck.set_brightness(80);
-                            let _ = ui_tx.send(UiEvent::StreamDeckConnected {
-                                device_name: meta.label.clone(),
-                                button_count: meta.key_count,
-                            });
-                            if let Ok(mut s) = state.write() {
-                                s.connected = Some(meta.clone());
-                                s.last_error = None;
-                            }
-                            connected = Some(deck);
-                            connected_meta = Some(meta);
-                            // Apply any labels queued while disconnected.
-                            if let Some(labels) = pending_labels.take() {
-                                push_all_labels(
-                                    connected.as_ref().unwrap(),
-                                    connected_meta.as_ref().unwrap(),
-                                    font.as_ref(),
-                                    &labels,
-                                );
-                            }
-                        }
-                        Err(msg) => {
-                            warn!("Stream Deck connect failed: {msg}");
-                            if let Ok(mut s) = state.write() {
-                                s.last_error = Some(msg.clone());
-                            }
-                            let _ = ui_tx.send(UiEvent::StreamDeckError { message: msg });
-                        }
+                    // Not plugged in: wait for it rather than report an
+                    // error; the enumeration below connects when it appears.
+                    if !list_devices(&hidapi).iter().any(|(_, s)| *s == serial) {
+                        debug!(%serial, "Stream Deck: waiting for the device to appear");
+                        continue;
+                    }
+                    if let Some((deck, meta)) = open_device(
+                        &hidapi,
+                        &serial,
+                        font.as_ref(),
+                        &ui_tx,
+                        &state,
+                        &mut pending_labels,
+                        true,
+                    ) {
+                        connected = Some(deck);
+                        connected_meta = Some(meta);
+                        keys_down.clear();
                     }
                 }
                 Ok(DeviceCmd::Disconnect) => {
+                    wanted = None;
                     if connected.is_some() {
                         connected = None;
                         connected_meta = None;
@@ -318,8 +306,30 @@ fn run_device_thread(
                     label,
                 });
             }
+            // Reconnect to the wanted device once it's present again.
+            let reconnect = wanted
+                .as_ref()
+                .filter(|serial| {
+                    connected.is_none() && available.iter().any(|d| &d.serial == *serial)
+                })
+                .cloned();
             if let Ok(mut s) = state.write() {
                 s.available = available;
+            }
+            if let Some(serial) = reconnect
+                && let Some((deck, meta)) = open_device(
+                    &hidapi,
+                    &serial,
+                    font.as_ref(),
+                    &ui_tx,
+                    &state,
+                    &mut pending_labels,
+                    false,
+                )
+            {
+                connected = Some(deck);
+                connected_meta = Some(meta);
+                keys_down.clear();
             }
         }
 
@@ -328,14 +338,13 @@ fn run_device_thread(
             match deck.read_input(read_timeout) {
                 Ok(StreamDeckInput::NoData) => {}
                 Ok(StreamDeckInput::ButtonStateChange(states)) => {
-                    // `states` is Vec<bool>: true means pressed. We only
-                    // emit on press transitions (not release).
-                    for (idx, pressed) in states.iter().enumerate() {
-                        if *pressed {
-                            let _ =
-                                ui_tx.send(UiEvent::StreamDeckButtonPressed { button_idx: idx });
-                        }
+                    // `states` holds every key (true = down). Only a key
+                    // that has just gone down is a press: holding one key
+                    // while pressing another used to fire the held one again.
+                    for idx in newly_pressed(&keys_down, &states) {
+                        let _ = ui_tx.send(UiEvent::StreamDeckButtonPressed { button_idx: idx });
                     }
+                    keys_down = states;
                 }
                 Ok(_other) => {
                     // Encoder / touch events from Plus / Pedal are
@@ -361,7 +370,67 @@ fn run_device_thread(
     }
 }
 
+/// The keys that went down between two key-state reports. Each report
+/// carries every key, so a key still held isn't a new press (audit M22).
+fn newly_pressed<'a>(before: &'a [bool], now: &'a [bool]) -> impl Iterator<Item = usize> + 'a {
+    now.iter()
+        .enumerate()
+        .filter(|&(idx, &down)| down && !before.get(idx).copied().unwrap_or(false))
+        .map(|(idx, _)| idx)
+}
+
 // ─── Connection helpers ──────────────────────────────────────────────
+
+/// Open `serial`, reset it and paint any queued labels, and tell the UI.
+/// A failure is recorded, and reported to the UI when `report` (a quiet
+/// automatic reconnect doesn't pester the operator every two seconds).
+fn open_device(
+    hidapi: &hidapi::HidApi,
+    serial: &str,
+    font: Option<&FontRef>,
+    ui_tx: &mpsc::Sender<UiEvent>,
+    state: &Arc<RwLock<EngineState>>,
+    pending_labels: &mut Option<Vec<(String, StepColor)>>,
+    report: bool,
+) -> Option<(StreamDeck, ConnectedDevice)> {
+    match try_connect(hidapi, serial) {
+        Ok((deck, meta)) => {
+            info!(
+                serial = %meta.serial,
+                kind = ?meta.kind,
+                key_count = meta.key_count,
+                "Stream Deck connected"
+            );
+            // Reset the device so any leftover button images from a
+            // previous app session are cleared before we paint our own.
+            let _ = deck.reset();
+            let _ = deck.set_brightness(80);
+            let _ = ui_tx.send(UiEvent::StreamDeckConnected {
+                device_name: meta.label.clone(),
+                button_count: meta.key_count,
+            });
+            if let Ok(mut s) = state.write() {
+                s.connected = Some(meta.clone());
+                s.last_error = None;
+            }
+            // Apply any labels queued while disconnected.
+            if let Some(labels) = pending_labels.take() {
+                push_all_labels(&deck, &meta, font, &labels);
+            }
+            Some((deck, meta))
+        }
+        Err(msg) => {
+            warn!("Stream Deck connect failed: {msg}");
+            if let Ok(mut s) = state.write() {
+                s.last_error = Some(msg.clone());
+            }
+            if report {
+                let _ = ui_tx.send(UiEvent::StreamDeckError { message: msg });
+            }
+            None
+        }
+    }
+}
 
 fn try_connect(
     hidapi: &hidapi::HidApi,
@@ -554,6 +623,24 @@ fn char_wrap(word: &str, font: &FontRef<'_>, scale: PxScale, max_w: i32) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Audit M22: holding one key while pressing another fires only the new one.
+    #[test]
+    fn a_held_key_does_not_fire_again() {
+        let first: Vec<usize> = newly_pressed(&[], &[true, false, false]).collect();
+        assert_eq!(first, [0]);
+        // A held, C pressed: only C.
+        let next: Vec<usize> = newly_pressed(&[true, false, false], &[true, false, true]).collect();
+        assert_eq!(next, [2]);
+        // Releases fire nothing; pressing A again after its release does.
+        assert_eq!(
+            newly_pressed(&[true, false, true], &[false, false, true]).count(),
+            0
+        );
+        let again: Vec<usize> =
+            newly_pressed(&[false, false, true], &[true, false, true]).collect();
+        assert_eq!(again, [0]);
+    }
 
     #[test]
     fn render_label_returns_correct_dimensions() {

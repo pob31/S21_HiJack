@@ -486,6 +486,15 @@ fn poll_learn_progress(
                     control,
                     mode,
                 };
+            } else if LearnShared::take_timed_out(learn_shared) {
+                // The capture let go so bound controls work again.
+                tab.learn = LearnPhase::GotTarget {
+                    target: target.clone(),
+                };
+                tab.status_message = Some(format!(
+                    "Nothing was detected for {} s, so learning stopped. Arm it again to retry.",
+                    crate::console::sidecar_learn::LEARN_TIMEOUT.as_secs()
+                ));
             }
         }
         _ => {}

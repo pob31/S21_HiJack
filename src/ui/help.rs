@@ -678,8 +678,11 @@ fn meta(key: HelpKey) -> HelpMeta {
         SidecarLearnHardware => (
             "sidecar.learn_hardware",
             "Now move the sidecar control. A deliberate move is required — \
-             brushing a fader won't bind it. 14-bit pairs, relative \
-             encoders and pitch-bend faders are detected automatically.",
+             brushing a fader won't bind it. Turn an encoder a few clicks \
+             each way: one direction alone doesn't show which encoding it \
+             uses. 14-bit pairs, relative encoders and pitch-bend faders are \
+             detected automatically. Learning stops after 30 s with nothing \
+             detected.",
         ),
         SidecarLearnConfirm => (
             "sidecar.learn_confirm",

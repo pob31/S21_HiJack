@@ -298,6 +298,9 @@ pub struct HiJackApp {
     /// see freshly-plugged devices without an explicit "scan" step;
     /// idle when no device is connected.
     pub stream_deck_engine: Arc<crate::console::streamdeck_engine::StreamDeckEngine>,
+    /// The Stream Deck device last asked of the engine (`Some(None)` = none);
+    /// `None` until the first frame. See `sync_streamdeck_target`.
+    streamdeck_target: Option<Option<String>>,
 
     /// MIDI output engine (external cue triggers). App-lifetime; auto-connects
     /// to the configured port on startup and stays up across console reconnects.
@@ -551,6 +554,7 @@ impl HiJackApp {
             stream_deck_engine: crate::console::streamdeck_engine::StreamDeckEngine::new(
                 ui_tx.clone(),
             ),
+            streamdeck_target: None,
             midi_engine,
             trigger_dispatcher,
 
@@ -1756,6 +1760,27 @@ impl HiJackApp {
     /// Handle a Stream Deck button press: fire the next-to-fire macro
     /// for that button, advance the cursor (with wrap-around), then
     /// refresh the LCD to show the now-next-to-fire macro's name.
+    /// Point the Stream Deck engine at the device the show wants whenever
+    /// that changes: at launch, after a show load, when it's switched on or
+    /// off. Only the Macros tab's controls used to connect it, so a show
+    /// that had one came up without it (audit M22). The engine reconnects by
+    /// itself after a replug.
+    fn sync_streamdeck_target(&mut self) {
+        let Ok(cfg) = self.stream_deck_config.try_read() else {
+            return;
+        };
+        let want = cfg.enabled.then(|| cfg.device_serial.clone()).flatten();
+        drop(cfg);
+        if self.streamdeck_target.as_ref() == Some(&want) {
+            return;
+        }
+        match &want {
+            Some(serial) => self.stream_deck_engine.connect(serial.clone()),
+            None => self.stream_deck_engine.disconnect(),
+        }
+        self.streamdeck_target = Some(want);
+    }
+
     fn handle_streamdeck_button(&self, button_idx: usize) {
         let cfg = self.stream_deck_config.clone();
         let macro_mgr = self.macro_manager.clone();
@@ -1767,6 +1792,10 @@ impl HiJackApp {
             // cursor under a single write-lock.
             let macro_id_to_fire: Option<uuid::Uuid> = {
                 let mut cfg_w = cfg.write().await;
+                // Switched off: presses do nothing (audit M22).
+                if !cfg_w.enabled {
+                    return;
+                }
                 let Some(button) = cfg_w.buttons.get_mut(button_idx) else {
                     return;
                 };
@@ -2770,6 +2799,7 @@ impl eframe::App for HiJackApp {
 
         // Drain async events
         self.drain_events();
+        self.sync_streamdeck_target();
 
         // The first frame's show is the "no unsaved changes" baseline until a
         // load, save or New replaces it.

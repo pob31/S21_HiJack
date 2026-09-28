@@ -90,11 +90,14 @@ impl ControlMode {
 /// Encodings used by endless encoders for signed ticks in a 7-bit CC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RelativeMode {
-    /// 1..=63 = +n, 65..=127 = −(128−v). X-Touch V-pots, most MCU pots.
+    /// 1..=63 = +n, 65..=127 = −(128−v): one click back is 127.
     TwosComplement,
-    /// 64 = 0, above = +, below = −.
+    /// 64 = 0, above = +, below = −: one click back is 63.
     BinaryOffset,
-    /// Bit 6 = sign (set = negative), bits 0..=5 = magnitude.
+    /// Bit 6 = sign (set = negative), bits 0..=5 = magnitude: one click back
+    /// is 65. The Mackie Control convention, used by MCU and X-Touch V-pots
+    /// and the D700's encoders (D700 field note 3). This comment used to
+    /// credit them to two's complement (audit M21).
     SignMagnitude,
 }
 

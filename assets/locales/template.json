@@ -267,7 +267,7 @@
   "sidecar.learn_cancel": "Abandon this learn without saving.",
   "sidecar.learn_confirm": "Save this binding. Motor feedback and a sensible value curve are preset from the target; everything is editable afterwards.",
   "sidecar.learn_console": "Move the target on the console itself (or in this app). Only continuous parameters (faders, sends, pans, gains) can be bound to a fader or encoder.",
-  "sidecar.learn_hardware": "Now move the sidecar control. A deliberate move is required — brushing a fader won't bind it. 14-bit pairs, relative encoders and pitch-bend faders are detected automatically.",
+  "sidecar.learn_hardware": "Now move the sidecar control. A deliberate move is required — brushing a fader won't bind it. Turn an encoder a few clicks each way: one direction alone doesn't show which encoding it uses. 14-bit pairs, relative encoders and pitch-bend faders are detected automatically. Learning stops after 30 s with nothing detected.",
   "sidecar.learn_needs_conn": "Connect to the console first — Learn captures the parameter from inbound console traffic. (External OSC targets can be entered without a console.)",
   "sidecar.learn_raw_osc": "Bind to an external OSC target (host, port, path) instead of a console parameter. The scaled value is appended as a float argument. No motor feedback for external targets.",
   "sidecar.learn_replace": "This hardware control already drives another binding — confirming replaces that binding.",

@@ -76,6 +76,13 @@ struct CandStats {
     /// cluster (small positives, around-64, high negatives). One value
     /// outside and the candidate is treated as absolute.
     all_in_rel_cluster: bool,
+    /// Which relative-encoder bands have been seen: 1..=8, 56..=63,
+    /// 65..=72, 120..=127. They decide the encoding (see
+    /// [`LearnAccumulator::relative_mode`]).
+    seen_low: bool,
+    seen_below_64: bool,
+    seen_above_64: bool,
+    seen_high: bool,
 }
 
 impl CandStats {
@@ -87,6 +94,10 @@ impl CandStats {
             pos_ticks: 0,
             neg_ticks: 0,
             all_in_rel_cluster: true,
+            seen_low: false,
+            seen_below_64: false,
+            seen_above_64: false,
+            seen_high: false,
         }
     }
 
@@ -136,6 +147,13 @@ impl LearnAccumulator {
             if !in_rel_cluster(v) {
                 st.all_in_rel_cluster = false;
             }
+            match v {
+                1..=8 => st.seen_low = true,
+                56..=63 => st.seen_below_64 = true,
+                65..=72 => st.seen_above_64 = true,
+                120..=127 => st.seen_high = true,
+                _ => {}
+            }
             let ticks = RelativeMode::TwosComplement.ticks(v);
             if ticks > 0 {
                 st.pos_ticks += 1;
@@ -169,10 +187,14 @@ impl LearnAccumulator {
                 if st.all_in_rel_cluster {
                     let total = st.pos_ticks + st.neg_ticks;
                     let both = st.pos_ticks > 0 && st.neg_ticks > 0;
-                    if (both && total >= REL_MIN_TICKS_BOTH_WAYS) || total >= REL_MIN_TICKS_ONE_WAY
+                    if ((both && total >= REL_MIN_TICKS_BOTH_WAYS)
+                        || total >= REL_MIN_TICKS_ONE_WAY)
+                        && let Some(mode) = Self::relative_mode(st)
                     {
-                        let mode = self.guess_relative_mode(st);
-                        return Some((ControlSelector::Cc { channel, cc }, mode));
+                        return Some((
+                            ControlSelector::Cc { channel, cc },
+                            ControlMode::Relative(mode),
+                        ));
                     }
                     return None;
                 }
@@ -211,21 +233,23 @@ impl LearnAccumulator {
         }
     }
 
-    /// Best-effort relative-encoding guess from the observed value
-    /// shape. Shown before Confirm and editable after — ambiguity
-    /// (e.g. binary-offset vs sign-magnitude positives) is resolved by
-    /// the operator, not here.
-    fn guess_relative_mode(&self, st: &CandStats) -> ControlMode {
-        let has_low = st.min <= 8 && st.min >= 1;
-        let around_64 = st.min >= 56 && st.max <= 72;
-        if around_64 {
-            ControlMode::Relative(RelativeMode::BinaryOffset)
-        } else if has_low && st.max >= 65 && st.max <= 72 {
-            ControlMode::Relative(RelativeMode::SignMagnitude)
+    /// The relative encoding the observed values prove, or `None` while they
+    /// fit more than one. 120..=127 only occurs in two's complement, 56..=63
+    /// only in binary offset, and 1..=8 with 65..=72 is sign-magnitude.
+    /// Clicks one way are ambiguous (1..=8 is two's complement or
+    /// sign-magnitude; 65..=72 binary offset or sign-magnitude), so learn
+    /// waits for a click the other way. Guessing from one direction learned
+    /// the MCU/D700's sign-magnitude encoders wrongly, reversed or reading
+    /// the first click back as −63 (audit M21).
+    fn relative_mode(st: &CandStats) -> Option<RelativeMode> {
+        if st.seen_high {
+            Some(RelativeMode::TwosComplement)
+        } else if st.seen_below_64 {
+            Some(RelativeMode::BinaryOffset)
+        } else if st.seen_low && st.seen_above_64 {
+            Some(RelativeMode::SignMagnitude)
         } else {
-            // Wrap-around negatives (or low-only positives): the common
-            // two's-complement encoding — also the default guess.
-            ControlMode::Relative(RelativeMode::TwosComplement)
+            None
         }
     }
 }
@@ -240,7 +264,18 @@ pub struct LearnShared {
     pub active: bool,
     pub acc: LearnAccumulator,
     pub result: Option<(ControlSelector, ControlMode)>,
+    /// When the capture was armed, for [`LEARN_TIMEOUT`].
+    armed_at: Option<Instant>,
+    /// Set when the capture gave up; the UI takes it with
+    /// [`LearnShared::take_timed_out`].
+    timed_out: bool,
 }
+
+/// How long the hardware capture stays armed without detecting anything.
+/// While armed it diverts every hardware event, so every bound control is
+/// dead; an operator who leaves the Sidecar tab mid-learn used to leave them
+/// dead until they came back and cancelled (audit M20).
+pub const LEARN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl LearnShared {
     /// Arm the hardware capture (fresh accumulator, no stale result).
@@ -249,6 +284,8 @@ impl LearnShared {
         g.active = true;
         g.acc = LearnAccumulator::default();
         g.result = None;
+        g.armed_at = Some(Instant::now());
+        g.timed_out = false;
     }
 
     /// Disarm without keeping anything.
@@ -257,10 +294,31 @@ impl LearnShared {
         g.active = false;
         g.acc = LearnAccumulator::default();
         g.result = None;
+        g.armed_at = None;
+        g.timed_out = false;
     }
 
-    /// Service side: feed one event while active. Keeps the first
-    /// detection (later movement doesn't steal the capture).
+    /// Service side: whether to divert `ev` into the capture. Past
+    /// [`LEARN_TIMEOUT`] without a detection the capture disarms itself and
+    /// lets events through again (audit M20).
+    pub fn wants(shared: &Mutex<Self>, now: Instant) -> bool {
+        let Ok(mut g) = shared.lock() else {
+            return false;
+        };
+        if g.active
+            && g.armed_at
+                .is_some_and(|t| now.duration_since(t) >= LEARN_TIMEOUT)
+        {
+            g.active = false;
+            g.acc = LearnAccumulator::default();
+            g.timed_out = true;
+        }
+        g.active
+    }
+
+    /// Service side: feed one event while active. The first detection
+    /// disarms the capture, so bound controls work again while the
+    /// operator reviews it (audit M20); later movement can't steal it.
     pub fn feed(shared: &Mutex<Self>, ev: &HwEvent, now: Instant) {
         let mut g = shared.lock().unwrap();
         if !g.active || g.result.is_some() {
@@ -268,7 +326,13 @@ impl LearnShared {
         }
         if let Some(found) = g.acc.feed(ev, now) {
             g.result = Some(found);
+            g.active = false;
         }
+    }
+
+    /// UI side: whether the capture timed out since the last call.
+    pub fn take_timed_out(shared: &Mutex<Self>) -> bool {
+        std::mem::take(&mut shared.lock().unwrap().timed_out)
     }
 
     /// UI side: take the detection once available.
@@ -400,19 +464,51 @@ mod tests {
         );
     }
 
+    /// Audit M21: clicks one way don't say which encoding it is, so learn
+    /// waits for a click back rather than guessing.
     #[test]
-    fn one_way_encoder_needs_more_ticks() {
+    fn one_way_clicks_wait_for_a_click_back() {
         let mut acc = LearnAccumulator::default();
-        // Five +1 ticks: not yet.
-        let evs: Vec<_> = (0..5).map(|_| cc(1, 61, 1)).collect();
+        // +1 ticks well past the one-way bar: two's complement or
+        // sign-magnitude, can't tell yet.
+        let evs: Vec<_> = (0..8).map(|_| cc(1, 61, 1)).collect();
         assert_eq!(feed_all(&mut acc, &evs), None);
-        // The sixth crosses the one-way bar.
-        let got = acc.feed(&cc(1, 61, 1), Instant::now());
+        // 127 is one click back only in two's complement.
+        let got = acc.feed(&cc(1, 61, 127), Instant::now());
         assert_eq!(
             got,
             Some((
                 ControlSelector::Cc { channel: 1, cc: 61 },
                 ControlMode::Relative(RelativeMode::TwosComplement)
+            ))
+        );
+    }
+
+    /// Audit M21: the MCU/D700 encoders (1, 2, then 65 = one click back)
+    /// learn as sign-magnitude. They used to learn as two's complement, so
+    /// the first click back read as −63.
+    #[test]
+    fn mackie_encoder_learns_as_sign_magnitude() {
+        let mut acc = LearnAccumulator::default();
+        let got = feed_all(&mut acc, &[cc(1, 16, 1), cc(1, 16, 2), cc(1, 16, 65)]);
+        assert_eq!(
+            got,
+            Some((
+                ControlSelector::Cc { channel: 1, cc: 16 },
+                ControlMode::Relative(RelativeMode::SignMagnitude)
+            ))
+        );
+
+        // Turned back first: 65, 66 alone could be binary offset going up.
+        let mut acc = LearnAccumulator::default();
+        let evs: Vec<_> = (0..8).map(|_| cc(1, 17, 65)).collect();
+        assert_eq!(feed_all(&mut acc, &evs), None);
+        let got = acc.feed(&cc(1, 17, 1), Instant::now());
+        assert_eq!(
+            got,
+            Some((
+                ControlSelector::Cc { channel: 1, cc: 17 },
+                ControlMode::Relative(RelativeMode::SignMagnitude)
             ))
         );
     }
@@ -489,6 +585,32 @@ mod tests {
         );
         // Taken once; second take is empty.
         assert_eq!(LearnShared::take_result(&shared), None);
+    }
+
+    /// Audit M20: the capture lets go once it has found the control, and
+    /// by itself after LEARN_TIMEOUT, so bound controls don't stay dead.
+    #[test]
+    fn learn_shared_lets_go_on_detection_and_on_timeout() {
+        let shared = Mutex::new(LearnShared::default());
+        LearnShared::arm(&shared);
+        let t = Instant::now();
+        assert!(LearnShared::wants(&shared, t));
+        for v in [4000u16, 5000, 6000, 9000] {
+            LearnShared::feed(&shared, &pb(1, v), t);
+        }
+        assert!(
+            !LearnShared::wants(&shared, t),
+            "detected: events flow again"
+        );
+        assert!(LearnShared::take_result(&shared).is_some());
+
+        LearnShared::arm(&shared);
+        let t = Instant::now();
+        assert!(LearnShared::wants(&shared, t + LEARN_TIMEOUT / 2));
+        assert!(!LearnShared::take_timed_out(&shared));
+        assert!(!LearnShared::wants(&shared, t + LEARN_TIMEOUT));
+        assert!(LearnShared::take_timed_out(&shared));
+        assert!(!LearnShared::take_timed_out(&shared), "taken once");
     }
 
     #[test]

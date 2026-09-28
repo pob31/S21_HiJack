@@ -123,6 +123,10 @@ pots"*, which makes it the natural pick in the learn wizard. It decodes `65` as 
 simply has to be the mode selected for this surface. Worth defaulting or flagging in the UI
 when the bound port looks like a D700.
 
+*Addressed 2026-09-28 (audit M21):* the code comment now names sign-magnitude as the Mackie
+convention, and the learn wizard picks it from the values it sees (1–8 with 65–72). Clicks
+one way only fit two encodings, so it waits for a click back instead of guessing.
+
 ### 4. Button map — Confirmed on hardware (partial)
 
 | Control | Notes (channel 1) | Observed |
@@ -657,6 +661,11 @@ Worth considering when the outbound path is next touched:
 
 None of this is urgent, and nothing here is evidence of damage. It is the kind of thing that
 is cheap to get right while writing the code and expensive to retrofit after a year of shows.
+
+*Addressed 2026-09-28 (audit M19):* motor moves longer than 1/20 of travel are ramped, one
+step per 25 ms tick, so full travel takes about 20 steps (~0.5 s). A new target retargets the
+ramp from where it is, which also covers point 2. The endpoints are still reached (point 3).
+Not yet tried on the D700.
 
 ### 24–26. The vendor HID channel — Confirmed on hardware
 

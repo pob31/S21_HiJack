@@ -15,9 +15,14 @@
 //! 2. **`sent_to_console`** — values we just sent (and optimistically
 //!    mirrored) are consumed-on-match by the motor poll so our own
 //!    write's generation bump doesn't bounce back to the motor.
-//! 3. **`sent_to_motor`** — motor positions we just pushed are matched
-//!    against inbound hardware events so surfaces that echo motor
-//!    moves (most non-touch CC boards) don't loop back to the console.
+//! 3. **`motor_echo`** — the positions we just drove a motor through (a
+//!    whole ramp, for a long move) are matched against inbound hardware
+//!    events so surfaces that echo motor moves (most non-touch CC boards)
+//!    don't loop back to the console.
+//!
+//! Long motor moves are ramped over several ticks, since one full-travel
+//! command slams the fader into its end stop (D700 field note 23), and the
+//! motor poll compares against where the fader actually is (audit M19).
 //!
 //! ## Console-wins sync
 //! On console (re)connect, MIDI (re)connect, enable, and show load the
@@ -68,6 +73,14 @@ const CONSOLE_SEND_FLOOR: Duration = Duration::from_millis(15);
 /// Motor poll / coalesce-flush cadence (~40 Hz — motors can't usefully
 /// track faster).
 const TICK: Duration = Duration::from_millis(25);
+/// Largest motor move in one command, in 14-bit steps: a full-travel move
+/// becomes a ramp of about 20 steps, one per tick (~0.5 s). A single
+/// full-travel command slams the fader into its end stop; about 20 steps
+/// was smooth on the D700 (field note 23).
+const MOTOR_MAX_STEP: u16 = 16383 / 20;
+/// How far (normalized travel) the console may sit from a relative
+/// encoder's last send before the encoder starts again from the console.
+const RESEED_TOLERANCE: f32 = 0.005;
 /// Hardware-echo tolerance in 14-bit steps, per mode: a 7-bit surface
 /// echoes our 14-bit motor value quantized to the MSB (up to 127 off).
 fn motor_echo_tolerance(mode: &ControlMode) -> u16 {
@@ -130,17 +143,51 @@ struct Runtime {
     decode: HashMap<Uuid, DecodeState>,
     /// Console-echo suppression: what we sent, consumed on match.
     sent_to_console: HashMap<ParameterAddress, (f32, Instant)>,
-    /// Hardware-echo suppression: what we pushed to motors.
-    sent_to_motor: HashMap<ControlSelector, (u16, Instant)>,
+    /// Hardware-echo suppression: the positions we just drove each motor
+    /// through.
+    motor_echo: HashMap<ControlSelector, MotorEcho>,
     /// Touch selectors currently held down.
     touched: HashSet<ControlSelector>,
-    /// Last value14 pushed per binding (dedup for the motor poll).
-    last_motor_value: HashMap<Uuid, u16>,
+    /// Where each binding's fader is, as far as we know: the last position
+    /// its hardware reported, or the last we commanded. The motor poll
+    /// dedups against it.
+    fader_pos: HashMap<Uuid, u16>,
+    /// Long motor moves in progress, advanced one step per tick.
+    ramps: HashMap<Uuid, MotorRamp>,
+    /// The normalized value each binding last sent to the console, so a
+    /// relative encoder notices the console moving away from it.
+    last_sent_norm: HashMap<Uuid, f32>,
     /// Per-binding console-send rate limiting + pending coalesced value.
     last_console_send: HashMap<Uuid, Instant>,
     pending_console: HashMap<Uuid, f32>,
     /// Console-state generation at the last motor poll.
     last_generation: u64,
+}
+
+/// The positions a motor was just driven through, until `until`. Reports
+/// inside that range are the motor's own movement echoing back.
+#[derive(Clone, Copy, Debug)]
+struct MotorEcho {
+    lo: u16,
+    hi: u16,
+    until: Instant,
+}
+
+impl MotorEcho {
+    fn covers(&self, v14: u16, tolerance: u16) -> bool {
+        v14.saturating_add(tolerance) >= self.lo && v14 <= self.hi.saturating_add(tolerance)
+    }
+}
+
+/// A long motor move, spread over ticks (audit M19).
+#[derive(Clone, Copy, Debug)]
+struct MotorRamp {
+    control: ControlSelector,
+    mode: ControlMode,
+    touch: Option<ControlSelector>,
+    /// Last position commanded.
+    at: u16,
+    to: u16,
 }
 
 pub async fn run(mut deps: SidecarDeps) {
@@ -186,6 +233,7 @@ pub async fn run(mut deps: SidecarDeps) {
             _ = tick.tick() => {
                 flush_pending_console(&deps, &mut rt).await;
                 motor_poll(&deps, &mut rt).await;
+                advance_ramps(&deps, &mut rt);
             }
         }
     }
@@ -198,13 +246,11 @@ async fn handle_hw_event(
     raw_osc_socket: &mut Option<tokio::net::UdpSocket>,
     ev: &HwEvent,
 ) {
-    // Learn swallows everything while armed.
-    {
-        let active = deps.learn.lock().map(|g| g.active).unwrap_or(false);
-        if active {
-            LearnShared::feed(&deps.learn, ev, Instant::now());
-            return;
-        }
+    // Learn swallows everything while armed (it lets go on detection or
+    // after its timeout; audit M20).
+    if LearnShared::wants(&deps.learn, Instant::now()) {
+        LearnShared::feed(&deps.learn, ev, Instant::now());
+        return;
     }
 
     let config = deps.config.read().await.clone();
@@ -223,7 +269,10 @@ async fn handle_hw_event(
             {
                 matched = true;
                 if *on {
+                    // The hand has it: stop moving the motor under it.
                     rt.touched.insert(*touch);
+                    rt.ramps.remove(&b.id);
+                    rt.motor_echo.remove(&b.control);
                 } else {
                     rt.touched.remove(touch);
                     push_binding_to_motor(deps, rt, b).await;
@@ -240,36 +289,40 @@ async fn handle_hw_event(
         if !b.enabled {
             continue;
         }
-        // Hardware echo of our own motor push? Consume and drop.
         if b.mode.is_absolute()
             && event_matches(&b.control, ev)
-            && let Some((sent_v14, at)) = rt.sent_to_motor.get(&b.control).copied()
+            && let Some(v14) = absolute_v14(&b.mode, ev)
         {
-            let ev_v14 = match ev {
-                HwEvent::PitchBend { value, .. } => Some(*value),
-                HwEvent::Cc { value, .. } if matches!(b.mode, ControlMode::Absolute7) => {
-                    Some(u16::from(*value) << 7)
-                }
-                _ => None,
-            };
-            if let Some(v14) = ev_v14
-                && now.duration_since(at) <= SUPPRESSION_WINDOW
-                && v14.abs_diff(sent_v14) <= motor_echo_tolerance(&b.mode)
-            {
-                rt.sent_to_motor.remove(&b.control);
+            // Our own motor movement reported back: drop it.
+            if rt.motor_echo.get(&b.control).is_some_and(|echo| {
+                now <= echo.until && echo.covers(v14, motor_echo_tolerance(&b.mode))
+            }) {
                 continue;
             }
+            // Otherwise it's where the operator put the fader.
+            rt.fader_pos.insert(b.id, v14);
         }
 
         let st = rt.decode.entry(b.id).or_default();
-        // Seed relative encoders from live console state so the first
-        // tick nudges from reality.
+        // A relative encoder starts from the console's value, and starts
+        // again from it whenever the console has moved away from what this
+        // binding last sent (a recall, a move on the desk). Seeded only once,
+        // the next click after a recall jumped back to the old value
+        // (audit M19).
         if matches!(b.mode, ControlMode::Relative(_))
-            && st.last_norm.is_none()
             && let BindingTarget::ConsoleParameter { address } = &b.target
             && let Some(ParameterValue::Float(v)) = deps.state.read().await.get(address).cloned()
         {
-            st.seed(taper_to_norm(&b.taper, v));
+            let console = taper_to_norm(&b.taper, v);
+            let stale = match (st.last_norm, rt.last_sent_norm.get(&b.id)) {
+                (None, _) => true,
+                (Some(_), Some(sent)) => (sent - console).abs() > RESEED_TOLERANCE,
+                (Some(_), None) => false,
+            };
+            if stale {
+                st.last_norm = Some(console.clamp(0.0, 1.0));
+                rt.pending_console.remove(&b.id);
+            }
         }
 
         let Some(norm) = decode(b, st, ev, now) else {
@@ -328,6 +381,7 @@ async fn send_console_value(deps: &SidecarDeps, rt: &mut Runtime, b: &SidecarBin
 
     rt.sent_to_console
         .insert(address.clone(), (v, Instant::now()));
+    rt.last_sent_norm.insert(b.id, taper_to_norm(&b.taper, v));
     if link.tx.send_parameter(address, &value).await.is_sent() {
         // An operator change: updates the mirror (so the UI reflects the
         // move at once) and runs the rest of the chain. The console's echo
@@ -476,12 +530,109 @@ async fn motor_poll(deps: &SidecarDeps, rt: &mut Runtime) {
             continue;
         }
         let v14 = (taper_to_norm(&b.taper, v) * 16383.0).round() as u16;
-        if rt.last_motor_value.get(&b.id) == Some(&v14) {
+        // Compared with where the fader is (or is ramping to), not with the
+        // last value sent to it: a fader moved by hand on a board without
+        // touch sensing used to stay where the hand left it (audit M19).
+        let there = rt
+            .ramps
+            .get(&b.id)
+            .map_or(rt.fader_pos.get(&b.id) == Some(&v14), |r| r.to == v14);
+        if there {
             continue;
         }
-        rt.last_motor_value.insert(b.id, v14);
-        rt.sent_to_motor.insert(b.control, (v14, Instant::now()));
-        (deps.motor)(b.control, b.mode, v14);
+        drive_motor(deps, rt, b, v14);
+    }
+}
+
+/// An absolute control's position from a hardware event, in 14-bit units.
+fn absolute_v14(mode: &ControlMode, ev: &HwEvent) -> Option<u16> {
+    match ev {
+        HwEvent::PitchBend { value, .. } => Some(*value),
+        HwEvent::Cc { value, .. } if matches!(mode, ControlMode::Absolute7) => {
+            Some(u16::from(*value) << 7)
+        }
+        _ => None,
+    }
+}
+
+/// Move a binding's motor to `v14`: in one command when it's close (or its
+/// position is unknown), otherwise as a ramp the tick advances.
+fn drive_motor(deps: &SidecarDeps, rt: &mut Runtime, b: &SidecarBinding, v14: u16) {
+    match rt.fader_pos.get(&b.id).copied() {
+        Some(at) if at.abs_diff(v14) > MOTOR_MAX_STEP => {
+            rt.ramps.insert(
+                b.id,
+                MotorRamp {
+                    control: b.control,
+                    mode: b.mode,
+                    touch: b.touch,
+                    at,
+                    to: v14,
+                },
+            );
+            step_ramp(deps, rt, b.id);
+        }
+        _ => {
+            rt.ramps.remove(&b.id);
+            command_motor(deps, rt, b.id, b.control, b.mode, v14);
+        }
+    }
+}
+
+/// Send one motor command, and note it for echo matching and dedup.
+fn command_motor(
+    deps: &SidecarDeps,
+    rt: &mut Runtime,
+    id: Uuid,
+    control: ControlSelector,
+    mode: ControlMode,
+    v14: u16,
+) {
+    let now = Instant::now();
+    rt.fader_pos.insert(id, v14);
+    let echo = rt.motor_echo.entry(control).or_insert(MotorEcho {
+        lo: v14,
+        hi: v14,
+        until: now,
+    });
+    if now > echo.until {
+        echo.lo = v14;
+        echo.hi = v14;
+    }
+    echo.lo = echo.lo.min(v14);
+    echo.hi = echo.hi.max(v14);
+    echo.until = now + SUPPRESSION_WINDOW;
+    (deps.motor)(control, mode, v14);
+}
+
+/// One step of a ramp: at most [`MOTOR_MAX_STEP`] toward its target. A ramp
+/// on a fader the operator is touching is dropped.
+fn step_ramp(deps: &SidecarDeps, rt: &mut Runtime, id: Uuid) {
+    let Some(r) = rt.ramps.get(&id).copied() else {
+        return;
+    };
+    if r.touch.is_some_and(|t| rt.touched.contains(&t)) {
+        rt.ramps.remove(&id);
+        return;
+    }
+    let next = if r.at < r.to {
+        r.at.saturating_add(MOTOR_MAX_STEP).min(r.to)
+    } else {
+        r.at.saturating_sub(MOTOR_MAX_STEP).max(r.to)
+    };
+    command_motor(deps, rt, id, r.control, r.mode, next);
+    if next == r.to {
+        rt.ramps.remove(&id);
+    } else if let Some(ramp) = rt.ramps.get_mut(&id) {
+        ramp.at = next;
+    }
+}
+
+/// Advance every running ramp by one step.
+fn advance_ramps(deps: &SidecarDeps, rt: &mut Runtime) {
+    let ids: Vec<Uuid> = rt.ramps.keys().copied().collect();
+    for id in ids {
+        step_ramp(deps, rt, id);
     }
 }
 
@@ -498,9 +649,7 @@ async fn push_binding_to_motor(deps: &SidecarDeps, rt: &mut Runtime, b: &Sidecar
         return;
     };
     let v14 = (taper_to_norm(&b.taper, v) * 16383.0).round() as u16;
-    rt.last_motor_value.insert(b.id, v14);
-    rt.sent_to_motor.insert(b.control, (v14, Instant::now()));
-    (deps.motor)(b.control, b.mode, v14);
+    drive_motor(deps, rt, b, v14);
 }
 
 /// Console-wins sweep: push mirror values to every feedback-capable
@@ -526,9 +675,7 @@ async fn sync_surface(deps: &SidecarDeps, rt: &mut Runtime) {
             continue;
         };
         let v14 = (taper_to_norm(&b.taper, v) * 16383.0).round() as u16;
-        rt.last_motor_value.insert(b.id, v14);
-        rt.sent_to_motor.insert(b.control, (v14, Instant::now()));
-        (deps.motor)(b.control, b.mode, v14);
+        drive_motor(deps, rt, b, v14);
         pushed += 1;
     }
     // Track the generation we synced at so the next poll only diffs
@@ -808,6 +955,140 @@ mod tests {
         assert!(
             h.motor_log.lock().unwrap().is_empty(),
             "own echo must not move the motor"
+        );
+    }
+
+    /// Wait until the motor log holds a value satisfying `done`; returns the log.
+    async fn await_motor(
+        h: &Harness,
+        what: &str,
+        done: impl Fn(&[(ControlSelector, u16)]) -> bool,
+    ) -> Vec<(ControlSelector, u16)> {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let log = h.motor_log.lock().unwrap().clone();
+                if done(&log) {
+                    return log;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+    }
+
+    /// Audit M19: a fader moved by hand (no touch sensing) is brought back
+    /// when a recall returns the console to where the motor last put it, and
+    /// the long move back is ramped rather than one full-travel slam. The
+    /// motor poll used to compare with the last value it sent, see no
+    /// change, and leave the fader where the hand left it.
+    #[tokio::test]
+    async fn a_hand_moved_fader_follows_a_recall_back_in_steps() {
+        let cfg = SidecarConfig {
+            enabled: true,
+            bindings: vec![pb_binding(1, 12)],
+        };
+        let h = harness(cfg).await;
+        h.state
+            .write()
+            .await
+            .update(fader_addr(12), ParameterValue::Float(0.0));
+        let unity = await_motor(&h, "the first push", |log| !log.is_empty()).await[0].1;
+
+        // The hand moves the fader down; the console follows.
+        h.motor_log.lock().unwrap().clear();
+        h.hw_tx
+            .send(HwEvent::PitchBend {
+                channel: 1,
+                value: 2000,
+            })
+            .unwrap();
+        let _ = recv_osc(&h.console_sock).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // A recall puts the console back at unity.
+        h.state
+            .write()
+            .await
+            .update(fader_addr(12), ParameterValue::Float(0.0));
+        let log = await_motor(&h, "the motor back at unity", |log| {
+            log.last().is_some_and(|&(_, v)| v == unity)
+        })
+        .await;
+        let mut at = 2000u16;
+        for &(_, v) in &log {
+            assert!(
+                v.abs_diff(at) <= MOTOR_MAX_STEP,
+                "a {} step from {at} to {v}: long moves must be ramped",
+                v.abs_diff(at)
+            );
+            at = v;
+        }
+        assert!(log.len() > 5, "unity is ~10k steps from 2000: {log:?}");
+    }
+
+    /// Audit M19: after a recall, an encoder click nudges the recalled
+    /// value. The accumulator was seeded once, so the click jumped the
+    /// parameter back to where the encoder had left it.
+    #[tokio::test]
+    async fn an_encoder_click_after_a_recall_nudges_the_recalled_value() {
+        let encoder = SidecarBinding {
+            id: Uuid::from_bytes([0x10; 16]),
+            label: String::new(),
+            control: ControlSelector::Cc {
+                channel: 1,
+                cc: 0x10,
+            },
+            mode: ControlMode::Relative(crate::model::sidecar::RelativeMode::SignMagnitude),
+            target: BindingTarget::ConsoleParameter {
+                address: fader_addr(12),
+            },
+            taper: Taper::FaderDb { max_db: 10.0 },
+            motor_feedback: false,
+            touch: None,
+            relative_step: 1.0 / 100.0,
+            enabled: true,
+        };
+        let h = harness(SidecarConfig {
+            enabled: true,
+            bindings: vec![encoder],
+        })
+        .await;
+        let fader = |h: &Harness| {
+            let state = h.state.clone();
+            async move {
+                match state.read().await.get(&fader_addr(12)) {
+                    Some(ParameterValue::Float(v)) => *v,
+                    other => panic!("no fader value: {other:?}"),
+                }
+            }
+        };
+        let click = || HwEvent::Cc {
+            channel: 1,
+            cc: 0x10,
+            value: 1,
+        };
+
+        h.state
+            .write()
+            .await
+            .update(fader_addr(12), ParameterValue::Float(-40.0));
+        h.hw_tx.send(click()).unwrap();
+        let _ = recv_osc(&h.console_sock).await;
+        assert!(fader(&h).await > -40.0 && fader(&h).await < -35.0);
+
+        // A recall takes the fader to unity; one click up is just above it.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        h.state
+            .write()
+            .await
+            .update(fader_addr(12), ParameterValue::Float(0.0));
+        h.hw_tx.send(click()).unwrap();
+        let _ = recv_osc(&h.console_sock).await;
+        let after = fader(&h).await;
+        assert!(
+            after > 0.0 && after < 1.0,
+            "one click above unity, not back near -40 dB: {after}"
         );
     }
 
