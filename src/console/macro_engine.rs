@@ -419,10 +419,11 @@ fn toggle_value(current: &ParameterValue) -> ParameterValue {
 }
 
 /// Keep a relative step's result within the parameter's range. Repeated steps
-/// used to take pan past ±1 and levels past the top of the fader, and send
-/// that to the desk (audit M18). Pan-family limits come from
-/// `ParameterPath::clamp_value`; fader-driven levels stay between off and
-/// +10 dB, the top of the fader.
+/// used to take pan past ±1, levels past the top of the fader, and EQ gain,
+/// trim and the like past their ends, and send that to the desk (audit M18).
+/// Pan-family limits come from `ParameterPath::clamp_value`; fader-driven
+/// levels stay between off and +10 dB, the top of the fader; the rest use
+/// [`documented_range`].
 fn clamp_relative(
     path: &crate::model::parameter::ParameterPath,
     value: ParameterValue,
@@ -431,8 +432,53 @@ fn clamp_relative(
         ParameterValue::Float(f) if path.is_fader_level() => {
             ParameterValue::Float(f.clamp(crate::model::parameter::FADER_INF_DB, 10.0))
         }
+        ParameterValue::Float(f) => match documented_range(path) {
+            Some((lo, hi)) => ParameterValue::Float(f.clamp(lo, hi)),
+            None => ParameterValue::Float(f),
+        },
+        ParameterValue::Int(i) => match documented_range(path) {
+            Some((lo, hi)) => ParameterValue::Int(i.clamp(lo as i32, hi as i32)),
+            None => ParameterValue::Int(i),
+        },
         v => v,
     }
+}
+
+/// A parameter's range as the S-series GP OSC documents it
+/// (Documentation/PRD.md §3.1.3), for the parameters a relative macro step
+/// can push past an end. `None` where there's no documented range.
+fn documented_range(path: &crate::model::parameter::ParameterPath) -> Option<(f32, f32)> {
+    use crate::model::parameter::ParameterPath as P;
+    Some(match path {
+        P::Trim => (-40.0, 40.0),
+        P::DelayTime => (0.0, 0.682),
+        P::DigitubeDrive => (0.1, 50.0),
+        P::DigitubeBias => (0.0, 6.0),
+        P::Polarity => (0.0, 3.0),
+        P::HighpassFrequency
+        | P::LowpassFrequency
+        | P::EqBandFrequency(_)
+        | P::Dyn1CrossoverHigh
+        | P::Dyn1CrossoverLow
+        | P::Dyn2Highpass
+        | P::Dyn2Lowpass => (20.0, 20_000.0),
+        P::EqBandGain(_) => (-18.0, 18.0),
+        P::EqBandQ(_) => (0.1, 20.0),
+        P::EqBandDynThreshold(_) | P::Dyn1Threshold(_) | P::Dyn2Threshold => (-60.0, 0.0),
+        P::EqBandDynRatio(_) => (1.0, 10.0),
+        P::Dyn1Ratio(_) | P::Dyn2Ratio => (1.0, 50.0),
+        P::EqBandDynAttack(_) | P::Dyn1Attack(_) | P::Dyn2Attack => (0.0005, 0.1),
+        P::EqBandDynRelease(_) => (0.01, 10.0),
+        P::Dyn1Release(_) | P::Dyn2Release => (0.005, 5.0),
+        P::Dyn1Gain(_) | P::Dyn2Gain => (0.0, 40.0),
+        P::Dyn2Range => (-90.0, 0.0),
+        P::Dyn2Hold => (0.002, 2.0),
+        P::Dyn1Knee(_) | P::Dyn2Knee => (0.0, 2.0),
+        P::Dyn1Mode => (0.0, 1.0),
+        P::Dyn2Mode => (0.0, 2.0),
+        P::GeqBandGain(_) => (-12.0, 12.0),
+        _ => return None,
+    })
 }
 
 /// Apply a relative offset to a numeric parameter value.
@@ -442,7 +488,10 @@ fn clamp_relative(
 fn apply_relative_offset(current: &ParameterValue, offset: f32) -> Option<ParameterValue> {
     match current {
         ParameterValue::Float(f) => Some(ParameterValue::Float(f + offset)),
-        ParameterValue::Int(i) => Some(ParameterValue::Int(i + offset.round() as i32)),
+        // Saturating: a large offset used to overflow (audit M18).
+        ParameterValue::Int(i) => {
+            Some(ParameterValue::Int(i.saturating_add(offset.round() as i32)))
+        }
         _ => None,
     }
 }
@@ -587,8 +636,55 @@ mod tests {
             ParameterValue::Float(-7.0)
         );
         assert_eq!(
-            step(&ParameterPath::EqBandGain(1), 12.0, 10.0),
+            step(&ParameterPath::AnalogGain, 12.0, 10.0),
             ParameterValue::Float(22.0)
+        );
+    }
+
+    /// Audit M18: EQ gain, trim and the like stop at their documented ends
+    /// too, and an integer step can't overflow.
+    #[test]
+    fn relative_steps_stop_at_documented_ends() {
+        let step = |path: ParameterPath, current: ParameterValue, offset: f32| {
+            apply_relative_offset(&current, offset).map(|v| clamp_relative(&path, v))
+        };
+        assert_eq!(
+            step(
+                ParameterPath::EqBandGain(2),
+                ParameterValue::Float(15.0),
+                6.0
+            ),
+            Some(ParameterValue::Float(18.0))
+        );
+        assert_eq!(
+            step(ParameterPath::Trim, ParameterValue::Float(-35.0), -10.0),
+            Some(ParameterValue::Float(-40.0))
+        );
+        assert_eq!(
+            step(
+                ParameterPath::EqBandFrequency(1),
+                ParameterValue::Float(19_000.0),
+                5_000.0
+            ),
+            Some(ParameterValue::Float(20_000.0))
+        );
+        assert_eq!(
+            step(ParameterPath::Polarity, ParameterValue::Int(3), 1.0),
+            Some(ParameterValue::Int(3))
+        );
+        // Within range: untouched.
+        assert_eq!(
+            step(
+                ParameterPath::EqBandGain(2),
+                ParameterValue::Float(3.0),
+                2.0
+            ),
+            Some(ParameterValue::Float(5.0))
+        );
+        // No documented range: saturates instead of overflowing.
+        assert_eq!(
+            apply_relative_offset(&ParameterValue::Int(i32::MAX - 1), 10.0),
+            Some(ParameterValue::Int(i32::MAX))
         );
     }
 

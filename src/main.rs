@@ -23,7 +23,7 @@ mod ui;
 mod version;
 mod web;
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -232,18 +232,48 @@ async fn load_headless_show(
     }
 }
 
+/// A command-line IP address (IPv4 or IPv6, no port), or exit with a message.
+/// Formatting `"{ip}:{port}"` and parsing that rejected IPv6 literals, and
+/// panicked on a bad `--ipad-ip` (audit M3).
+fn ip_arg(what: &str, ip: &str) -> IpAddr {
+    ip.trim().parse().unwrap_or_else(|e| {
+        error!("Invalid {what} {ip:?}: {e}");
+        std::process::exit(1);
+    })
+}
+
+/// A listener's source allowlist, or exit with a message. Headless has no
+/// screen to show a listener that didn't start, so a bad list stops the
+/// daemon instead of leaving monitoring or the web page off without a word
+/// (audit M14).
+fn allowlist_arg(flag: &str, raw: &[String]) -> Vec<model::cidr::Ipv4Cidr> {
+    persistence::show_file::parse_cidr_allowlist(raw).unwrap_or_else(|e| {
+        error!("Invalid {flag}: {e}");
+        std::process::exit(1);
+    })
+}
+
+/// A listening address on every interface.
+fn any_addr(port: u16) -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)
+}
+
 /// Run in headless mode — the original daemon behavior.
 async fn run_headless(args: Args) {
-    let console_addr: SocketAddr = format!("{}:{}", args.console_ip, args.console_port)
-        .parse()
-        .unwrap_or_else(|e| {
-            error!("Invalid console address: {e}");
-            std::process::exit(1);
-        });
-
-    let local_addr: SocketAddr = format!("0.0.0.0:{}", args.local_port)
-        .parse()
-        .expect("Invalid local address");
+    let console_addr = SocketAddr::new(ip_arg("console IP", &args.console_ip), args.console_port);
+    let local_addr = any_addr(args.local_port);
+    // Checked before anything connects; only for the listeners that will run.
+    let monitor_allowlist = if args.monitor_port > 0 {
+        allowlist_arg("--monitor-allow-cidr", &args.monitor_allow_cidrs)
+    } else {
+        Vec::new()
+    };
+    let web_allowlist = if args.web_port > 0 {
+        allowlist_arg("--web-allow-cidr", &args.web_allow_cidrs)
+    } else {
+        Vec::new()
+    };
+    let trigger_allowlist = allowlist_arg("--trigger-allow-cidr", &args.trigger_allow_cidrs);
 
     // Load the show before anything connects, so every manager starts
     // populated and the console config is right from the first message.
@@ -448,17 +478,12 @@ async fn run_headless(args: Args) {
     let mut ipad_sender_for_monitor = None;
 
     if mode.uses_ipad_protocol() && send_port > 0 {
-        let console_ipad_addr: SocketAddr = format!("{}:{}", args.console_ip, send_port)
-            .parse()
-            .expect("Invalid console iPad address");
+        let console_ipad_addr = SocketAddr::new(console_addr.ip(), send_port);
 
         match mode {
             OperatingMode::Mode2 => {
-                let ipad_local: SocketAddr = if recv_port > 0 {
-                    format!("0.0.0.0:{}", recv_port).parse().unwrap()
-                } else {
-                    "0.0.0.0:0".parse().unwrap()
-                };
+                // Port 0 (not set): the OS picks one.
+                let ipad_local = any_addr(recv_port);
                 match ipad_connection::connect_mode2(
                     console_ipad_addr,
                     ipad_local,
@@ -483,28 +508,39 @@ async fn run_headless(args: Args) {
                 }
             }
             OperatingMode::Mode3 => {
-                let local_console_addr: SocketAddr = format!("0.0.0.0:{}", recv_port)
-                    .parse()
-                    .expect("Invalid iPad local port (--ipad-receive-port required for Mode 3)");
-                // In headless mode, use recv_port+1000 for iPad listener by default
-                let ipad_listen_port = recv_port + 1000;
-                let ipad_reply_port = recv_port + 1000 - 1;
-                let ipad_listen_addr: SocketAddr = format!("0.0.0.0:{}", ipad_listen_port)
-                    .parse()
-                    .expect("Invalid iPad listen address");
+                let local_console_addr = any_addr(recv_port);
+                // In headless mode, use recv_port+1000 for iPad listener by
+                // default. Checked: `recv_port + 1000` overflowed near 65535.
+                let ports = recv_port
+                    .checked_add(1000)
+                    .map(|listen| (listen, listen - 1));
                 // Mode 3 proxies to a specific iPad — its IP is required
-                // (no autodiscovery). Skip the proxy if --ipad-ip is absent.
-                match args.ipad_ip.as_ref() {
-                    None => {
+                // (no autodiscovery). Skip the proxy if --ipad-ip is absent
+                // or not an IP address.
+                let target_ip = args
+                    .ipad_ip
+                    .as_deref()
+                    .map(|ip| ip.trim().parse::<IpAddr>());
+                match (target_ip, ports) {
+                    (None, _) => {
                         error!(
                             "Mode 3: --ipad-ip is required (the DiGiCo iPad app shows it) — \
                              iPad proxy not started"
                         );
                     }
-                    Some(ip) => {
-                        let ipad_target: SocketAddr = format!("{ip}:{ipad_reply_port}")
-                            .parse()
-                            .expect("Invalid iPad IP");
+                    (Some(Err(e)), _) => {
+                        error!("Mode 3: invalid --ipad-ip ({e}) — iPad proxy not started");
+                    }
+                    (_, None) => {
+                        error!(
+                            recv_port,
+                            "Mode 3: iPad receive port too high for the proxy's ports \
+                             (it +1000) — iPad proxy not started"
+                        );
+                    }
+                    (Some(Ok(ip)), Some((ipad_listen_port, ipad_reply_port))) => {
+                        let ipad_listen_addr = any_addr(ipad_listen_port);
+                        let ipad_target = SocketAddr::new(ip, ipad_reply_port);
                         match ipad_connection::connect_mode3_proxy(
                             console_ipad_addr,
                             local_console_addr,
@@ -559,22 +595,14 @@ async fn run_headless(args: Args) {
 
     // Native UDP monitor server (if enabled): reply socket + UDP fan-out task.
     if args.monitor_port > 0 {
-        let monitor_addr: SocketAddr = format!("0.0.0.0:{}", args.monitor_port)
-            .parse()
-            .expect("Invalid monitor address");
-        let monitor_allowlist =
-            persistence::show_file::parse_cidr_allowlist(&args.monitor_allow_cidrs);
-        // A bad allowlist fails the start like a bind error would (audit M14).
-        match async {
-            MonitorServer::start_with_cancel(
-                monitor_addr,
-                cancel_token.clone(),
-                None,
-                monitor_allowlist?,
-                monitor_cmd_tx.clone(),
-            )
-            .await
-        }
+        let monitor_addr = any_addr(args.monitor_port);
+        match MonitorServer::start_with_cancel(
+            monitor_addr,
+            cancel_token.clone(),
+            None,
+            monitor_allowlist,
+            monitor_cmd_tx.clone(),
+        )
         .await
         {
             Ok(monitor_sender) => {
@@ -611,7 +639,7 @@ async fn run_headless(args: Args) {
                 tokio::select! {
                     Some(cmd) = monitor_rx.recv() => {
                         let mut mgr = mon_mgr.write().await;
-                        monitor_engine.handle_command(cmd, &mut mgr, true).await;
+                        monitor_engine.handle_command(cmd, &mut mgr).await;
                     }
                     _ = poll_interval.tick() => {
                         let mgr = mon_mgr.read().await;
@@ -634,10 +662,7 @@ async fn run_headless(args: Args) {
 
     // Web monitor server (if enabled): shares the command channel + broadcast.
     if args.web_port > 0 {
-        let web_addr: SocketAddr = format!("0.0.0.0:{}", args.web_port)
-            .parse()
-            .expect("Invalid web address");
-        let web_allowlist = persistence::show_file::parse_cidr_allowlist(&args.web_allow_cidrs);
+        let web_addr = any_addr(args.web_port);
         let web_ctx = web::WebContext {
             state: manager.state(),
             manager: monitor_manager.clone(),
@@ -646,31 +671,21 @@ async fn run_headless(args: Args) {
             offline_mode: offline_mode.clone(),
             conn_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
-        match async {
-            web::start_web_server(web_addr, cancel_token.clone(), web_allowlist?, web_ctx).await
-        }
-        .await
-        {
+        match web::start_web_server(web_addr, cancel_token.clone(), web_allowlist, web_ctx).await {
             Ok(()) => info!(port = args.web_port, "Web server started"),
             Err(e) => error!("Failed to start web server: {e}"),
         }
     }
 
     // Start QLab trigger listener
-    let trigger_addr: SocketAddr = format!("0.0.0.0:{}", args.trigger_port)
-        .parse()
-        .expect("Invalid trigger address");
+    let trigger_addr = any_addr(args.trigger_port);
 
-    let trigger_allowlist = persistence::show_file::parse_cidr_allowlist(&args.trigger_allow_cidrs);
-    let mut trigger_rx = match async {
-        TriggerListener::start_with_cancel(
-            trigger_addr,
-            cancel_token.clone(),
-            None,
-            trigger_allowlist?,
-        )
-        .await
-    }
+    let mut trigger_rx = match TriggerListener::start_with_cancel(
+        trigger_addr,
+        cancel_token.clone(),
+        None,
+        trigger_allowlist,
+    )
     .await
     {
         Ok(rx) => rx,

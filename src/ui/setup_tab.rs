@@ -2751,6 +2751,7 @@ pub(crate) fn start_connection(
             }
             Err(e) => {
                 error!("Failed to start trigger listener: {e}");
+                let _ = tx.send(UiEvent::TriggerListenerFailed(e.to_string()));
             }
         }
 
@@ -2855,7 +2856,7 @@ pub(crate) fn start_connection(
                         }
                         Some(cmd) = monitor_rx.recv() => {
                             let mut mgr = mon_mgr_loop.write().await;
-                            monitor_engine.handle_command(cmd, &mut mgr, true).await;
+                            monitor_engine.handle_command(cmd, &mut mgr).await;
                         }
                         _ = poll_interval.tick() => {
                             let mgr = mon_mgr_loop.read().await;

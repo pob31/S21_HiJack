@@ -266,6 +266,9 @@ pub enum UiEvent {
     MonitorServerFailed(String),
     WebServerStarted,
     WebServerFailed(String),
+    /// The QLab / external trigger listener didn't start (a bad allowlist,
+    /// or the port in use). It used to be logged only (audit M14).
+    TriggerListenerFailed(String),
 
     // ─── App-internal commands triggered by macro steps ──────────────
     //

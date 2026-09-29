@@ -271,9 +271,16 @@ impl MacroRecording {
     /// values per address is safe and — unlike a fixed time window — catches
     /// late echoes too. A genuine A→B→A sequence still records every step,
     /// because the intervening B changes the address's last recorded value.
+    /// True once the recording holds [`MAX_RECORDED_STEPS`]: later changes
+    /// are dropped, which the Macros tab says rather than stopping quietly.
+    pub fn is_full(&self) -> bool {
+        self.steps.len() >= MAX_RECORDED_STEPS
+    }
+
     pub fn record(&mut self, address: ParameterAddress, value: ParameterValue) {
-        // A bound on a recording left running (audit M18).
-        if self.steps.len() >= MAX_RECORDED_STEPS {
+        // A bound on a recording left running (audit M18). The Macros tab
+        // shows the recording as full (see `is_full`).
+        if self.is_full() {
             return;
         }
         if let Some(last) = self.last_value_per_address.get(&address) {
@@ -340,6 +347,7 @@ mod tests {
             rec.record(fader.clone(), ParameterValue::Float(i as f32));
         }
         assert_eq!(rec.step_count(), MAX_RECORDED_STEPS);
+        assert!(rec.is_full());
     }
     use crate::model::channel::ChannelId;
     use crate::model::parameter::ParameterPath;

@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::{RwLock, broadcast};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::console::console_tx::ConsoleTx;
+use crate::logging::warn_throttled;
 use crate::model::channel::ChannelId;
 use crate::model::monitor::MonitorClient;
 use crate::model::parameter::{FADER_INF_DB, ParameterAddress, ParameterPath, ParameterValue};
@@ -74,27 +75,31 @@ impl MonitorEngine {
     }
 
     /// Handle a single monitor command.
-    pub async fn handle_command(
-        &self,
-        cmd: MonitorCommand,
-        manager: &mut MonitorManager,
-        console_connected: bool,
-    ) {
+    pub async fn handle_command(&self, cmd: MonitorCommand, manager: &mut MonitorManager) {
         match cmd {
             MonitorCommand::Connect {
                 client_name,
                 endpoint,
             } => {
                 if manager.find_by_name(&client_name).is_none() {
-                    warn!(name = %client_name, "Monitor connect: unknown client");
+                    warn_throttled!(name = %client_name, "Monitor connect: unknown client");
                     self.publish(MonitorStateEvent::UnknownClient {
                         endpoint,
                         name: client_name,
                     });
                     return;
                 }
+                // Each heartbeat is a Connect: only a new connection is news
+                // (audit M13: this logged at info every 10 s per phone).
+                let was_connected = manager
+                    .find_by_name(&client_name)
+                    .is_some_and(|c| c.is_connected() && c.endpoint == Some(endpoint));
                 manager.update_last_seen(&client_name, endpoint);
-                info!(name = %client_name, ?endpoint, "Monitor client connected");
+                if was_connected {
+                    debug!(name = %client_name, ?endpoint, "Monitor client heartbeat");
+                } else {
+                    info!(name = %client_name, ?endpoint, "Monitor client connected");
+                }
 
                 // Publish full permitted state to the connecting client.
                 if let Some(client) = manager.find_by_name(&client_name) {
@@ -111,7 +116,7 @@ impl MonitorEngine {
                     let client = client.clone();
                     self.publish_client_state(&client).await;
                 } else {
-                    warn!(name = %client_name, "Monitor state: unknown client");
+                    warn_throttled!(name = %client_name, "Monitor state: unknown client");
                 }
             }
             MonitorCommand::SetSendLevel {
@@ -215,9 +220,16 @@ impl MonitorEngine {
                 info!(?endpoint, "Monitor discovery reply queued");
             }
             MonitorCommand::QueryConsoleStatus { endpoint } => {
+                // A live link, as the web Welcome reports it. Every caller
+                // used to pass `true` (audit, missed Low).
+                let connected = matches!(
+                    self.state.read().await.health,
+                    crate::model::state::ConnectionHealth::Connected
+                        | crate::model::state::ConnectionHealth::Idle
+                );
                 self.publish(MonitorStateEvent::ConsoleStatus {
                     endpoint,
-                    connected: console_connected,
+                    connected,
                 });
             }
             MonitorCommand::QueryClientCount { endpoint } => {
@@ -237,17 +249,17 @@ impl MonitorEngine {
         manager: &MonitorManager,
     ) {
         if !value.is_finite() {
-            warn!(name = %client_name, aux_ch, "Monitor aux: non-finite value refused");
+            warn_throttled!(name = %client_name, aux_ch, "Monitor aux: non-finite value refused");
             return;
         }
         if !self.desk_has(None, aux_ch).await {
-            warn!(name = %client_name, aux_ch, "Monitor aux: no such aux on the desk");
+            warn_throttled!(name = %client_name, aux_ch, "Monitor aux: no such aux on the desk");
             return;
         }
         let client = match manager.find_by_name(client_name) {
             Some(c) => c,
             None => {
-                warn!(name = %client_name, "Monitor aux: unknown client");
+                warn_throttled!(name = %client_name, "Monitor aux: unknown client");
                 return;
             }
         };
@@ -255,7 +267,7 @@ impl MonitorEngine {
         // input channel, so check `permitted_auxes` directly rather than
         // going through `is_permitted`, which would also test `visible_inputs`.
         if !client.permitted_auxes.contains(&aux_ch) {
-            warn!(name = %client_name, aux_ch, "Monitor aux: not permitted");
+            warn_throttled!(name = %client_name, aux_ch, "Monitor aux: not permitted");
             return;
         }
 
@@ -308,11 +320,11 @@ impl MonitorEngine {
         // an infinite f32) would otherwise land in the mirror before the send
         // is refused (audit H3).
         if !value.is_finite() {
-            warn!(name = %client_name, input_ch, aux_ch, "Monitor send change: non-finite value refused");
+            warn_throttled!(name = %client_name, input_ch, aux_ch, "Monitor send change: non-finite value refused");
             return;
         }
         if !self.desk_has(Some(input_ch), aux_ch).await {
-            warn!(name = %client_name, input_ch, aux_ch, "Monitor send change: no such input or aux on the desk");
+            warn_throttled!(name = %client_name, input_ch, aux_ch, "Monitor send change: no such input or aux on the desk");
             return;
         }
         // Validate, and capture the originating endpoint so the echo can skip
@@ -321,7 +333,7 @@ impl MonitorEngine {
         let source = match manager.find_by_name(client_name) {
             Some(c) => {
                 if !c.is_permitted(input_ch, aux_ch) {
-                    warn!(
+                    warn_throttled!(
                         name = %client_name, input_ch, aux_ch,
                         "Monitor send change: permission denied"
                     );
@@ -330,7 +342,7 @@ impl MonitorEngine {
                 c.endpoint
             }
             None => {
-                warn!(name = %client_name, "Monitor send change: unknown client");
+                warn_throttled!(name = %client_name, "Monitor send change: unknown client");
                 return;
             }
         };
@@ -842,7 +854,6 @@ mod tests {
                         endpoint: ClientEndpoint::Udp(addr_a),
                     },
                     &mut mgr,
-                    true,
                 )
                 .await;
             engine
@@ -852,7 +863,6 @@ mod tests {
                         endpoint: ClientEndpoint::Udp(addr_b),
                     },
                     &mut mgr,
-                    true,
                 )
                 .await;
         }
@@ -881,7 +891,6 @@ mod tests {
                         endpoint: ClientEndpoint::Udp(addr_a),
                     },
                     &mut mgr,
-                    true,
                 )
                 .await;
         }
@@ -942,7 +951,7 @@ mod tests {
                     endpoint,
                 },
             ] {
-                engine.handle_command(cmd, &mut mgr, true).await;
+                engine.handle_command(cmd, &mut mgr).await;
             }
         }
         assert_eq!(state.read().await.parameter_count(), 0);
@@ -957,7 +966,6 @@ mod tests {
                     endpoint,
                 },
                 &mut mgr,
-                true,
             )
             .await;
         assert_eq!(state.read().await.parameter_count(), 1);
@@ -995,11 +1003,11 @@ mod tests {
                 endpoint,
             },
         ] {
-            engine.handle_command(cmd, &mut mgr, true).await;
+            engine.handle_command(cmd, &mut mgr).await;
         }
         assert_eq!(state.read().await.parameter_count(), 0);
 
-        engine.handle_command(level(48, 1), &mut mgr, true).await;
+        engine.handle_command(level(48, 1), &mut mgr).await;
         assert_eq!(state.read().await.parameter_count(), 1);
     }
 
@@ -1023,7 +1031,6 @@ mod tests {
                     endpoint,
                 },
                 &mut mgr,
-                true,
             )
             .await;
 

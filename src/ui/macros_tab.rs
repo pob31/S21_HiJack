@@ -607,6 +607,11 @@ fn draw_learn_section(
                         ))
                         .color(theme::TEXT_PRIMARY),
                     );
+                    // The cap used to drop later changes without a word
+                    // (audit M18).
+                    if step_count >= crate::model::macro_def::MAX_RECORDED_STEPS {
+                        ui.colored_label(theme::ACCENT_RED, "full — later changes aren't recorded");
+                    }
                 });
 
                 ui.horizontal(|ui| {

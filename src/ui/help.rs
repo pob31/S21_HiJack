@@ -412,6 +412,7 @@ pub enum HelpKey {
     SetupWarnIpadConnFailed,
     SetupWarnMonitorServerFailed,
     SetupWarnWebServerFailed,
+    SetupWarnTriggerListenerFailed,
 
     // ── Snapshots / cues (inline text) ──
     SnapshotInfoScopeHint,
@@ -1735,6 +1736,12 @@ fn meta(key: HelpKey) -> HelpMeta {
             "The web monitor server couldn't start — most often the port is \
              already in use.",
         ),
+        SetupWarnTriggerListenerFailed => (
+            "setup.warn_trigger_listener_failed",
+            "The trigger listener couldn't start, so QLab and other external \
+             triggers aren't received. Check the trigger allowlist in Advanced \
+             Settings, and that the trigger port isn't already in use.",
+        ),
 
         // ── Snapshots / cues (inline text) ──
         SnapshotInfoScopeHint => (
@@ -2182,6 +2189,7 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::SetupWarnIpadConnFailed,
     HelpKey::SetupWarnMonitorServerFailed,
     HelpKey::SetupWarnWebServerFailed,
+    HelpKey::SetupWarnTriggerListenerFailed,
     HelpKey::SnapshotInfoScopeHint,
     HelpKey::SnapshotInfoEmpty,
     HelpKey::CueInfoEmpty,

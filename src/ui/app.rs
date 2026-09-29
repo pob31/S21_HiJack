@@ -1547,6 +1547,12 @@ impl HiJackApp {
                         HelpKey::SetupWarnWebServerFailed,
                     ));
                 }
+                UiEvent::TriggerListenerFailed(msg) => {
+                    self.setup.status_message = Some(StatusMessage::with_help(
+                        format!("Trigger listener failed: {msg}"),
+                        HelpKey::SetupWarnTriggerListenerFailed,
+                    ));
+                }
                 // ── Macro-emitted app-internal commands ─────────────
                 UiEvent::MacroFireGo => {
                     super::cue_transport::fire_go(

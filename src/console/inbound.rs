@@ -167,7 +167,7 @@ async fn apply_parameter_change(
 
     // Mark this cell dirty IF the value actually changed. The dirty
     // tracker is suppression-aware, so echoes from snapshot recall
-    // (which set begin_suppression before sending) are ignored. The
+    // (which holds a suppression guard while sending) are ignored. The
     // first sample after a connection comes through old_value=None,
     // which we treat as "this is the baseline" — not a change.
     // Also gated on the console-load window: a memory load floods

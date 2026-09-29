@@ -248,6 +248,7 @@
   "setup.warn_monitor_server_failed": "The monitor server couldn't start — most often the port is already in use.",
   "setup.warn_show_corrupt": "The show file appears corrupt. Choose a backup or autosave from the recovery dialog.",
   "setup.warn_show_file_error": "The show file could not be loaded or saved. See the message for details.",
+  "setup.warn_trigger_listener_failed": "The trigger listener couldn't start, so QLab and other external triggers aren't received. Check the trigger allowlist in Advanced Settings, and that the trigger port isn't already in use.",
   "setup.warn_web_server_failed": "The web monitor server couldn't start — most often the port is already in use.",
   "shift.apply": "Apply the row shift to every matching cue.",
   "shift.close": "Close without shifting.",

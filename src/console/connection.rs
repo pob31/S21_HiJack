@@ -493,6 +493,7 @@ async fn process_message(parsed: &ParsedOscMessage, daemon: &DaemonState, sender
             );
             let mut s = daemon.state.write().await;
             crate::console::discovery::apply_channel_count(&mut s.config, channel_type, *count);
+            publish_bus_layout(sender, &s.config);
         }
         ParsedOscMessage::CurrentSnapshot(row) => {
             // The desk reported (or echoed) a snapshot load. Normalize the wire

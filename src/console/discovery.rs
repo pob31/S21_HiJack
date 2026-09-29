@@ -24,18 +24,28 @@ pub fn apply_channel_counts(
     config.control_group_count = control_groups;
     config.matrix_output_count = matrices;
     config.plus_mode = PlusMode::from_input_count(inputs);
+    fit_bus_layout(config);
+}
 
-    // Generate the default layout (first `aux` buses are aux, the rest group)
-    // unless the existing one agrees with these counts. The iPad handshake
-    // reports the real, possibly interleaved, split, so a layout with the
-    // right number of auxes is kept. One from an old show file or from before
-    // the desk was reconfigured used to be kept too, numbering every bus
-    // write wrongly for the whole session (audit H1).
+/// Make the aux/group bus layout agree with the aux and group counts.
+///
+/// Generates the default layout (first `aux` buses are aux, the rest group)
+/// unless the existing one agrees with the counts. The iPad handshake reports
+/// the real, possibly interleaved, split, so a layout with the right number of
+/// auxes (and room for the groups) is kept: a later GP counts reply doesn't
+/// replace it. One from an old show file or from before the desk was
+/// reconfigured used to be kept too, numbering every bus write wrongly for the
+/// whole session (audit H1).
+pub fn fit_bus_layout(config: &mut ConsoleConfig) {
+    let (aux, groups) = (
+        config.aux_output_count as usize,
+        config.group_output_count as usize,
+    );
     let known_auxes = config.mix_output_types.iter().filter(|&&t| t).count();
     let known_groups = config.mix_output_types.len() - known_auxes;
-    if known_auxes != aux as usize || known_groups < groups as usize {
-        config.mix_output_types = std::iter::repeat_n(true, aux as usize)
-            .chain(std::iter::repeat_n(false, groups as usize))
+    if known_auxes != aux || known_groups < groups {
+        config.mix_output_types = std::iter::repeat_n(true, aux)
+            .chain(std::iter::repeat_n(false, groups))
             .collect();
     }
 }
@@ -48,8 +58,16 @@ pub fn apply_channel_count(config: &mut ConsoleConfig, channel_type: &str, count
             config.input_channel_count = count;
             config.plus_mode = PlusMode::from_input_count(count);
         }
-        "aux" => config.aux_output_count = count,
-        "group" => config.group_output_count = count,
+        // The bus layout follows, as for the positional reply: these counts
+        // used to leave it as it was (audit follow-up to H1).
+        "aux" => {
+            config.aux_output_count = count;
+            fit_bus_layout(config);
+        }
+        "group" => {
+            config.group_output_count = count;
+            fit_bus_layout(config);
+        }
         "matrix" => config.matrix_output_count = count,
         "matrix_input" => config.matrix_input_count = count,
         "control_group" => config.control_group_count = count,
@@ -128,6 +146,31 @@ mod tests {
             ..ConsoleConfig::default()
         };
         apply_channel_counts(&mut config, 48, 3, 3, 10, 8, 1);
+        assert_eq!(config.mix_output_types, interleaved);
+    }
+
+    /// The per-type count replies fit the layout too, and keep a matching
+    /// interleaved one; they used to leave a stale layout in place.
+    #[test]
+    fn per_type_counts_fit_the_bus_layout() {
+        let mut config = ConsoleConfig {
+            mix_output_types: (0..24).map(|i| i < 8).collect(),
+            ..ConsoleConfig::default()
+        };
+        apply_channel_count(&mut config, "aux", 10);
+        apply_channel_count(&mut config, "group", 14);
+        let expected: Vec<bool> = (0..24).map(|i| i < 10).collect();
+        assert_eq!(config.mix_output_types, expected);
+
+        let interleaved = vec![true, false, true, false, true, false];
+        let mut config = ConsoleConfig {
+            mix_output_types: interleaved.clone(),
+            aux_output_count: 3,
+            group_output_count: 3,
+            ..ConsoleConfig::default()
+        };
+        apply_channel_count(&mut config, "aux", 3);
+        apply_channel_count(&mut config, "group", 3);
         assert_eq!(config.mix_output_types, interleaved);
     }
 }

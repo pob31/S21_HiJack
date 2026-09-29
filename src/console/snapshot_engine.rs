@@ -254,10 +254,11 @@ pub struct SnapshotEngine {
     /// for a synchronous take/store, never across an `.await`.
     superseded_plan: std::sync::Mutex<Option<(u64, Vec<(ParameterAddress, ParameterValue)>)>>,
     /// Phase C: optional dirty tracker. When present, recall() and
-    /// recall_cue() bracket their writes with begin_suppression /
-    /// end_suppression so console echoes from the recall don't pollute the
-    /// dirty set, and clear() the tracker on a successful recall (mirroring
-    /// `ParameterDirtyTracker::endSuppressionAndClear` from WFS-DIY).
+    /// recall_cue() hold a `SuppressionGuard` (`DirtyTracker::suppress`)
+    /// across their writes so console echoes from the recall don't pollute
+    /// the dirty set, and clear() the tracker on a successful recall
+    /// (mirroring `ParameterDirtyTracker::endSuppressionAndClear` from
+    /// WFS-DIY).
     dirty_tracker: Option<Arc<RwLock<DirtyTracker>>>,
     /// Inter-message pacing delay in microseconds. 0 = no pacing.
     /// Prevents flooding the console's ARM chip during large recalls.
@@ -701,10 +702,10 @@ impl SnapshotEngine {
     /// — `ApplyOnSave` snapshots already filtered at capture time, so the
     /// stored data IS the scope.
     ///
-    /// Phase C: brackets the entire body in begin_suppression / end_suppression
-    /// on the attached dirty tracker (if any), and clears the dirty set on
-    /// the way out so the operator's "what's changed since" view is anchored
-    /// to this recall.
+    /// Phase C: holds a `SuppressionGuard` on the attached dirty tracker (if
+    /// any) for the entire body, released on every exit path, and clears the
+    /// dirty set on the way out so the operator's "what's changed since" view
+    /// is anchored to this recall.
     pub async fn recall(
         &self,
         snapshot: &Snapshot,

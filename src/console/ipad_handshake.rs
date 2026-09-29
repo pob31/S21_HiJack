@@ -373,11 +373,25 @@ pub(crate) fn apply_config_message(config: &mut ConsoleConfig, msg: &IpadConfigM
 /// known and either count is the pool size, the counts come from the types.
 /// A console that reports true per-type counts is left as it reported.
 /// (Inferred from the capture; to confirm on a desk with another split.)
+///
+/// "Either" is for the S family only, where it is what the capture shows.
+/// An SD or Quantum desk reporting real per-type counts with an aux-only
+/// types list would have its aux count equal the list's length, and its group
+/// count would come out 0; there both counts must be the pool.
 fn reconcile_bus_counts(config: &mut ConsoleConfig) {
     let Ok(pool) = u16::try_from(config.mix_output_types.len()) else {
         return;
     };
-    if pool == 0 || (config.aux_output_count != pool && config.group_output_count != pool) {
+    let (aux_is_pool, group_is_pool) = (
+        config.aux_output_count == pool,
+        config.group_output_count == pool,
+    );
+    let pool_counts = if config.family == crate::model::family::ConsoleFamily::SSeries {
+        aux_is_pool || group_is_pool
+    } else {
+        aux_is_pool && group_is_pool
+    };
+    if pool == 0 || !pool_counts {
         return;
     }
     let aux = config.mix_output_types.iter().filter(|&&t| t).count() as u16;
@@ -419,6 +433,7 @@ pub fn merge_handshake_config(live: &mut ConsoleConfig, handshake: &ConsoleConfi
 mod tests {
     use super::*;
     use crate::model::config::ChannelMode;
+    use crate::model::family::ConsoleFamily;
     use rosc::OscType;
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -685,6 +700,50 @@ mod tests {
             apply_config_message(&mut config, &msg);
         }
         assert_eq!((config.aux_output_count, config.group_output_count), (8, 9));
+    }
+
+    /// An SD or Quantum desk with per-type counts and an aux-only types list
+    /// keeps its group count (audit follow-up to M10: it came out 0).
+    #[test]
+    fn pad_family_per_type_counts_with_aux_only_types_are_kept() {
+        for family in [ConsoleFamily::SdRange, ConsoleFamily::Quantum] {
+            let mut config = ConsoleConfig {
+                family,
+                ..ConsoleConfig::default()
+            };
+            for msg in [
+                IpadConfigMessage::OutputTypes {
+                    types: vec![true; 16],
+                },
+                count("Aux_Outputs", 16),
+                count("Group_Outputs", 8),
+            ] {
+                apply_config_message(&mut config, &msg);
+            }
+            assert_eq!(
+                (config.aux_output_count, config.group_output_count),
+                (16, 8),
+                "{family:?}"
+            );
+
+            // A pool reported as both counts still takes the split.
+            let mut config = ConsoleConfig {
+                family,
+                ..ConsoleConfig::default()
+            };
+            for msg in [
+                count("Group_Outputs", 17),
+                captured_types(),
+                count("Aux_Outputs", 17),
+            ] {
+                apply_config_message(&mut config, &msg);
+            }
+            assert_eq!(
+                (config.aux_output_count, config.group_output_count),
+                (8, 9),
+                "{family:?}"
+            );
+        }
     }
 
     /// A console that reports true per-type counts keeps them.

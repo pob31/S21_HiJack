@@ -85,13 +85,18 @@ pub async fn handle_trigger_event(
                 return;
             };
             drop(mgr);
-            let result = macro_engine.execute(&macro_def).await;
-            info!(
-                name = %result.macro_name,
-                executed = result.steps_executed,
-                skipped = result.steps_skipped,
-                "Trigger MacroFire complete"
-            );
+            // Spawned like a snapshot recall: a macro with delays used to
+            // hold the trigger loop, queueing the GOs behind it.
+            let engine = macro_engine.clone();
+            tokio::spawn(async move {
+                let result = engine.execute(&macro_def).await;
+                info!(
+                    name = %result.macro_name,
+                    executed = result.steps_executed,
+                    skipped = result.steps_skipped,
+                    "Trigger MacroFire complete"
+                );
+            });
         }
         TriggerEvent::SnapshotRecall {
             identifier,
@@ -314,6 +319,42 @@ mod tests {
             received >= 1,
             "expected at least 1 OSC packet at sink, got {received}"
         );
+    }
+
+    /// A `/macro/fire` doesn't hold the trigger loop while the macro runs:
+    /// a GO right after it used to queue behind every delay in the macro.
+    #[tokio::test]
+    async fn macro_fire_does_not_block_the_trigger_loop() {
+        use crate::model::macro_def::{MacroDef, MacroStep, MacroStepMode};
+        let (engine, _state, _sink) = setup_engine_with_sink().await;
+        let slow = MacroDef::new(
+            "Slow".into(),
+            vec![MacroStep::parameter(
+                ParameterAddress {
+                    channel: ChannelId::Input(1),
+                    parameter: ParameterPath::Mute,
+                },
+                MacroStepMode::Fixed(ParameterValue::Bool(true)),
+                5_000,
+            )],
+        );
+        let macros = empty_macro_manager();
+        macros.write().await.add_macro(slow);
+
+        let fired = tokio::time::timeout(
+            Duration::from_millis(500),
+            handle_trigger_event(
+                TriggerEvent::MacroFire("Slow".into()),
+                &Arc::new(RwLock::new(CueManager::new(CueList::default()))),
+                &empty_palette_manager(),
+                &macros,
+                &empty_macro_engine().await,
+                &engine,
+                None,
+            ),
+        )
+        .await;
+        assert!(fired.is_ok(), "the trigger loop waited for the macro");
     }
 
     #[tokio::test]
