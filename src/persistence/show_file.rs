@@ -348,7 +348,10 @@ impl ShowFile {
     ///
     /// Left out, because none of it is the operator's work:
     /// - the console config, which the desk rewrites on every connect;
-    /// - the connection settings, which are also kept in preferences;
+    /// - the two connection fields that really are preferences, send pacing
+    ///   and the UI mode. The rest (addresses, ports, mode, allowlists, QLab,
+    ///   sync direction, auto-update) is kept only in the show, so changing it
+    ///   is an edit (audit R4);
     /// - the version fields;
     /// - the Stream Deck step cursors, which advance as buttons are pressed
     ///   during a show, and the empty buttons added when a bigger deck is
@@ -377,7 +380,15 @@ impl ShowFile {
             stream_deck.buttons.pop();
         }
 
+        let connection = ConnectionSettings {
+            send_pace_us: 0,
+            ui_mode: UiMode::default(),
+            console_snapshot_follow_legacy: None,
+            ..self.connection.clone()
+        };
+
         let content = (
+            &connection,
             by_id(&self.scope_templates, |t| t.id),
             by_id(&self.snapshots, |s| s.id),
             &self.cue_list,
@@ -435,7 +446,8 @@ impl ShowFile {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 format!(
-                    "this show was saved by a newer version of S21_HiJack (show format {};                      this version opens up to {SHOW_FORMAT_VERSION}). Update the app to open it.",
+                    "this show was saved by a newer version of S21_HiJack (show format {}; \
+                     this version opens up to {SHOW_FORMAT_VERSION}). Update the app to open it.",
                     header.version
                 ),
             ));
@@ -520,12 +532,13 @@ mod tests {
         let show = show_with_two_snapshots();
         let saved = show.edit_fingerprint();
 
-        // Not edits: manager order, desk config, connection settings, and
-        // Stream Deck cursors or padding.
+        // Not edits: manager order, desk config, the connection fields that
+        // are preferences, and Stream Deck cursors or padding.
         let mut same = show.clone();
         same.snapshots.reverse();
         same.console_config.aux_output_count = 12;
-        same.connection.console_ip = "10.0.0.9".into();
+        same.connection.send_pace_us = 500;
+        same.connection.ui_mode = UiMode::Theatre;
         same.version = 1;
         same.stream_deck.buttons = vec![
             crate::model::streamdeck::StreamDeckButton {
@@ -553,6 +566,16 @@ mod tests {
         let mut fewer = show.clone();
         fewer.snapshots.pop();
         assert_ne!(fewer.edit_fingerprint(), saved);
+        // The show's connection settings live nowhere else (audit R4).
+        let mut moved = show.clone();
+        moved.connection.console_ip = "10.0.0.9".into();
+        assert_ne!(moved.edit_fingerprint(), saved);
+        let mut following = show.clone();
+        following.connection.snapshot_sync_direction = SnapshotSyncDirection::ConsoleToApp;
+        assert_ne!(following.edit_fingerprint(), saved);
+        let mut allowlisted = show.clone();
+        allowlisted.connection.trigger_allow_cidrs = vec!["10.0.0.0/8".into()];
+        assert_ne!(allowlisted.edit_fingerprint(), saved);
     }
 
     /// Audit M14: an allowlist fails closed. An empty list lets every host
@@ -587,6 +610,7 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
         assert!(!crate::persistence::backup::is_corruption_error(&err));
         assert!(err.to_string().contains("newer version"));
+        assert!(!err.to_string().contains("  "), "{err}");
     }
 
     /// Audit M5: a damaged file is corruption (the UI offers recovery); a
@@ -755,15 +779,16 @@ mod tests {
         let dir = std::env::temp_dir().join("s21_hijack_test");
         let _ = tokio::fs::create_dir_all(&dir).await;
         let path = dir.join("test_atomic_save.json");
-        let tmp_path = {
-            let mut s = path.as_os_str().to_owned();
-            s.push(".tmp");
-            std::path::PathBuf::from(s)
+        // Temp files are `<path>.<pid>-<n>.tmp`.
+        let tmp_left = || {
+            std::fs::read_dir(&dir).unwrap().any(|e| {
+                let name = e.unwrap().file_name().to_string_lossy().into_owned();
+                name.starts_with("test_atomic_save.json.") && name.ends_with(".tmp")
+            })
         };
 
         // Clean slate
         let _ = tokio::fs::remove_file(&path).await;
-        let _ = tokio::fs::remove_file(&tmp_path).await;
 
         // First save: with default config (48 inputs)
         let mut show1 = ShowFile::new(ConsoleConfig::default());
@@ -771,7 +796,7 @@ mod tests {
         show1.save(&path).await.unwrap();
         assert!(path.exists(), "destination should exist after save");
         assert!(
-            !tmp_path.exists(),
+            !tmp_left(),
             "no .tmp file should remain after successful save"
         );
 
@@ -779,10 +804,7 @@ mod tests {
         let mut show2 = ShowFile::new(ConsoleConfig::default());
         show2.connection.console_ip = "192.168.1.42".to_string();
         show2.save(&path).await.unwrap();
-        assert!(
-            !tmp_path.exists(),
-            "no .tmp file should remain after replace"
-        );
+        assert!(!tmp_left(), "no .tmp file should remain after replace");
 
         // Verify the file actually contains the second version's content
         let loaded = ShowFile::load(&path).await.unwrap();
@@ -790,7 +812,6 @@ mod tests {
 
         // Cleanup
         let _ = tokio::fs::remove_file(&path).await;
-        let _ = tokio::fs::remove_file(&tmp_path).await;
     }
 
     #[tokio::test]
@@ -1319,6 +1340,48 @@ mod tests {
         );
         assert!(!parsed.sidecar.enabled);
         assert!(parsed.sidecar.bindings.is_empty());
+    }
+
+    /// Audit R3: a Linear taper saved with an infinite bound (written as
+    /// `null`) no longer makes the show, and every later autosave, unloadable.
+    #[test]
+    fn a_null_taper_bound_still_loads() {
+        use crate::model::sidecar::{
+            BindingTarget, ControlMode, ControlSelector, SidecarBinding, Taper,
+        };
+        let mut show = ShowFile::new(ConsoleConfig::default());
+        show.sidecar.bindings = vec![SidecarBinding {
+            id: uuid::Uuid::from_bytes([7; 16]),
+            label: "Raw".into(),
+            control: ControlSelector::Cc { channel: 1, cc: 7 },
+            mode: ControlMode::Absolute7,
+            target: BindingTarget::RawOsc {
+                target_id: None,
+                host: Some("127.0.0.1".into()),
+                port: Some(9000),
+                path: "/x".into(),
+                args: vec![],
+            },
+            taper: Taper::Linear {
+                min: 0.0,
+                max: f32::INFINITY,
+            },
+            motor_feedback: false,
+            touch: None,
+            relative_step: 1.0 / 300.0,
+            enabled: true,
+        }];
+        let json = serde_json::to_string(&show).unwrap();
+        assert!(
+            json.contains(r#""max":null"#),
+            "serde_json writes inf as null"
+        );
+
+        let loaded: ShowFile = serde_json::from_str(&json).expect("the show loads");
+        assert_eq!(
+            loaded.sidecar.bindings[0].taper,
+            Taper::Linear { min: 0.0, max: 1.0 }
+        );
     }
 
     #[test]

@@ -68,6 +68,64 @@ pub struct PendingEngines {
     pub token: tokio_util::sync::CancellationToken,
 }
 
+/// Opens and News in progress. Autosave stays out of a show that is half
+/// replaced: it reads the managers one at a time, so running alongside
+/// `apply_show` it could save half the old show and half the new one, under
+/// whichever path the Setup tab had at the time. There is one show per
+/// process, so this is process-wide.
+pub mod show_switch {
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    static PENDING: AtomicUsize = AtomicUsize::new(0);
+    static EPOCH: AtomicU64 = AtomicU64::new(0);
+
+    /// One Open or New, pending until this is dropped. The task hands it
+    /// back to the UI in [`UiEvent::ShowSwitchDone`](super::UiEvent), after
+    /// its result, so it lasts until the UI has applied that result too.
+    #[derive(Debug)]
+    pub struct ShowSwitch(());
+
+    /// Start a switch. Call on the UI thread, before spawning its task.
+    pub fn begin() -> ShowSwitch {
+        EPOCH.fetch_add(1, Ordering::SeqCst);
+        PENDING.fetch_add(1, Ordering::SeqCst);
+        ShowSwitch(())
+    }
+
+    impl Drop for ShowSwitch {
+        fn drop(&mut self) {
+            PENDING.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    /// True while any Open or New is under way.
+    pub fn in_progress() -> bool {
+        PENDING.load(Ordering::SeqCst) > 0
+    }
+
+    /// Changes each time a switch starts: an autosave that sees it change
+    /// while it was reading the show throws that read away.
+    pub fn epoch() -> u64 {
+        EPOCH.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        // Other tests may start switches of their own at the same time, so
+        // this only checks what they can't undo.
+        #[test]
+        fn a_switch_is_pending_until_dropped_and_moves_the_epoch() {
+            let before = epoch();
+            let switch = begin();
+            assert!(in_progress());
+            assert!(epoch() > before);
+            drop(switch);
+        }
+    }
+}
+
 /// Events sent from async tasks back to the UI thread.
 #[derive(Debug)]
 pub enum UiEvent {
@@ -170,13 +228,19 @@ pub enum UiEvent {
     /// New finished clearing the show, so the UI can take a fresh
     /// "no unsaved changes" baseline.
     NewShowCreated,
+    /// An Open or New is over, and its result event (sent just before) has
+    /// been handled. Dropping the guard lets autosave run again.
+    ShowSwitchDone(show_switch::ShowSwitch),
     /// An autosave write task finished. `wrote` is false when the content
     /// fingerprint was unchanged (nothing written). Carries the new
     /// fingerprint so the UI updates its dedup baseline and clears the
-    /// in-flight guard.
+    /// in-flight guard. After a failed write, `error` says why and the
+    /// fingerprint is the previous one, so the next interval tries again
+    /// (audit R9).
     AutosaveCompleted {
         fingerprint: u64,
         wrote: bool,
+        error: Option<String>,
     },
     /// A load failed because the file looks truncated or has a bad header.
     /// Carries the original path and the recovery candidates (backups +

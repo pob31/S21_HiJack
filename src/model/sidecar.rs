@@ -125,7 +125,12 @@ impl RelativeMode {
 }
 
 /// Normalized-position → target-value curve.
+///
+/// Loaded through [`TaperRepr`]: a bound that isn't a finite number (a NaN
+/// or infinity, which serde_json writes as `null`) takes its default instead
+/// of failing the whole show (audit R3).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "TaperRepr")]
 pub enum Taper {
     /// Piecewise-linear dB fader law approximating the console's:
     /// unity gain at ~75% travel, −inf detent at 0. Output spans
@@ -138,6 +143,56 @@ pub enum Taper {
     /// Straight line min..=max. Pan family uses −1..=1; raw OSC and
     /// generic continuous parameters default to 0..=1.
     Linear { min: f32, max: f32 },
+}
+
+/// Largest magnitude a taper bound may have. Wide enough for any parameter
+/// or raw-OSC range, small enough that `max - min` can't overflow.
+pub const TAPER_LIMIT: f32 = 1.0e6;
+
+impl Taper {
+    /// The same taper with every bound finite and within ±[`TAPER_LIMIT`].
+    /// A bound that isn't finite takes its default: 10 dB, or 0..=1.
+    pub fn sanitized(self) -> Taper {
+        let fix = |v: f32, default: f32| {
+            if v.is_finite() {
+                v.clamp(-TAPER_LIMIT, TAPER_LIMIT)
+            } else {
+                default
+            }
+        };
+        match self {
+            Taper::FaderDb { max_db } => Taper::FaderDb {
+                max_db: fix(max_db, 10.0),
+            },
+            Taper::Linear { min, max } => Taper::Linear {
+                min: fix(min, 0.0),
+                max: fix(max, 1.0),
+            },
+        }
+    }
+}
+
+/// [`Taper`] as stored, where any bound may be `null` or missing.
+#[derive(Deserialize)]
+enum TaperRepr {
+    FaderDb { max_db: Option<f32> },
+    Linear { min: Option<f32>, max: Option<f32> },
+}
+
+impl From<TaperRepr> for Taper {
+    fn from(repr: TaperRepr) -> Self {
+        let nan = |v: Option<f32>| v.unwrap_or(f32::NAN);
+        match repr {
+            TaperRepr::FaderDb { max_db } => Taper::FaderDb {
+                max_db: nan(max_db),
+            },
+            TaperRepr::Linear { min, max } => Taper::Linear {
+                min: nan(min),
+                max: nan(max),
+            },
+        }
+        .sanitized()
+    }
 }
 
 /// The FaderDb law as (normalized position, dB) breakpoints. The final
@@ -156,9 +211,14 @@ const FADER_DB_TABLE: [(f32, f32); 8] = [
 
 /// Map a normalized 0..=1 position through a taper to a target value.
 /// FaderDb: exactly `FADER_INF_DB` at (or below) zero.
+/// Always finite, whatever the taper or position (audit R3).
 pub fn taper_to_value(taper: &Taper, norm: f32) -> f32 {
-    let norm = norm.clamp(0.0, 1.0);
-    match taper {
+    let norm = if norm.is_nan() {
+        0.0
+    } else {
+        norm.clamp(0.0, 1.0)
+    };
+    match &taper.sanitized() {
         Taper::Linear { min, max } => min + (max - min) * norm,
         Taper::FaderDb { max_db } => {
             if norm <= 0.0 {
@@ -186,7 +246,7 @@ pub fn taper_to_value(taper: &Taper, norm: f32) -> f32 {
 /// Inverse of [`taper_to_value`], for motor feedback. FaderDb: any
 /// value at or below the −inf detent maps to 0.
 pub fn taper_to_norm(taper: &Taper, value: f32) -> f32 {
-    match taper {
+    match &taper.sanitized() {
         Taper::Linear { min, max } => {
             if (max - min).abs() < f32::EPSILON {
                 0.0
@@ -386,6 +446,63 @@ mod tests {
     }
 
     const FADER: Taper = Taper::FaderDb { max_db: 10.0 };
+
+    /// Audit R3: a bound that isn't a number loads as its default instead of
+    /// failing the show, and no taper or position produces a non-finite value.
+    #[test]
+    fn non_finite_taper_bounds_are_contained() {
+        let loaded: Taper = serde_json::from_str(r#"{"Linear":{"min":-1.0,"max":null}}"#).unwrap();
+        assert_eq!(
+            loaded,
+            Taper::Linear {
+                min: -1.0,
+                max: 1.0
+            }
+        );
+        let loaded: Taper = serde_json::from_str(r#"{"Linear":{"max":5.0}}"#).unwrap();
+        assert_eq!(loaded, Taper::Linear { min: 0.0, max: 5.0 });
+        let loaded: Taper = serde_json::from_str(r#"{"FaderDb":{"max_db":null}}"#).unwrap();
+        assert_eq!(loaded, FADER);
+        let loaded: Taper = serde_json::from_str(r#"{"Linear":{"min":0.0,"max":1e30}}"#).unwrap();
+        assert_eq!(
+            loaded,
+            Taper::Linear {
+                min: 0.0,
+                max: TAPER_LIMIT
+            }
+        );
+        // Written out and read back unchanged.
+        let t = Taper::Linear {
+            min: -18.0,
+            max: 18.0,
+        };
+        let back: Taper = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back, t);
+
+        for taper in [
+            Taper::Linear {
+                min: 0.0,
+                max: f32::INFINITY,
+            },
+            Taper::Linear {
+                min: f32::NAN,
+                max: 1.0,
+            },
+            Taper::Linear {
+                min: -f32::MAX,
+                max: f32::MAX,
+            },
+            Taper::FaderDb { max_db: f32::NAN },
+        ] {
+            for norm in [0.0, 0.5, 1.0, f32::NAN, f32::INFINITY] {
+                let v = taper_to_value(&taper, norm);
+                assert!(v.is_finite(), "{taper:?} at {norm} gave {v}");
+                assert!(taper_to_norm(&taper, v).is_finite());
+            }
+        }
+        // A NaN position is the bottom, never unity.
+        assert_eq!(taper_to_value(&FADER, f32::NAN), FADER_INF_DB);
+    }
 
     #[test]
     fn fader_taper_endpoints() {

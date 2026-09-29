@@ -22,7 +22,7 @@ use crate::console::sidecar_service::SvcCmd;
 use crate::model::parameter::{ParameterAddress, ParameterValue};
 use crate::model::sidecar::{
     BindingTarget, ControlMode, ControlSelector, RelativeMode, SidecarBinding, SidecarConfig,
-    Taper, default_taper_for, is_valid_console_target, mcu_default_touch_note,
+    TAPER_LIMIT, Taper, default_taper_for, is_valid_console_target, mcu_default_touch_note,
 };
 use crate::model::state::ConsoleState;
 use crate::ui::help::{HelpKey, help};
@@ -815,12 +815,22 @@ fn draw_binding_editor(
                 }
             }
             Taper::Linear { min, max } => {
+                // Finite bounds: egui parses "inf" and "nan", which made every
+                // move NaN and saved the show as unloadable (audit R3). Out of
+                // range, both clamp to the limit.
+                let bounds = -TAPER_LIMIT..=TAPER_LIMIT;
                 ui.label(egui::RichText::new("min").color(theme::label_weak()));
-                if ui.add(egui::DragValue::new(min).speed(0.1)).changed() {
+                if ui
+                    .add(egui::DragValue::new(min).range(bounds.clone()).speed(0.1))
+                    .changed()
+                {
                     changed = true;
                 }
                 ui.label(egui::RichText::new("max").color(theme::label_weak()));
-                if ui.add(egui::DragValue::new(max).speed(0.1)).changed() {
+                if ui
+                    .add(egui::DragValue::new(max).range(bounds).speed(0.1))
+                    .changed()
+                {
                     changed = true;
                 }
             }

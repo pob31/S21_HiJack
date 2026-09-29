@@ -2179,6 +2179,12 @@ impl SnapshotEngine {
         }
     }
 
+    /// Forget the last recall's undo. After Open or New it would put the desk
+    /// back as it was before a cue of the previous show (audit M4).
+    pub async fn clear_undo(&self) {
+        *self.undo.write().await = None;
+    }
+
     /// Undo the last recall: cancel any active fades and send the pre-recall
     /// values back to the console. Consumes the undo state (can't undo an undo).
     pub async fn undo_recall(&self) -> Option<RecallResult> {

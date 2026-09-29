@@ -3,10 +3,11 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Replace `path` with `bytes`: write `<path>.tmp`, fsync it, then rename it
-/// over `path`. A crash or failure part-way leaves the previous file intact,
-/// and the orphan `.tmp` is removed (best effort) on error.
+/// Replace `path` with `bytes`: write a temp file next to it, fsync it, then
+/// rename it over `path`. A crash or failure part-way leaves the previous file
+/// intact, and the orphan temp file is removed (best effort) on error.
 ///
 /// Runs on a blocking thread with `std::fs` on purpose. `tokio::fs::File`
 /// buffers the last write and completes it inside `sync_all()`, which drops
@@ -20,9 +21,7 @@ pub async fn write_atomically(path: &Path, bytes: Vec<u8>) -> io::Result<()> {
 }
 
 fn replace_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut tmp_os = path.as_os_str().to_owned();
-    tmp_os.push(".tmp");
-    let tmp_path = PathBuf::from(tmp_os);
+    let tmp_path = tmp_path_for(path);
 
     if let Err(e) = write_and_sync(&tmp_path, bytes) {
         let _ = fs::remove_file(&tmp_path);
@@ -33,6 +32,18 @@ fn replace_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
         return Err(e);
     }
     Ok(())
+}
+
+/// `<path>.<pid>-<n>.tmp`, unique to this write. Two saves of one show can
+/// be in flight at once (a Save still running when Close → Save starts
+/// another); with one shared `<path>.tmp` they truncated and wrote the same
+/// file, and could rename a mix of both, reported as saved (audit R8).
+fn tmp_path_for(path: &Path) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{}-{n}.tmp", std::process::id()));
+    PathBuf::from(tmp)
 }
 
 fn write_and_sync(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -52,6 +63,15 @@ mod tests {
         dir
     }
 
+    /// Names of the temp files left in `dir`.
+    fn leftover_tmp(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect()
+    }
+
     #[tokio::test]
     async fn replaces_the_file_and_leaves_no_tmp() {
         let dir = scratch_dir("replace");
@@ -61,21 +81,49 @@ mod tests {
         write_atomically(&path, b"new".to_vec()).await.unwrap();
 
         assert_eq!(fs::read(&path).unwrap(), b"new");
-        assert!(!dir.join("show.s21show.tmp").exists());
+        assert!(leftover_tmp(&dir).is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn failure_is_reported_and_keeps_the_previous_file() {
-        // A directory squatting on the `.tmp` name makes the write fail.
+        // The rename can't replace a directory that holds a file.
         let dir = scratch_dir("failure");
         let path = dir.join("show.s21show");
-        fs::write(&path, b"good show").unwrap();
-        fs::create_dir(dir.join("show.s21show.tmp")).unwrap();
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("inside"), b"good show").unwrap();
 
         assert!(write_atomically(&path, b"new".to_vec()).await.is_err());
 
-        assert_eq!(fs::read(&path).unwrap(), b"good show");
+        assert_eq!(fs::read(path.join("inside")).unwrap(), b"good show");
+        assert!(leftover_tmp(&dir).is_empty(), "the temp file is removed");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Audit R8: saves of one file that overlap each land whole. Sharing one
+    /// temp name, they interleaved in it, and a rename could fail when
+    /// another writer had already moved the file away.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn overlapping_saves_each_land_whole() {
+        let dir = scratch_dir("overlap");
+        let path = dir.join("show.s21show");
+        let writes: Vec<_> = (0u8..8)
+            .map(|i| {
+                let path = path.clone();
+                tokio::spawn(async move { write_atomically(&path, vec![b'a' + i; 1 << 20]).await })
+            })
+            .collect();
+        for w in writes {
+            w.await.unwrap().expect("every save succeeds");
+        }
+
+        let bytes = fs::read(&path).unwrap();
+        assert_eq!(bytes.len(), 1 << 20);
+        assert!(
+            bytes.iter().all(|&b| b == bytes[0]),
+            "the file is one save's content, not a mix"
+        );
+        assert!(leftover_tmp(&dir).is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 

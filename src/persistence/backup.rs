@@ -37,6 +37,10 @@ pub const QUIET_SETTLE: Duration = Duration::from_secs(5);
 pub const KEEP_AUTOSAVES: usize = 20;
 /// Number of load-time backups retained per show.
 pub const KEEP_BACKUPS: usize = 5;
+/// Number of untitled sessions (runs of the app) whose autosaves are kept,
+/// counting the current one. Each run has its own series, see
+/// [`untitled_autosave_path`].
+pub const KEEP_UNTITLED_SESSIONS: usize = 10;
 /// Subfolder (next to the show file) that holds autosaves + backups.
 pub const BACKUP_SUBDIR: &str = ".s21backups";
 /// Extension used for safety copies (matches the primary show file).
@@ -152,12 +156,31 @@ fn fnv1a32(bytes: &[u8]) -> u32 {
 /// Stand-in show path for autosaving a show that has never been saved, so its
 /// autosaves land in `<config dir>/s21_hijack/untitled/.s21backups/` (audit
 /// H8). `None` if the platform has no config directory.
+///
+/// The name is this run's own, `untitled-<start time>-<pid>`: with one shared
+/// `untitled` series, two instances pruned each other's autosaves and could
+/// write to the same file (audit R8). [`write_and_rotate`] keeps the series of
+/// the [`KEEP_UNTITLED_SESSIONS`] most recent runs.
 pub fn untitled_autosave_path() -> Option<PathBuf> {
+    static STEM: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let stem = STEM.get_or_init(|| {
+        format!(
+            "untitled-{}-{}",
+            Utc::now().format(TS_FMT),
+            std::process::id()
+        )
+    });
     dirs::config_dir().map(|d| {
         d.join("s21_hijack")
             .join("untitled")
-            .join("untitled.s21show")
+            .join(format!("{stem}.{SHOW_EXT}"))
     })
+}
+
+/// True for the stem of an untitled run's series (including the single
+/// `untitled` series older builds shared).
+fn is_untitled_stem(stem: &str) -> bool {
+    stem == "untitled" || stem.starts_with("untitled-")
 }
 
 /// The `.s21backups/` folder next to `show_path`. `None` only if the show path
@@ -228,7 +251,48 @@ pub async fn write_and_rotate(
 
     let stem = sanitized_stem(show_path);
     rotate(&dir, kind, &stem, kind.keep()).await;
+    let untitled_dir = untitled_autosave_path().and_then(|p| backup_dir(&p));
+    if kind == BackupKind::Autosave && untitled_dir.as_deref() == Some(dir.as_path()) {
+        prune_untitled_sessions(&dir, &stem, KEEP_UNTITLED_SESSIONS).await;
+    }
     Ok(target)
+}
+
+/// Keep the autosaves of the `keep` untitled runs that autosaved most
+/// recently, `current` always among them, and delete the other runs'. Without
+/// this, every run would leave its own series behind for good. Best-effort.
+async fn prune_untitled_sessions(dir: &Path, current: &str, keep: usize) {
+    let mut files: Vec<(PathBuf, String)> = Vec::new();
+    let mut newest: std::collections::HashMap<String, DateTime<Utc>> = Default::default();
+    let Ok(mut rd) = tokio::fs::read_dir(dir).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let name = entry.file_name();
+        if let Some((BackupKind::Autosave, stem, ts)) = parse_name(&name.to_string_lossy())
+            && is_untitled_stem(&stem)
+            && stem != current
+        {
+            let latest = newest.entry(stem.clone()).or_insert(ts);
+            *latest = (*latest).max(ts);
+            files.push((entry.path(), stem));
+        }
+    }
+
+    let mut others: Vec<(String, DateTime<Utc>)> = newest.into_iter().collect();
+    others.sort_by_key(|(_, ts)| std::cmp::Reverse(*ts));
+    let kept: std::collections::HashSet<String> = others
+        .into_iter()
+        .take(keep.saturating_sub(1))
+        .map(|(stem, _)| stem)
+        .collect();
+    for (path, stem) in files {
+        if !kept.contains(&stem)
+            && let Err(e) = tokio::fs::remove_file(&path).await
+        {
+            tracing::warn!(path = %path.display(), error = %e, "Failed to prune an old untitled autosave");
+        }
+    }
 }
 
 /// Keep the `keep` newest safety copies of `kind` for `stem` in `dir`; delete
@@ -329,6 +393,69 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Audit R8: each run autosaves an untitled show under its own name, and
+    /// only the most recent runs' series are kept.
+    #[tokio::test]
+    async fn untitled_runs_keep_their_own_series() {
+        let path = untitled_autosave_path().expect("a config dir");
+        let stem = sanitized_stem(&path);
+        assert!(
+            stem.starts_with("untitled-") && is_untitled_stem(&stem),
+            "{stem}"
+        );
+        assert_eq!(untitled_autosave_path(), Some(path), "fixed for the run");
+
+        let dir = unique_dir("untitled_sessions");
+        let touch = |stem: &str, day: u32, seq: u32| {
+            let name = format!("autosave__{stem}__202601{day:02}-0000{seq:02}.{SHOW_EXT}");
+            std::fs::write(dir.join(name), b"{}").unwrap();
+        };
+        // Twelve earlier runs (run 12 the most recent), two autosaves each,
+        // plus the old shared series, a real show and a load-time backup.
+        for run in 1..=12 {
+            touch(&format!("untitled-run{run:02}"), run, 0);
+            touch(&format!("untitled-run{run:02}"), run, 1);
+        }
+        touch("untitled", 13, 0);
+        touch("Concert", 1, 0);
+        std::fs::write(
+            dir.join(format!(
+                "backup__untitled-run01__20260101-000000.{SHOW_EXT}"
+            )),
+            b"{}",
+        )
+        .unwrap();
+        touch("untitled-now", 14, 0);
+
+        prune_untitled_sessions(&dir, "untitled-now", 4).await;
+
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        let stems: std::collections::BTreeSet<String> = left
+            .iter()
+            .filter_map(|n| parse_name(n))
+            .map(|(_, stem, _)| stem)
+            .collect();
+        assert_eq!(
+            stems.into_iter().collect::<Vec<_>>(),
+            [
+                "Concert",
+                "untitled",
+                "untitled-now",
+                "untitled-run01",
+                "untitled-run11",
+                "untitled-run12"
+            ],
+            "the current run plus the three latest others; the backup and the \
+             other show are left alone"
+        );
+        assert_eq!(left.len(), 1 + 1 + 1 + 1 + 2 + 2, "{left:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

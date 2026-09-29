@@ -1477,7 +1477,8 @@ pub fn draw_setup_tab(
                             theme::LONG_PRESS_DURATION_MS,
                             save_hover,
                         ) {
-                            if setup.show_file_path.is_empty() {
+                            let mut target = setup.show_file_path.clone();
+                            if target.is_empty() {
                                 let dlg = seed_last_open_dir(
                                     rfd::FileDialog::new()
                                         .add_filter("Show files", &["s21show", "json"])
@@ -1486,13 +1487,13 @@ pub fn draw_setup_tab(
                                 );
                                 if let Some(path) = dlg.save_file() {
                                     remember_last_open_dir(setup, &path);
-                                    setup.show_file_path = path.display().to_string();
+                                    target = path.display().to_string();
                                 }
                             }
-                            if !setup.show_file_path.is_empty() {
-                                ensure_show_file_extension(&mut setup.show_file_path);
+                            if !target.is_empty() {
+                                ensure_show_file_extension(&mut target);
                                 save_show_file(
-                                    setup, state, cue_manager, macro_manager, monitor_manager,
+                                    setup, target, state, cue_manager, macro_manager, monitor_manager,
                                     palette_manager, gang_manager, pan_link_bindings,
                                     stream_deck_config, sidecar_config,
                                     auto_update_on_recall.load(Ordering::Relaxed),
@@ -1533,10 +1534,10 @@ pub fn draw_setup_tab(
                             }
                             if let Some(path) = dlg.save_file() {
                                 remember_last_open_dir(setup, &path);
-                                setup.show_file_path = path.display().to_string();
-                                ensure_show_file_extension(&mut setup.show_file_path);
+                                let mut target = path.display().to_string();
+                                ensure_show_file_extension(&mut target);
                                 save_show_file(
-                                    setup, state, cue_manager, macro_manager, monitor_manager,
+                                    setup, target, state, cue_manager, macro_manager, monitor_manager,
                                     palette_manager, gang_manager, pan_link_bindings,
                                     stream_deck_config, sidecar_config,
                                     auto_update_on_recall.load(Ordering::Relaxed),
@@ -3458,21 +3459,40 @@ pub(crate) fn load_show_file(
     let conn_flag = connected.clone();
     let tx = ui_tx.clone();
     let path_str = path.display().to_string();
+    let switch = crate::ui::show_switch::begin();
 
     runtime.spawn(async move {
-        match ShowFile::load(&path).await {
-            Ok(show) => {
-                let (conn, recall) =
-                    apply_show(show, &targets, !conn_flag.load(Ordering::Relaxed)).await;
+        load_and_apply(&path, path_str, save_path, &targets, &conn_flag, &tx).await;
+        let _ = tx.send(UiEvent::ShowSwitchDone(switch));
+    });
+}
 
-                info!("Show file loaded: {path_str}");
-                // Backup-on-load: copy the exact on-disk bytes into the
-                // `.s21backups/` subfolder (keep the last few). Best-effort —
-                // a failure here must never block a successful load.
-                match tokio::fs::read(&path).await {
+/// The body of [`load_show_file`]'s task: load, apply, back up, report.
+async fn load_and_apply(
+    path: &std::path::Path,
+    path_str: String,
+    save_path: String,
+    targets: &ShowTargets,
+    conn_flag: &AtomicBool,
+    tx: &std::sync::mpsc::Sender<UiEvent>,
+) {
+    match ShowFile::load(path).await {
+        Ok(show) => {
+            let (conn, recall) =
+                apply_show(show, targets, !conn_flag.load(Ordering::Relaxed)).await;
+
+            info!("Show file loaded: {path_str}");
+            // Backup-on-load: copy the exact on-disk bytes into the
+            // `.s21backups/` subfolder (keep the last few). Best-effort —
+            // a failure here must never block a successful load. Not for a
+            // recovery: the file is already a copy inside `.s21backups/`,
+            // and backing it up made `.s21backups/.s21backups/`.
+            let recovering = path_str != save_path;
+            if !recovering {
+                match tokio::fs::read(path).await {
                     Ok(bytes) => {
                         if let Err(e) = crate::persistence::backup::write_and_rotate(
-                            &path,
+                            path,
                             crate::persistence::backup::BackupKind::Backup,
                             &bytes,
                         )
@@ -3483,31 +3503,30 @@ pub(crate) fn load_show_file(
                     }
                     Err(e) => tracing::warn!(error = %e, "Backup-on-load: re-read failed"),
                 }
-
-                let _ = tx.send(UiEvent::ShowFileLoaded {
-                    from: path_str,
-                    save_path,
-                    conn: Some(Box::new(conn)),
-                    recall,
-                });
             }
-            Err(e) => {
-                error!("Load failed for {path_str}: {e}");
-                if crate::persistence::backup::is_corruption_error(&e) {
-                    // Truncated / bad-header file — offer recovery from the
-                    // backups and autosaves of this same show.
-                    let candidates =
-                        crate::persistence::backup::list_recovery_candidates(&path).await;
-                    let _ = tx.send(UiEvent::ShowFileCorrupt {
-                        path: path_str,
-                        candidates,
-                    });
-                } else {
-                    let _ = tx.send(UiEvent::ShowFileError(format!("Load failed: {e}")));
-                }
+
+            let _ = tx.send(UiEvent::ShowFileLoaded {
+                from: path_str,
+                save_path,
+                conn: Some(Box::new(conn)),
+                recall,
+            });
+        }
+        Err(e) => {
+            error!("Load failed for {path_str}: {e}");
+            if crate::persistence::backup::is_corruption_error(&e) {
+                // Truncated / bad-header file — offer recovery from the
+                // backups and autosaves of this same show.
+                let candidates = crate::persistence::backup::list_recovery_candidates(path).await;
+                let _ = tx.send(UiEvent::ShowFileCorrupt {
+                    path: path_str,
+                    candidates,
+                });
+            } else {
+                let _ = tx.send(UiEvent::ShowFileError(format!("Load failed: {e}")));
             }
         }
-    });
+    }
 }
 
 /// Start an empty show: everything a show file holds is emptied, through the
@@ -3540,18 +3559,24 @@ pub(crate) fn new_show(
         sidecar_config: sidecar_config.clone(),
     };
     let tx = ui_tx.clone();
+    let switch = crate::ui::show_switch::begin();
     runtime.spawn(async move {
         let empty = ShowFile::new(crate::model::config::ConsoleConfig::default());
         apply_show(empty, &targets, false).await;
         let _ = tx.send(UiEvent::NewShowCreated);
+        let _ = tx.send(UiEvent::ShowSwitchDone(switch));
     });
     setup.show_file_path.clear();
     setup.status_message = Some("New show created".into());
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Save the show to `target`. The Setup tab's show path only moves to
+/// `target` once the save has succeeded (on `ShowFileSaved`), so a failed Save
+/// As leaves it on the file the show last came from or went to.
 pub(crate) fn save_show_file(
     setup: &mut SetupTabState,
+    target: String,
     state: &Arc<RwLock<ConsoleState>>,
     cue_manager: &Arc<RwLock<CueManager>>,
     macro_manager: &Arc<RwLock<MacroManager>>,
@@ -3567,7 +3592,7 @@ pub(crate) fn save_show_file(
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
 ) {
-    if setup.show_file_path.is_empty() {
+    if target.is_empty() {
         setup.status_message = Some(StatusMessage::with_help(
             "Enter a file path first",
             HelpKey::SetupWarnFilePathRequired,
@@ -3575,7 +3600,7 @@ pub(crate) fn save_show_file(
         return;
     }
 
-    let path = std::path::PathBuf::from(&setup.show_file_path);
+    let path = std::path::PathBuf::from(&target);
     let st = state.clone();
     let cue_mgr = cue_manager.clone();
     let macro_mgr = macro_manager.clone();
@@ -3586,7 +3611,7 @@ pub(crate) fn save_show_file(
     let sd_config = stream_deck_config.clone();
     let sc_config = sidecar_config.clone();
     let tx = ui_tx.clone();
-    let path_str = setup.show_file_path.clone();
+    let path_str = target;
 
     // Capture connection settings from current UI state
     let conn_settings =
@@ -3931,11 +3956,21 @@ mod tests {
             &tokio::runtime::Handle::current(),
             &tx,
         );
-        let event =
-            tokio::task::spawn_blocking(move || rx.recv_timeout(std::time::Duration::from_secs(2)))
-                .await
-                .unwrap();
-        assert!(matches!(event, Ok(UiEvent::NewShowCreated)), "{event:?}");
+        let events = tokio::task::spawn_blocking(move || {
+            let next = || rx.recv_timeout(std::time::Duration::from_secs(2));
+            (next(), next())
+        })
+        .await
+        .unwrap();
+        assert!(
+            matches!(events.0, Ok(UiEvent::NewShowCreated)),
+            "{events:?}"
+        );
+        // Autosave stays off until the UI has handled the result.
+        assert!(
+            matches!(events.1, Ok(UiEvent::ShowSwitchDone(_))),
+            "{events:?}"
+        );
 
         assert!(setup.show_file_path.is_empty());
         assert!(monitors.read().await.clients.is_empty());
@@ -3966,7 +4001,8 @@ mod tests {
         assert_eq!(bind_ip_from("console.local"), None);
     }
 
-    /// however the managers were filled, and an edit must not.
+    /// Audit H8: the unsaved-changes check gives the same value for the same
+    /// show however the managers were filled, and an edit changes it.
     #[tokio::test]
     async fn unsaved_check_is_stable_until_an_edit() {
         use crate::model::macro_def::MacroDef;
@@ -4019,7 +4055,9 @@ mod tests {
 
         let saved = fingerprint(&forward, "10.0.0.1").await;
         assert_eq!(fingerprint(&forward, "10.0.0.1").await, saved);
-        assert_eq!(fingerprint(&backward, "192.168.1.5").await, saved);
+        assert_eq!(fingerprint(&backward, "10.0.0.1").await, saved);
+        // The console IP is kept only in the show (audit R4).
+        assert_ne!(fingerprint(&forward, "192.168.1.5").await, saved);
 
         let extra = MacroDef::new("Extra".into(), vec![]);
         forward.write().await.macros.insert(extra.id, extra);

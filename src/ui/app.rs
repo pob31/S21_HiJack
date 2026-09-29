@@ -1308,6 +1308,7 @@ impl HiJackApp {
                     conn,
                     recall,
                 } => {
+                    let recovered = from != save_path;
                     self.setup.status_message = Some(
                         if from == save_path {
                             format!("Loaded: {from}")
@@ -1329,8 +1330,7 @@ impl HiJackApp {
                         .sidecar_svc_tx
                         .send(crate::console::sidecar_service::SvcCmd::SyncSurface);
                     self.snapshots.scope_editor.console_recall = recall;
-                    // The loaded show is the new "no unsaved changes" baseline.
-                    self.take_saved_baseline();
+                    self.after_show_switch();
                     if let Some(c) = &conn {
                         self.auto_update_on_recall
                             .store(c.auto_update_on_recall, Ordering::Relaxed);
@@ -1431,11 +1431,26 @@ impl HiJackApp {
                             tracing::warn!(error = %e, "Failed to save app preferences after show load");
                         }
                     }
+                    if recovered {
+                        // Saves still go to the corrupt original, so this
+                        // content isn't saved anywhere yet: leaving must ask
+                        // (audit R9).
+                        self.mark_unsaved();
+                    } else {
+                        // The loaded show is the new "no unsaved changes"
+                        // baseline. Taken once its connection settings are in
+                        // the Setup fields, as they're in the fingerprint (R4).
+                        self.take_saved_baseline();
+                    }
                 }
                 UiEvent::ShowFileSaved { path, fingerprint } => {
                     self.setup.status_message = Some(format!("Saved: {path}").into());
+                    // Only now does a Save As move the show to its new path.
+                    self.setup.show_file_path = path;
                     self.saved_fingerprint = Some(fingerprint);
                 }
+                // Dropping the guard ends the switch: autosave may run again.
+                UiEvent::ShowSwitchDone(_switch) => {}
                 UiEvent::NewShowCreated => {
                     // A new show's own settings start from the defaults too
                     // (audit M4); the network settings stay.
@@ -1449,6 +1464,7 @@ impl HiJackApp {
                     let _ = self
                         .sidecar_svc_tx
                         .send(crate::console::sidecar_service::SvcCmd::SyncSurface);
+                    self.after_show_switch();
                     self.take_saved_baseline();
                 }
                 UiEvent::ShowFileError(msg) => {
@@ -1457,10 +1473,20 @@ impl HiJackApp {
                         HelpKey::SetupWarnShowFileError,
                     ));
                 }
-                UiEvent::AutosaveCompleted { fingerprint, wrote } => {
+                UiEvent::AutosaveCompleted {
+                    fingerprint,
+                    wrote,
+                    error,
+                } => {
                     self.last_autosaved_fingerprint = fingerprint;
                     self.autosave_in_flight.store(false, Ordering::Relaxed);
-                    if wrote {
+                    if let Some(e) = error {
+                        // A full disk used to fail silently (audit R9).
+                        self.setup.status_message = Some(StatusMessage::with_help(
+                            format!("Autosave failed: {e}"),
+                            HelpKey::SetupWarnShowFileError,
+                        ));
+                    } else if wrote {
                         self.setup.status_message = Some("Autosaved".into());
                     }
                 }
@@ -1781,6 +1807,26 @@ impl HiJackApp {
         self.streamdeck_target = Some(want);
     }
 
+    /// Tidy up after Open or New has replaced the show (audit M4). The deck
+    /// is repainted from the new show's buttons: `sync_streamdeck_target`
+    /// only reconnects when the device changes, so the same deck kept the old
+    /// show's labels. The desk changes marked dirty and the last recall's
+    /// undo belonged to the old show too.
+    fn after_show_switch(&self) {
+        if let Some(device) = self.stream_deck_engine.connected_device() {
+            let labels = self.streamdeck_resize_and_collect_labels(device.key_count as usize);
+            self.stream_deck_engine.refresh_all(labels);
+        }
+        let dirty = self.dirty_tracker.clone();
+        let engine = self.snapshot_engine.clone();
+        self.runtime.spawn(async move {
+            dirty.write().await.clear();
+            if let Some(engine) = engine {
+                engine.clear_undo().await;
+            }
+        });
+    }
+
     fn handle_streamdeck_button(&self, button_idx: usize) {
         let cfg = self.stream_deck_config.clone();
         let macro_mgr = self.macro_manager.clone();
@@ -1963,6 +2009,11 @@ impl HiJackApp {
         if self.autosave_in_flight.load(Ordering::Relaxed) {
             return;
         }
+        // Not while an Open or New is replacing the show.
+        if super::show_switch::in_progress() {
+            return;
+        }
+        let switch_epoch = super::show_switch::epoch();
 
         // All gates passed. Build connection settings on the UI thread, then
         // spawn the gather + write.
@@ -1998,6 +2049,7 @@ impl HiJackApp {
                 let _ = tx.send(UiEvent::AutosaveCompleted {
                     fingerprint: prev_fp,
                     wrote: false,
+                    error: None,
                 });
                 in_flight.store(false, Ordering::Relaxed);
                 return;
@@ -2018,11 +2070,24 @@ impl HiJackApp {
             )
             .await;
 
+            // An Open or New began while the show was being read: this may
+            // be half of each, so it isn't written anywhere.
+            if super::show_switch::epoch() != switch_epoch {
+                let _ = tx.send(UiEvent::AutosaveCompleted {
+                    fingerprint: prev_fp,
+                    wrote: false,
+                    error: None,
+                });
+                in_flight.store(false, Ordering::Relaxed);
+                return;
+            }
+
             // An untitled show nobody has touched has nothing to protect.
             if untitled && baseline == Some(show.edit_fingerprint()) {
                 let _ = tx.send(UiEvent::AutosaveCompleted {
                     fingerprint: prev_fp,
                     wrote: false,
+                    error: None,
                 });
                 in_flight.store(false, Ordering::Relaxed);
                 return;
@@ -2035,6 +2100,7 @@ impl HiJackApp {
                     let _ = tx.send(UiEvent::AutosaveCompleted {
                         fingerprint: prev_fp,
                         wrote: false,
+                        error: Some(format!("could not serialize the show: {e}")),
                     });
                     in_flight.store(false, Ordering::Relaxed);
                     return;
@@ -2049,17 +2115,31 @@ impl HiJackApp {
             };
 
             let mut wrote = false;
+            let mut error = None;
             if fingerprint != prev_fp {
                 match backup::write_and_rotate(&path, backup::BackupKind::Autosave, &json).await {
                     Ok(p) => {
                         tracing::info!(path = %p.display(), "Autosaved");
                         wrote = true;
                     }
-                    Err(e) => tracing::warn!(error = %e, "Autosave write failed"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Autosave write failed");
+                        error = Some(e.to_string());
+                    }
                 }
             }
 
-            let _ = tx.send(UiEvent::AutosaveCompleted { fingerprint, wrote });
+            let _ = tx.send(UiEvent::AutosaveCompleted {
+                // Not written: keep the last good one, so the next interval
+                // tries again instead of waiting for another edit (R9).
+                fingerprint: if error.is_some() {
+                    prev_fp
+                } else {
+                    fingerprint
+                },
+                wrote,
+                error,
+            });
             in_flight.store(false, Ordering::Relaxed);
         }));
     }
@@ -2186,9 +2266,9 @@ impl HiJackApp {
                     .as_ref()
                     .map(|rd| rd.original_path.clone())
                     .unwrap_or_default();
-                self.setup.show_file_path = orig;
                 super::setup_tab::save_show_file(
                     &mut self.setup,
+                    orig,
                     &self.state,
                     &self.cue_manager,
                     &self.macro_manager,
@@ -2466,8 +2546,12 @@ impl HiJackApp {
             &self.pan_link_bindings,
             &self.stream_deck_config,
             &self.sidecar_config,
-            // Connection settings aren't part of the fingerprint.
-            crate::persistence::show_file::ConnectionSettings::default(),
+            // As a save would write them: they're part of the show (audit R4).
+            super::setup_tab::connection_settings_from_setup(
+                &self.setup,
+                self.auto_update_on_recall.load(Ordering::Relaxed),
+                self.snapshot_sync_direction.get(),
+            ),
             self.snapshots.scope_editor.console_recall.clone(),
         );
         let show = self
@@ -2485,6 +2569,12 @@ impl HiJackApp {
     /// next close, Open or New asks rather than assuming it's saved.
     fn take_saved_baseline(&mut self) {
         self.saved_fingerprint = Some(self.current_edit_fingerprint().unwrap_or(0));
+    }
+
+    /// Record a baseline no real show matches, so the next close, Open or New
+    /// asks before discarding the show.
+    fn mark_unsaved(&mut self) {
+        self.saved_fingerprint = Some(0);
     }
 
     /// True if the show differs from what was last saved, loaded or created.
@@ -2540,7 +2630,9 @@ impl HiJackApp {
     /// Asks for a path first if the show has none. `Ok(false)` means the
     /// operator cancelled the file dialog.
     fn save_blocking(&mut self) -> Result<bool, String> {
-        if self.setup.show_file_path.is_empty() {
+        // A new path is only adopted once the save succeeds, so a failed one
+        // leaves the show where it was.
+        let target = if self.setup.show_file_path.is_empty() {
             let dlg = super::setup_tab::seed_last_open_dir(
                 rfd::FileDialog::new()
                     .add_filter("Show files", &["s21show", "json"])
@@ -2551,15 +2643,18 @@ impl HiJackApp {
                 return Ok(false);
             };
             super::setup_tab::remember_last_open_dir(&mut self.setup, &path);
-            self.setup.show_file_path = path.display().to_string();
-            super::setup_tab::ensure_show_file_extension(&mut self.setup.show_file_path);
-        }
+            let mut target = path.display().to_string();
+            super::setup_tab::ensure_show_file_extension(&mut target);
+            target
+        } else {
+            self.setup.show_file_path.clone()
+        };
         let conn = super::setup_tab::connection_settings_from_setup(
             &self.setup,
             self.auto_update_on_recall.load(Ordering::Relaxed),
             self.snapshot_sync_direction.get(),
         );
-        let show = self.runtime.block_on(super::setup_tab::build_show_file(
+        let build = super::setup_tab::build_show_file(
             &self.state,
             &self.cue_manager,
             &self.macro_manager,
@@ -2571,19 +2666,33 @@ impl HiJackApp {
             &self.sidecar_config,
             conn,
             self.snapshots.scope_editor.console_recall.clone(),
-        ));
+        );
+        // This blocks the UI thread, so it can't wait on the locks for ever.
+        let show = self
+            .runtime
+            .block_on(tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                build,
+            ))
+            .map_err(|_| "Save failed: the show stayed busy for 2 s. Try again.".to_string())?;
         let fingerprint = show.edit_fingerprint();
-        let path = std::path::PathBuf::from(&self.setup.show_file_path);
-        match self.runtime.block_on(show.save(&path)) {
-            Ok(()) => {
+        let path = std::path::PathBuf::from(&target);
+        let write = tokio::time::timeout(std::time::Duration::from_secs(10), show.save(&path));
+        match self.runtime.block_on(write) {
+            Ok(Ok(())) => {
                 tracing::info!("Show file saved: {}", path.display());
                 self.saved_fingerprint = Some(fingerprint);
                 self.setup.status_message = Some(format!("Saved: {}", path.display()).into());
+                self.setup.show_file_path = target;
                 Ok(true)
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::error!("Save failed for {}: {e}", path.display());
                 Err(format!("Save failed: {e}"))
+            }
+            Err(_) => {
+                tracing::error!("Save to {} took over 10 s", path.display());
+                Err("Save failed: writing the file took over 10 s".into())
             }
         }
     }
