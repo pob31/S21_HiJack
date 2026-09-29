@@ -7,7 +7,7 @@ use tracing::{debug, info};
 use crate::console::console_tx::ConsoleTx;
 use crate::logging::warn_throttled;
 use crate::model::channel::ChannelId;
-use crate::model::monitor::MonitorClient;
+use crate::model::monitor::{ClientEndpoint, MonitorClient};
 use crate::model::parameter::{FADER_INF_DB, ParameterAddress, ParameterPath, ParameterValue};
 use crate::model::state::ConsoleState;
 use crate::osc::client::OscSender;
@@ -34,7 +34,30 @@ pub struct MonitorEngine {
     /// Publishes server→client output; subscribed by the UDP fan-out task and
     /// (later) each WebSocket connection. See [`super::monitor_event`].
     events: broadcast::Sender<MonitorStateEvent>,
+    /// The last change a client made to each send `(input, aux)`, so the
+    /// poll doesn't push it back to that client (audit A5).
+    own_changes: std::sync::Mutex<HashMap<(u16, u16), OwnChange>>,
+    /// When each client last got a full snapshot, so a heartbeat only brings
+    /// one every [`HEARTBEAT_RESYNC`] (audit A5).
+    snapshots: std::sync::Mutex<HashMap<ClientEndpoint, std::time::Instant>>,
 }
+
+/// A client's own change to one field of a send.
+#[derive(Clone, Debug)]
+struct OwnChange {
+    source: ClientEndpoint,
+    param: SendParam,
+    value: ParameterValue,
+    at: std::time::Instant,
+}
+
+/// How long a client's own send change is kept from being pushed back to it.
+const OWN_CHANGE_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How often a heartbeat (a repeated `Connect`) brings a full snapshot. Every
+/// heartbeat used to, every 10 s; a phone that missed an update (UDP) is still
+/// put right within a minute.
+const HEARTBEAT_RESYNC: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl MonitorEngine {
     pub fn new(
@@ -51,7 +74,13 @@ impl MonitorEngine {
         tx: ConsoleTx,
         events: broadcast::Sender<MonitorStateEvent>,
     ) -> Self {
-        Self { state, tx, events }
+        Self {
+            state,
+            tx,
+            events,
+            own_changes: Default::default(),
+            snapshots: Default::default(),
+        }
     }
 
     pub fn set_ipad_sender(&mut self, sender: Option<IpadSender>) {
@@ -101,8 +130,17 @@ impl MonitorEngine {
                     info!(name = %client_name, ?endpoint, "Monitor client connected");
                 }
 
-                // Publish full permitted state to the connecting client.
-                if let Some(client) = manager.find_by_name(&client_name) {
+                // Full permitted state for a new connection; for a heartbeat
+                // only now and then (audit A5).
+                let resync_due = self
+                    .snapshots
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&endpoint)
+                    .is_none_or(|at| at.elapsed() >= HEARTBEAT_RESYNC);
+                if (!was_connected || resync_due)
+                    && let Some(client) = manager.find_by_name(&client_name)
+                {
                     let client = client.clone();
                     self.publish_client_state(&client).await;
                 }
@@ -362,6 +400,18 @@ impl MonitorEngine {
             // The fan-out/WS subscribers apply the per-client permission filter
             // and skip the source endpoint.
             if let Some(source) = source {
+                self.own_changes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(
+                        (input_ch, aux_ch),
+                        OwnChange {
+                            source,
+                            param,
+                            value: value.clone(),
+                            at: std::time::Instant::now(),
+                        },
+                    );
                 self.publish(MonitorStateEvent::SendEcho {
                     source,
                     input: input_ch,
@@ -380,6 +430,10 @@ impl MonitorEngine {
         let Some(endpoint) = client.endpoint else {
             return;
         };
+        self.snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(endpoint, std::time::Instant::now());
 
         let state = self.state.read().await;
 
@@ -515,6 +569,39 @@ impl MonitorEngine {
         self.tx.send_parameter_logged("Monitor", &addr, value).await
     }
 
+    /// The client to leave out of a state push for send `key`: the one whose
+    /// change it is, if it made it within [`OWN_CHANGE_WINDOW`] and it is the
+    /// only difference from the last push. It would get back the value under
+    /// its finger (audit A5). Any other push goes to everyone and forgets the
+    /// change, so a later move back to the same value still reaches it.
+    fn own_change_only(
+        &self,
+        key: (u16, u16),
+        old: Option<&(f32, f32, bool)>,
+        new: (f32, f32, bool),
+    ) -> Option<ClientEndpoint> {
+        let mut own = self.own_changes.lock().unwrap_or_else(|e| e.into_inner());
+        let change = own.get(&key)?;
+        let (level, pan, on) = new;
+        let only_theirs = old.is_some_and(|&(old_level, old_pan, old_on)| match change.param {
+            SendParam::Level => {
+                pan == old_pan && on == old_on && change.value.as_float() == Some(level)
+            }
+            SendParam::Pan => {
+                level == old_level && on == old_on && change.value.as_float() == Some(pan)
+            }
+            SendParam::On => {
+                level == old_level && pan == old_pan && change.value.as_bool() == Some(on)
+            }
+        });
+        if only_theirs && change.at.elapsed() < OWN_CHANGE_WINDOW {
+            Some(change.source)
+        } else {
+            own.remove(&key);
+            None
+        }
+    }
+
     /// PRD 5.7 step 5: Poll ConsoleState for send + aux parameter changes and push updates.
     /// Uses a generation counter to skip scanning when nothing changed.
     /// Per-parameter rate limited to 20Hz via `last_push_times`.
@@ -618,7 +705,9 @@ impl MonitorEngine {
                 }
 
                 // State changed — publish once; the transports fan it out to
-                // each permitted+visible client.
+                // each permitted+visible client, less the one whose own
+                // change this is, if nothing else changed (audit A5).
+                let skip = self.own_change_only(key, last_send_state.get(&key), new_state);
                 last_send_state.insert(key, new_state);
                 last_push_times.insert(key, now);
 
@@ -628,6 +717,7 @@ impl MonitorEngine {
                     level,
                     pan,
                     on,
+                    skip,
                 });
             }
         }
@@ -1115,6 +1205,154 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(60)).await;
         assert_eq!(poll!(), vec![-70.0]);
         assert!(poll!().is_empty());
+    }
+
+    /// An engine whose console link reaches a real socket (so forwards
+    /// succeed), with clients A and B connected on aux 1.
+    async fn engine_with_two_clients() -> (
+        MonitorEngine,
+        Arc<RwLock<ConsoleState>>,
+        broadcast::Receiver<MonitorStateEvent>,
+        MonitorManager,
+        tokio::net::UdpSocket,
+    ) {
+        let console = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let local = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sender = OscSender::new(local, console.local_addr().unwrap());
+        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
+        let (events, rx) = broadcast::channel(256);
+        let engine = MonitorEngine::new(state.clone(), sender, events);
+        let mut mgr = MonitorManager::new();
+        for (name, port) in [("A", 9001), ("B", 9002)] {
+            let mut c = MonitorClient::new(name.into(), vec![1], vec![]);
+            c.endpoint = Some(ClientEndpoint::Udp(
+                format!("127.0.0.1:{port}").parse().unwrap(),
+            ));
+            c.last_seen = Some(Instant::now());
+            mgr.add_client(c);
+        }
+        (engine, state, rx, mgr, console)
+    }
+
+    /// Audit A5: the poll doesn't push a client's own change back to it, and
+    /// anything else still reaches everyone.
+    #[tokio::test]
+    async fn a_clients_own_change_is_not_pushed_back_to_it() {
+        let (engine, state, mut rx, mut mgr, _console) = engine_with_two_clients().await;
+        let a = ClientEndpoint::Udp("127.0.0.1:9001".parse().unwrap());
+        let send = |p: ParameterPath| ParameterAddress {
+            channel: ChannelId::Input(5),
+            parameter: p,
+        };
+        {
+            let mut st = state.write().await;
+            st.update(
+                send(ParameterPath::SendLevel(1)),
+                ParameterValue::Float(-20.0),
+            );
+            st.update(send(ParameterPath::SendPan(1)), ParameterValue::Float(0.0));
+            st.update(
+                send(ParameterPath::SendEnabled(1)),
+                ParameterValue::Bool(true),
+            );
+        }
+        let (mut sends, mut auxes, mut generation, mut send_times, mut aux_times) = (
+            HashMap::new(),
+            HashMap::new(),
+            0,
+            HashMap::new(),
+            HashMap::new(),
+        );
+        macro_rules! poll {
+            () => {{
+                tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                engine
+                    .poll_and_push_state_changes(
+                        &mut sends,
+                        &mut auxes,
+                        &mut generation,
+                        &mut send_times,
+                        &mut aux_times,
+                        &mgr,
+                    )
+                    .await;
+                let mut pushed = Vec::new();
+                while let Ok(event) = rx.try_recv() {
+                    if let MonitorStateEvent::SendState {
+                        input: 5,
+                        aux: 1,
+                        level,
+                        pan,
+                        skip,
+                        ..
+                    } = event
+                    {
+                        pushed.push((level, pan, skip));
+                    }
+                }
+                pushed
+            }};
+        }
+        assert_eq!(poll!(), vec![(-20.0, 0.0, None)]);
+
+        // A moves the level: pushed to everyone but A.
+        engine
+            .handle_command(
+                MonitorCommand::SetSendLevel {
+                    client_name: "A".into(),
+                    input_ch: 5,
+                    aux_ch: 1,
+                    value: -6.0,
+                    endpoint: a,
+                },
+                &mut mgr,
+            )
+            .await;
+        assert_eq!(poll!(), vec![(-6.0, 0.0, Some(a))]);
+
+        // The desk moves the pan: everyone, A included.
+        state
+            .write()
+            .await
+            .update(send(ParameterPath::SendPan(1)), ParameterValue::Float(0.5));
+        assert_eq!(poll!(), vec![(-6.0, 0.5, None)]);
+    }
+
+    /// Audit A5: a heartbeat (a repeated Connect) doesn't bring a full
+    /// snapshot each time; a new connection and an explicit request do.
+    #[tokio::test]
+    async fn heartbeats_do_not_resend_the_whole_state() {
+        let (engine, _state, mut rx, mut mgr, _console) = engine_with_two_clients().await;
+        let a = ClientEndpoint::Udp("127.0.0.1:9001".parse().unwrap());
+        let connect = || MonitorCommand::Connect {
+            client_name: "A".into(),
+            endpoint: a,
+        };
+        let mut snapshots = || {
+            let mut n = 0;
+            while let Ok(event) = rx.try_recv() {
+                if matches!(event, MonitorStateEvent::ClientState { .. }) {
+                    n += 1;
+                }
+            }
+            n
+        };
+
+        engine.handle_command(connect(), &mut mgr).await;
+        assert_eq!(snapshots(), 1, "the first connect");
+        engine.handle_command(connect(), &mut mgr).await;
+        engine.handle_command(connect(), &mut mgr).await;
+        assert_eq!(snapshots(), 0, "heartbeats");
+        engine
+            .handle_command(
+                MonitorCommand::RequestState {
+                    client_name: "A".into(),
+                    endpoint: a,
+                },
+                &mut mgr,
+            )
+            .await;
+        assert_eq!(snapshots(), 1, "an explicit request");
     }
 
     /// A send the desk hasn't reported yet reads as off, never 0 dB: clients

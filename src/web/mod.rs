@@ -190,27 +190,11 @@ async fn handle_ws(socket: WebSocket, ctx: WebContext, shutdown: CancellationTok
     info!(conn = id, name = %perms.name, "WS: monitor client connected");
 
     // 3. Welcome.
-    let (input_count, console_connected) = {
-        let st = ctx.state.read().await;
-        // "Connected" = a live link (healthy/idle ping) and not in offline mode,
-        // not merely that a session was started.
-        let live = matches!(
-            st.health,
-            ConnectionHealth::Connected | ConnectionHealth::Idle
-        );
-        (
-            st.config.input_channel_count,
-            live && !ctx.offline_mode.load(Ordering::Relaxed),
-        )
-    };
-    let welcome = protocol::ServerMsg::Welcome {
-        client_name: perms.name.clone(),
-        permitted_auxes: perms.permitted_auxes.clone(),
-        visible_inputs: perms.visible_inputs.clone(),
-        input_count,
-        console_connected,
-    };
-    if ws_tx.send(text(&welcome)).await.is_err() {
+    if ws_tx
+        .send(text(&welcome(&ctx, &perms).await))
+        .await
+        .is_err()
+    {
         return;
     }
 
@@ -225,8 +209,18 @@ async fn handle_ws(socket: WebSocket, ctx: WebContext, shutdown: CancellationTok
         })
         .await;
 
+    // The profile as of the last heartbeat. Permissions used to be fixed at
+    // login, so a narrowed profile kept reaching a connected browser until it
+    // reconnected. The read loop re-checks on each heartbeat; the write task
+    // filters with the latest, and on a change sends a new Welcome (the page
+    // then asks for the state again), or closes if the login no longer holds.
+    let (perms_tx, mut perms_rx) = tokio::sync::watch::channel::<
+        Result<protocol::ClientPerms, protocol::AuthErrorReason>,
+    >(Ok(perms.clone()));
+
     // 5. Write task: broadcast events → filtered JSON → socket.
-    let perms_w = perms.clone();
+    let mut perms_w = perms.clone();
+    let ctx_w = ctx.clone();
     let commands_w = ctx.commands.clone();
     let name_w = perms.name.clone();
     let shutdown_w = shutdown.clone();
@@ -241,6 +235,34 @@ async fn handle_ws(socket: WebSocket, ctx: WebContext, shutdown: CancellationTok
                         })))
                         .await;
                     break;
+                }
+                changed = perms_rx.changed() => {
+                    if changed.is_err() {
+                        break; // the read loop has ended
+                    }
+                    let latest = perms_rx.borrow_and_update().clone();
+                    match latest {
+                        Ok(p) => {
+                            perms_w = p;
+                            if ws_tx.send(text(&welcome(&ctx_w, &perms_w).await)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(reason) => {
+                            info!(conn = id, name = %name_w, ?reason, "WS: login no longer valid; closing");
+                            let _ = ws_tx
+                                .send(text(&protocol::ServerMsg::AuthError { reason }))
+                                .await;
+                            let _ = ws_tx
+                                .send(Message::Close(Some(CloseFrame {
+                                    code: close_code::POLICY,
+                                    reason: "monitor profile changed".into(),
+                                })))
+                                .await;
+                            break;
+                        }
+                    }
+                    continue;
                 }
                 event = events_rx.recv() => event,
             };
@@ -283,8 +305,21 @@ async fn handle_ws(socket: WebSocket, ctx: WebContext, shutdown: CancellationTok
                             Ok(protocol::ClientMsg::Heartbeat)
                             | Ok(protocol::ClientMsg::Hello { .. }) => {
                                 // Keep-alive: refresh liveness so the 20 Hz poll
-                                // keeps scanning this client's auxes.
-                                ctx.manager.write().await.update_last_seen(&perms.name, endpoint);
+                                // keeps scanning this client's auxes, and pick
+                                // up any change to the profile (see `perms_tx`).
+                                let fresh = {
+                                    let mut mgr = ctx.manager.write().await;
+                                    mgr.update_last_seen(&perms.name, endpoint);
+                                    protocol::authenticate(mgr.find_by_name(&perms.name), pin.as_deref())
+                                };
+                                let changed = match (&fresh, &*perms_tx.borrow()) {
+                                    (Ok(new), Ok(old)) => new != old,
+                                    (Err(_), Err(_)) => false,
+                                    _ => true,
+                                };
+                                if changed {
+                                    let _ = perms_tx.send_replace(fresh);
+                                }
                             }
                             Ok(msg) => {
                                 if let Some(cmd) = protocol::to_command(&msg, &perms.name, endpoint) {
@@ -304,6 +339,31 @@ async fn handle_ws(socket: WebSocket, ctx: WebContext, shutdown: CancellationTok
 
     stop_write_task(write, shutdown.is_cancelled()).await;
     info!(conn = id, name = %perms.name, "WS: monitor client disconnected");
+}
+
+/// The `Welcome` for `perms`: its permissions, plus the desk's input count and
+/// whether its link is live.
+async fn welcome(ctx: &WebContext, perms: &protocol::ClientPerms) -> protocol::ServerMsg {
+    let (input_count, console_connected) = {
+        let st = ctx.state.read().await;
+        // "Connected" = a live link (healthy/idle ping) and not in offline mode,
+        // not merely that a session was started.
+        let live = matches!(
+            st.health,
+            ConnectionHealth::Connected | ConnectionHealth::Idle
+        );
+        (
+            st.config.input_channel_count,
+            live && !ctx.offline_mode.load(Ordering::Relaxed),
+        )
+    };
+    protocol::ServerMsg::Welcome {
+        client_name: perms.name.clone(),
+        permitted_auxes: perms.permitted_auxes.clone(),
+        visible_inputs: perms.visible_inputs.clone(),
+        input_count,
+        console_connected,
+    }
 }
 
 /// End a session's write task. On shutdown it is sending the Close frame, so
@@ -404,6 +464,80 @@ mod tests {
         tokio::spawn(stop_write_task(write, true))
             .await
             .expect("no JoinHandle polled after completion");
+    }
+
+    /// A profile edited while its browser is connected reaches it at the next
+    /// heartbeat: a new Welcome with the new permissions, or, once the profile
+    /// is gone, an auth error and a Close. They were fixed at login.
+    #[tokio::test]
+    async fn profile_changes_reach_a_connected_browser() {
+        let mut mgr = MonitorManager::new();
+        mgr.add_client(MonitorClient::new("Drummer".into(), vec![1], vec![]));
+        let manager = Arc::new(RwLock::new(mgr));
+        let (cmd_tx, _cmd_rx) = mpsc::channel::<MonitorCommand>(64);
+        let (events_tx, _) = broadcast::channel::<MonitorStateEvent>(64);
+        let ctx = WebContext {
+            state: Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default()))),
+            manager: manager.clone(),
+            commands: cmd_tx,
+            events: events_tx,
+            offline_mode: Arc::new(AtomicBool::new(false)),
+            conn_counter: Arc::new(AtomicU64::new(0)),
+        };
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        start_web_server(addr, CancellationToken::new(), Vec::new(), ctx)
+            .await
+            .unwrap();
+        let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
+            .await
+            .unwrap();
+        ws.send(TMsg::Text(r#"{"type":"hello","name":"Drummer"}"#.into()))
+            .await
+            .unwrap();
+        let welcome = recv_json(&mut ws).await;
+        assert_eq!(welcome["permitted_auxes"], serde_json::json!([1]));
+
+        // The engineer gives the drummer aux 2 as well.
+        manager
+            .write()
+            .await
+            .find_by_name_mut("Drummer")
+            .unwrap()
+            .permitted_auxes = vec![1, 2];
+        ws.send(TMsg::Text(r#"{"type":"heartbeat"}"#.into()))
+            .await
+            .unwrap();
+        let welcome = recv_json(&mut ws).await;
+        assert_eq!(welcome["type"].as_str(), Some("welcome"));
+        assert_eq!(welcome["permitted_auxes"], serde_json::json!([1, 2]));
+
+        // Then deletes the profile.
+        manager
+            .write()
+            .await
+            .clients
+            .retain(|_, c| c.name != "Drummer");
+        ws.send(TMsg::Text(r#"{"type":"heartbeat"}"#.into()))
+            .await
+            .unwrap();
+        let error = recv_json(&mut ws).await;
+        assert_eq!(error["type"].as_str(), Some("auth_error"));
+        assert_eq!(error["reason"].as_str(), Some("unknown_client"));
+        let closed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match ws.next().await {
+                    Some(Ok(TMsg::Close(_))) | None => return,
+                    _ => continue,
+                }
+            }
+        })
+        .await;
+        assert!(closed.is_ok(), "the session should close");
     }
 
     /// End-to-end WebSocket gate: Hello → Welcome → State, a fader move flows

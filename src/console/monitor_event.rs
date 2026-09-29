@@ -67,7 +67,8 @@ pub enum MonitorStateEvent {
         value: ParameterValue,
     },
     /// A send's full `(level, pan, on)`, poll-driven. Sent to every connected
-    /// client permitted for `aux` with `input` visible.
+    /// client permitted for `aux` with `input` visible, except `skip`: the
+    /// client whose own change this is and nothing else (audit A5).
     /// UDP path: `/monitor/state/send/{input}/{aux}` `[level, pan, on]`.
     SendState {
         input: u16,
@@ -75,6 +76,7 @@ pub enum MonitorStateEvent {
         level: f32,
         pan: f32,
         on: bool,
+        skip: Option<ClientEndpoint>,
     },
     /// An aux master's `(fader, mute)`, poll-driven. Sent to every connected
     /// client permitted for `aux`. UDP path: `/monitor/state/aux/{aux}` `[fader, mute]`.
@@ -218,6 +220,7 @@ async fn dispatch_udp(
             level,
             pan,
             on,
+            skip,
         } => {
             let path = format!("/monitor/state/send/{input}/{aux}");
             let mgr = manager.read().await;
@@ -225,6 +228,9 @@ async fn dispatch_udp(
                 let Some(ClientEndpoint::Udp(addr)) = client.endpoint else {
                     continue;
                 };
+                if skip.is_some() && client.endpoint == skip {
+                    continue;
+                }
                 if !client.is_connected() || !client.permitted_auxes.contains(&aux) {
                     continue;
                 }
@@ -404,6 +410,7 @@ mod tests {
             level: -3.0,
             pan: 0.5,
             on: true,
+            skip: None,
         })
         .unwrap();
         let got_a = recv_osc(&sock_a)
@@ -427,6 +434,7 @@ mod tests {
             level: -9.0,
             pan: 0.0,
             on: false,
+            skip: None,
         })
         .unwrap();
         assert_eq!(

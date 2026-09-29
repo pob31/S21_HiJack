@@ -320,8 +320,9 @@ pub fn event_to_server_msg(
             level,
             pan,
             on,
+            skip,
         } => {
-            if !perms.permits_aux(*aux) || !perms.input_visible(*input) {
+            if !perms.permits_aux(*aux) || !perms.input_visible(*input) || *skip == Some(me) {
                 return None;
             }
             Some(ServerMsg::Send {
@@ -493,6 +494,7 @@ mod tests {
             level: -3.0,
             pan: 0.0,
             on: true,
+            skip: None,
         };
         assert!(matches!(
             event_to_server_msg(&permitted, me, &p),
@@ -504,6 +506,7 @@ mod tests {
             level: -3.0,
             pan: 0.0,
             on: true,
+            skip: None,
         };
         assert!(event_to_server_msg(&unpermitted, me, &p).is_none());
 
