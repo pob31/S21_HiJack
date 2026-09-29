@@ -78,6 +78,11 @@ const TICK: Duration = Duration::from_millis(25);
 /// full-travel command slams the fader into its end stop; about 20 steps
 /// was smooth on the D700 (field note 23).
 const MOTOR_MAX_STEP: u16 = 16383 / 20;
+/// Where a motor move starts when the fader's position is unknown (just
+/// connected, never reported): mid-travel. No single command then crosses
+/// more than about half the travel, and a move to an end stop is always
+/// ramped. The first sync used to send one full-travel command (audit M19).
+const MOTOR_UNKNOWN_POS: u16 = 8192;
 /// How far (normalized travel) the console may sit from a relative
 /// encoder's last send before the encoder starts again from the console.
 const RESEED_TOLERANCE: f32 = 0.005;
@@ -94,10 +99,15 @@ fn motor_echo_tolerance(mode: &ControlMode) -> u16 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SvcCmd {
     /// Push console state onto all feedback-capable motors ("console
-    /// wins"). Sent on enable, MIDI reconnect, show load, and via the
-    /// tab's "Sync surface now" button. Also clears decode state so
+    /// wins"). Sent on enable, show load, binding add, and via the tab's
+    /// "Sync surface now" button. Also clears decode state and ramps so
     /// edited bindings restart clean.
     SyncSurface,
+    /// The sidecar's MIDI device (re)connected: forget everything known
+    /// about the surface (fader positions, ramps, echo windows, held
+    /// touches), then sync. Positions kept from before the reconnect made
+    /// ramps start from where a fader used to be (audit M19).
+    SurfaceReconnected,
 }
 
 /// The live console connection as the sidecar sees it.
@@ -209,6 +219,13 @@ pub async fn run(mut deps: SidecarDeps) {
             cmd = deps.svc_rx.recv() => {
                 match cmd {
                     Some(SvcCmd::SyncSurface) => sync_surface(&deps, &mut rt).await,
+                    Some(SvcCmd::SurfaceReconnected) => {
+                        rt.fader_pos.clear();
+                        rt.ramps.clear();
+                        rt.motor_echo.clear();
+                        rt.touched.clear();
+                        sync_surface(&deps, &mut rt).await;
+                    }
                     None => {
                         // The UI half owns this sender for the app's
                         // lifetime — closure means shutdown.
@@ -233,7 +250,7 @@ pub async fn run(mut deps: SidecarDeps) {
             _ = tick.tick() => {
                 flush_pending_console(&deps, &mut rt).await;
                 motor_poll(&deps, &mut rt).await;
-                advance_ramps(&deps, &mut rt);
+                advance_ramps(&deps, &mut rt).await;
             }
         }
     }
@@ -246,6 +263,13 @@ async fn handle_hw_event(
     raw_osc_socket: &mut Option<tokio::net::UdpSocket>,
     ev: &HwEvent,
 ) {
+    // A touch release always lets go, even while learning or switched off:
+    // dropped there, the fader stayed "touched" and its motor never
+    // followed the console again.
+    if let HwEvent::Note { on: false, .. } = ev {
+        rt.touched.retain(|t| !event_matches(t, ev));
+    }
+
     // Learn swallows everything while armed (it lets go on detection or
     // after its timeout; audit M20).
     if LearnShared::wants(&deps.learn, Instant::now()) {
@@ -294,13 +318,11 @@ async fn handle_hw_event(
             && let Some(v14) = absolute_v14(&b.mode, ev)
         {
             // Our own motor movement reported back: drop it.
-            if rt.motor_echo.get(&b.control).is_some_and(|echo| {
-                now <= echo.until && echo.covers(v14, motor_echo_tolerance(&b.mode))
-            }) {
+            if is_motor_echo(rt, b, v14, now) {
                 continue;
             }
             // Otherwise it's where the operator put the fader.
-            rt.fader_pos.insert(b.id, v14);
+            hand_moved(rt, b, v14);
         }
 
         let st = rt.decode.entry(b.id).or_default();
@@ -328,8 +350,33 @@ async fn handle_hw_event(
         let Some(norm) = decode(b, st, ev, now) else {
             continue;
         };
+        // A 14-bit CC position only exists once its MSB and LSB are paired,
+        // so its echo check comes after decoding. It had none, and since H7
+        // each echo ran the operator-change chain: it could cancel a fade,
+        // mark the cell dirty, drive gangs and be learned (audit R2).
+        if matches!(b.mode, ControlMode::Absolute14 { .. }) {
+            let v14 = (norm * 16383.0).round() as u16;
+            if is_motor_echo(rt, b, v14, now) {
+                continue;
+            }
+            hand_moved(rt, b, v14);
+        }
         dispatch_value(deps, rt, raw_osc_socket, b, norm, now).await;
     }
+}
+
+/// The operator moved `b`'s fader to `v14`. A motor ramp still heading
+/// somewhere else would fight the hand, so it stops (audit M19).
+fn hand_moved(rt: &mut Runtime, b: &SidecarBinding, v14: u16) {
+    rt.fader_pos.insert(b.id, v14);
+    rt.ramps.remove(&b.id);
+}
+
+/// Is `v14`, reported by `b`'s control, our own motor movement coming back?
+fn is_motor_echo(rt: &Runtime, b: &SidecarBinding, v14: u16, now: Instant) -> bool {
+    rt.motor_echo
+        .get(&b.control)
+        .is_some_and(|echo| now <= echo.until && echo.covers(v14, motor_echo_tolerance(&b.mode)))
 }
 
 /// Route a decoded normalized position to the binding's target,
@@ -544,7 +591,8 @@ async fn motor_poll(deps: &SidecarDeps, rt: &mut Runtime) {
     }
 }
 
-/// An absolute control's position from a hardware event, in 14-bit units.
+/// An absolute control's position from a single hardware event, in 14-bit
+/// units. A 14-bit CC pair needs its decoder, so it's handled after decoding.
 fn absolute_v14(mode: &ControlMode, ev: &HwEvent) -> Option<u16> {
     match ev {
         HwEvent::PitchBend { value, .. } => Some(*value),
@@ -555,27 +603,30 @@ fn absolute_v14(mode: &ControlMode, ev: &HwEvent) -> Option<u16> {
     }
 }
 
-/// Move a binding's motor to `v14`: in one command when it's close (or its
-/// position is unknown), otherwise as a ramp the tick advances.
+/// Move a binding's motor to `v14`: in one command when it's close,
+/// otherwise as a ramp the tick advances. An unknown position counts as
+/// mid-travel ([`MOTOR_UNKNOWN_POS`]).
 fn drive_motor(deps: &SidecarDeps, rt: &mut Runtime, b: &SidecarBinding, v14: u16) {
-    match rt.fader_pos.get(&b.id).copied() {
-        Some(at) if at.abs_diff(v14) > MOTOR_MAX_STEP => {
-            rt.ramps.insert(
-                b.id,
-                MotorRamp {
-                    control: b.control,
-                    mode: b.mode,
-                    touch: b.touch,
-                    at,
-                    to: v14,
-                },
-            );
-            step_ramp(deps, rt, b.id);
-        }
-        _ => {
-            rt.ramps.remove(&b.id);
-            command_motor(deps, rt, b.id, b.control, b.mode, v14);
-        }
+    let at = rt
+        .fader_pos
+        .get(&b.id)
+        .copied()
+        .unwrap_or(MOTOR_UNKNOWN_POS);
+    if at.abs_diff(v14) > MOTOR_MAX_STEP {
+        rt.ramps.insert(
+            b.id,
+            MotorRamp {
+                control: b.control,
+                mode: b.mode,
+                touch: b.touch,
+                at,
+                to: v14,
+            },
+        );
+        step_ramp(deps, rt, b.id);
+    } else {
+        rt.ramps.remove(&b.id);
+        command_motor(deps, rt, b.id, b.control, b.mode, v14);
     }
 }
 
@@ -628,8 +679,27 @@ fn step_ramp(deps: &SidecarDeps, rt: &mut Runtime, id: Uuid) {
     }
 }
 
-/// Advance every running ramp by one step.
-fn advance_ramps(deps: &SidecarDeps, rt: &mut Runtime) {
+/// Advance every running ramp by one step. A ramp only runs while its
+/// binding still wants it: none while the sidecar is off, and none for a
+/// binding deleted, disabled or re-pointed since. They used to run on
+/// (audit M19).
+async fn advance_ramps(deps: &SidecarDeps, rt: &mut Runtime) {
+    if rt.ramps.is_empty() {
+        return;
+    }
+    {
+        let config = deps.config.read().await;
+        rt.ramps.retain(|id, r| {
+            config.enabled
+                && config.bindings.iter().any(|b| {
+                    b.id == *id
+                        && b.enabled
+                        && b.wants_motor_feedback()
+                        && b.control == r.control
+                        && b.mode == r.mode
+                })
+        });
+    }
     let ids: Vec<Uuid> = rt.ramps.keys().copied().collect();
     for id in ids {
         step_ramp(deps, rt, id);
@@ -660,6 +730,9 @@ async fn sync_surface(deps: &SidecarDeps, rt: &mut Runtime) {
     let config = deps.config.read().await.clone();
     rt.decode.clear();
     rt.pending_console.clear();
+    // Every motor is driven afresh below; a ramp from before may be for a
+    // binding that has since changed.
+    rt.ramps.clear();
     if !config.enabled {
         return;
     }
@@ -688,7 +761,7 @@ async fn sync_surface(deps: &SidecarDeps, rt: &mut Runtime) {
 mod tests {
     use super::*;
     use crate::model::channel::ChannelId;
-    use crate::model::parameter::ParameterPath;
+    use crate::model::parameter::{FADER_INF_DB, ParameterPath};
     use crate::model::sidecar::Taper;
     use crate::osc::client::OscClient;
     use std::net::SocketAddr;
@@ -722,6 +795,7 @@ mod tests {
     }
 
     struct Harness {
+        config: Arc<RwLock<SidecarConfig>>,
         hw_tx: mpsc::UnboundedSender<HwEvent>,
         svc_tx: mpsc::UnboundedSender<SvcCmd>,
         senders_tx: watch::Sender<Option<SidecarLink>>,
@@ -774,6 +848,7 @@ mod tests {
         };
         let task = spawn(deps);
         Harness {
+            config,
             hw_tx,
             svc_tx,
             senders_tx,
@@ -926,20 +1001,14 @@ mod tests {
             .write()
             .await
             .update(fader_addr(12), ParameterValue::Float(0.0));
-        tokio::time::timeout(Duration::from_millis(500), async {
-            loop {
-                if !h.motor_log.lock().unwrap().is_empty() {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("motor pushed on console change");
-        let (control, v14) = h.motor_log.lock().unwrap()[0];
-        assert_eq!(control, ControlSelector::PitchBend { channel: 1 });
         // Unity ≈ 75% travel.
-        assert!((f32::from(v14) / 16383.0 - 0.75).abs() < 0.01);
+        await_motor_at(&h, "the motor at unity", 0.75).await;
+        let log = h.motor_log.lock().unwrap().clone();
+        assert_eq!(log[0].0, ControlSelector::PitchBend { channel: 1 });
+        // Audit M19: its position unknown, the fader is ramped there from
+        // mid-travel; it used to get one full-travel command.
+        assert_eq!(log[0].1, MOTOR_UNKNOWN_POS + MOTOR_MAX_STEP);
+        assert!(log.len() > 1, "{log:?}");
 
         // Now a hardware move: its own optimistic mirror write must NOT
         // bounce back to the motor.
@@ -956,6 +1025,57 @@ mod tests {
             h.motor_log.lock().unwrap().is_empty(),
             "own echo must not move the motor"
         );
+    }
+
+    /// Audit R2: a 14-bit CC fader's report of our own motor move is
+    /// dropped, as for pitch bend. It went to the console as a hand move.
+    #[tokio::test]
+    async fn a_14_bit_motor_echo_is_not_a_hand_move() {
+        let mut b = pb_binding(1, 12);
+        b.control = ControlSelector::Cc { channel: 1, cc: 7 };
+        b.mode = ControlMode::Absolute14 { lsb_cc: 39 };
+        b.touch = None;
+        let h = harness(SidecarConfig {
+            enabled: true,
+            bindings: vec![b],
+        })
+        .await;
+
+        h.state
+            .write()
+            .await
+            .update(fader_addr(12), ParameterValue::Float(0.0));
+        let v14 = await_motor_at(&h, "the motor push", 0.75).await;
+
+        // The fader reports where the motor put it: MSB, then LSB.
+        let pair = |v14: u16| {
+            [
+                HwEvent::Cc {
+                    channel: 1,
+                    cc: 7,
+                    value: (v14 >> 7) as u8,
+                },
+                HwEvent::Cc {
+                    channel: 1,
+                    cc: 39,
+                    value: (v14 & 0x7f) as u8,
+                },
+            ]
+        };
+        for ev in pair(v14) {
+            h.hw_tx.send(ev).unwrap();
+        }
+        assert!(
+            recv_osc(&h.console_sock).await.is_none(),
+            "the motor's echo must not reach the console"
+        );
+
+        // A real move, at once, still does.
+        for ev in pair(v14 / 2) {
+            h.hw_tx.send(ev).unwrap();
+        }
+        let (path, _) = recv_osc(&h.console_sock).await.expect("the hand move");
+        assert_eq!(path, "/channel/12/fader");
     }
 
     /// Wait until the motor log holds a value satisfying `done`; returns the log.
@@ -977,6 +1097,151 @@ mod tests {
         .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
     }
 
+    /// Wait until the motor has arrived at `norm` of its travel (a long move
+    /// is ramped, so that's the log's last entry); returns that position.
+    async fn await_motor_at(h: &Harness, what: &str, norm: f32) -> u16 {
+        let log = await_motor(h, what, |log| {
+            log.last()
+                .is_some_and(|&(_, v)| (f32::from(v) / 16383.0 - norm).abs() < 0.01)
+        })
+        .await;
+        log.last().unwrap().1
+    }
+
+    /// Motor commands logged over the next `ms` milliseconds.
+    async fn motor_moves_within(h: &Harness, ms: u64) -> Vec<(ControlSelector, u16)> {
+        h.motor_log.lock().unwrap().clear();
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        h.motor_log.lock().unwrap().clone()
+    }
+
+    /// Put the fader at the top, then start a long ramp down to −inf.
+    async fn start_a_long_ramp(h: &Harness) {
+        h.state
+            .write()
+            .await
+            .update(fader_addr(12), ParameterValue::Float(10.0));
+        await_motor_at(h, "the fader at the top", 1.0).await;
+        h.motor_log.lock().unwrap().clear();
+        h.state
+            .write()
+            .await
+            .update(fader_addr(12), ParameterValue::Float(FADER_INF_DB));
+        await_motor(h, "the ramp under way", |log| log.len() >= 2).await;
+    }
+
+    /// Audit M19: a ramp stops when the sidecar is switched off.
+    #[tokio::test]
+    async fn switching_off_stops_a_ramp() {
+        let h = harness(SidecarConfig {
+            enabled: true,
+            bindings: vec![pb_binding(1, 12)],
+        })
+        .await;
+        start_a_long_ramp(&h).await;
+
+        h.config.write().await.enabled = false;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(motor_moves_within(&h, 200).await.is_empty());
+    }
+
+    /// Audit M19: a ramp stops when its binding goes.
+    #[tokio::test]
+    async fn deleting_the_binding_stops_its_ramp() {
+        let h = harness(SidecarConfig {
+            enabled: true,
+            bindings: vec![pb_binding(1, 12)],
+        })
+        .await;
+        start_a_long_ramp(&h).await;
+
+        h.config.write().await.bindings.clear();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(motor_moves_within(&h, 200).await.is_empty());
+    }
+
+    /// Audit M19: a hand move outside the motor's path stops the ramp, which
+    /// would otherwise fight the hand.
+    #[tokio::test]
+    async fn a_hand_move_stops_a_ramp() {
+        let mut b = pb_binding(1, 12);
+        b.touch = None; // a board without touch sensing
+        let h = harness(SidecarConfig {
+            enabled: true,
+            bindings: vec![b],
+        })
+        .await;
+        start_a_long_ramp(&h).await;
+
+        h.hw_tx
+            .send(HwEvent::PitchBend {
+                channel: 1,
+                value: 0,
+            })
+            .unwrap();
+        let _ = recv_osc(&h.console_sock).await; // the move reached the desk
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let moves = motor_moves_within(&h, 200).await;
+        assert!(moves.is_empty(), "the ramp carried on: {moves:?}");
+    }
+
+    /// Audit M19: after a MIDI reconnect nothing is assumed about where the
+    /// faders are, so the first move ramps from mid-travel again.
+    #[tokio::test]
+    async fn a_reconnect_forgets_fader_positions() {
+        let h = harness(SidecarConfig {
+            enabled: true,
+            bindings: vec![pb_binding(1, 12)],
+        })
+        .await;
+        h.state
+            .write()
+            .await
+            .update(fader_addr(12), ParameterValue::Float(FADER_INF_DB));
+        await_motor_at(&h, "the fader at the bottom", 0.0).await;
+
+        // Plain sync: the position is known and matches, no ramp.
+        h.motor_log.lock().unwrap().clear();
+        h.svc_tx.send(SvcCmd::SyncSurface).unwrap();
+        let log = await_motor(&h, "the sync", |log| !log.is_empty()).await;
+        assert_eq!(log[0].1, 0);
+
+        h.motor_log.lock().unwrap().clear();
+        h.svc_tx.send(SvcCmd::SurfaceReconnected).unwrap();
+        let log = await_motor(&h, "the reconnect sync", |log| !log.is_empty()).await;
+        assert_eq!(log[0].1, MOTOR_UNKNOWN_POS - MOTOR_MAX_STEP);
+    }
+
+    /// A touch release that arrives while the sidecar is off still lets go;
+    /// dropped, the motor never followed that fader again.
+    #[tokio::test]
+    async fn a_touch_release_while_off_is_not_lost() {
+        let h = harness(SidecarConfig {
+            enabled: true,
+            bindings: vec![pb_binding(1, 12)],
+        })
+        .await;
+        let Some(ControlSelector::Note { channel, note }) =
+            crate::model::sidecar::mcu_default_touch_note(1)
+        else {
+            panic!()
+        };
+        let touch = |on| HwEvent::Note { channel, note, on };
+
+        h.hw_tx.send(touch(true)).unwrap();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        h.config.write().await.enabled = false;
+        h.hw_tx.send(touch(false)).unwrap();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        h.config.write().await.enabled = true;
+
+        h.state
+            .write()
+            .await
+            .update(fader_addr(12), ParameterValue::Float(0.0));
+        await_motor_at(&h, "the motor following the console", 0.75).await;
+    }
+
     /// Audit M19: a fader moved by hand (no touch sensing) is brought back
     /// when a recall returns the console to where the motor last put it, and
     /// the long move back is ramped rather than one full-travel slam. The
@@ -993,7 +1258,7 @@ mod tests {
             .write()
             .await
             .update(fader_addr(12), ParameterValue::Float(0.0));
-        let unity = await_motor(&h, "the first push", |log| !log.is_empty()).await[0].1;
+        let unity = await_motor_at(&h, "the first push", 0.75).await;
 
         // The hand moves the fader down; the console follows.
         h.motor_log.lock().unwrap().clear();

@@ -420,7 +420,15 @@ fn open_device(
             Some((deck, meta))
         }
         Err(msg) => {
-            warn!("Stream Deck connect failed: {msg}");
+            // A deck that is present but can't be opened (held by another
+            // app, say) is retried on every 2 s scan: say so once a minute.
+            static RETRY: crate::logging::LogThrottle =
+                crate::logging::LogThrottle::new(std::time::Duration::from_secs(60));
+            if report {
+                warn!("Stream Deck connect failed: {msg}");
+            } else if let Some(held_back) = RETRY.allow() {
+                warn!(held_back, "Stream Deck reconnect failed: {msg}");
+            }
             if let Ok(mut s) = state.write() {
                 s.last_error = Some(msg.clone());
             }

@@ -1731,10 +1731,11 @@ impl HiJackApp {
                     tracing::info!(input = %input, output = ?output, "Sidecar MIDI connected");
                     // Console wins on connect: the surface may sit at
                     // stale positions — push mirror values to the
-                    // motors rather than trusting the hardware.
+                    // motors rather than trusting the hardware, and forget
+                    // what was known about it before (audit M19).
                     let _ = self
                         .sidecar_svc_tx
-                        .send(crate::console::sidecar_service::SvcCmd::SyncSurface);
+                        .send(crate::console::sidecar_service::SvcCmd::SurfaceReconnected);
                     self.sidecar_tab.status_message = Some(format!("Connected: {input}"));
                 }
                 UiEvent::SidecarMidiDisconnected => {

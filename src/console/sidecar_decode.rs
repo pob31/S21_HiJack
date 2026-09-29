@@ -37,6 +37,8 @@ const PITCH_BEND_DEADBAND: f32 = 4.0 / 16383.0;
 pub struct DecodeState {
     /// MSB received, awaiting its LSB partner (Absolute14).
     pending_msb: Option<(u8, Instant)>,
+    /// The MSB of the last Absolute14 value, for an LSB sent on its own.
+    last_msb: Option<u8>,
     /// Last emitted normalized position. Relative modes accumulate on
     /// it; pitch bend deadbands against it. Seed it from console state
     /// (see [`DecodeState::seed`]) so a relative encoder's first tick
@@ -127,25 +129,34 @@ pub fn decode(
                 // A second MSB (or one whose LSB never came) means the
                 // device is effectively 7-bit: emit the *stale* MSB
                 // alone before stashing the new one.
-                let stale = st.pending_msb.take().map(|(msb, _)| f32::from(msb) / 127.0);
+                let stale = st.pending_msb.take().map(|(msb, _)| msb);
                 st.pending_msb = Some((*value, now));
-                if let Some(norm) = stale {
+                if let Some(msb) = stale {
+                    st.last_msb = Some(msb);
+                    let norm = f32::from(msb) / 127.0;
                     st.last_norm = Some(norm);
                     return Some(norm);
                 }
                 None
             } else if *ecc == lsb_cc {
-                match st.pending_msb.take() {
-                    Some((msb, at)) if now.duration_since(at) <= PAIR_WINDOW => {
-                        let v14 = (u16::from(msb) << 7) | u16::from(*value & 0x7f);
-                        let norm = f32::from(v14) / 16383.0;
-                        st.last_norm = Some(norm);
-                        Some(norm)
+                let msb = match st.pending_msb.take() {
+                    Some((msb, at)) if now.duration_since(at) <= PAIR_WINDOW => msb,
+                    // A stale MSB: this LSB may not go with it, so drop it.
+                    Some((msb, _)) => {
+                        st.last_msb = Some(msb);
+                        return None;
                     }
-                    // LSB-first (or stale MSB): drop — we can't build a
-                    // meaningful 14-bit value from an LSB alone.
-                    _ => None,
-                }
+                    // An LSB on its own: only the fine position changed, so
+                    // it goes with the last MSB, as MIDI has it. Those updates
+                    // used to be dropped. Before any MSB (an LSB-first
+                    // device) there's nothing to pair it with.
+                    None => st.last_msb?,
+                };
+                st.last_msb = Some(msb);
+                let v14 = (u16::from(msb) << 7) | u16::from(*value & 0x7f);
+                let norm = f32::from(v14) / 16383.0;
+                st.last_norm = Some(norm);
+                Some(norm)
             } else {
                 None
             }
@@ -280,6 +291,24 @@ mod tests {
         // LSB arrives 50 ms later — outside the window, dropped.
         let late = t + Duration::from_millis(50);
         assert_eq!(decode(&b, &mut st, &cc(1, 48, 1), late), None);
+    }
+
+    /// A fine move sends the LSB alone; it keeps the last MSB.
+    #[test]
+    fn absolute14_lone_lsb_keeps_the_last_msb() {
+        let b = binding(
+            ControlSelector::Cc { channel: 1, cc: 16 },
+            ControlMode::Absolute14 { lsb_cc: 48 },
+        );
+        let mut st = DecodeState::default();
+        let t = Instant::now();
+        assert_eq!(decode(&b, &mut st, &cc(1, 16, 0x40), t), None);
+        assert!(decode(&b, &mut st, &cc(1, 48, 0x01), t).is_some());
+
+        let later = t + Duration::from_millis(200);
+        let norm = decode(&b, &mut st, &cc(1, 48, 0x05), later).unwrap();
+        let expect = f32::from((0x40u16 << 7) | 0x05) / 16383.0;
+        assert!((norm - expect).abs() < 1e-6);
     }
 
     #[test]

@@ -18,8 +18,9 @@ use tracing::debug;
 use crate::console::connection::DaemonState;
 use crate::model::parameter::{ParameterAddress, ParameterPath, ParameterValue};
 
-/// Which link produced an inbound parameter. Currently informational (log
-/// wording); the side-effect chain itself is source-agnostic.
+/// Which link produced an inbound parameter. Mostly informational (log
+/// wording); only the console-load gate tells them apart, see
+/// [`apply_operator_change`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InboundSource {
     /// The GP OSC connection.
@@ -118,7 +119,8 @@ pub async fn apply_inbound_parameter(
 /// Sidecar moves used to update only the mirror: GP OSC doesn't echo, and the
 /// iPad link's echo is screened as our own write, so the chain never ran for
 /// them (audit H7). The echo check is skipped here for the same reason: the
-/// send has just put this value in the sent-value log.
+/// send has just put this value in the sent-value log. So is the console-load
+/// gate: a desk memory load floods values from the desk, never from here.
 pub async fn apply_operator_change(
     daemon: &DaemonState,
     addr: &ParameterAddress,
@@ -157,9 +159,11 @@ async fn apply_parameter_change(
     // While a console snapshot is loading, treat the desk's echo flood
     // as the desk applying a coherent snapshot — not operator input.
     // Computed BEFORE the dirty mark below so the flood can't pollute
-    // the dirty set either.
-    let in_console_load =
-        crate::console::snapshot_engine::console_load_active(&daemon.console_load_suppression);
+    // the dirty set either. A sidecar move can't be part of that flood:
+    // it is always the operator. Gated too, a grab on the D700 in the first
+    // seconds of a recall didn't cancel the fade, reach gangs or get learned.
+    let in_console_load = source != InboundSource::Sidecar
+        && crate::console::snapshot_engine::console_load_active(&daemon.console_load_suppression);
 
     // Mark this cell dirty IF the value actually changed. The dirty
     // tracker is suppression-aware, so echoes from snapshot recall
@@ -503,6 +507,36 @@ mod tests {
         )
         .await;
         assert_eq!(steps().await, 1);
+    }
+
+    /// Audit follow-up to H7: a sidecar move during a desk memory load is
+    /// still the operator. It was screened out with the desk's own flood.
+    #[tokio::test]
+    async fn a_sidecar_move_during_a_console_load_is_the_operator() {
+        let (daemon, _sent_log) = gang_test_daemon().await;
+        daemon.macro_manager.write().await.start_recording();
+        daemon
+            .state
+            .write()
+            .await
+            .update(mute(1), ParameterValue::Bool(false));
+        crate::console::snapshot_engine::arm_console_load(&daemon.console_load_suppression);
+
+        apply_operator_change(&daemon, &mute(1), &ParameterValue::Bool(true)).await;
+
+        assert_eq!(daemon.macro_manager.read().await.recording_step_count(), 1);
+        assert!(
+            daemon
+                .dirty_tracker
+                .read()
+                .await
+                .is_dirty(&ChannelId::Input(1), &ParameterPath::Mute)
+        );
+        assert_eq!(
+            daemon.state.read().await.get(&mute(2)),
+            Some(&ParameterValue::Bool(true)),
+            "the gang follows"
+        );
     }
 
     fn mute(n: u16) -> ParameterAddress {

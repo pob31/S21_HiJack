@@ -2826,9 +2826,10 @@ fn draw_streamdeck_panel(
                             macros_state.streamdeck_virtual_kind = k;
                             // If a real device is currently connected,
                             // disconnect so the template view actually
-                            // takes effect. The configured `device_serial`
-                            // is kept so plugging the device back in
-                            // auto-reconnects.
+                            // takes effect. The deck stays off until it is
+                            // picked in this list again (the status line
+                            // says so): a disconnect is not retried. The
+                            // configured `device_serial` is kept.
                             if connected.is_some() {
                                 engine.disconnect();
                             }
@@ -2846,6 +2847,9 @@ fn draw_streamdeck_panel(
     // ── Status line ──
     let status = match (&connected, enabled) {
         (Some(c), _) => format!("Connected: {}", c.label),
+        (None, true) if macros_state.streamdeck_explicit_template.is_some() => {
+            "Template view — pick the deck in the list to reconnect.".into()
+        }
         (None, true) => "Disconnected — editing offline.".into(),
         (None, false) => "OFF — editing offline.".into(),
     };
@@ -3029,32 +3033,38 @@ fn draw_streamdeck_panel(
                             let mgr = macro_manager.clone();
                             let eng = engine.clone();
                             runtime.spawn(async move {
-                                let mut cfg_w = cfg.write().await;
-                                // Grow on demand: when editing a
-                                // template offline (no device connect
-                                // path triggered), the buttons vec may
-                                // not yet cover this index.
-                                if cfg_w.buttons.len() <= button_idx {
-                                    cfg_w.buttons.resize_with(button_idx + 1, Default::default);
-                                }
-                                if let Some(b) = cfg_w.buttons.get_mut(button_idx) {
+                                // The config lock is released before the
+                                // macro manager's is taken, as everywhere
+                                // else (audit H4).
+                                let next = {
+                                    let mut cfg_w = cfg.write().await;
+                                    // Grow on demand: when editing a
+                                    // template offline (no device connect
+                                    // path triggered), the buttons vec may
+                                    // not yet cover this index.
+                                    if cfg_w.buttons.len() <= button_idx {
+                                        cfg_w.buttons.resize_with(button_idx + 1, Default::default);
+                                    }
+                                    let b = &mut cfg_w.buttons[button_idx];
                                     b.steps.push(crate::model::streamdeck::StreamDeckStep {
                                         macro_id,
                                         ..Default::default()
                                     });
-                                    let mgr_r = mgr.read().await;
-                                    let next = b.next_step();
-                                    let label = next
-                                        .and_then(|s| {
-                                            mgr_r.get_macro(&s.macro_id).map(|m| m.name.clone())
-                                        })
-                                        .unwrap_or_default();
-                                    let bg = next
-                                        .map(|s| s.color)
-                                        .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
-                                    drop(mgr_r);
-                                    eng.refresh_button(button_idx as u8, label, bg);
-                                }
+                                    b.next_step().map(|s| (s.macro_id, s.color))
+                                };
+                                let label = match next {
+                                    Some((id, _)) => mgr
+                                        .read()
+                                        .await
+                                        .get_macro(&id)
+                                        .map(|m| m.name.clone())
+                                        .unwrap_or_default(),
+                                    None => String::new(),
+                                };
+                                let bg = next
+                                    .map(|(_, color)| color)
+                                    .unwrap_or(crate::model::streamdeck::StepColor::BLACK);
+                                eng.refresh_button(button_idx as u8, label, bg);
                             });
                         }
                     }

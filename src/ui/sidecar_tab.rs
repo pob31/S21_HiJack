@@ -740,27 +740,33 @@ fn draw_binding_editor(
     if let ControlSelector::Cc { cc, .. } = edited.control {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Mode").color(theme::label_weak()));
-            let modes: [(ControlMode, &str); 5] = [
-                (ControlMode::Absolute7, "Absolute 7-bit"),
+            // A 14-bit pair needs its LSB on cc + 32, a real controller only
+            // up to CC 95. Above that the motor's LSB write landed on another
+            // controller; learn already stops there.
+            let pair = (cc < 96).then(|| {
                 (
-                    ControlMode::Absolute14 {
-                        lsb_cc: cc.wrapping_add(32),
-                    },
+                    ControlMode::Absolute14 { lsb_cc: cc + 32 },
                     "Absolute 14-bit (CC pair)",
-                ),
-                (
-                    ControlMode::Relative(RelativeMode::TwosComplement),
-                    "Relative (2's complement)",
-                ),
-                (
-                    ControlMode::Relative(RelativeMode::BinaryOffset),
-                    "Relative (binary offset)",
-                ),
-                (
-                    ControlMode::Relative(RelativeMode::SignMagnitude),
-                    "Relative (sign-magnitude)",
-                ),
-            ];
+                )
+            });
+            let modes: Vec<(ControlMode, &str)> = [(ControlMode::Absolute7, "Absolute 7-bit")]
+                .into_iter()
+                .chain(pair)
+                .chain([
+                    (
+                        ControlMode::Relative(RelativeMode::TwosComplement),
+                        "Relative (2's complement)",
+                    ),
+                    (
+                        ControlMode::Relative(RelativeMode::BinaryOffset),
+                        "Relative (binary offset)",
+                    ),
+                    (
+                        ControlMode::Relative(RelativeMode::SignMagnitude),
+                        "Relative (sign-magnitude)",
+                    ),
+                ])
+                .collect();
             let current = modes
                 .iter()
                 .find(|(m, _)| *m == edited.mode)
