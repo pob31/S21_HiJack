@@ -54,6 +54,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
@@ -110,8 +111,9 @@ class MonitorService : Service() {
     private var boundNetwork: Network? = null
 
     /** Input names arrive on their own messages, possibly before the sends —
-     *  cache them so sends pick up the right label whenever they appear. */
-    private val inputNames = HashMap<Int, String>()
+     *  cache them so sends pick up the right label whenever they appear.
+     *  Written on the link's thread, read on the UI thread too (audit A12). */
+    private val inputNames = ConcurrentHashMap<Int, String>()
 
     inner class LocalBinder : Binder() {
         fun service(): MonitorService = this@MonitorService
@@ -176,6 +178,8 @@ class MonitorService : Service() {
      */
     override fun onTimeout(startId: Int, fgsType: Int) {
         stopLink()
+        // Say so in the app too, rather than a bare "Connecting…".
+        _state.update { it.copy(problem = LinkProblem.STOPPED) }
         stopForeground(STOP_FOREGROUND_DETACH)
         getSystemService(NotificationManager::class.java).notify(
             NOTIFICATION_ID,
@@ -217,8 +221,14 @@ class MonitorService : Service() {
                 val pkt = DatagramPacket(buf, buf.size)
                 try {
                     sock.receive(pkt)
-                    // Only the daemon's packets count (audit A7).
-                    if (pkt.address != daemonAddr?.address) continue
+                    // Only the daemon's packets count (audit A7). A monitor
+                    // reply from elsewhere is still noted: a daemon with
+                    // several addresses may answer from another one, and
+                    // "no reply" would then mislead.
+                    if (pkt.address != daemonAddr?.address) {
+                        if (daemonAddr != null && isMonitorReply(pkt)) noteStrayReply(pkt.address)
+                        continue
+                    }
                     val data = pkt.data.copyOf(pkt.length)
                     if (!queue.offer(data)) {
                         queue.poll()
@@ -272,20 +282,29 @@ class MonitorService : Service() {
         send(MonitorProtocol.requestState(c.name))
 
         // Heartbeat every 10 s: the daemon's keepalive for this profile, and
-        // its reply is the profile's full state. Also renews the wake lock.
+        // its reply is the profile's full state. Also renews the wake and
+        // Wi-Fi locks, but only while the link is up or recently was: after
+        // that the phone may sleep until a reply brings the link back
+        // (audit R5).
         scope.launch {
             while (isActive && running) {
                 send(MonitorProtocol.connect(c.name))
-                wakeLock?.acquire(WAKE_LOCK_MS)
+                if (tracker.keepAwake(SystemClock.elapsedRealtime(), AWAKE_GRACE_MS)) {
+                    renewAwake()
+                } else {
+                    releaseAwake()
+                }
                 delay(HEARTBEAT_MS)
             }
         }
 
         // Ping every 2 s: a one-packet reply, so a dropped link shows within
-        // seconds rather than after the next heartbeat (audit A7).
+        // seconds rather than after the next heartbeat (audit A7). Slower
+        // once the link has been down for a while (audit R5).
         scope.launch {
             while (isActive && running) {
-                delay(PING_MS)
+                val awake = tracker.keepAwake(SystemClock.elapsedRealtime(), AWAKE_GRACE_MS)
+                delay(if (awake) PING_MS else PING_IDLE_MS)
                 send(MonitorProtocol.PING)
             }
         }
@@ -299,7 +318,10 @@ class MonitorService : Service() {
         }
     }
 
-    /** Publishes the tracker's view of the link when it changes (audit A7). */
+    /** Publishes the tracker's view of the link when it changes (audit A7).
+     *  Called from the inbound loop and the watchdog: synchronized, or a
+     *  stale LOST could overwrite a fresh connected state. */
+    @Synchronized
     private fun refreshLink(nowMs: Long) {
         val status = tracker.status(nowMs)
         val st = _state.value
@@ -308,14 +330,28 @@ class MonitorService : Service() {
         if (status.connected && st.problem == LinkProblem.LOST) {
             creds?.let { send(MonitorProtocol.requestState(it.name)) }
         }
+        // Back after the locks were let go: take them again now, not at the
+        // next heartbeat (audit R5).
+        if (status.connected && running) renewAwake()
         _state.update { it.copy(connected = status.connected, problem = status.problem) }
         updateNotification()
+    }
+
+    private fun isMonitorReply(pkt: DatagramPacket): Boolean =
+        OscCodec.decode(pkt.data, pkt.length)?.let { MonitorProtocol.parse(it) } != null
+
+    private fun noteStrayReply(from: InetAddress) {
+        tracker.strayReplyReceived()
+        val addr = from.hostAddress ?: return
+        if (_state.value.replyFrom != addr) _state.update { it.copy(replyFrom = addr) }
     }
 
     /** Keeps the CPU awake so the heartbeat runs with the screen off (the
      *  daemon drops a client after 30 s of silence), and Wi-Fi out of power
      *  save (audit A8). The wake lock times out unless the heartbeat renews it,
-     *  so a stuck link can't hold it for ever. */
+     *  and the heartbeat lets both go once the link has been down for
+     *  [AWAKE_GRACE_MS] (audit R5). */
+    @Synchronized
     private fun holdAwake() {
         wakeLock = getSystemService(PowerManager::class.java)
             ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "S21Monitor:link")
@@ -339,6 +375,21 @@ class MonitorService : Service() {
             }
     }
 
+    /** Extends the locks, or takes them again after [releaseAwake]. */
+    @Synchronized
+    private fun renewAwake() {
+        val wake = wakeLock
+        val wifi = wifiLock
+        if (wake == null || wifi == null) {
+            releaseAwake()
+            holdAwake()
+            return
+        }
+        wake.acquire(WAKE_LOCK_MS)
+        if (!wifi.isHeld) wifi.acquire()
+    }
+
+    @Synchronized
     private fun releaseAwake() {
         wakeLock?.takeIf { it.isHeld }?.release()
         wakeLock = null
@@ -539,7 +590,7 @@ class MonitorService : Service() {
         daemonAddr = null
         releaseAwake()
         outbound.clear()
-        _state.update { it.copy(connected = false, problem = null) }
+        _state.update { it.copy(connected = false, problem = null, replyFrom = null) }
     }
 
     override fun onDestroy() {
@@ -589,6 +640,8 @@ class MonitorService : Service() {
             s.problem == LinkProblem.UNKNOWN_NAME -> "The daemon doesn't know the name \u201c$name\u201d"
             s.problem == LinkProblem.NO_REPLY -> "No reply from the daemon"
             s.problem == LinkProblem.LOST -> "Connection lost, retrying…"
+            s.problem == LinkProblem.OTHER_ADDRESS -> "The daemon answers from ${s.replyFrom}"
+            s.problem == LinkProblem.STOPPED -> "Android stopped the monitor link"
             else -> "Connecting to $label…"
         }
 
@@ -621,5 +674,10 @@ class MonitorService : Service() {
         private const val TIMEOUT_MS = 6_000L
         /** The wake lock's timeout; the heartbeat renews it well before. */
         private const val WAKE_LOCK_MS = 60_000L
+        /** How long after the link was last up the phone is still kept awake
+         *  for it; then the locks go and pings slow down (audit R5). */
+        private const val AWAKE_GRACE_MS = 5 * 60_000L
+        /** Ping interval once the link has been down past [AWAKE_GRACE_MS]. */
+        private const val PING_IDLE_MS = 15_000L
     }
 }

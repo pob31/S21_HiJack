@@ -68,7 +68,19 @@ object OscCodec {
                     's' -> { val (s, e) = readString(data, off, length); args.add(OscString(s)); off = e }
                     'T' -> args.add(OscBool(true))
                     'F' -> args.add(OscBool(false))
-                    else -> { /* skip unknown */ }
+                    // Types this client doesn't use are stepped over by their
+                    // size, so the arguments after them still line up. One of
+                    // unknown size ends the decode: it used to be skipped in
+                    // place, misreading everything after it (audit A12).
+                    'N', 'I' -> {}
+                    'c', 'r', 'm' -> off += 4
+                    'h', 'd', 't' -> off += 8
+                    'b' -> {
+                        val size = readInt32(data, off)
+                        if (size < 0) return null
+                        off += 4 + ((size + 3) and 3.inv())
+                    }
+                    else -> return null
                 }
             }
             OscMessage(address, args)

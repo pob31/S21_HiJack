@@ -2,6 +2,8 @@ package com.pob31.s21monitor.service
 
 import com.pob31.s21monitor.model.LinkProblem
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Audit A7: the link state behind the lock on the controls. */
@@ -43,6 +45,41 @@ class LinkTrackerTest {
         // The engineer adds the profile: the next heartbeat brings its state.
         t.received(Reply.PROFILE, 10_000)
         assertEquals(up, t.status(10_100))
+    }
+
+    @Test
+    fun theAwakeGraceRunsFromWhenTheLinkWasLastUp() {
+        val grace = 300_000L
+        val t = tracker()
+        assertTrue("starting up", t.keepAwake(1_000, grace))
+        t.received(Reply.PROFILE, 10_000)
+        assertTrue("up", t.keepAwake(15_000, grace))
+
+        // The daemon goes away after the show.
+        assertTrue(t.keepAwake(10_000 + grace - 1, grace))
+        assertFalse("all night", t.keepAwake(10_000 + grace, grace))
+
+        // It comes back: awake again at once.
+        t.received(Reply.PONG, 900_000)
+        assertTrue(t.keepAwake(900_000, grace))
+    }
+
+    @Test
+    fun aRefusedNameDoesNotKeepThePhoneAwake() {
+        // The daemon answers, but the link never comes up (audit R5).
+        val grace = 300_000L
+        val t = tracker()
+        t.received(Reply.UNKNOWN_NAME, 100)
+        t.received(Reply.UNKNOWN_NAME, grace + 100)
+        assertFalse(t.keepAwake(grace + 200, grace))
+    }
+
+    @Test
+    fun repliesFromAnotherAddressAreReportedAsSuch() {
+        val t = tracker()
+        t.strayReplyReceived()
+        assertEquals(connecting, t.status(4_999))
+        assertEquals(LinkStatus(false, LinkProblem.OTHER_ADDRESS), t.status(5_000))
     }
 
     @Test

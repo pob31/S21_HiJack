@@ -30,6 +30,10 @@ class LinkTracker(
     private var lastReplyMs: Long? = null
     private var knowsProfile = false
     private var unknownName = false
+    /** When the link was last up (a reply while the profile is known). */
+    private var lastUpMs: Long? = null
+    /** A monitor reply came from an address other than the daemon's. */
+    private var strayReply = false
 
     @Synchronized
     fun received(reply: Reply, nowMs: Long) {
@@ -45,7 +49,27 @@ class LinkTracker(
                 unknownName = true
             }
         }
+        if (knowsProfile) lastUpMs = nowMs
     }
+
+    /** A monitor reply arrived from another address than the daemon's: a
+     *  daemon with several addresses answering from a different one. Its
+     *  packets are still dropped, but "no reply" would mislead. */
+    @Synchronized
+    fun strayReplyReceived() {
+        strayReply = true
+    }
+
+    /**
+     * Whether the link should keep the phone awake (wake lock, Wi-Fi lock,
+     * fast pings): while it's up, and for [graceMs] after it was last up or
+     * began. A phone left on "No reply", "Name not recognised" or "Lost"
+     * after the show used to hold both locks and ping every 2 s all night
+     * (audit R5). Any reply that brings the link back makes this true again.
+     */
+    @Synchronized
+    fun keepAwake(nowMs: Long, graceMs: Long): Boolean =
+        status(nowMs).connected || nowMs - (lastUpMs ?: startMs) < graceMs
 
     @Synchronized
     fun status(nowMs: Long): LinkStatus {
@@ -53,7 +77,11 @@ class LinkTracker(
         return when {
             last == null -> LinkStatus(
                 false,
-                if (nowMs - startMs >= noReplyAfterMs) LinkProblem.NO_REPLY else null,
+                when {
+                    nowMs - startMs < noReplyAfterMs -> null
+                    strayReply -> LinkProblem.OTHER_ADDRESS
+                    else -> LinkProblem.NO_REPLY
+                },
             )
             nowMs - last >= timeoutMs -> LinkStatus(false, LinkProblem.LOST)
             unknownName -> LinkStatus(false, LinkProblem.UNKNOWN_NAME)

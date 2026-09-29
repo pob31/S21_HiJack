@@ -20,10 +20,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -31,6 +33,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,8 +66,10 @@ fun MonitorScreen(
     service: MonitorService,
     onShutdown: () -> Unit,
 ) {
-    var tab by remember { mutableIntStateOf(0) } // 0 = My Mix, 1 = My Aux
-    var selectedAux by remember { mutableStateOf<Int?>(null) }
+    // Saveable: rotating the phone used to reset both (audit A9).
+    var tab by rememberSaveable { mutableIntStateOf(0) } // 0 = My Mix, 1 = My Aux
+    var selectedAux by rememberSaveable { mutableStateOf<Int?>(null) }
+    var confirmDisconnect by rememberSaveable { mutableStateOf(false) }
 
     val auxes = state.availableAuxes
     LaunchedEffect(auxes) {
@@ -80,7 +85,7 @@ fun MonitorScreen(
             connected = state.connected,
             problem = state.problem,
         )
-        state.problem?.let { LinkBanner(it, clientName, daemon) }
+        state.problem?.let { LinkBanner(it, clientName, daemon, state.replyFrom) }
         TabsRow(
             tab = tab,
             onTab = { tab = it },
@@ -93,7 +98,27 @@ fun MonitorScreen(
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (tab == 0) MyMix(state, selectedAux, service) else MyAux(state, service)
         }
-        BottomBar(onShutdown = onShutdown)
+        BottomBar(onShutdown = { confirmDisconnect = true })
+    }
+
+    // One tap used to end the link and forget the profile (audit A10).
+    if (confirmDisconnect) {
+        AlertDialog(
+            onDismissRequest = { confirmDisconnect = false },
+            title = { Text("Disconnect?") },
+            text = {
+                Text("Your mix stops following this phone until you connect again.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDisconnect = false
+                    onShutdown()
+                }) { Text("Disconnect") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDisconnect = false }) { Text("Stay connected") }
+            },
+        )
     }
 }
 
@@ -129,7 +154,12 @@ private fun Header(
 
 /** Why the link is down, and what to check (audit A7). */
 @Composable
-private fun LinkBanner(problem: LinkProblem, clientName: String, daemon: String) {
+private fun LinkBanner(
+    problem: LinkProblem,
+    clientName: String,
+    daemon: String,
+    replyFrom: String?,
+) {
     Text(
         when (problem) {
             LinkProblem.UNKNOWN_NAME ->
@@ -140,6 +170,11 @@ private fun LinkBanner(problem: LinkProblem, clientName: String, daemon: String)
                     "network, and that monitoring is running on the daemon."
             LinkProblem.LOST ->
                 "Lost contact with the daemon. Controls are locked until it's back."
+            LinkProblem.OTHER_ADDRESS ->
+                "The daemon answers from ${replyFrom ?: "another address"}, not $daemon. " +
+                    "Disconnect, then connect to ${replyFrom ?: "that address"} instead."
+            LinkProblem.STOPPED ->
+                "Android stopped the monitor link. Disconnect, then connect again."
         },
         color = TextPrimary,
         fontSize = 13.sp,

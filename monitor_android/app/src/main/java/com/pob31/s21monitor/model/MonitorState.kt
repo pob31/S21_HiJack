@@ -34,6 +34,12 @@ enum class LinkProblem {
     UNKNOWN_NAME,
     /** The daemon was answering, and has stopped. */
     LOST,
+    /** Nothing from the daemon's address, but monitor replies came from
+     *  another one ([MonitorUiState.replyFrom]): the daemon has several
+     *  addresses and answers from a different one. */
+    OTHER_ADDRESS,
+    /** Android stopped the link (a foreground-service time limit). */
+    STOPPED,
 }
 
 /** Immutable snapshot the UI renders. Replaced wholesale on each change so
@@ -42,6 +48,8 @@ data class MonitorUiState(
     /** The daemon is answering and knows this profile; controls are live. */
     val connected: Boolean = false,
     val problem: LinkProblem? = null,
+    /** Where stray monitor replies came from, for [LinkProblem.OTHER_ADDRESS]. */
+    val replyFrom: String? = null,
     val console: String = "",
     val sends: Map<Pair<Int, Int>, SendState> = emptyMap(), // key = (input, aux)
     val auxes: Map<Int, AuxState> = emptyMap(),

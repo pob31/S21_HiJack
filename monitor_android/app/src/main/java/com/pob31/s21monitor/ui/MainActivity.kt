@@ -109,11 +109,15 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun Root() {
         var creds by remember { mutableStateOf(CredentialsStore.load(this)) }
+        // The profile just disconnected from, to fill the form with: it is no
+        // longer stored (so the next launch doesn't connect by itself), but
+        // connecting again is one tap (audit A10).
+        var previous by remember { mutableStateOf<Credentials?>(null) }
         val svc = service.value
         val current = creds
 
         when {
-            current == null -> ConnectionScreen(initial = null, onConnect = { c ->
+            current == null -> ConnectionScreen(initial = previous, onConnect = { c ->
                 connectWith(c)
                 creds = c
             })
@@ -121,6 +125,7 @@ class MainActivity : ComponentActivity() {
             svc == null -> Loading()
 
             else -> MonitorRoute(svc, current, onShutdown = {
+                previous = current
                 forget()
                 creds = null
             })

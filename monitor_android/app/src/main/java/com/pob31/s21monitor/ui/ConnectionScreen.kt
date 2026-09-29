@@ -63,10 +63,16 @@ fun ConnectionScreen(
         Text("S21 Monitor", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
         Text("Connect to the daemon on your network.", color = Muted, fontSize = 14.sp)
 
+        // The name is a segment of every OSC address (/monitor/{name}/...),
+        // so a "/" in it splits the path and the daemon never finds the
+        // profile (audit A12).
+        val nameError = if ('/' in name) "A profile name can't contain “/”." else null
         OutlinedTextField(
             value = name, onValueChange = { name = it },
             label = { Text("Profile name") },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
+            isError = nameError != null,
+            supportingText = nameError?.let { { Text(it) } },
         )
         OutlinedTextField(
             value = host, onValueChange = { host = it },
@@ -122,7 +128,7 @@ fun ConnectionScreen(
             onClick = {
                 onConnect(Credentials(name.trim(), host.trim(), port.toIntOrNull() ?: 8025))
             },
-            enabled = name.isNotBlank() && host.isNotBlank(),
+            enabled = name.isNotBlank() && nameError == null && host.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("Connect", fontWeight = FontWeight.SemiBold)

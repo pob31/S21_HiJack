@@ -1,6 +1,21 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+}
+
+// Release signing comes from monitor_android/key.properties, which is never
+// committed (see .gitignore):
+//   storeFile=<path to the .jks, relative to monitor_android/>
+//   storePassword=…
+//   keyAlias=…
+//   keyPassword=…
+// Without it a release build is signed with the debug key, so it can still be
+// sideloaded, but a properly signed build can't then update it in place.
+// Unsigned, it didn't install at all (audit A13).
+val keyProperties = rootProject.file("key.properties").takeIf { it.exists() }?.let { file ->
+    Properties().apply { file.inputStream().use { load(it) } }
 }
 
 base {
@@ -21,11 +36,24 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (keyProperties != null) {
+            create("release") {
+                storeFile = rootProject.file(keyProperties.getProperty("storeFile"))
+                storePassword = keyProperties.getProperty("storePassword")
+                keyAlias = keyProperties.getProperty("keyAlias")
+                keyPassword = keyProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // No release signing config yet — debug-signed for sideloading.
-            // Add a signingConfigs.release backed by key.properties before any
-            // public distribution (see the project's Windows signing notes).
+            // See keyProperties above.
+            signingConfig = signingConfigs.findByName("release")
+                ?: signingConfigs.getByName("debug")
+            // Off until a release build has been checked on a device: R8 can
+            // strip what's only reached by reflection.
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
