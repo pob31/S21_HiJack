@@ -365,10 +365,10 @@ async fn run_loop(
                     // arrives while another is unanswered, so silence counts
                     // instead: a dead desk used to show Connected for the
                     // whole sweep (audit M12).
-                    let beats = last_inbound.elapsed().as_millis() / HEARTBEAT_INTERVAL.as_millis();
-                    if beats >= u128::from(HEARTBEAT_MISSES_LOST) {
+                    let beats = silent_beats(last_inbound.elapsed());
+                    if beats >= HEARTBEAT_MISSES_LOST {
                         set_health(&daemon, ConnectionHealth::Lost).await;
-                    } else if beats >= u128::from(HEARTBEAT_MISSES_STALE) {
+                    } else if beats >= HEARTBEAT_MISSES_STALE {
                         set_health(&daemon, ConnectionHealth::Stale).await;
                     }
                 } else {
@@ -382,7 +382,7 @@ async fn run_loop(
                     if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
                         last_heartbeat = Instant::now();
                         if heartbeat_outstanding {
-                            misses = misses.saturating_add(1);
+                            misses = count_missed_beat(misses, last_inbound.elapsed());
                             if misses >= HEARTBEAT_MISSES_LOST {
                                 set_health(&daemon, ConnectionHealth::Lost).await;
                             } else if misses >= HEARTBEAT_MISSES_STALE {
@@ -397,6 +397,20 @@ async fn run_loop(
         }
     }
     info!("Pad connection loop ended");
+}
+
+/// Whole heartbeat intervals the desk has been silent for.
+fn silent_beats(silent_for: Duration) -> u8 {
+    let beats = silent_for.as_millis() / HEARTBEAT_INTERVAL.as_millis();
+    u8::try_from(beats).unwrap_or(u8::MAX)
+}
+
+/// Heartbeat misses once one more beat has gone unanswered. Silence that began
+/// during the enumeration sweep counts too: the count restarted from zero when
+/// the sweep ended, so a desk already `Lost` stepped back to `Stale` for a few
+/// beats before going `Lost` again.
+fn count_missed_beat(misses: u8, silent_for: Duration) -> u8 {
+    misses.saturating_add(1).max(silent_beats(silent_for))
 }
 
 /// Build the enumeration queue from the live config and start the progress bar.
@@ -1138,6 +1152,18 @@ mod tests {
         )
         .await;
         assert_eq!(h.state.read().await.health, ConnectionHealth::Connected);
+    }
+
+    /// A desk that went silent during the sweep is already `Lost` when the
+    /// heartbeat takes over; the first unanswered beat must keep it there.
+    #[test]
+    fn silence_from_the_sweep_counts_as_missed_beats() {
+        let lost = HEARTBEAT_INTERVAL * u32::from(HEARTBEAT_MISSES_LOST + 2);
+        assert!(count_missed_beat(0, lost) >= HEARTBEAT_MISSES_LOST);
+        // A desk that answered moments ago counts beats one at a time.
+        assert_eq!(count_missed_beat(0, HEARTBEAT_INTERVAL), 1);
+        assert_eq!(count_missed_beat(2, HEARTBEAT_INTERVAL * 3), 3);
+        assert_eq!(count_missed_beat(u8::MAX, Duration::MAX), u8::MAX);
     }
 
     #[tokio::test]

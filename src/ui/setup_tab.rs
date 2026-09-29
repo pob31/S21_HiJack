@@ -3029,7 +3029,13 @@ pub(crate) fn start_pad_connection(
                 return;
             }
         };
-        let (mut pad_sender, rx) = client.into_parts_with_cancel(token.clone());
+        // The link's own loops run on a child of the connection's token. A
+        // failed handshake stops them by cancelling only the child, so the
+        // connection's token stays live and the UI still shows the failure
+        // (it drops events from cancelled connections: audit R6). Disconnect
+        // cancels the parent, which cancels the child too.
+        let link = token.child_token();
+        let (mut pad_sender, rx) = client.into_parts_with_cancel(link.clone());
         // Per-clone fields — set before the sender is cloned into the write
         // path below, or those clones log nothing and ignore offline mode.
         pad_sender.set_log(Some(log.clone()));
@@ -3089,6 +3095,12 @@ pub(crate) fn start_pad_connection(
         // anything: `theme::console_status` reads the connected flag first, so
         // without this the dot stays red for the whole handshake.
         st.write().await.health = ConnectionHealth::Connecting;
+        // Disconnect may have come while the socket was being set up; the
+        // flag then belongs to whatever connection comes next (audit R6).
+        if token.is_cancelled() {
+            info!("Pad connection cancelled before it came up");
+            return;
+        }
         conn_flag.store(true, Ordering::Relaxed);
 
         if let Err(e) = crate::console::pad_connection::connect_pad_from_parts(
@@ -3096,7 +3108,7 @@ pub(crate) fn start_pad_connection(
             rx,
             daemon.clone(),
             profile.clone(),
-            token.clone(),
+            link.clone(),
             Some(log.clone()),
         )
         .await
@@ -3104,8 +3116,9 @@ pub(crate) fn start_pad_connection(
             error!("Pad connection failed: {e}");
             // The receive loop is already spawned and holding the local port;
             // cancel so it releases now rather than at the next connect.
-            token.cancel();
-            conn_flag.store(false, Ordering::Relaxed);
+            link.cancel();
+            // The connected flag is left to the UI: it clears it on this
+            // event only while this connection is still the current one.
             let _ = tx.send(UiEvent::ConnectionFailed {
                 token: token.clone(),
                 message: e.to_string(),

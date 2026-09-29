@@ -117,8 +117,15 @@ async fn listen_loop(
                         }
                     }
                     Err(e) => {
-                        error!("Trigger listener: UDP receive error: {e}");
-                        break;
+                        // Never fatal: one peer going away (an ICMP reset on
+                        // Windows) or an oversized datagram used to stop this
+                        // listener for the rest of the session (audit R7).
+                        if let Some(pause) = crate::osc::client::recv_error_pause(&e) {
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                _ = tokio::time::sleep(pause) => {}
+                            }
+                        }
                     }
                 }
             }
@@ -257,6 +264,31 @@ pub async fn send_reply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Audit R7: a receive error doesn't stop the listener. On Windows a
+    /// datagram bigger than the buffer surfaces as an error from `recv_from`.
+    #[tokio::test]
+    async fn receive_errors_do_not_stop_the_listener() {
+        let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = probe.local_addr().unwrap();
+        drop(probe);
+        let mut rx = TriggerListener::start(addr).await.unwrap();
+
+        let qlab = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        qlab.send_to(&[0u8; 5000], addr).await.unwrap();
+        let packet = rosc::encoder::encode(&OscPacket::Message(OscMessage {
+            addr: "/cue/go".into(),
+            args: vec![],
+        }))
+        .unwrap();
+        qlab.send_to(&packet, addr).await.unwrap();
+
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("the listener should still be listening")
+            .unwrap();
+        assert!(matches!(got, TriggerEvent::GoNext), "{got:?}");
+    }
 
     #[test]
     fn parse_cue_fire_int() {

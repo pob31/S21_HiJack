@@ -179,6 +179,9 @@
       const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
       const sendKey = (i, a) => i + ":" + a;
       const FADER_MIN = -60, FADER_MAX = 10; // dB range for level/fader
+      // The daemon's "off" level. Anything not received yet shows as off, never
+      // unity: faders drag relative to the value shown (audit R0).
+      const OFF_DB = -150;
       const dbText = (v) => (v <= FADER_MIN + 0.05 ? "-∞" : (v > 0 ? "+" : "") + v.toFixed(1));
       // Pan fill grows from the centre out to the thumb (bidirectional).
       function panGradient(v) {
@@ -292,12 +295,12 @@
             S.sends.set(sendKey(m.input, m.aux), { level: m.level, pan: m.pan, on: m.on }); updateStrip(m.input, m.aux);
             break;
           case "send_field": {
-            const k = sendKey(m.input, m.aux), c = S.sends.get(k) || { level: 0, pan: 0, on: false };
+            const k = sendKey(m.input, m.aux), c = S.sends.get(k) || { level: OFF_DB, pan: 0, on: false };
             if (m.field === "level") c.level = m.value; else if (m.field === "pan") c.pan = m.value;
             S.sends.set(k, c); updateStrip(m.input, m.aux); break;
           }
           case "send_on": {
-            const k = sendKey(m.input, m.aux), c = S.sends.get(k) || { level: 0, pan: 0, on: false };
+            const k = sendKey(m.input, m.aux), c = S.sends.get(k) || { level: OFF_DB, pan: 0, on: false };
             c.on = m.on; S.sends.set(k, c); updateStrip(m.input, m.aux); break;
           }
           case "aux":
@@ -347,7 +350,7 @@
       }
       function buildStrip(input, aux) {
         const k = sendKey(input, aux);
-        const st = S.sends.get(k) || { level: 0, pan: 0, on: false };
+        const st = S.sends.get(k) || { level: OFF_DB, pan: 0, on: false };
         const el = document.createElement("div"); el.className = "strip"; el.dataset.k = k;
         const name = S.inputNames.get(input) || ("In " + input);
         const fader = makeFader(name, st.level, false, (v) => setSend(input, aux, "level", v));
@@ -366,7 +369,7 @@
         return el;
       }
       function buildMaster(aux) {
-        const a = S.aux.get(aux) || { fader: 0, mute: false };
+        const a = S.aux.get(aux) || { fader: OFF_DB, mute: false };
         const el = document.createElement("div"); el.className = "strip master"; el.id = "master";
         const label = (S.auxNames.get(aux) || ("Aux " + aux)) + " ▸ MIX";
         const fader = makeFader(label, a.fader, true, (v) => setAuxFader(aux, v));
@@ -380,14 +383,14 @@
         if (aux !== S.activeAux) return;
         const k = sendKey(input, aux), el = document.querySelector('.strip[data-k="' + CSS.escape(k) + '"]');
         if (!el) return;
-        const st = S.sends.get(k) || { level: 0, pan: 0, on: false };
+        const st = S.sends.get(k) || { level: OFF_DB, pan: 0, on: false };
         const f = S.faders.get(k); if (f) f.set(st.level);
         const pan = el.querySelector("input.pan"); if (pan && document.activeElement !== pan) paintPan(pan, st.pan);
         el.querySelector("button.on").classList.toggle("active", st.on);
       }
       function renderMaster() {
         const el = $("master"); if (!el) return;
-        const a = S.aux.get(S.activeAux) || { fader: 0, mute: false };
+        const a = S.aux.get(S.activeAux) || { fader: OFF_DB, mute: false };
         const f = S.faders.get("master"); if (f) f.set(a.fader);
         el.querySelector("button.mute").classList.toggle("active", a.mute);
       }

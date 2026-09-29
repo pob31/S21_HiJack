@@ -388,7 +388,9 @@ impl MonitorEngine {
                         parameter: ParameterPath::SendLevel(aux),
                     })
                     .and_then(|v| v.as_float())
-                    .unwrap_or(0.0);
+                    // Not mirrored yet: report off, never unity. Clients drag
+                    // relative to this value (audit R0).
+                    .unwrap_or(FADER_INF_DB);
 
                 let pan = state
                     .get(&ParameterAddress {
@@ -566,7 +568,9 @@ impl MonitorEngine {
                         parameter: ParameterPath::SendLevel(aux),
                     })
                     .and_then(|v| v.as_float())
-                    .unwrap_or(0.0);
+                    // Not mirrored yet: report off, never unity. Clients drag
+                    // relative to this value (audit R0).
+                    .unwrap_or(FADER_INF_DB);
 
                 let pan = state
                     .get(&ParameterAddress {
@@ -1104,5 +1108,66 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(60)).await;
         assert_eq!(poll!(), vec![-70.0]);
         assert!(poll!().is_empty());
+    }
+
+    /// A send the desk hasn't reported yet reads as off, never 0 dB: clients
+    /// drag relative to the value shown, so a false unity would turn a nudge
+    /// on a muted send into about −3 dB in someone's ears (audit R0).
+    #[tokio::test]
+    async fn unmirrored_sends_read_as_off() {
+        let local_sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sender = OscSender::new(local_sock, "127.0.0.1:1".parse().unwrap());
+        let state = Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default())));
+        let (events, mut rx) = broadcast::channel(64);
+        let engine = MonitorEngine::new(state.clone(), sender, events);
+        let mut client = MonitorClient::new("A".into(), vec![1], vec![5]);
+        client.endpoint = Some(ClientEndpoint::Udp("127.0.0.1:9".parse().unwrap()));
+        client.last_seen = Some(Instant::now());
+
+        // Snapshot: nothing mirrored at all.
+        engine.publish_client_state(&client).await;
+        let mut snapshot = None;
+        while let Ok(event) = rx.try_recv() {
+            if let MonitorStateEvent::ClientState { snapshot: s, .. } = event {
+                snapshot = Some(s);
+            }
+        }
+        let snapshot = snapshot.expect("a snapshot is published");
+        assert_eq!(snapshot.sends, vec![(5, 1, FADER_INF_DB, 0.0, false)]);
+
+        // Poll: only the send's on-switch has been mirrored, not its level.
+        let mut mgr = MonitorManager::new();
+        mgr.add_client(client);
+        state.write().await.update(
+            ParameterAddress {
+                channel: ChannelId::Input(5),
+                parameter: ParameterPath::SendEnabled(1),
+            },
+            ParameterValue::Bool(true),
+        );
+        engine
+            .poll_and_push_state_changes(
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut 0,
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mgr,
+            )
+            .await;
+        let mut pushed = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let MonitorStateEvent::SendState {
+                input: 5,
+                aux: 1,
+                level,
+                on,
+                ..
+            } = event
+            {
+                pushed.push((level, on));
+            }
+        }
+        assert_eq!(pushed, vec![(FADER_INF_DB, true)]);
     }
 }

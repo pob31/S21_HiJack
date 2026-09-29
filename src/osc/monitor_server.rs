@@ -230,8 +230,15 @@ async fn listen_loop(
                         }
                     }
                     Err(e) => {
-                        error!("Monitor server: UDP receive error: {e}");
-                        break;
+                        // Never fatal: one peer going away (an ICMP reset on
+                        // Windows) or an oversized datagram used to stop this
+                        // listener for the rest of the session (audit R7).
+                        if let Some(pause) = crate::osc::client::recv_error_pause(&e) {
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                _ = tokio::time::sleep(pause) => {}
+                            }
+                        }
                     }
                 }
             }
@@ -416,6 +423,47 @@ mod tests {
 
     fn src() -> SocketAddr {
         "192.168.1.100:9000".parse().unwrap()
+    }
+
+    /// Audit R7: a receive error doesn't stop the server. On Windows both a
+    /// datagram bigger than the buffer and an ICMP reset for an earlier reply
+    /// to a client that has gone surface as errors from `recv_from`.
+    #[tokio::test]
+    async fn receive_errors_do_not_stop_the_server() {
+        let (commands, mut rx) = mpsc::channel(16);
+        let server = MonitorServer::start_with_cancel(
+            "127.0.0.1:0".parse().unwrap(),
+            CancellationToken::new(),
+            None,
+            Vec::new(),
+            commands,
+        )
+        .await
+        .unwrap();
+        let addr: SocketAddr = format!("127.0.0.1:{}", server.local_port())
+            .parse()
+            .unwrap();
+
+        // A reply to a phone that has left.
+        let gone = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let gone_addr = gone.local_addr().unwrap();
+        drop(gone);
+        let _ = server.send_to(gone_addr, "/monitor/state", vec![]).await;
+        // More than the 4 KB receive buffer.
+        let phone = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        phone.send_to(&[0u8; 5000], addr).await.unwrap();
+
+        let packet = rosc::encoder::encode(&OscPacket::Message(OscMessage {
+            addr: "/monitor/drummer/connect".into(),
+            args: vec![],
+        }))
+        .unwrap();
+        phone.send_to(&packet, addr).await.unwrap();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("the server should still be listening")
+            .unwrap();
+        assert!(matches!(got, MonitorCommand::Connect { .. }), "{got:?}");
     }
 
     #[test]

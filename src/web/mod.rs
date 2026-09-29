@@ -273,7 +273,8 @@ async fn handle_ws(socket: WebSocket, ctx: WebContext, shutdown: CancellationTok
         tokio::select! {
             // The write task sends the Close frame; wait for it below.
             () = shutdown.cancelled() => break,
-            // If the write task ends (socket send failed), tear down.
+            // If the write task ends (socket send failed, or the Close frame
+            // went out on shutdown), tear down.
             _ = &mut write => break,
             frame = ws_rx.next() => {
                 match frame {
@@ -301,11 +302,19 @@ async fn handle_ws(socket: WebSocket, ctx: WebContext, shutdown: CancellationTok
         }
     }
 
-    if shutdown.is_cancelled() {
+    stop_write_task(write, shutdown.is_cancelled()).await;
+    info!(conn = id, name = %perms.name, "WS: monitor client disconnected");
+}
+
+/// End a session's write task. On shutdown it is sending the Close frame, so
+/// give it up to a second first, unless it has already finished: the read
+/// loop may have polled its handle to completion, and polling a finished
+/// `JoinHandle` again panics (audit R1).
+async fn stop_write_task(mut write: tokio::task::JoinHandle<()>, shutting_down: bool) {
+    if shutting_down && !write.is_finished() {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(1), &mut write).await;
     }
     write.abort();
-    info!(conn = id, name = %perms.name, "WS: monitor client disconnected");
 }
 
 #[cfg(test)]
@@ -384,6 +393,17 @@ mod tests {
             Some(1001),
             "a Close frame saying the server went away"
         );
+    }
+
+    /// Audit R1: when the read loop has already seen the write task finish
+    /// (it sent the Close frame first), stopping it must not poll it again.
+    #[tokio::test]
+    async fn stopping_a_finished_write_task_does_not_panic() {
+        let mut write = tokio::spawn(async {});
+        (&mut write).await.unwrap(); // as the read loop's `select!` arm does
+        tokio::spawn(stop_write_task(write, true))
+            .await
+            .expect("no JoinHandle polled after completion");
     }
 
     /// End-to-end WebSocket gate: Hello → Welcome → State, a fader move flows
