@@ -23,8 +23,14 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Single source of truth for the tag across all jobs.
+  # Single source of truth for the tag across all jobs. Every checkout uses
+  # it: a manual dispatch otherwise built the default branch, not the tag
+  # (audit M24).
   RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+
+# Third-party actions are pinned to commit SHAs (the version they were taken
+# from is in the comment), so a moved or hijacked tag can't change what runs
+# (audit M24). Resolve a new version with `git ls-remote <repo> <tag>`.
 
 jobs:
   # ── Guard: the artifact names derive from Cargo.toml, the release is named by
@@ -34,7 +40,9 @@ jobs:
     name: verify tag == Cargo.toml version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - name: Check tag matches Cargo.toml version
         run: |
           VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
@@ -62,17 +70,21 @@ jobs:
             arch: aarch64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - name: Install build deps (libudev for hidapi-rs, libasound2 for midir)
         run: |
           sudo apt-get update
           sudo apt-get install -y libudev-dev libasound2-dev pkg-config
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Build Linux release
         run: scripts/build-linux-release.sh
       - name: Attach artifacts to release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           fail_on_unmatched_files: true
@@ -95,13 +107,16 @@ jobs:
       NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
       NOTARY_API_ISSUER: ${{ secrets.NOTARY_API_ISSUER }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
           targets: x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Import Developer ID signing certificate
-        uses: apple-actions/import-codesign-certs@v7
+        uses: apple-actions/import-codesign-certs@5142e029c445c10ffc7149d172e540235a065466 # v7
         with:
           p12-file-base64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
           p12-password: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -114,7 +129,7 @@ jobs:
       - name: Build, sign, notarize, staple
         run: scripts/build-macos-release.sh
       - name: Attach artifacts to release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           fail_on_unmatched_files: true
@@ -128,16 +143,20 @@ jobs:
     needs: verify-version
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Install Inno Setup (for the installer)
         run: choco install innosetup -y --no-progress
       - name: Build Windows release
         shell: pwsh
         run: ./scripts/build-windows-release.ps1
       - name: Attach artifacts to release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           fail_on_unmatched_files: true

@@ -1,5 +1,9 @@
 name: CI
 
+# Third-party actions are pinned to commit SHAs (the version they were taken
+# from is in the comment), so a moved or hijacked tag can't change what runs
+# (audit M24). Resolve a new version with `git ls-remote <repo> <tag>`.
+
 on:
   push:
     branches: [main]
@@ -19,7 +23,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Linux build deps (libudev for hidapi-rs, libasound2 for midir)
         if: runner.os == 'Linux'
@@ -28,10 +32,12 @@ jobs:
           sudo apt-get install -y libudev-dev libasound2-dev pkg-config
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
 
       - name: Cache cargo registry and target
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: cargo check
         run: cargo check --all-targets
@@ -43,10 +49,11 @@ jobs:
     name: cargo fmt --check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
+          toolchain: stable
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -54,29 +61,30 @@ jobs:
     name: cargo clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install Linux build deps (libudev for hidapi-rs, libasound2 for midir)
         run: |
           sudo apt-get update
           sudo apt-get install -y libudev-dev libasound2-dev pkg-config
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
+          toolchain: stable
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo clippy --all-targets -- -D warnings
 
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       # NOTE: pinned at v2 (Node 20) deliberately — rustsec/audit-check has no
       # Node 24 release yet (latest is v2.0.0). This emits the GitHub Actions
       # "Node.js 20 is deprecated" WARNING (not an error); the runner forces it
       # onto Node 24 from 2026-06-16 and removes Node 20 on 2026-09-16. Bump to
       # a Node 24 release when one ships.
-      - uses: rustsec/audit-check@v2
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           # RUSTSEC-2026-0194 / -0195: quick-xml DoS advisories (need >=0.41.0).
@@ -87,3 +95,23 @@ jobs:
           # unreachable here. The real fix is the winit/eframe 0.35 upgrade
           # (a separate breaking change); drop these ignores once that lands.
           ignore: RUSTSEC-2026-0194,RUSTSEC-2026-0195
+
+  # The Android monitor app (monitor_android/): unit tests, a debug build and
+  # lint. The runner image has the Android SDK; Gradle comes from the wrapper,
+  # whose distribution is checked against its pinned SHA-256 (audit M24).
+  android:
+    name: Android app
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: monitor_android
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Install JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+      - name: Unit tests, debug build, lint
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug lintDebug
