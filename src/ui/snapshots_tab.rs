@@ -23,8 +23,12 @@ use crate::model::parameter::{ParameterAddress, ParameterValue, parse_finite_f32
 use crate::model::snapshot::{Cue, Snapshot, SnapshotKind};
 use crate::model::state::ConsoleState;
 use crate::model::sync_direction::{SharedSyncDirection, SnapshotSyncDirection};
+use crate::osc::godot_client::GoDotClient;
+use crate::osc::godot_cue_builder::{self, GoDotCue};
+use crate::osc::godot_reply::GoDotAck;
 use crate::osc::qlab_client::QLabClient;
 use crate::osc::qlab_cue_builder::{build_snapshot_cues, build_snapshot_load_cue};
+use crate::persistence::show_file::CueingSystem;
 
 /// Space (px) left below the snapshot list so the status line under the card
 /// (and an eventual footer) stay visible when the list fills the column.
@@ -88,6 +92,23 @@ pub struct SnapshotsTabState {
     /// shift onto the runtime and stashes this receiver; the modal polls it
     /// non-blockingly each frame instead of blocking the UI thread.
     pub shift_result_rx: Option<std::sync::mpsc::Receiver<(usize, usize)>>,
+    /// The "ignore scope" box beside "Go.dot recall cue": the cue recalls
+    /// with `/s21/snapshot/recall_full`, every stored parameter.
+    pub godot_ignore_scope: bool,
+}
+
+/// Where the Snapshots tab sends its exports: the show's cueing system and,
+/// for each, its address. Built by the app from the Setup fields each frame.
+pub struct CueingTarget<'a> {
+    pub system: CueingSystem,
+    pub qlab_ip: &'a str,
+    pub qlab_port: u16,
+    /// QLab patch for app-targeted (trigger) cues; console patch for the
+    /// per-parameter GP OSC export. See `ConnectionSettings::qlab_patch_*`.
+    pub qlab_patch_app: i32,
+    pub qlab_patch_console: i32,
+    pub godot_ip: &'a str,
+    pub godot_port: u16,
 }
 
 impl Default for SnapshotsTabState {
@@ -117,6 +138,7 @@ impl Default for SnapshotsTabState {
             shift_delta: "1".into(),
             shift_status: None,
             shift_result_rx: None,
+            godot_ignore_scope: false,
         }
     }
 }
@@ -188,12 +210,7 @@ pub fn draw_snapshots_tab(
     // Retained for call-site compatibility; snapshot sync is now unified on GP
     // OSC and works in every mode, so the mode no longer gates the control.
     _operating_mode: crate::model::operating_mode::OperatingMode,
-    qlab_ip: &str,
-    qlab_port: u16,
-    // QLab patch for app-targeted (trigger) cues; console patch for the
-    // per-parameter GP OSC export. See `ConnectionSettings::qlab_patch_*`.
-    qlab_patch_app: i32,
-    qlab_patch_console: i32,
+    cueing: &CueingTarget<'_>,
     connected: &Arc<AtomicBool>,
     runtime: &tokio::runtime::Handle,
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
@@ -620,9 +637,33 @@ pub fn draw_snapshots_tab(
                         //   and fires each cue directly to the console. Best
                         //   for small snapshots where the operator wants the
                         //   cues visible inside QLab itself.
+                        //
+                        // Under Go.dot the same row holds Go.dot's two
+                        // captures instead (see `draw_godot_export_buttons`).
                         ui.add_space(2.0);
+                        if cueing.system == CueingSystem::GoDot {
+                            // Wrapped: three controls are wider than QLab's two.
+                            ui.horizontal_wrapped(|ui| {
+                                let has_selection = snap_state.selected_snapshot_id.is_some();
+                                draw_godot_export_buttons(
+                                    ui,
+                                    snap_state,
+                                    console_state,
+                                    cue_manager,
+                                    palette_manager,
+                                    cueing,
+                                    has_selection,
+                                    runtime,
+                                    ui_tx,
+                                );
+                            });
+                        } else {
                         ui.horizontal(|ui| {
                             let has_selection = snap_state.selected_snapshot_id.is_some();
+                            let qlab_ip = cueing.qlab_ip;
+                            let qlab_port = cueing.qlab_port;
+                            let qlab_patch_app = cueing.qlab_patch_app;
+                            let qlab_patch_console = cueing.qlab_patch_console;
                             let qlab_ip_owned = qlab_ip.to_string();
                             let qlab_port_local = qlab_port;
 
@@ -688,6 +729,7 @@ pub fn draw_snapshots_tab(
                                 );
                             }
                         });
+                        }
 
                         // Scope hint — rendered just above the list (the last
                         // thing in the card) so when it appears it only pushes
@@ -2591,6 +2633,196 @@ fn qlab_create_trigger_cue(
     });
 
     snap_state.status_message = Some("Creating QLab trigger cue...".into());
+}
+
+/// The Go.dot half of the export row: "Go.dot recall cue" (with its
+/// "ignore scope" box) and "Go.dot console capture". Each captures one cue
+/// after Go.dot's standby, or updates the cue the snapshot already has
+/// there (contract `docs/godot-authoring-protocol-0.1.md` §7.2).
+#[allow(clippy::too_many_arguments)]
+fn draw_godot_export_buttons(
+    ui: &mut egui::Ui,
+    snap_state: &mut SnapshotsTabState,
+    console_state: &Arc<RwLock<ConsoleState>>,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
+    cueing: &CueingTarget<'_>,
+    has_selection: bool,
+    runtime: &tokio::runtime::Handle,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+) {
+    let target = format!(
+        "{}:{}",
+        if cueing.godot_ip.trim().is_empty() {
+            "127.0.0.1"
+        } else {
+            cueing.godot_ip.trim()
+        },
+        cueing.godot_port
+    );
+
+    let recall_resp = ui
+        .scope(|ui| {
+            ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
+            ui.add_enabled(
+                has_selection,
+                theme::action_button(
+                    "Go.dot recall cue",
+                    theme::ACCENT_BLUE,
+                    egui::Vec2::new(140.0, theme::ROW_H),
+                ),
+            )
+        })
+        .inner
+        .on_hover_text(help(HelpKey::SnapshotGodotRecall).replace("{target}", &target));
+    if recall_resp.clicked() {
+        let ignore_scope = snap_state.godot_ignore_scope;
+        godot_capture(
+            snap_state,
+            console_state,
+            cue_manager,
+            palette_manager,
+            GoDotExport::Recall { ignore_scope },
+            cueing,
+            runtime,
+            ui_tx,
+        );
+    }
+    ui.checkbox(&mut snap_state.godot_ignore_scope, "ignore scope")
+        .on_hover_text(help(HelpKey::SnapshotGodotIgnoreScope));
+
+    let console_resp = ui
+        .scope(|ui| {
+            ui.spacing_mut().button_padding = egui::Vec2::new(12.0, 4.0);
+            ui.add_enabled(
+                has_selection,
+                theme::action_button(
+                    "Go.dot console capture",
+                    theme::ACCENT_BLUE,
+                    egui::Vec2::new(170.0, theme::ROW_H),
+                ),
+            )
+        })
+        .inner
+        .on_hover_text(help(HelpKey::SnapshotGodotExportConsole).replace("{target}", &target));
+    if console_resp.clicked() {
+        godot_capture(
+            snap_state,
+            console_state,
+            cue_manager,
+            palette_manager,
+            GoDotExport::Console,
+            cueing,
+            runtime,
+            ui_tx,
+        );
+    }
+}
+
+/// Which of the two Go.dot captures to make.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum GoDotExport {
+    /// One message back to this app: `/s21/snapshot/recall s:"<uuid>"`, or
+    /// `recall_full` with "ignore scope".
+    Recall { ignore_scope: bool },
+    /// One message per stored parameter, straight at the console.
+    Console,
+}
+
+/// Spawn a capture of the selected snapshot into Go.dot: build the cue,
+/// give it the snapshot's Go.dot identifier (or a fresh one), capture it
+/// after Go.dot's standby (or update it in place), and report. On success
+/// `UiEvent::GoDotCaptured` lets the app keep the identifier on the
+/// snapshot; a refusal or silence is `UiEvent::GoDotCaptureFailed`.
+#[allow(clippy::too_many_arguments)]
+fn godot_capture(
+    snap_state: &mut SnapshotsTabState,
+    console_state: &Arc<RwLock<ConsoleState>>,
+    cue_manager: &Arc<RwLock<CueManager>>,
+    palette_manager: &Arc<RwLock<PaletteManager>>,
+    export: GoDotExport,
+    cueing: &CueingTarget<'_>,
+    runtime: &tokio::runtime::Handle,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+) {
+    let Some(snap_id) = snap_state.selected_snapshot_id else {
+        return;
+    };
+    let cue_mgr = cue_manager.clone();
+    let pal_mgr = palette_manager.clone();
+    let st = console_state.clone();
+    let tx = ui_tx.clone();
+    let godot_ip = cueing.godot_ip.to_string();
+    let godot_port = cueing.godot_port;
+
+    runtime.spawn(async move {
+        let Some(snapshot) = cue_mgr.read().await.snapshots.get(&snap_id).cloned() else {
+            return;
+        };
+        let mut cue: GoDotCue = match export {
+            GoDotExport::Recall { ignore_scope } => {
+                godot_cue_builder::build_snapshot_recall_cue(&snapshot, ignore_scope)
+            }
+            GoDotExport::Console => {
+                let palettes = pal_mgr.read().await.palettes.clone();
+                // The cues carry GP bus numbers, so they need the desk's bus split.
+                let layout = st.read().await.config.mix_output_types.clone();
+                let layout = (!layout.is_empty()).then_some(layout);
+                godot_cue_builder::build_console_capture(&snapshot, &palettes, layout.as_deref())
+            }
+        };
+        cue.id = snapshot
+            .godot_cue_id
+            .clone()
+            .filter(|id| godot_cue_builder::is_cue_id(id))
+            .unwrap_or_else(godot_cue_builder::new_cue_id);
+        let what = match export {
+            GoDotExport::Recall { .. } => "recall cue",
+            GoDotExport::Console => "console capture",
+        };
+
+        let result = match GoDotClient::new(&godot_ip, godot_port).await {
+            Ok(client) => {
+                client
+                    .capture(godot_cue_builder::WHERE_STANDBY, "", &cue)
+                    .await
+            }
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(acks) => {
+                let (outcome, number, name) = match acks.first() {
+                    Some(GoDotAck::Captured {
+                        outcome,
+                        number,
+                        name,
+                        ..
+                    }) => (outcome.clone(), number.clone(), name.clone()),
+                    _ => ("created".to_string(), String::new(), cue.name.clone()),
+                };
+                let _ = tx.send(UiEvent::GoDotCaptured {
+                    snapshot_id: snap_id,
+                    cue_id: cue.id.clone(),
+                    outcome,
+                    number,
+                    name,
+                    messages: cue.messages.len(),
+                    what: what.to_string(),
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(UiEvent::GoDotCaptureFailed(format!(
+                    "Go.dot {what} for '{}' failed: {e}",
+                    snapshot.name
+                )));
+            }
+        }
+    });
+
+    snap_state.status_message = Some(match export {
+        GoDotExport::Recall { .. } => "Capturing the recall cue into Go.dot...".into(),
+        GoDotExport::Console => "Capturing the console into Go.dot...".into(),
+    });
 }
 
 #[cfg(test)]

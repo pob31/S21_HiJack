@@ -273,6 +273,24 @@ pub enum UiEvent {
     /// `/godot/described` answers, or why it failed. Shown as the Setup
     /// status line.
     GoDotNotice(crate::console::godot_link::GoDotNotice),
+    /// A snapshot's cue was made or updated in Go.dot: the app keeps its
+    /// identifier on the snapshot, so the next capture updates the same cue.
+    GoDotCaptured {
+        snapshot_id: uuid::Uuid,
+        cue_id: String,
+        /// `created` or `updated`.
+        outcome: String,
+        /// The cue's number and name in Go.dot, as they now stand.
+        number: String,
+        name: String,
+        /// How many messages the cue holds.
+        messages: usize,
+        /// Which capture it was: "recall cue" or "console capture".
+        what: String,
+    },
+    /// A capture into Go.dot failed; the sentence says why, for the
+    /// Snapshots status line.
+    GoDotCaptureFailed(String),
 
     // ─── App-internal commands triggered by macro steps ──────────────
     //

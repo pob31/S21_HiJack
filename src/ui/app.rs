@@ -1570,6 +1570,47 @@ impl HiJackApp {
                     }
                     self.setup.status_message = Some(notice.sentence().into());
                 }
+                UiEvent::GoDotCaptured {
+                    snapshot_id,
+                    cue_id,
+                    outcome,
+                    number,
+                    name,
+                    messages,
+                    what,
+                } => {
+                    let number = if number.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", cue {number}")
+                    };
+                    let noun = if messages == 1 { "message" } else { "messages" };
+                    self.snapshots.status_message = Some(
+                        format!("Go.dot {what} {outcome}: {name}{number} ({messages} {noun})")
+                            .into(),
+                    );
+                    // Kept on the snapshot (an edit: the show now differs
+                    // from what was saved), so the next capture updates
+                    // this cue.
+                    let cue_manager = self.cue_manager.clone();
+                    self.runtime.spawn(async move {
+                        if !cue_manager
+                            .write()
+                            .await
+                            .set_godot_cue_id(snapshot_id, cue_id.clone())
+                        {
+                            tracing::warn!(
+                                %snapshot_id,
+                                cue_id,
+                                "Go.dot capture: the snapshot was deleted meanwhile"
+                            );
+                        }
+                    });
+                }
+                UiEvent::GoDotCaptureFailed(message) => {
+                    tracing::warn!("{message}");
+                    self.snapshots.status_message = Some(message.into());
+                }
                 // ── Macro-emitted app-internal commands ─────────────
                 UiEvent::MacroFireGo => {
                     super::cue_transport::fire_go(
@@ -3654,6 +3695,15 @@ impl eframe::App for HiJackApp {
                     } else {
                         self.setup.qlab_ip.as_str()
                     };
+                    let cueing = super::snapshots_tab::CueingTarget {
+                        system: self.setup.cueing_system,
+                        qlab_ip,
+                        qlab_port,
+                        qlab_patch_app,
+                        qlab_patch_console,
+                        godot_ip: self.setup.godot_ip.as_str(),
+                        godot_port: self.setup.godot_port.trim().parse().unwrap_or(8010),
+                    };
                     super::snapshots_tab::draw_snapshots_tab(
                         ui,
                         &mut self.snapshots,
@@ -3666,10 +3716,7 @@ impl eframe::App for HiJackApp {
                         &self.auto_update_on_recall,
                         &self.snapshot_sync_direction,
                         self.setup.operating_mode,
-                        qlab_ip,
-                        qlab_port,
-                        qlab_patch_app,
-                        qlab_patch_console,
+                        &cueing,
                         &self.connected,
                         &self.runtime,
                         &self.ui_tx,

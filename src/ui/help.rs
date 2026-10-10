@@ -238,6 +238,9 @@ pub enum HelpKey {
     SnapshotApplyScope,
     SnapshotQlabCreateTrigger,
     SnapshotQlabExportFull,
+    SnapshotGodotRecall,
+    SnapshotGodotIgnoreScope,
+    SnapshotGodotExportConsole,
     CueAdd,
     CueSaveChanges,
 
@@ -1191,6 +1194,24 @@ fn meta(key: HelpKey) -> HelpMeta {
             "snapshot.qlab_export_full",
             "Export one network cue per parameter to QLab (grouped). Sent to {target}.",
         ),
+        SnapshotGodotRecall => (
+            "snapshot.godot_recall",
+            "Capture one OSC cue into Go.dot, after its standby, that recalls \
+             this snapshot here (/s21/snapshot/recall with its id). Capturing \
+             again updates the same cue. Sent to {target}.",
+        ),
+        SnapshotGodotIgnoreScope => (
+            "snapshot.godot_ignore_scope",
+            "The Go.dot recall cue recalls every stored parameter, ignoring \
+             the snapshot's scope (/s21/snapshot/recall_full).",
+        ),
+        SnapshotGodotExportConsole => (
+            "snapshot.godot_export_console",
+            "Capture one OSC cue into Go.dot holding every stored parameter, \
+             sent straight to the console. Declare the console in Go.dot \
+             first (prefixes /channel /console /digico). Capturing again \
+             updates the same cue. Sent to {target}.",
+        ),
         CueAdd => (
             "cue.add",
             "Add a new cue to the list from the fields above.",
@@ -2079,6 +2100,9 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::SnapshotApplyScope,
     HelpKey::SnapshotQlabCreateTrigger,
     HelpKey::SnapshotQlabExportFull,
+    HelpKey::SnapshotGodotRecall,
+    HelpKey::SnapshotGodotIgnoreScope,
+    HelpKey::SnapshotGodotExportConsole,
     HelpKey::CueAdd,
     HelpKey::CueSaveChanges,
     HelpKey::ScopeTemplateLoad,

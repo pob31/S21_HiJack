@@ -278,6 +278,13 @@ pub struct Snapshot {
     pub palette_refs: HashMap<(ChannelId, PaletteKind), Uuid>,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
+    /// The identifier of this snapshot's cue in Go.dot (8 characters of
+    /// Crockford base32), drawn by the first capture into Go.dot and sent
+    /// again by every later one, which then updates that cue instead of
+    /// making another. Also what the "Go.dot: fire this snapshot's cue"
+    /// triggers fire. `None` until captured. New in v20.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub godot_cue_id: Option<String>,
 }
 
 impl Snapshot {
@@ -293,6 +300,7 @@ impl Snapshot {
             palette_refs: HashMap::new(),
             created_at: now,
             modified_at: now,
+            godot_cue_id: None,
         }
     }
 
@@ -459,6 +467,9 @@ impl<'de> serde::Deserialize<'de> for Snapshot {
             eq_palette_refs: Vec<LegacyEqRefEntry>,
             created_at: DateTime<Utc>,
             modified_at: DateTime<Utc>,
+            /// v20 field — absent from older show files.
+            #[serde(default)]
+            godot_cue_id: Option<String>,
         }
 
         let mut shadow = ShadowSnapshot::deserialize(deserializer)?;
@@ -477,6 +488,7 @@ impl<'de> serde::Deserialize<'de> for Snapshot {
             palette_refs: shadow.palette_refs,
             created_at: shadow.created_at,
             modified_at: shadow.modified_at,
+            godot_cue_id: shadow.godot_cue_id,
         })
     }
 }
@@ -709,6 +721,29 @@ mod tests {
         );
         let t: CategoryTiming = serde_json::from_str("{}").unwrap();
         assert_eq!(t, CategoryTiming::default());
+    }
+
+    /// The Go.dot cue id survives a save and a load (through the
+    /// hand-written Deserialize), is left out while there is none, and a
+    /// snapshot from before it loads without one.
+    #[test]
+    fn godot_cue_id_round_trips_and_is_optional() {
+        let mut snap = Snapshot::new(
+            "Verse 1".into(),
+            ScopeTemplate::new("S".into(), vec![]),
+            SnapshotData::new(),
+            SnapshotKind::ApplyOnSave,
+        );
+        assert_eq!(snap.godot_cue_id, None);
+        let json = serde_json::to_string(&snap).unwrap();
+        assert!(!json.contains("godot_cue_id"), "{json}");
+        let back: Snapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.godot_cue_id, None);
+
+        snap.godot_cue_id = Some("0123ABCD".into());
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: Snapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.godot_cue_id.as_deref(), Some("0123ABCD"));
     }
 
     #[test]

@@ -340,6 +340,23 @@ impl CueManager {
         }
     }
 
+    /// Keep `cue_id` as the identifier of this snapshot's cue in Go.dot, so
+    /// the next capture updates it. Changes no recall data, so the
+    /// look-ahead cache stays valid. Returns `false` when no snapshot with
+    /// that id exists (it was deleted while the capture was in flight).
+    pub fn set_godot_cue_id(&mut self, id: Uuid, cue_id: String) -> bool {
+        match self.snapshots.get_mut(&id) {
+            Some(snapshot) => {
+                if snapshot.godot_cue_id.as_deref() != Some(cue_id.as_str()) {
+                    info!(name = %snapshot.name, %id, cue_id, "Go.dot cue id kept on the snapshot");
+                    snapshot.godot_cue_id = Some(cue_id);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Update a snapshot's data (re-capture with fresh values).
     pub fn update_snapshot(&mut self, id: Uuid, data: crate::model::snapshot::SnapshotData) {
         if let Some(snapshot) = self.snapshots.get_mut(&id) {
@@ -469,6 +486,27 @@ mod tests {
 
     fn make_cue(number: f32, name: &str) -> Cue {
         Cue::new(number, name.into()).with_snapshot_id(Uuid::new_v4())
+    }
+
+    #[test]
+    fn the_godot_cue_id_is_kept_on_the_snapshot() {
+        use crate::model::snapshot::{ScopeTemplate, Snapshot, SnapshotData, SnapshotKind};
+        let mut mgr = CueManager::new(CueList::default());
+        let snap = Snapshot::new(
+            "Verse 1".into(),
+            ScopeTemplate::new("S".into(), vec![]),
+            SnapshotData::new(),
+            SnapshotKind::ApplyOnSave,
+        );
+        let id = snap.id;
+        mgr.snapshots.insert(id, snap);
+        assert!(mgr.set_godot_cue_id(id, "0123ABCD".into()));
+        assert_eq!(
+            mgr.get_snapshot(&id).unwrap().godot_cue_id.as_deref(),
+            Some("0123ABCD")
+        );
+        // A snapshot deleted while the capture was in flight.
+        assert!(!mgr.set_godot_cue_id(Uuid::new_v4(), "0123ABCD".into()));
     }
 
     #[test]
