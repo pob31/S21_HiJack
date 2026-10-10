@@ -3767,6 +3767,7 @@ impl eframe::App for HiJackApp {
                     );
                 }
                 Tab::Macros => {
+                    self.macros.cueing_system = self.setup.cueing_system;
                     super::macros_tab::draw_macros_tab(
                         ui,
                         &mut self.macros,

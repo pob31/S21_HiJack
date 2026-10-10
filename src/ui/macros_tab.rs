@@ -20,6 +20,7 @@ use crate::model::parameter::{
     ParameterAddress, ParameterPath, ParameterSection, ParameterValue, parse_finite_f32,
 };
 use crate::model::state::ConsoleState;
+use crate::persistence::show_file::CueingSystem;
 
 /// State for the Macros tab.
 pub struct MacrosTabState {
@@ -134,6 +135,10 @@ pub struct MacrosTabState {
     /// serial / connected device". Cleared when the user picks a real
     /// device row.
     pub streamdeck_explicit_template: Option<elgato_streamdeck::info::Kind>,
+    /// The show's cueing system, copied in by the app each frame: the
+    /// cue steps (QLab Go and the rest) are named after the system they
+    /// go to, since under Go.dot they are sent to Go.dot translated.
+    pub cueing_system: CueingSystem,
 }
 
 /// Cached step data for the currently-selected macro. Read once when the
@@ -188,6 +193,7 @@ impl Default for MacrosTabState {
             streamdeck_add_step_target: None,
             streamdeck_virtual_kind: elgato_streamdeck::info::Kind::Original,
             streamdeck_explicit_template: None,
+            cueing_system: CueingSystem::QLab,
             status_message: None,
             last_execution_info: None,
         }
@@ -289,6 +295,24 @@ impl AddStepKindChoice {
         Self::QLabPause,
         Self::QLabResume,
     ];
+
+    /// The name shown in the step-kind menu. Under Go.dot the cue steps
+    /// carry the Go.dot verb they are translated to (the trigger templates'
+    /// words), and Pause / Resume say that Go.dot does not take them.
+    fn label_for(&self, system: CueingSystem) -> &'static str {
+        if system == CueingSystem::GoDot {
+            match self {
+                Self::QLabGo => return "Go.dot: GO",
+                Self::QLabGoCue => return "Go.dot: GO cue #",
+                Self::QLabStop => return "Go.dot: Esc",
+                Self::QLabPanic => return "Go.dot: double Esc",
+                Self::QLabPause => return "QLab Pause (not sent to Go.dot)",
+                Self::QLabResume => return "QLab Resume (not sent to Go.dot)",
+                _ => {}
+            }
+        }
+        self.label()
+    }
 
     fn label(&self) -> &'static str {
         match self {
@@ -1270,7 +1294,10 @@ fn draw_step_editor(
                                             // also clickable for selection.
                                             let kind_resp = ui.add(
                                                 egui::Label::new(
-                                                    egui::RichText::new(describe_step_kind(kind))
+                                                    egui::RichText::new(describe_step_kind(
+                                                        kind,
+                                                        macros_state.cueing_system,
+                                                    ))
                                                         .color(theme::label_color())
                                                         .strong(),
                                                 )
@@ -1633,12 +1660,21 @@ fn draw_add_step(
                 |ui| {
                     let kind_combo = egui::ComboBox::from_id_salt("add_step_kind")
                         .width(180.0)
-                        .selected_text(macros_state.add_step_kind.label())
+                        .selected_text(
+                            macros_state
+                                .add_step_kind
+                                .label_for(macros_state.cueing_system),
+                        )
                         .show_ui(ui, |ui| {
                             ui.set_min_width(180.0);
                             ui.set_max_width(180.0);
+                            let system = macros_state.cueing_system;
                             for k in AddStepKindChoice::ALL {
-                                ui.selectable_value(&mut macros_state.add_step_kind, k, k.label());
+                                ui.selectable_value(
+                                    &mut macros_state.add_step_kind,
+                                    k,
+                                    k.label_for(system),
+                                );
                             }
                         });
                     kind_combo
@@ -2527,8 +2563,22 @@ pub fn fire_macro_by_id(
 /// Compact human-readable label for a non-Parameter macro step kind.
 /// Used by the steps list to render app-action rows. Parameter steps
 /// have their own dedicated rendering path that shows the address +
-/// mode + value.
-fn describe_step_kind(kind: &MacroStepKind) -> String {
+/// mode + value. Under Go.dot the cue steps are named by the Go.dot verb
+/// they are sent as (`godot_cue_builder::macro_step_messages`).
+fn describe_step_kind(kind: &MacroStepKind, system: CueingSystem) -> String {
+    if system == CueingSystem::GoDot {
+        match kind {
+            MacroStepKind::QLabGo => return "Go.dot: GO".into(),
+            MacroStepKind::QLabGoCue { cue_number } => {
+                return format!("Go.dot: GO cue {cue_number}");
+            }
+            MacroStepKind::QLabStop => return "Go.dot: Esc".into(),
+            MacroStepKind::QLabPanic => return "Go.dot: double Esc".into(),
+            MacroStepKind::QLabPause => return "QLab Pause (not sent to Go.dot)".into(),
+            MacroStepKind::QLabResume => return "QLab Resume (not sent to Go.dot)".into(),
+            _ => {}
+        }
+    }
     match kind {
         MacroStepKind::Parameter { .. } => "Parameter".into(),
         MacroStepKind::GoNextCue => "Go (next cue)".into(),
@@ -3860,4 +3910,49 @@ fn parse_parameter_value(s: &str) -> ParameterValue {
         return ParameterValue::Float(f);
     }
     ParameterValue::String(s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cue_steps_are_named_after_the_cueing_system() {
+        let go_cue = MacroStepKind::QLabGoCue {
+            cue_number: "12".into(),
+        };
+        assert_eq!(
+            describe_step_kind(&go_cue, CueingSystem::QLab),
+            "QLab Go Cue #12"
+        );
+        assert_eq!(
+            describe_step_kind(&go_cue, CueingSystem::GoDot),
+            "Go.dot: GO cue 12"
+        );
+        assert_eq!(
+            describe_step_kind(&MacroStepKind::QLabPanic, CueingSystem::GoDot),
+            "Go.dot: double Esc"
+        );
+        assert_eq!(
+            describe_step_kind(&MacroStepKind::QLabPause, CueingSystem::GoDot),
+            "QLab Pause (not sent to Go.dot)"
+        );
+        // A step that is not a cue step reads the same either way.
+        assert_eq!(
+            describe_step_kind(&MacroStepKind::GoNextCue, CueingSystem::GoDot),
+            describe_step_kind(&MacroStepKind::GoNextCue, CueingSystem::QLab)
+        );
+        assert_eq!(
+            AddStepKindChoice::QLabStop.label_for(CueingSystem::QLab),
+            "QLab Stop"
+        );
+        assert_eq!(
+            AddStepKindChoice::QLabStop.label_for(CueingSystem::GoDot),
+            "Go.dot: Esc"
+        );
+        assert_eq!(
+            AddStepKindChoice::Parameter.label_for(CueingSystem::GoDot),
+            "Parameter"
+        );
+    }
 }

@@ -148,4 +148,6 @@ Go.dot:
 | Pause, Resume | nothing: Go.dot has no pause or resume of everything, and the step fails with a sentence saying so |
 
 Headless sends these to Go.dot as well in a Go.dot show (a QLab show still drops them headless,
-as it always has). The Macros tab still names the steps "QLab ...".
+as it always has). Under Go.dot the Macros tab names the steps by what they send: "Go.dot: GO",
+"Go.dot: GO cue #", "Go.dot: Esc", "Go.dot: double Esc", and "QLab Pause (not sent to Go.dot)" and
+"QLab Resume (not sent to Go.dot)" for the two that Go.dot does not take.
