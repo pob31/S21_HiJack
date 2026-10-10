@@ -134,6 +134,9 @@ pub enum HelpKey {
     SetupQlabPort,
     SetupQlabPatchApp,
     SetupQlabPatchConsole,
+    SetupCueingSystem,
+    SetupGodotHost,
+    SetupGodotPort,
     SetupTriggerPort,
     SetupMonitorPort,
     SetupOpenShow,
@@ -827,6 +830,20 @@ fn meta(key: HelpKey) -> HelpMeta {
         SetupQlabHost => (
             "setup.qlab_host",
             "QLab host — usually 127.0.0.1 if QLab runs on this machine.",
+        ),
+        SetupCueingSystem => (
+            "setup.cueing_system",
+            "Which cue system this show writes cues into and drives from \
+             triggers and macros: QLab, or Go.dot. Saved with the show.",
+        ),
+        SetupGodotHost => (
+            "setup.godot_host",
+            "Go.dot host — usually 127.0.0.1 if Go.dot runs on this machine.",
+        ),
+        SetupGodotPort => (
+            "setup.godot_port",
+            "Go.dot's OSC port (8010 by default) — the app sends cue captures, \
+             the declare and the Go.dot triggers here.",
         ),
         SetupAdvanced => (
             "setup.advanced",
@@ -1642,8 +1659,8 @@ fn meta(key: HelpKey) -> HelpMeta {
         ),
         SetupInfoLiveMusic => (
             "setup.info_live_music",
-            "Live Music mode hides Snapshots, so QLab cue triggering is disabled. \
-             Switch to Full or Theatre mode to enable QLab.",
+            "Live Music mode hides Snapshots, so QLab and Go.dot cue triggering is \
+             disabled. Switch to Full or Theatre mode to enable them.",
         ),
         SetupInfoTheatre => (
             "setup.info_theatre",
@@ -1978,6 +1995,9 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::SetupQlabPort,
     HelpKey::SetupQlabPatchApp,
     HelpKey::SetupQlabPatchConsole,
+    HelpKey::SetupCueingSystem,
+    HelpKey::SetupGodotHost,
+    HelpKey::SetupGodotPort,
     HelpKey::SetupTriggerPort,
     HelpKey::SetupMonitorPort,
     HelpKey::SetupOpenShow,

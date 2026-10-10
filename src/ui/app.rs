@@ -1384,6 +1384,15 @@ impl HiJackApp {
                         if conn.qlab_patch_console > 0 {
                             self.setup.qlab_patch_console = conn.qlab_patch_console.to_string();
                         }
+                        // Always taken from the show: a show from before the
+                        // toggle is a QLab show, whatever the last one was.
+                        self.setup.cueing_system = conn.cueing_system;
+                        if !conn.godot_ip.is_empty() {
+                            self.setup.godot_ip = conn.godot_ip;
+                        }
+                        if conn.godot_port > 0 {
+                            self.setup.godot_port = conn.godot_port.to_string();
+                        }
                         // One-time migration: pacing used to live on
                         // the show file. If the user opens an old show
                         // and prefs has no pacing yet, adopt the show's

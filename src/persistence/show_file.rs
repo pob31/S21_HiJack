@@ -107,6 +107,42 @@ pub struct ConnectionSettings {
     /// show files (pre-v14) get `UiMode::Full` (all tabs visible).
     #[serde(default)]
     pub ui_mode: UiMode,
+    /// Which cue system the Snapshots tab writes cues into and the macro
+    /// cue steps drive: QLab (the default, and what every show before v20
+    /// loads as) or Go.dot. See `docs/godot-cueing.md`.
+    #[serde(default)]
+    pub cueing_system: CueingSystem,
+    /// Go.dot's address, for cue captures, the declare and the Go.dot
+    /// triggers. Empty falls back to localhost in the UI. New in v20.
+    #[serde(default)]
+    pub godot_ip: String,
+    /// Go.dot's OSC port. Default 8010, Go.dot's own default. New in v20.
+    #[serde(default = "default_godot_port")]
+    pub godot_port: u16,
+}
+
+/// The cue system a show works with. Saved per show (new in v20); a show
+/// from before it loads as [`CueingSystem::QLab`], which is what it used.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CueingSystem {
+    /// QLab: cues built with `/new` + `/cue/selected/*`, triggers to `/go`.
+    #[default]
+    #[serde(rename = "qlab", alias = "q_lab")]
+    QLab,
+    /// Go.dot: one `cue.capture` per cue, triggers to `/godot/cmd/*`.
+    #[serde(rename = "godot", alias = "go_dot")]
+    GoDot,
+}
+
+impl CueingSystem {
+    /// The name shown in the Setup tab and in status lines.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::QLab => "QLab",
+            Self::GoDot => "Go.dot",
+        }
+    }
 }
 
 /// Parse a list of CIDR strings into `Ipv4Cidr`s, for a listener's source
@@ -171,6 +207,9 @@ fn default_monitor_port() -> u16 {
 fn default_web_port() -> u16 {
     8080
 }
+fn default_godot_port() -> u16 {
+    8010
+}
 
 impl ConnectionSettings {
     /// Resolve the effective sync direction, honoring the legacy
@@ -214,6 +253,9 @@ impl Default for ConnectionSettings {
             web_port: 8080,
             web_allow_cidrs: Vec::new(),
             ui_mode: UiMode::default(),
+            cueing_system: CueingSystem::default(),
+            godot_ip: String::new(),
+            godot_port: default_godot_port(),
         }
     }
 }
@@ -288,7 +330,7 @@ pub struct ShowFile {
 /// The show file format this build writes, and the newest it opens. Bump it
 /// with every format change; there is one constant so a save path can't stamp
 /// a stale number (audit M5).
-pub const SHOW_FORMAT_VERSION: u32 = 19;
+pub const SHOW_FORMAT_VERSION: u32 = 20;
 
 /// A load error for text that didn't deserialize. A damaged file (not JSON,
 /// or cut short) is `InvalidData`/`UnexpectedEof`, which the UI treats as
@@ -350,7 +392,8 @@ impl ShowFile {
     /// - the console config, which the desk rewrites on every connect;
     /// - the two connection fields that really are preferences, send pacing
     ///   and the UI mode. The rest (addresses, ports, mode, allowlists, QLab,
-    ///   sync direction, auto-update) is kept only in the show, so changing it
+    ///   the cueing system and Go.dot, sync direction, auto-update) is kept
+    ///   only in the show, so changing it
     ///   is an edit (audit R4);
     /// - the version fields;
     /// - the Stream Deck step cursors, which advance as buttons are pressed
@@ -649,7 +692,7 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 19);
+        assert_eq!(loaded.version, SHOW_FORMAT_VERSION);
         // A freshly-written show stamps the running app version.
         assert_eq!(loaded.app_version, crate::version::APP_VERSION);
         assert_eq!(loaded.console_config.input_channel_count, 48);
@@ -736,7 +779,7 @@ mod tests {
         let path = dir.join("test_show_streamdeck.json");
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
-        assert_eq!(loaded.version, 19);
+        assert_eq!(loaded.version, SHOW_FORMAT_VERSION);
         assert_eq!(loaded.stream_deck, show.stream_deck);
         let _ = tokio::fs::remove_file(&path).await;
     }
@@ -1132,7 +1175,7 @@ mod tests {
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
 
-        assert_eq!(loaded.version, 19);
+        assert_eq!(loaded.version, SHOW_FORMAT_VERSION);
         assert_eq!(loaded.osc_targets, show.osc_targets);
         assert_eq!(loaded.trigger_templates, show.trigger_templates);
         assert_eq!(
@@ -1228,7 +1271,7 @@ mod tests {
         let path = dir.join("test_show_sidecar.json");
         show.save(&path).await.unwrap();
         let loaded = ShowFile::load(&path).await.unwrap();
-        assert_eq!(loaded.version, 19);
+        assert_eq!(loaded.version, SHOW_FORMAT_VERSION);
         assert_eq!(loaded.sidecar, show.sidecar);
         let _ = tokio::fs::remove_file(&path).await;
     }
@@ -1340,6 +1383,62 @@ mod tests {
         );
         assert!(!parsed.sidecar.enabled);
         assert!(parsed.sidecar.bindings.is_empty());
+    }
+
+    #[test]
+    fn legacy_v19_show_loads_with_qlab_cueing() {
+        // A v19 show (no cueing system, no Go.dot address) loads as a QLab
+        // show with Go.dot's default port, and opens in this build.
+        let json = r#"{
+            "version": 19,
+            "console_config": {
+                "console_name": "",
+                "console_serial": "",
+                "session_filename": null,
+                "input_channel_count": 48,
+                "aux_output_count": 8,
+                "group_output_count": 8,
+                "matrix_output_count": 8,
+                "matrix_input_count": 10,
+                "control_group_count": 10,
+                "graphic_eq_count": 16,
+                "talkback_output_count": 0,
+                "mix_output_types": [],
+                "mix_output_modes": [],
+                "input_modes": [],
+                "group_modes": []
+            },
+            "connection": { "qlab_ip": "10.0.0.2", "qlab_port": 53000 }
+        }"#;
+        let parsed = ShowFile::from_json(json).expect("a v19 show opens");
+        assert_eq!(parsed.version, 19);
+        assert_eq!(parsed.connection.cueing_system, CueingSystem::QLab);
+        assert_eq!(parsed.connection.godot_ip, "");
+        assert_eq!(parsed.connection.godot_port, 8010);
+        assert_eq!(parsed.connection.qlab_ip, "10.0.0.2");
+    }
+
+    #[test]
+    fn cueing_system_round_trips_and_counts_as_an_edit() {
+        let mut show = ShowFile::new(ConsoleConfig::default());
+        let before = show.edit_fingerprint();
+        show.connection.cueing_system = CueingSystem::GoDot;
+        show.connection.godot_ip = "10.0.0.7".into();
+        show.connection.godot_port = 9010;
+        assert_ne!(show.edit_fingerprint(), before, "the toggle is the show's");
+
+        let json = serde_json::to_string(&show).unwrap();
+        assert!(json.contains(r#""cueing_system":"godot""#), "{json}");
+        let back = ShowFile::from_json(&json).unwrap();
+        assert_eq!(back.connection.cueing_system, CueingSystem::GoDot);
+        assert_eq!(back.connection.godot_ip, "10.0.0.7");
+        assert_eq!(back.connection.godot_port, 9010);
+        assert_eq!(back.edit_fingerprint(), show.edit_fingerprint());
+
+        // The snake_case spellings read too.
+        let alias: ConnectionSettings =
+            serde_json::from_str(r#"{"cueing_system":"go_dot"}"#).unwrap();
+        assert_eq!(alias.cueing_system, CueingSystem::GoDot);
     }
 
     /// Audit R3: a Linear taper saved with an infinite bound (written as

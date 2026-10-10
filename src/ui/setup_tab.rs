@@ -39,7 +39,7 @@ use crate::osc::ipad_client::{IpadClient, IpadSender};
 use crate::osc::monitor_server::MonitorServer;
 use crate::osc::trigger_listener::TriggerListener;
 use crate::persistence::preferences::AppPreferences;
-use crate::persistence::show_file::{ConnectionSettings, ShowFile};
+use crate::persistence::show_file::{ConnectionSettings, CueingSystem, ShowFile};
 
 /// State for the Setup tab.
 pub struct SetupTabState {
@@ -77,6 +77,13 @@ pub struct SetupTabState {
     /// QLab network patch (1-based) for cues that target the **S21 console** —
     /// the per-parameter GP OSC cues. Editable string; default "2".
     pub qlab_patch_console: String,
+    /// Which cue system the show works with (Setup → Cueing system). Saved
+    /// in the show file.
+    pub cueing_system: CueingSystem,
+    /// Go.dot destination IP — defaults to localhost.
+    pub godot_ip: String,
+    /// Go.dot's OSC port (default 8010, Go.dot's own default).
+    pub godot_port: String,
     /// Inter-message pacing delay in microseconds during snapshot recall.
     pub send_pace_us: u64,
     /// Global UI scale multiplier (Advanced Settings → Display scale). Folded
@@ -229,6 +236,9 @@ impl SetupTabState {
             qlab_port: "53000".to_string(),
             qlab_patch_app: "1".to_string(),
             qlab_patch_console: "2".to_string(),
+            cueing_system: CueingSystem::default(),
+            godot_ip: "127.0.0.1".to_string(),
+            godot_port: "8010".to_string(),
             send_pace_us: prefs.send_pace_us,
             ui_scale: prefs.ui_scale,
             color_theme: prefs.color_theme,
@@ -643,6 +653,75 @@ fn peer_section(
             body(ui);
         });
     });
+}
+
+/// Width of each button of the Cueing system toggle (QLab | Go.dot).
+const CUEING_BTN_W: f32 = 72.0;
+
+/// The Go.dot half of the Cueing system card: where Go.dot listens, and the
+/// trigger port its answers come back to. Mirrors the QLab half's layout.
+fn draw_godot_fields(ui: &mut egui::Ui, setup: &mut SetupTabState, w_sat: f32, is_connected: bool) {
+    ui.horizontal(|ui| {
+        theme::row_label(ui, "IP:", theme::label_color());
+        ui.add_space(6.0);
+        theme::padded_text_edit_sized(
+            ui,
+            &mut setup.godot_ip,
+            w_sat - 100.0,
+            theme::ROW_H,
+            !is_connected,
+            "127.0.0.1",
+        )
+        .on_hover_text(help(HelpKey::SetupGodotHost));
+    });
+    ui.add_space(6.0);
+
+    egui::Grid::new("godot_flow_grid")
+        .num_columns(3)
+        .spacing([6.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("");
+            ui.label("");
+            ui.label(
+                egui::RichText::new("Server")
+                    .strong()
+                    .color(theme::ACCENT_GREEN),
+            );
+            ui.end_row();
+
+            // Go.dot listen (godot_port) ← Server Tx
+            port_edit_enabled(
+                ui,
+                &mut setup.godot_port,
+                !is_connected,
+                "8010",
+                help(HelpKey::SetupGodotPort),
+            );
+            ui.label(egui::RichText::new("◀").color(theme::label_weak()));
+            ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
+            ui.end_row();
+
+            // Go.dot Tx → Server listen (trigger_port)
+            ui.label(egui::RichText::new("Tx").color(theme::label_weak()));
+            ui.label(egui::RichText::new("▶").color(theme::label_weak()));
+            port_edit_enabled(
+                ui,
+                &mut setup.trigger_port,
+                !is_connected,
+                "",
+                help(HelpKey::SetupTriggerPort),
+            );
+            ui.end_row();
+        });
+
+    ui.add_space(8.0);
+    ui.label(
+        egui::RichText::new(
+            "Answers arrive on the trigger port; the menu is served on the web port.",
+        )
+        .small()
+        .color(theme::label_weak()),
+    );
 }
 
 /// Draw the Setup tab.
@@ -1695,8 +1774,38 @@ pub fn draw_setup_tab(
                 ui.add_space(qlab_lead);
 
                 if qlab_active {
-                // QLab satellite — bottom-left
-                peer_section(ui, "QLab", theme::ACCENT_AMBER, w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
+                // Cueing-system satellite — bottom-left: QLab or Go.dot, each
+                // with its own fields under the toggle.
+                peer_section(ui, "Cueing system", theme::ACCENT_AMBER, w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
+                    ui.horizontal(|ui| {
+                        for system in [CueingSystem::QLab, CueingSystem::GoDot] {
+                            let is_active = setup.cueing_system == system;
+                            let fill = if is_active { theme::ACCENT_BLUE } else { theme::btn_neutral() };
+                            let text_color = if is_active { theme::TEXT_PRIMARY } else { theme::neutral_inactive_text() };
+                            let btn = egui::Button::new(
+                                egui::RichText::new(system.label()).color(text_color),
+                            )
+                            .fill(fill)
+                            .corner_radius(4.0);
+                            if ui
+                                .add_enabled_ui(!is_connected, |ui| {
+                                    ui.add_sized([CUEING_BTN_W, theme::ROW_H], btn)
+                                })
+                                .inner
+                                .on_hover_text(help(HelpKey::SetupCueingSystem))
+                                .clicked()
+                            {
+                                setup.cueing_system = system;
+                            }
+                        }
+                    });
+                    ui.add_space(6.0);
+
+                    if setup.cueing_system == CueingSystem::GoDot {
+                        draw_godot_fields(ui, setup, w_sat, is_connected);
+                        return;
+                    }
+
                     ui.horizontal(|ui| {
                         theme::row_label(ui, "IP:", theme::label_color());
                         ui.add_space(6.0);
@@ -1819,11 +1928,12 @@ pub fn draw_setup_tab(
                         });
                 });
                 } else {
-                    peer_section(ui, "QLab", theme::label_disabled(), w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
+                    peer_section(ui, "Cueing system", theme::label_disabled(), w_sat, MIN_BOT_HEIGHT, false, None, |ui| {
                         ui.label(
                             egui::RichText::new(
-                                "Live Music mode hides Snapshots, so QLab cue triggering is \
-                                 disabled. Switch to Full or Theatre mode to enable QLab.",
+                                "Live Music mode hides Snapshots, so QLab and Go.dot cue \
+                                 triggering is disabled. Switch to Full or Theatre mode to \
+                                 enable them.",
                             )
                             .color(theme::label_disabled())
                             .small(),
@@ -3217,6 +3327,9 @@ pub(crate) fn connection_settings_from_setup(
         qlab_port: setup.qlab_port.parse().unwrap_or(53000),
         qlab_patch_app: setup.qlab_patch_app.parse().unwrap_or(1),
         qlab_patch_console: setup.qlab_patch_console.parse().unwrap_or(2),
+        cueing_system: setup.cueing_system,
+        godot_ip: setup.godot_ip.clone(),
+        godot_port: setup.godot_port.parse().unwrap_or(8010),
         send_pace_us: setup.send_pace_us,
         auto_update_on_recall,
         snapshot_sync_direction: sync_direction,
