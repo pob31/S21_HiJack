@@ -16,7 +16,7 @@ use crate::console::cue_manager::CueManager;
 use crate::console::palette_manager::PaletteManager;
 use crate::console::snapshot_engine::SnapshotEngine;
 use crate::model::cue_trigger::{
-    CueTrigger, MidiMessage, OscArg, OscTarget, TriggerAction, TriggerTemplate,
+    CueTrigger, GoDotVerb, MidiMessage, OscArg, OscTarget, TriggerAction, TriggerTemplate,
 };
 use crate::model::dirty_tracker::DirtyTracker;
 use crate::model::parameter::{ParameterAddress, ParameterValue, parse_finite_f32};
@@ -1849,6 +1849,9 @@ pub enum TriggerEditKind {
         d1: String,
         d2: String,
     },
+    /// A Go.dot verb; `number` is the cue number of the `[N]` verbs, kept
+    /// apart so switching verbs doesn't lose it.
+    GoDot { verb: GoDotVerb, number: String },
 }
 
 /// UI-side editable representation of one [`CueTrigger`]. Converted from/to the
@@ -1934,6 +1937,10 @@ impl TriggerEditRow {
                     d2: d2.to_string(),
                 }
             }
+            TriggerAction::GoDot { verb } => TriggerEditKind::GoDot {
+                number: verb.number().unwrap_or("1").to_string(),
+                verb: verb.clone(),
+            },
         };
         Self {
             id: t.id,
@@ -1995,6 +2002,9 @@ impl TriggerEditRow {
                 };
                 TriggerAction::Midi { message }
             }
+            TriggerEditKind::GoDot { verb, number } => TriggerAction::GoDot {
+                verb: verb.with_number(number.trim()),
+            },
         };
         CueTrigger {
             id: self.id,
@@ -2228,6 +2238,40 @@ fn draw_external_triggers(
                             ui.add(egui::TextEdit::singleline(d2).desired_width(44.0));
                         }
                     });
+                }
+                TriggerEditKind::GoDot { verb, number } => {
+                    ui.horizontal(|ui| {
+                        ui.label("Go.dot:");
+                        egui::ComboBox::from_id_salt(("trig_godot", i))
+                            .selected_text(verb.name())
+                            .width(200.0)
+                            .show_ui(ui, |ui| {
+                                for choice in GoDotVerb::all(number) {
+                                    if ui
+                                        .selectable_label(verb.same_kind(&choice), choice.name())
+                                        .clicked()
+                                    {
+                                        *verb = choice;
+                                    }
+                                }
+                            });
+                    })
+                    .response
+                    .on_hover_text(
+                        "Sent to the Go.dot address in Setup when this cue is recalled; \
+                         \"this snapshot's cue\" is the cue its snapshot was captured into.",
+                    );
+                    if verb.number().is_some() {
+                        ui.horizontal(|ui| {
+                            ui.label("cue number:");
+                            ui.add(
+                                egui::TextEdit::singleline(number)
+                                    .desired_width(70.0)
+                                    .hint_text("12"),
+                            )
+                            .on_hover_text("Go.dot's cue number, as exact text: 12 is not 12.0.");
+                        });
+                    }
                 }
             }
         });

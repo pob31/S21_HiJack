@@ -607,8 +607,9 @@ fn meta(key: HelpKey) -> HelpMeta {
         ),
         MacroQlabCueNumber => (
             "macro.qlab_cue_number",
-            "QLab cue number — free-form string (numbers, letters, dots). \
-             Sent as `/cue/<number>/start`.",
+            "Cue number — free-form string (numbers, letters, dots). QLab: \
+             sent as `/go <number>`. Go.dot: parks its standby on the cue \
+             with that exact number, then GO.",
         ),
         MacroAddSwatch => (
             "macro.add_swatch",

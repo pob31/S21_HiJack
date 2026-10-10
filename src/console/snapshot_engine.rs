@@ -1237,7 +1237,8 @@ impl SnapshotEngine {
             // and QLab/MIDI chases must not silently drop it.
             if !cue.triggers.is_empty() {
                 if let Some(dispatcher) = &self.trigger_dispatcher {
-                    dispatcher.fire(&cue.triggers).await;
+                    let godot_cue_id = snapshot.and_then(|s| s.godot_cue_id.as_deref());
+                    dispatcher.fire_for(&cue.triggers, godot_cue_id).await;
                 }
             }
             return result;
@@ -1305,7 +1306,10 @@ impl SnapshotEngine {
         // window. Best-effort: a failed send logs and never affects `result`.
         if !cue.triggers.is_empty() {
             if let Some(dispatcher) = &self.trigger_dispatcher {
-                dispatcher.fire(&cue.triggers).await;
+                // "This snapshot's cue" for the Go.dot triggers: the snapshot
+                // as it was read for this recall.
+                let godot_cue_id = snapshot.and_then(|s| s.godot_cue_id.as_deref());
+                dispatcher.fire_for(&cue.triggers, godot_cue_id).await;
             }
         }
 

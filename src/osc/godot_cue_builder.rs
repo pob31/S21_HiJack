@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use rosc::{OscMessage, OscType};
 use uuid::Uuid;
 
+use crate::model::cue_trigger::GoDotVerb;
 use crate::model::palette::ChannelPalette;
 use crate::model::snapshot::{self, Snapshot};
 
@@ -373,6 +374,73 @@ pub fn go_at_number_bundle(number: &str) -> Vec<OscMessage> {
     ]
 }
 
+/// What a Go.dot trigger sends (contract §7.3): one message, or the GO-at
+/// bundles. `snapshot_cue_id` is the identifier kept on the snapshot the
+/// trigger's cue recalls, read when it fires.
+///
+/// `Err` with the reason when there is nothing to send: a "this snapshot's
+/// cue" verb on a snapshot never captured into Go.dot (or a cue with no
+/// snapshot), or a numbered verb with no number.
+pub fn verb_messages(
+    verb: &GoDotVerb,
+    snapshot_cue_id: Option<&str>,
+) -> Result<Vec<OscMessage>, &'static str> {
+    const NO_SNAPSHOT_CUE: &str = "this cue's snapshot has no cue in Go.dot yet (capture it \
+         from the Snapshots tab), so nothing was sent";
+    const NO_NUMBER: &str = "the trigger has no cue number, so nothing was sent";
+    let snapshot_cue = || {
+        snapshot_cue_id
+            .filter(|id| !id.is_empty())
+            .ok_or(NO_SNAPSHOT_CUE)
+    };
+    let number = |n: &str| {
+        let n = n.trim();
+        if n.is_empty() {
+            Err(NO_NUMBER)
+        } else {
+            Ok(n.to_string())
+        }
+    };
+    Ok(match verb {
+        GoDotVerb::Go => vec![go_message()],
+        GoDotVerb::FireSnapshotCue => vec![fire_message(snapshot_cue()?)],
+        GoDotVerb::GoAtSnapshotCue => go_at_id_bundle(snapshot_cue()?),
+        GoDotVerb::FireCueNumber(n) => vec![fire_number_message(&number(n)?)],
+        GoDotVerb::GoCueNumber(n) => go_at_number_bundle(&number(n)?),
+        GoDotVerb::Esc => vec![stop_all_message()],
+        GoDotVerb::DoubleEsc => vec![kill_all_message()],
+    })
+}
+
+/// A macro's QLab step translated for Go.dot, when Go.dot is the show's
+/// cueing system (contract §7.3). The macro engine spells its QLab steps as
+/// QLab's addresses: `/go` → `go`; `/go "N"` → park the standby on cue N,
+/// then GO (one bundle); `/stop` → `run.stopAll` (Esc); `/panic` →
+/// `run.killAll` (double Esc). `/pause` and `/resume` have no Go.dot verb:
+/// `Err` with the sentence to show.
+pub fn macro_step_messages(
+    qlab_addr: &str,
+    string_arg: Option<&str>,
+) -> Result<Vec<OscMessage>, String> {
+    match (qlab_addr, string_arg.map(str::trim)) {
+        ("/go", None) | ("/go", Some("")) => Ok(vec![go_message()]),
+        ("/go", Some(number)) => Ok(go_at_number_bundle(number)),
+        ("/stop", _) => Ok(vec![stop_all_message()]),
+        ("/panic", _) => Ok(vec![kill_all_message()]),
+        ("/pause", _) => Err(
+            "Go.dot has no pause of everything, so this Pause step sent nothing to Go.dot"
+                .to_string(),
+        ),
+        ("/resume", _) => Err(
+            "Go.dot has no resume of everything, so this Resume step sent nothing to Go.dot"
+                .to_string(),
+        ),
+        (other, _) => Err(format!(
+            "no Go.dot command stands for {other}, so this step sent nothing to Go.dot"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,6 +714,65 @@ mod tests {
                 OscType::String("S21_HiJack".into()),
             ]
         );
+    }
+
+    fn addrs(msgs: &[OscMessage]) -> Vec<&str> {
+        msgs.iter().map(|m| m.addr.as_str()).collect()
+    }
+
+    #[test]
+    fn each_trigger_verb_sends_the_contracts_messages() {
+        let id = Some("0123ABCD");
+        let sent = |verb: GoDotVerb| verb_messages(&verb, id).unwrap();
+        assert_eq!(addrs(&sent(GoDotVerb::Go)), vec!["/godot/cmd/go"]);
+        let fire = sent(GoDotVerb::FireSnapshotCue);
+        assert_eq!(addrs(&fire), vec!["/godot/cmd/cue/fire"]);
+        assert_eq!(fire[0].args, vec![OscType::String("0123ABCD".into())]);
+        let at = sent(GoDotVerb::GoAtSnapshotCue);
+        assert_eq!(addrs(&at), vec!["/godot/cmd/standby/set", "/godot/cmd/go"]);
+        assert_eq!(at[0].args, vec![OscType::String("0123ABCD".into())]);
+        let n = sent(GoDotVerb::FireCueNumber(" 12 ".into()));
+        assert_eq!(addrs(&n), vec!["/godot/cmd/cue/fireNumber"]);
+        assert_eq!(n[0].args, vec![OscType::String("12".into())]);
+        assert_eq!(
+            addrs(&sent(GoDotVerb::GoCueNumber("12".into()))),
+            vec!["/godot/cmd/standby/setNumber", "/godot/cmd/go"]
+        );
+        assert_eq!(addrs(&sent(GoDotVerb::Esc)), vec!["/godot/cmd/run/stopAll"]);
+        assert_eq!(
+            addrs(&sent(GoDotVerb::DoubleEsc)),
+            vec!["/godot/cmd/run/killAll"]
+        );
+    }
+
+    #[test]
+    fn a_snapshot_never_captured_sends_nothing() {
+        for verb in [GoDotVerb::FireSnapshotCue, GoDotVerb::GoAtSnapshotCue] {
+            let why = verb_messages(&verb, None).unwrap_err();
+            assert!(why.contains("no cue in Go.dot"), "{why}");
+            assert!(verb_messages(&verb, Some("")).is_err());
+        }
+        assert!(verb_messages(&GoDotVerb::GoCueNumber("  ".into()), None).is_err());
+        // The other verbs need no snapshot.
+        assert!(verb_messages(&GoDotVerb::Go, None).is_ok());
+    }
+
+    #[test]
+    fn macro_qlab_steps_translate_for_go_dot() {
+        let ok = |addr: &str, arg: Option<&str>| macro_step_messages(addr, arg).unwrap();
+        assert_eq!(addrs(&ok("/go", None)), vec!["/godot/cmd/go"]);
+        let at = ok("/go", Some("7"));
+        assert_eq!(
+            addrs(&at),
+            vec!["/godot/cmd/standby/setNumber", "/godot/cmd/go"]
+        );
+        assert_eq!(at[0].args, vec![OscType::String("7".into())]);
+        assert_eq!(addrs(&ok("/stop", None)), vec!["/godot/cmd/run/stopAll"]);
+        assert_eq!(addrs(&ok("/panic", None)), vec!["/godot/cmd/run/killAll"]);
+        for addr in ["/pause", "/resume"] {
+            let why = macro_step_messages(addr, None).unwrap_err();
+            assert!(why.contains("Go.dot has no"), "{why}");
+        }
     }
 
     #[test]

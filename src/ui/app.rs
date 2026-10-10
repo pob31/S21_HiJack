@@ -24,6 +24,7 @@ use crate::model::sync_direction::SharedSyncDirection;
 use crate::osc::client::OscSender;
 use crate::osc::ipad_client::IpadSender;
 use crate::persistence::preferences::AppPreferences;
+use crate::persistence::show_file::CueingSystem;
 
 use super::gangs_tab::GangsTabState;
 use super::help::{HelpHover, HelpKey, help};
@@ -1760,11 +1761,27 @@ impl HiJackApp {
                     string_arg,
                     label,
                 } => {
-                    let args = match string_arg {
-                        Some(s) => vec![rosc::OscType::String(s)],
-                        None => vec![],
-                    };
-                    self.spawn_qlab_send(addr, args, &label);
+                    if self.setup.cueing_system == CueingSystem::GoDot {
+                        // The same step, said to Go.dot (contract §7.3).
+                        let label = label.replacen("QLab", "Go.dot", 1);
+                        match crate::osc::godot_cue_builder::macro_step_messages(
+                            &addr,
+                            string_arg.as_deref(),
+                        ) {
+                            Ok(msgs) => self.spawn_godot_send(msgs, &label),
+                            Err(sentence) => {
+                                let _ = self.ui_tx.send(UiEvent::MacroExecutionFailed(format!(
+                                    "{label}: {sentence}"
+                                )));
+                            }
+                        }
+                    } else {
+                        let args = match string_arg {
+                            Some(s) => vec![rosc::OscType::String(s)],
+                            None => vec![],
+                        };
+                        self.spawn_qlab_send(addr, args, &label);
+                    }
                 }
                 UiEvent::StreamDeckButtonPressed { button_idx } => {
                     self.handle_streamdeck_button(button_idx);
@@ -1815,6 +1832,33 @@ impl HiJackApp {
                 }
             }
         }
+    }
+
+    /// Fire-and-forget Go.dot command(s) — one message, or a bundle for
+    /// "GO cue N" — to the current Setup-tab Go.dot IP / port (falls back to
+    /// 127.0.0.1:8010 if empty/unset). `label` names the step in failure
+    /// messages.
+    fn spawn_godot_send(&self, msgs: Vec<rosc::OscMessage>, label: &str) {
+        let godot_port: u16 = self.setup.godot_port.trim().parse().unwrap_or(8010);
+        let godot_ip = self.setup.godot_ip.clone();
+        let tx = self.ui_tx.clone();
+        let label = label.to_string();
+        self.runtime.spawn(async move {
+            match crate::osc::godot_client::GoDotClient::new(&godot_ip, godot_port).await {
+                Ok(client) => {
+                    if let Err(e) = client.send_all(&msgs).await {
+                        let _ = tx.send(UiEvent::MacroExecutionFailed(format!(
+                            "{label} failed: {e}"
+                        )));
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(UiEvent::MacroExecutionFailed(format!(
+                        "{label}: connect failed: {e}"
+                    )));
+                }
+            }
+        });
     }
 
     /// Fire-and-forget OSC message to QLab using the current Setup-tab

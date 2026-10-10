@@ -97,7 +97,7 @@
   "macro.new_name": "Name for the new macro.",
   "macro.palette_channel_number": "Channel number to apply the recalled palette to.",
   "macro.palette_channel_type": "Channel type to apply the recalled palette to.",
-  "macro.qlab_cue_number": "QLab cue number — free-form string (numbers, letters, dots). Sent as `/cue/<number>/start`.",
+  "macro.qlab_cue_number": "Cue number — free-form string (numbers, letters, dots). QLab: sent as `/go <number>`. Go.dot: parks its standby on the cue with that exact number, then GO.",
   "macro.rename": "Rename this macro — edits apply immediately to the list and any Stream Deck labels.",
   "macro.reset_step_delay": "Reset this step's delay to 0 ms",
   "macro.run": "Run the selected macro now — fires its steps in order.",

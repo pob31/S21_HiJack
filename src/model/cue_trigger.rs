@@ -93,6 +93,91 @@ pub enum TriggerAction {
     /// Raw MIDI message out the single active MIDI output (configured in
     /// Setup; machine-bound, so MIDI triggers carry no target reference).
     Midi { message: MidiMessage },
+    /// One of Go.dot's firing verbs, sent to the Go.dot address in Setup
+    /// (contract `docs/godot-authoring-protocol-0.1.md` in the Go.dot
+    /// repository, §5 and §7.3). Carries no address of its own: it goes
+    /// where the show's Go.dot is.
+    GoDot { verb: GoDotVerb },
+}
+
+/// What a Go.dot trigger asks Go.dot to do (contract §7.3).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GoDotVerb {
+    /// GO: the focused list's standby fires and moves on.
+    Go,
+    /// Fire the cue this snapshot was captured into, standby untouched.
+    /// Read when the trigger fires: a snapshot never captured sends nothing.
+    FireSnapshotCue,
+    /// Park the standby on this snapshot's cue, then GO (one bundle).
+    GoAtSnapshotCue,
+    /// Fire the cue with this number (exact text), standby untouched.
+    FireCueNumber(String),
+    /// Park the standby on the cue with this number, then GO (one bundle).
+    GoCueNumber(String),
+    /// Esc: everything stops gracefully, footers run.
+    Esc,
+    /// Double Esc: everything is dropped, footers skipped.
+    DoubleEsc,
+}
+
+impl GoDotVerb {
+    /// Every verb, the numbered ones carrying `number`: the choices of the
+    /// trigger row's verb menu.
+    pub fn all(number: &str) -> [GoDotVerb; 7] {
+        [
+            GoDotVerb::Go,
+            GoDotVerb::FireSnapshotCue,
+            GoDotVerb::GoAtSnapshotCue,
+            GoDotVerb::FireCueNumber(number.to_string()),
+            GoDotVerb::GoCueNumber(number.to_string()),
+            GoDotVerb::Esc,
+            GoDotVerb::DoubleEsc,
+        ]
+    }
+
+    /// The verb as the menus name it, with `[N]` for a number.
+    pub fn name(&self) -> &'static str {
+        match self {
+            GoDotVerb::Go => "GO",
+            GoDotVerb::FireSnapshotCue => "fire this snapshot's cue",
+            GoDotVerb::GoAtSnapshotCue => "GO at this snapshot's cue",
+            GoDotVerb::FireCueNumber(_) => "fire cue [N]",
+            GoDotVerb::GoCueNumber(_) => "GO cue [N]",
+            GoDotVerb::Esc => "Esc",
+            GoDotVerb::DoubleEsc => "double Esc",
+        }
+    }
+
+    /// The cue number a numbered verb carries.
+    pub fn number(&self) -> Option<&str> {
+        match self {
+            GoDotVerb::FireCueNumber(n) | GoDotVerb::GoCueNumber(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// The same verb with `number` (a verb without one is unchanged).
+    pub fn with_number(&self, number: &str) -> GoDotVerb {
+        match self {
+            GoDotVerb::FireCueNumber(_) => GoDotVerb::FireCueNumber(number.to_string()),
+            GoDotVerb::GoCueNumber(_) => GoDotVerb::GoCueNumber(number.to_string()),
+            other => other.clone(),
+        }
+    }
+
+    /// Whether two verbs are the same verb, whatever their numbers.
+    pub fn same_kind(&self, other: &GoDotVerb) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+
+    /// The verb named in full: `GO cue 12` rather than `GO cue [N]`.
+    pub fn describe(&self) -> String {
+        match self {
+            GoDotVerb::FireCueNumber(n) => format!("fire cue {n}"),
+            GoDotVerb::GoCueNumber(n) => format!("GO cue {n}"),
+            other => other.name().to_string(),
+        }
+    }
 }
 
 impl TriggerAction {
@@ -107,6 +192,7 @@ impl TriggerAction {
                 }
             }
             TriggerAction::Midi { message } => message.describe(),
+            TriggerAction::GoDot { verb } => format!("Go.dot: {}", verb.describe()),
         }
     }
 }
@@ -313,6 +399,7 @@ impl TriggerTemplate {
             path: path.to_string(),
             args,
         };
+        let godot = |verb: GoDotVerb| TriggerAction::GoDot { verb };
         vec![
             // ── QLab ──
             Self::builtin("QLab: GO", osc("/go", vec![])),
@@ -324,6 +411,26 @@ impl TriggerTemplate {
             Self::builtin("QLab: Pause", osc("/pause", vec![])),
             Self::builtin("QLab: Resume", osc("/resume", vec![])),
             Self::builtin("QLab: Panic", osc("/panic", vec![])),
+            // ── Go.dot (contract §7.3; numbers are exact text) ──
+            Self::builtin("Go.dot: GO", godot(GoDotVerb::Go)),
+            Self::builtin(
+                "Go.dot: fire this snapshot's cue",
+                godot(GoDotVerb::FireSnapshotCue),
+            ),
+            Self::builtin(
+                "Go.dot: GO at this snapshot's cue",
+                godot(GoDotVerb::GoAtSnapshotCue),
+            ),
+            Self::builtin(
+                "Go.dot: fire cue [N]",
+                godot(GoDotVerb::FireCueNumber("1".to_string())),
+            ),
+            Self::builtin(
+                "Go.dot: GO cue [N]",
+                godot(GoDotVerb::GoCueNumber("1".to_string())),
+            ),
+            Self::builtin("Go.dot: Esc", godot(GoDotVerb::Esc)),
+            Self::builtin("Go.dot: double Esc", godot(GoDotVerb::DoubleEsc)),
             // ── LiveProfessor (zero-based snapshot index) ──
             Self::builtin(
                 "LiveProfessor: recall snapshot [N]",
@@ -545,6 +652,89 @@ mod tests {
             }
             _ => panic!("expected OSC action"),
         }
+    }
+
+    #[test]
+    fn godot_builtins_are_the_contracts_seven() {
+        let names: Vec<String> = TriggerTemplate::builtins()
+            .into_iter()
+            .filter(|t| matches!(t.action, TriggerAction::GoDot { .. }))
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "Go.dot: GO",
+                "Go.dot: fire this snapshot's cue",
+                "Go.dot: GO at this snapshot's cue",
+                "Go.dot: fire cue [N]",
+                "Go.dot: GO cue [N]",
+                "Go.dot: Esc",
+                "Go.dot: double Esc",
+            ]
+        );
+    }
+
+    #[test]
+    fn godot_triggers_round_trip_and_read_their_json() {
+        let triggers: Vec<CueTrigger> = GoDotVerb::all("12")
+            .into_iter()
+            .map(|verb| CueTrigger::new(TriggerAction::GoDot { verb }))
+            .collect();
+        let json = serde_json::to_string_pretty(&triggers).unwrap();
+        let back: Vec<CueTrigger> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, triggers);
+
+        // The shape on disk: internally tagged like the other actions.
+        let t: CueTrigger = serde_json::from_str(
+            r#"{
+                "id": "00000000-0000-0000-0000-000000000001",
+                "label": "Go.dot: GO cue 12",
+                "action": { "kind": "GoDot", "verb": { "GoCueNumber": "12" } }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            t.action,
+            TriggerAction::GoDot {
+                verb: GoDotVerb::GoCueNumber("12".into())
+            }
+        );
+        let t: CueTrigger = serde_json::from_str(
+            r#"{ "id": "00000000-0000-0000-0000-000000000002", "label": "x",
+                 "action": { "kind": "GoDot", "verb": "DoubleEsc" } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            t.action,
+            TriggerAction::GoDot {
+                verb: GoDotVerb::DoubleEsc
+            }
+        );
+    }
+
+    #[test]
+    fn godot_labels_and_numbers() {
+        let go_12 = TriggerAction::GoDot {
+            verb: GoDotVerb::GoCueNumber("12".into()),
+        };
+        assert_eq!(go_12.default_label(), "Go.dot: GO cue 12");
+        assert_eq!(
+            TriggerAction::GoDot {
+                verb: GoDotVerb::FireSnapshotCue
+            }
+            .default_label(),
+            "Go.dot: fire this snapshot's cue"
+        );
+        let fire = GoDotVerb::FireCueNumber("1".into());
+        assert_eq!(
+            fire.with_number("4.5"),
+            GoDotVerb::FireCueNumber("4.5".into())
+        );
+        assert_eq!(GoDotVerb::Esc.with_number("4"), GoDotVerb::Esc);
+        assert_eq!(fire.number(), Some("1"));
+        assert!(fire.same_kind(&GoDotVerb::FireCueNumber("9".into())));
+        assert!(!fire.same_kind(&GoDotVerb::GoCueNumber("1".into())));
     }
 
     #[test]

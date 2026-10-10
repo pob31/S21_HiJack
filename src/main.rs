@@ -268,15 +268,12 @@ fn any_addr(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)
 }
 
-/// Go.dot's address and the app's ports for the declare, when the loaded
-/// show's cueing system is Go.dot: its saved address, unless `--godot-ip` /
-/// `--godot-port` say otherwise. The web port is the query port when the web
-/// server started, 0 when it is off.
-fn headless_godot_link(
+/// Go.dot's address, when the loaded show's cueing system is Go.dot: its
+/// saved address, unless `--godot-ip` / `--godot-port` say otherwise.
+fn headless_godot_target(
     args: &Args,
     show: Option<&persistence::show_file::ShowFile>,
-    web_ok: bool,
-) -> Option<console::godot_link::GoDotLink> {
+) -> Option<(String, u16)> {
     let connection = &show?.connection;
     if connection.cueing_system != persistence::show_file::CueingSystem::GoDot {
         return None;
@@ -285,9 +282,66 @@ fn headless_godot_link(
         .godot_ip
         .clone()
         .unwrap_or_else(|| connection.godot_ip.clone());
+    Some((
+        godot_ip.trim().to_string(),
+        args.godot_port.unwrap_or(connection.godot_port),
+    ))
+}
+
+/// Headless, Go.dot show: send the macros' cue steps to Go.dot (translated
+/// as the UI does, see `godot_cue_builder::macro_step_messages`) and drop
+/// every other app-action event, which headless has no UI to carry out.
+/// Pause and Resume, which Go.dot has no verb for, are logged.
+fn spawn_headless_godot_macro_steps(
+    events: std::sync::mpsc::Receiver<ui::UiEvent>,
+    (godot_ip, godot_port): (String, u16),
+) {
+    let runtime = tokio::runtime::Handle::current();
+    std::thread::spawn(move || {
+        while let Ok(event) = events.recv() {
+            let ui::UiEvent::MacroQLabSend {
+                addr,
+                string_arg,
+                label,
+            } = event
+            else {
+                continue;
+            };
+            let label = label.replacen("QLab", "Go.dot", 1);
+            match osc::godot_cue_builder::macro_step_messages(&addr, string_arg.as_deref()) {
+                Ok(msgs) => {
+                    let godot_ip = godot_ip.clone();
+                    runtime.spawn(async move {
+                        let sent = match osc::godot_client::GoDotClient::new(&godot_ip, godot_port)
+                            .await
+                        {
+                            Ok(client) => client.send_all(&msgs).await,
+                            Err(e) => Err(e),
+                        };
+                        match sent {
+                            Ok(()) => info!("Macro step {label} sent to Go.dot"),
+                            Err(e) => warn!("Macro step {label} failed: {e}"),
+                        }
+                    });
+                }
+                Err(sentence) => warn!("Macro step {label}: {sentence}"),
+            }
+        }
+    });
+}
+
+/// Go.dot's address and the app's ports for the declare, when the loaded
+/// show's cueing system is Go.dot (see [`headless_godot_target`]). The web
+/// port is the query port when the web server started, 0 when it is off.
+fn headless_godot_link(
+    args: &Args,
+    show: Option<&persistence::show_file::ShowFile>,
+    web_ok: bool,
+) -> Option<console::godot_link::GoDotLink> {
+    let (godot_ip, godot_port) = headless_godot_target(args, show)?;
     Some(console::godot_link::GoDotLink {
-        godot_ip: godot_ip.trim().to_string(),
-        godot_port: args.godot_port.unwrap_or(connection.godot_port),
+        godot_ip,
+        godot_port,
         trigger_port: args.trigger_port,
         query_port: if web_ok { args.web_port } else { 0 },
     })
@@ -485,13 +539,22 @@ async fn run_headless(args: Args) {
         cue_manager.clone(),
         None,
     );
+    trigger_dispatcher.set_godot_target(headless_godot_target(&args, show.as_ref()));
     snapshot_engine.set_trigger_dispatcher(trigger_dispatcher.clone());
     // Headless path: no UI thread to consume macro app-action
     // events (Go / Prev / Connect / Disconnect / RecallSnapshot /
     // RecallPalette). Use a dummy channel whose receiver is dropped
     // immediately — those step kinds become silent no-ops in
     // headless mode. Parameter writes work normally.
-    let (headless_macro_tx, _) = std::sync::mpsc::channel::<ui::UiEvent>();
+    //
+    // One exception: in a Go.dot show the macro cue steps (QLab GO, GO cue,
+    // Stop, Panic) go to Go.dot, so a thread drains the channel for those and
+    // drops the rest as before. In a QLab show they stay no-ops.
+    let (headless_macro_tx, headless_macro_rx) = std::sync::mpsc::channel::<ui::UiEvent>();
+    match headless_godot_target(&args, show.as_ref()) {
+        Some(target) => spawn_headless_godot_macro_steps(headless_macro_rx, target),
+        None => drop(headless_macro_rx),
+    }
     let mut macro_engine = MacroEngine::new(
         manager.state(),
         manager.sender(),

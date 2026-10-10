@@ -2192,6 +2192,10 @@ pub(crate) fn start_connection(
     ui_tx: &std::sync::mpsc::Sender<UiEvent>,
     egui_ctx: &Arc<std::sync::OnceLock<egui::Context>>,
 ) {
+    // Go.dot triggers go to the show's Go.dot while it is the cueing system
+    // (both connection paths fire cue triggers).
+    trigger_dispatcher.set_godot_target(godot_trigger_target(setup));
+
     // Pad-only families (SD/Quantum) have no GP OSC dialect and no S-series
     // mode semantics, so they take their own connection path entirely. Branch
     // before any field parsing below: most of it is GP/iPad-specific, and a
@@ -3349,6 +3353,17 @@ pub(crate) fn start_pad_connection(
             ctx.request_repaint();
         }
     });
+}
+
+/// Where the cue triggers' Go.dot verbs go: the Go.dot address in Setup
+/// when Go.dot is the show's cueing system, nowhere otherwise.
+pub(crate) fn godot_trigger_target(setup: &SetupTabState) -> Option<(String, u16)> {
+    (setup.cueing_system == CueingSystem::GoDot).then(|| {
+        (
+            setup.godot_ip.trim().to_string(),
+            setup.godot_port.trim().parse().unwrap_or(8010),
+        )
+    })
 }
 
 /// Where Go.dot is and what the app declares there, from the Setup fields;
