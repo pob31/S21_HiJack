@@ -1,6 +1,6 @@
 # S21 HiJack
 
-Middleware daemon and GUI for **DiGiCo S21/S31** mixing consoles. Sits between the console and your workflow tools to add snapshot/cue management, macros, channel palettes, smart ganging, pan link, personal monitoring (native app **and** browser), and QLab integration — features the console doesn't natively provide.
+Middleware daemon and GUI for **DiGiCo S21/S31** mixing consoles. Sits between the console and your workflow tools to add snapshot/cue management, macros, channel palettes, smart ganging, pan link, personal monitoring (native app **and** browser), and QLab and Go.dot integration — features the console doesn't natively provide.
 
 Communicates with the console over **GP OSC** (the documented open protocol) and optionally the **iPad protocol** (reverse-engineered) for parameters that GP OSC doesn't cover.
 
@@ -73,6 +73,12 @@ Communicates with the console over **GP OSC** (the documented open protocol) and
 ### QLab / External Trigger Integration
 - **Inbound (trigger listener)**: OSC trigger listener accepts `/cue/go`, `/cue/previous`, `/cue/fire`, `/cue/current`, `/macro/fire`, `/snapshot/recall`, and `/snapshot/recall_full`. Drive cue recall from QLab, companion apps, Stream Deck, or any OSC sender — see the [OSC Trigger Commands](#osc-trigger-commands) table for argument types.
 - **Outbound (QLab cue export)**: build QLab cue lists from app snapshots — emits `/new` + `/cue/selected/*` sequences that QLab consumes to create network cues (one per snapshot or per parameter), deterministically nested under a parent group cue. The exporter is **reply-driven**: it queries each created cue's `uniqueID`, waits for QLab's reply, then issues `/move` to place children in the group — so nesting no longer depends on QLab's insertion cursor. Each child cue can target either the app or the console via a configurable **QLab network patch** (one patch for the `/snapshot/recall` trigger cues pointed back at the daemon, another for the per-parameter GP OSC cues pointed at the console). Useful for building a QLab show that drives the console mix without re-keying snapshot names.
+
+### Go.dot Cueing
+- **Cueing system: QLab | Go.dot**, per show (Setup). Under Go.dot the Snapshots tab captures a snapshot into Go.dot as **one** OSC cue, made or updated in one exchange: a **recall cue** (`/s21/snapshot/recall "<snapshot id>"`, or `recall_full`) or a **console capture** (every stored parameter, straight at the desk). The snapshot keeps the cue's Go.dot identifier, so exporting again updates the same cue.
+- On connect the app **declares itself in Go.dot** as the device `/s21` (answers come back on the trigger port) and serves an **OSCQuery description** of its commands at `GET /s21` on the web port, which Go.dot offers as cascaded menus (snapshot names, cue numbers, macro names). It declares again whenever that menu changes.
+- **Go.dot trigger templates** (GO, fire / GO at this snapshot's cue, fire / GO cue [N], Esc, double Esc) drive Go.dot from S21 cues, and the macros' QLab cue steps go to Go.dot under the toggle.
+- The trigger listener takes every trigger address under `/s21` as well as bare. See [docs/godot-cueing.md](docs/godot-cueing.md); the protocol is Go.dot's `docs/godot-authoring-protocol-0.1.md`.
 
 ### iPad Protocol Support (Modes 2 & 3)
 - **Mode 1**: GP OSC only (default)
@@ -161,11 +167,13 @@ cargo run --release -- --console-ip 127.0.0.1 --console-port 8000
 | `--web-port` | `8080` | Browser (HTTP/WebSocket) monitor server port (0 = disabled) |
 | `--web-allow-cidr` | — | Repeatable: source-IP CIDR allowed to reach the web monitor server (empty = accept all) |
 | `--trigger-allow-cidr` | — | Repeatable: source-IP CIDR allowed to reach the trigger listener (empty = accept all) |
+| `--godot-ip` | — | Go.dot's IP, when the show's cueing system is Go.dot (overrides the show's) |
+| `--godot-port` | — | Go.dot's OSC port, when the show's cueing system is Go.dot (overrides the show's) |
 | `--headless` | `false` | Run without the GUI |
 
 ## OSC Trigger Commands
 
-Send these to the trigger port (default 53001) from QLab, Stream Deck, or any OSC source:
+Send these to the trigger port (default 53001) from QLab, Go.dot, Stream Deck, or any OSC source. Each is also taken under the app's root, `/s21` (`/s21/cue/go` is `/cue/go`), which is how Go.dot's cues address it:
 
 | OSC Path | Args | Action |
 |---|---|---|
@@ -207,14 +215,16 @@ src/
                        gangs, pan_link, palettes, recall_scope, dirty_tracker,
                        config (incl. PlusMode), monitor profiles
   osc/                 OSC protocol — GP OSC + iPad encode/parse/client,
-                       trigger listener, monitor server
+                       trigger listener, monitor server, QLab and Go.dot
+                       cue builders and clients
   console/             Business logic — connection manager, snapshot/macro/
                        monitor/gang/pan_link engines, fade controller,
                        palette manager, iPad handshake & proxy
   persistence/         Show file save/load (versioned, backward-compatible)
   ui/                  Native egui desktop UI (one file per tab + scope editor)
   web/                 Browser monitor server — axum HTTP + WebSocket, JSON
-                       protocol (protocol.rs), embedded static UI (assets.rs)
+                       protocol (protocol.rs), embedded static UI (assets.rs),
+                       OSCQuery description at /s21 for Go.dot (oscquery.rs)
   bin/mock_console.rs  Mock console simulator for testing without hardware
 web/
   dist/index.html      Browser monitor touch UI (HTML/CSS/JS) — embedded into
@@ -232,7 +242,7 @@ Documentation/
 cargo test
 ```
 
-560+ tests covering the data model, OSC protocol parsing/encoding, engine logic (incl. gang fader-floor and pan-mode propagation, palette ripple, QLab reply handling), persistence backward compatibility, the web monitor protocol + UDP fan-out (cross-transport echo), and UI parsing utilities. Continuous integration runs `cargo check`, `cargo test`, `cargo fmt --check`, `cargo clippy`, and `cargo audit` on a Linux/macOS/Windows matrix on every push and PR — see [.github/workflows/ci.yml](.github/workflows/ci.yml).
+960+ tests covering the data model, OSC protocol parsing/encoding, engine logic (incl. gang fader-floor and pan-mode propagation, palette ripple, QLab reply handling), Go.dot's authoring protocol against an in-process fake Go.dot (capture chunking, answers, timeouts, refusals, the declare, the OSCQuery description read to EOF), persistence backward compatibility, the web monitor protocol + UDP fan-out (cross-transport echo), and UI parsing utilities. Continuous integration runs `cargo check`, `cargo test`, `cargo fmt --check`, `cargo clippy`, and `cargo audit` on a Linux/macOS/Windows matrix on every push and PR — see [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 ## Stream Deck integration (Linux setup)
 
