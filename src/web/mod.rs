@@ -10,6 +10,7 @@
 //! Everything runs on spawned tasks; the egui thread never touches this.
 
 pub mod assets;
+pub mod oscquery;
 pub mod protocol;
 
 use std::net::SocketAddr;
@@ -32,6 +33,8 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
+use crate::console::cue_manager::CueManager;
+use crate::console::macro_manager::MacroManager;
 use crate::console::monitor_event::MonitorStateEvent;
 use crate::console::monitor_manager::MonitorManager;
 use crate::model::cidr::{self, Ipv4Cidr};
@@ -55,6 +58,10 @@ pub struct WebContext {
     pub offline_mode: Arc<AtomicBool>,
     /// Monotonic source of per-connection ids (`ClientEndpoint::Ws`).
     pub conn_counter: Arc<AtomicU64>,
+    /// Snapshots and cues — read for the OSCQuery description at `/s21`.
+    pub cue_manager: Arc<RwLock<CueManager>>,
+    /// Macros — read for the OSCQuery description at `/s21`.
+    pub macro_manager: Arc<RwLock<MacroManager>>,
 }
 
 /// Router state: the shared handles plus the server's shutdown token, which
@@ -87,6 +94,10 @@ pub async fn start_web_server(
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
+        // The app's OSCQuery description, which Go.dot fetches when the app
+        // declares itself (see `oscquery`).
+        .route("/s21", get(oscquery_handler))
+        .route("/s21/{*rest}", get(oscquery_handler))
         // Everything else: the embedded web UI (single-page app, falls back to
         // index.html). CIDR-gated like the WebSocket via the layer below.
         .fallback(assets::static_handler)
@@ -128,6 +139,38 @@ async fn cidr_guard(
         next.run(req).await
     } else {
         StatusCode::FORBIDDEN.into_response()
+    }
+}
+
+/// `GET /s21` and below: the app's OSCQuery description, or the subtree at
+/// the requested path; 404 for a path it does not describe.
+///
+/// Answers with `Connection: close` and closes after: Go.dot's client reads
+/// until the far end closes and does not look at `Content-Length`.
+async fn oscquery_handler(State(server): State<ServerState>, uri: axum::http::Uri) -> Response {
+    use axum::http::header;
+
+    // One lock at a time, each released before the next.
+    let (snapshot_names, cue_numbers) =
+        oscquery::MenuSource::of_cues(&*server.ctx.cue_manager.read().await);
+    let macro_names = oscquery::MenuSource::of_macros(&*server.ctx.macro_manager.read().await);
+    let menu = oscquery::MenuSource::new(snapshot_names, cue_numbers, macro_names);
+    let tree = oscquery::description(&menu);
+    match oscquery::subtree(&tree, uri.path()) {
+        Some(node) => (
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CONNECTION, "close"),
+            ],
+            node.to_string(),
+        )
+            .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            [(header::CONNECTION, "close")],
+            "no such node",
+        )
+            .into_response(),
     }
 }
 
@@ -416,6 +459,8 @@ mod tests {
             events: events_tx,
             offline_mode: Arc::new(AtomicBool::new(false)),
             conn_counter: Arc::new(AtomicU64::new(0)),
+            cue_manager: Arc::new(RwLock::new(CueManager::new(Default::default()))),
+            macro_manager: Arc::new(RwLock::new(MacroManager::new())),
         };
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -483,6 +528,8 @@ mod tests {
             events: events_tx,
             offline_mode: Arc::new(AtomicBool::new(false)),
             conn_counter: Arc::new(AtomicU64::new(0)),
+            cue_manager: Arc::new(RwLock::new(CueManager::new(Default::default()))),
+            macro_manager: Arc::new(RwLock::new(MacroManager::new())),
         };
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -560,6 +607,8 @@ mod tests {
             events: events_tx.clone(),
             offline_mode: Arc::new(AtomicBool::new(false)),
             conn_counter: Arc::new(AtomicU64::new(0)),
+            cue_manager: Arc::new(RwLock::new(CueManager::new(Default::default()))),
+            macro_manager: Arc::new(RwLock::new(MacroManager::new())),
         };
 
         // Grab a free port, then start the server on it.
@@ -642,5 +691,102 @@ mod tests {
             .unwrap();
         let w = recv_json(&mut ws_pin).await;
         assert_eq!(w["type"].as_str(), Some("welcome"));
+    }
+
+    /// Send one raw HTTP request and read the reply until the server closes,
+    /// as Go.dot's client does (it ignores `Content-Length`). Fails if the
+    /// connection is still open after 2 s.
+    async fn get_to_eof(port: u16, path: &str) -> (String, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let request =
+            format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut reply = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut reply))
+            .await
+            .expect("the server should close the connection after answering")
+            .unwrap();
+        let reply = String::from_utf8(reply).unwrap();
+        let (head, body) = reply.split_once("\r\n\r\n").expect("a head and a body");
+        (head.to_string(), body.to_string())
+    }
+
+    /// Go.dot fetches `GET /s21` on the web port when the app declares
+    /// itself: the description of the app's commands, with the show's
+    /// snapshot names, cue numbers and macro names as their menus.
+    #[tokio::test]
+    async fn oscquery_description_is_served_and_the_connection_closes() {
+        use crate::model::macro_def::MacroDef;
+        use crate::model::snapshot::{Cue, ScopeTemplate, Snapshot, SnapshotData, SnapshotKind};
+
+        let mut cues = CueManager::new(Default::default());
+        let snapshot = Snapshot::new(
+            "Verse 1".into(),
+            ScopeTemplate::new("S".into(), vec![]),
+            SnapshotData::new(),
+            SnapshotKind::ApplyOnSave,
+        );
+        cues.snapshots.insert(snapshot.id, snapshot);
+        cues.cue_list.cues.push(Cue::new(12.0, "Top".into()));
+        let mut macros = MacroManager::new();
+        let mute = MacroDef::new("Mute all".into(), vec![]);
+        macros.macros.insert(mute.id, mute);
+
+        let (cmd_tx, _cmd_rx) = mpsc::channel::<MonitorCommand>(64);
+        let (events_tx, _) = broadcast::channel::<MonitorStateEvent>(64);
+        let ctx = WebContext {
+            state: Arc::new(RwLock::new(ConsoleState::new(ConsoleConfig::default()))),
+            manager: Arc::new(RwLock::new(MonitorManager::new())),
+            commands: cmd_tx,
+            events: events_tx,
+            offline_mode: Arc::new(AtomicBool::new(false)),
+            conn_counter: Arc::new(AtomicU64::new(0)),
+            cue_manager: Arc::new(RwLock::new(cues)),
+            macro_manager: Arc::new(RwLock::new(macros)),
+        };
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        start_web_server(addr, CancellationToken::new(), Vec::new(), ctx)
+            .await
+            .unwrap();
+
+        let (head, body) = get_to_eof(port, "/s21").await;
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert!(
+            head.to_ascii_lowercase().contains("connection: close"),
+            "{head}"
+        );
+        let tree: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(tree["FULL_PATH"], "/s21");
+        assert_eq!(
+            tree["CONTENTS"]["snapshot"]["CONTENTS"]["recall"]["RANGE"][0]["VALS"],
+            serde_json::json!(["Verse 1"])
+        );
+        assert_eq!(
+            tree["CONTENTS"]["cue"]["CONTENTS"]["fire"]["RANGE"][0]["VALS"],
+            serde_json::json!([12.0])
+        );
+        assert_eq!(
+            tree["CONTENTS"]["macro"]["CONTENTS"]["fire"]["RANGE"][0]["VALS"],
+            serde_json::json!(["Mute all"])
+        );
+
+        // A sub-path answers its subtree.
+        let (head, body) = get_to_eof(port, "/s21/cue/go").await;
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        let go: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(go["FULL_PATH"], "/s21/cue/go");
+        assert_eq!(go["ACCESS"], 2);
+
+        // A path it does not describe is a 404, and still closes.
+        let (head, _) = get_to_eof(port, "/s21/nothing/here").await;
+        assert!(head.starts_with("HTTP/1.1 404"), "{head}");
     }
 }

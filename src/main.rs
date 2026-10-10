@@ -670,6 +670,8 @@ async fn run_headless(args: Args) {
             events: monitor_events_tx.clone(),
             offline_mode: offline_mode.clone(),
             conn_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            cue_manager: cue_manager.clone(),
+            macro_manager: macro_manager.clone(),
         };
         match web::start_web_server(web_addr, cancel_token.clone(), web_allowlist, web_ctx).await {
             Ok(()) => info!(port = args.web_port, "Web server started"),

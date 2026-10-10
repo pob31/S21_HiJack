@@ -2924,6 +2924,8 @@ pub(crate) fn start_connection(
                 events: events_tx.clone(),
                 offline_mode: offline.clone(),
                 conn_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                cue_manager: cue_mgr.clone(),
+                macro_manager: macro_mgr.clone(),
             };
             match async {
                 crate::web::start_web_server(web_addr, token.clone(), web_allowlist?, web_ctx).await
