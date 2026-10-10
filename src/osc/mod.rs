@@ -1,5 +1,8 @@
 pub mod client;
 pub mod encode;
+pub mod godot_client;
+pub mod godot_cue_builder;
+pub mod godot_reply;
 pub mod ipad_client;
 pub mod ipad_encode;
 pub mod ipad_parse;
@@ -22,6 +25,56 @@ pub const SNAPSHOT_RECALL_ADDR: &str = "/snapshot/recall";
 /// Variant that bypasses the snapshot's exclusion scope (only meaningful for
 /// `SnapshotKind::ApplyOnRecall` snapshots — see `SnapshotEngine::recall`).
 pub const SNAPSHOT_RECALL_FULL_ADDR: &str = "/snapshot/recall_full";
+
+/// The app's own root when it talks to Go.dot: it declares itself in Go.dot
+/// as the device `/s21`, its OSCQuery description lives at `GET /s21`, and
+/// the trigger listener takes every trigger address under it as well as
+/// bare (`/s21/cue/go` and `/cue/go` both fire GO), so cues made in Go.dot
+/// and in QLab both reach it.
+pub const S21_ROOT: &str = "/s21";
+
+/// `path` without a leading [`S21_ROOT`]: `/s21/cue/go` → `/cue/go`. A path
+/// not under the root (`/cue/go`, `/s21x/go`, `/s21` itself) comes back as
+/// it is.
+pub fn strip_s21_root(path: &str) -> &str {
+    match path.strip_prefix(S21_ROOT) {
+        Some(rest) if rest.starts_with('/') => rest,
+        _ => path,
+    }
+}
+
+// ─── Go.dot's authoring protocol ────────────────────────────────────
+//
+// The contract is `docs/godot-authoring-protocol-0.1.md` in the Go.dot
+// repository. A command `a.b` is addressed `/godot/cmd/a/b`; its answers
+// come back to the app's trigger port.
+
+/// `mount.declare s:prefix i:port i:queryPort s:name`: the app becomes a
+/// device in Go.dot (contract §3).
+pub const GODOT_DECLARE_ADDR: &str = "/godot/cmd/mount/declare";
+/// `cue.capture s:where s:target s:id s:name s:number s:notes s:messageIds
+/// [s:address s:value]...`: make or update one OSC cue (contract §4).
+pub const GODOT_CAPTURE_ADDR: &str = "/godot/cmd/cue/capture";
+/// GO: fires the focused list's standby and moves it on.
+pub const GODOT_GO_ADDR: &str = "/godot/cmd/go";
+/// `cue.fire s:id`: fires a cue, the standby untouched.
+pub const GODOT_FIRE_ADDR: &str = "/godot/cmd/cue/fire";
+/// `cue.fireNumber s:number`: fires the cue with that number.
+pub const GODOT_FIRE_NUMBER_ADDR: &str = "/godot/cmd/cue/fireNumber";
+/// `standby.set s:id`: parks the focused list's standby on a cue.
+pub const GODOT_STANDBY_SET_ADDR: &str = "/godot/cmd/standby/set";
+/// `standby.setNumber s:number`: parks it on the cue with that number.
+pub const GODOT_STANDBY_SET_NUMBER_ADDR: &str = "/godot/cmd/standby/setNumber";
+/// `run.stopAll`: Esc, everything stops gracefully and footers run.
+pub const GODOT_STOP_ALL_ADDR: &str = "/godot/cmd/run/stopAll";
+/// `run.killAll`: double Esc, everything is dropped, footers skipped.
+pub const GODOT_KILL_ALL_ADDR: &str = "/godot/cmd/run/killAll";
+/// Answer to a declare: `,ss id outcome`.
+pub const GODOT_DECLARED_ADDR: &str = "/godot/declared";
+/// Answer once Go.dot has fetched the description: `,sis id nodeCount problem`.
+pub const GODOT_DESCRIBED_ADDR: &str = "/godot/described";
+/// Answer to a capture datagram: `,ssss id outcome number name`.
+pub const GODOT_CAPTURED_ADDR: &str = "/godot/captured";
 
 // ─── Tolerant OSC decoding ──────────────────────────────────────────
 

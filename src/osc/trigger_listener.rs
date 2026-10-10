@@ -143,6 +143,22 @@ async fn process_trigger_packet(
 ) {
     match packet {
         OscPacket::Message(msg) => {
+            // Go.dot's answers land here too: the app declares its trigger
+            // port as the device's port, so `/godot/declared`, `/described`
+            // and `/captured` come back to it. Hand each to whoever waits
+            // for it (see `crate::osc::godot_reply`); never a trigger.
+            if msg.addr.starts_with("/godot/") {
+                match crate::osc::godot_reply::parse_answer(&msg.addr, &msg.args) {
+                    Some(ack) => {
+                        debug!(path = msg.addr, ?ack, "Go.dot answer");
+                        if !crate::osc::godot_reply::global().deliver(ack).await {
+                            debug!(path = msg.addr, %src, "Go.dot answer nobody waited for");
+                        }
+                    }
+                    None => debug!(path = msg.addr, %src, "Go.dot message not read"),
+                }
+                return;
+            }
             // QLab cue-creation replies land here (this is the app's
             // QLab-facing port). They carry a `/reply/.../uniqueID` address
             // and a single JSON string arg; route the uid to the in-flight
@@ -177,13 +193,16 @@ async fn process_trigger_packet(
     }
 }
 
-/// Parse a trigger OSC message into a TriggerEvent.
+/// Parse a trigger OSC message into a TriggerEvent. Every address is taken
+/// under the app's root as well as bare (`/s21/cue/go` is `/cue/go`), so
+/// cues made in Go.dot, which address the device `/s21`, reach it as QLab's
+/// do.
 pub(crate) fn parse_trigger_message(
     path: &str,
     args: &[OscType],
     src: SocketAddr,
 ) -> Option<TriggerEvent> {
-    match path {
+    match crate::osc::strip_s21_root(path) {
         "/cue/fire" => {
             // Accept both INT and FLOAT for cue number
             let number = match args.first() {
@@ -288,6 +307,82 @@ mod tests {
             .expect("the listener should still be listening")
             .unwrap();
         assert!(matches!(got, TriggerEvent::GoNext), "{got:?}");
+    }
+
+    /// Every trigger address reads the same under the `/s21` root as bare,
+    /// so Go.dot's cues (aimed at the device `/s21`) and QLab's both fire.
+    #[test]
+    fn root_and_bare_forms_parse_alike() {
+        let src: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let cases: Vec<(&str, Vec<OscType>)> = vec![
+            ("/cue/go", vec![]),
+            ("/cue/previous", vec![]),
+            ("/cue/current", vec![]),
+            ("/cue/fire", vec![OscType::Float(12.5)]),
+            ("/macro/fire", vec![OscType::String("mute_all".into())]),
+            ("/snapshot/recall", vec![OscType::String("Verse 1".into())]),
+            (
+                "/snapshot/recall_full",
+                vec![OscType::String("Verse 1".into())],
+            ),
+        ];
+        for (bare, args) in cases {
+            let rooted = format!("/s21{bare}");
+            let a = parse_trigger_message(bare, &args, src);
+            let b = parse_trigger_message(&rooted, &args, src);
+            assert!(a.is_some(), "{bare} should parse");
+            assert_eq!(
+                format!("{a:?}"),
+                format!("{b:?}"),
+                "{rooted} reads as {bare}"
+            );
+        }
+        // Only the root itself is stripped: lookalikes stay unknown.
+        assert!(parse_trigger_message("/s21x/cue/go", &[], src).is_none());
+        assert!(parse_trigger_message("/s21", &[], src).is_none());
+        assert!(parse_trigger_message("/s21/s21/cue/go", &[], src).is_none());
+    }
+
+    /// Go.dot's answers reaching the trigger port are handed to whoever
+    /// waits for them, and never become triggers.
+    #[tokio::test]
+    async fn godot_answers_are_routed_to_the_bus() {
+        let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = probe.local_addr().unwrap();
+        drop(probe);
+        let mut rx = TriggerListener::start(addr).await.unwrap();
+
+        let id = crate::osc::godot_cue_builder::new_cue_id();
+        let waiter = crate::osc::godot_reply::global().register(&id).await;
+        let godot = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let answer = rosc::encoder::encode(&OscPacket::Message(OscMessage {
+            addr: "/godot/captured".into(),
+            args: vec![
+                OscType::String(id.clone()),
+                OscType::String("updated".into()),
+                OscType::String("3".into()),
+                OscType::String("Recall 'A'".into()),
+            ],
+        }))
+        .unwrap();
+        godot.send_to(&answer, addr).await.unwrap();
+
+        let ack = tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
+            .await
+            .expect("the answer should reach the bus")
+            .unwrap();
+        assert_eq!(
+            ack,
+            crate::osc::godot_reply::GoDotAck::Captured {
+                id,
+                outcome: "updated".into(),
+                number: "3".into(),
+                name: "Recall 'A'".into(),
+            }
+        );
+        // ...and no trigger came of it.
+        let none = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+        assert!(none.is_err(), "an answer is not a trigger");
     }
 
     #[test]
