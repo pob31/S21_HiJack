@@ -6,6 +6,7 @@ pub mod discovery;
 pub mod fade_engine;
 pub mod gang_engine;
 pub mod gang_manager;
+pub mod godot_link;
 pub mod inbound;
 pub mod ipad_connection;
 pub mod ipad_handshake;

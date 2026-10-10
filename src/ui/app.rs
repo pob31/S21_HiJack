@@ -1562,6 +1562,14 @@ impl HiJackApp {
                         HelpKey::SetupWarnTriggerListenerFailed,
                     ));
                 }
+                UiEvent::GoDotNotice(notice) => {
+                    if notice.is_problem() {
+                        tracing::warn!("{}", notice.sentence());
+                    } else {
+                        tracing::info!("{}", notice.sentence());
+                    }
+                    self.setup.status_message = Some(notice.sentence().into());
+                }
                 // ── Macro-emitted app-internal commands ─────────────
                 UiEvent::MacroFireGo => {
                     super::cue_transport::fire_go(

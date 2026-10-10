@@ -2347,6 +2347,16 @@ pub(crate) fn start_connection(
     let monitor_port: u16 = setup.monitor_port.parse().unwrap_or(0);
     let web_port: u16 = setup.web_port.parse().unwrap_or(0);
 
+    // Go.dot, when it is the show's cueing system: the app declares itself
+    // there once its trigger listener and web server are up.
+    let godot_link = match godot_link_from_setup(setup, trigger_port, web_port) {
+        Ok(link) => link,
+        Err(message) => {
+            setup.status_message = Some(message.into());
+            return;
+        }
+    };
+
     let console_addr = match setup.console_ip.trim().parse::<IpAddr>() {
         Ok(ip) => SocketAddr::new(ip, console_port),
         Err(_) => {
@@ -2811,6 +2821,7 @@ pub(crate) fn start_connection(
         }
 
         // Start trigger listener (with cancellation so port is freed on disconnect)
+        let mut listener_ok = false;
         let trigger_allowlist =
             crate::persistence::show_file::parse_cidr_allowlist(&trigger_allow_cidrs);
         // A bad allowlist fails the start like a bind error would (audit M14).
@@ -2826,6 +2837,7 @@ pub(crate) fn start_connection(
         .await
         {
             Ok(mut trigger_rx) => {
+                listener_ok = true;
                 let trigger_cue_mgr = cue_mgr.clone();
                 let trigger_macro_mgr = manager.macro_manager();
                 let trigger_palette_mgr = pmgr_arc.clone();
@@ -2911,6 +2923,7 @@ pub(crate) fn start_connection(
         }
 
         // Web monitor server (if enabled) — shares the command channel + broadcast.
+        let mut web_ok = false;
         if web_port > 0 {
             let web_addr: SocketAddr = format!("0.0.0.0:{}", web_port)
                 .parse()
@@ -2934,12 +2947,45 @@ pub(crate) fn start_connection(
             {
                 Ok(()) => {
                     info!(port = web_port, "Web server started via UI");
+                    web_ok = true;
                     let _ = tx.send(UiEvent::WebServerStarted);
                 }
                 Err(e) => {
                     error!("Failed to start web server: {e}");
                     let _ = tx.send(UiEvent::WebServerFailed(e.to_string()));
                 }
+            }
+        }
+
+        // Go.dot: declare the app as the device /s21, and again whenever its
+        // menu changes, for as long as this connection lasts. Go.dot answers
+        // on the trigger listener, and fetches the menu from the web server
+        // (query port 0 when it isn't up).
+        if let Some(mut link) = godot_link {
+            if !web_ok {
+                link.query_port = 0;
+            }
+            if listener_ok {
+                let notify_tx = tx.clone();
+                let notify_ctx = ctx.clone();
+                tokio::spawn(crate::console::godot_link::run_declare_loop(
+                    link,
+                    cue_mgr.clone(),
+                    macro_mgr.clone(),
+                    token.clone(),
+                    move |notice| {
+                        let _ = notify_tx.send(UiEvent::GoDotNotice(notice));
+                        if let Some(ctx) = notify_ctx.get() {
+                            ctx.request_repaint();
+                        }
+                    },
+                ));
+            } else {
+                let _ = tx.send(UiEvent::GoDotNotice(
+                    crate::console::godot_link::GoDotNotice::Failed(
+                        "the trigger listener did not start, and Go.dot answers on it".into(),
+                    ),
+                ));
             }
         }
 
@@ -3303,6 +3349,29 @@ pub(crate) fn start_pad_connection(
             ctx.request_repaint();
         }
     });
+}
+
+/// Where Go.dot is and what the app declares there, from the Setup fields;
+/// `None` when the show's cueing system is QLab. An unreadable Go.dot port
+/// is refused with the status line to show, as the other ports are.
+pub(crate) fn godot_link_from_setup(
+    setup: &SetupTabState,
+    trigger_port: u16,
+    web_port: u16,
+) -> Result<Option<crate::console::godot_link::GoDotLink>, &'static str> {
+    if setup.cueing_system != CueingSystem::GoDot {
+        return Ok(None);
+    }
+    let godot_port = match setup.godot_port.trim().parse::<u16>() {
+        Ok(port) if port > 0 => port,
+        _ => return Err("Invalid Go.dot port"),
+    };
+    Ok(Some(crate::console::godot_link::GoDotLink {
+        godot_ip: setup.godot_ip.trim().to_string(),
+        godot_port,
+        trigger_port,
+        query_port: web_port,
+    }))
 }
 
 /// Assemble `ConnectionSettings` from the live Setup-tab fields. Shared by

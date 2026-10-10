@@ -119,6 +119,16 @@ struct Args {
     #[arg(long = "web-allow-cidr")]
     web_allow_cidrs: Vec<String>,
 
+    /// Go.dot's IP, when the show's cueing system is Go.dot. Overrides the
+    /// one saved in the show (headless only).
+    #[arg(long)]
+    godot_ip: Option<String>,
+
+    /// Go.dot's OSC port, when the show's cueing system is Go.dot.
+    /// Overrides the one saved in the show (headless only).
+    #[arg(long)]
+    godot_port: Option<u16>,
+
     /// Run in headless mode (no UI, daemon only)
     #[arg(long)]
     headless: bool,
@@ -256,6 +266,31 @@ fn allowlist_arg(flag: &str, raw: &[String]) -> Vec<model::cidr::Ipv4Cidr> {
 /// A listening address on every interface.
 fn any_addr(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)
+}
+
+/// Go.dot's address and the app's ports for the declare, when the loaded
+/// show's cueing system is Go.dot: its saved address, unless `--godot-ip` /
+/// `--godot-port` say otherwise. The web port is the query port when the web
+/// server started, 0 when it is off.
+fn headless_godot_link(
+    args: &Args,
+    show: Option<&persistence::show_file::ShowFile>,
+    web_ok: bool,
+) -> Option<console::godot_link::GoDotLink> {
+    let connection = &show?.connection;
+    if connection.cueing_system != persistence::show_file::CueingSystem::GoDot {
+        return None;
+    }
+    let godot_ip = args
+        .godot_ip
+        .clone()
+        .unwrap_or_else(|| connection.godot_ip.clone());
+    Some(console::godot_link::GoDotLink {
+        godot_ip: godot_ip.trim().to_string(),
+        godot_port: args.godot_port.unwrap_or(connection.godot_port),
+        trigger_port: args.trigger_port,
+        query_port: if web_ok { args.web_port } else { 0 },
+    })
 }
 
 /// Run in headless mode — the original daemon behavior.
@@ -661,6 +696,7 @@ async fn run_headless(args: Args) {
     }
 
     // Web monitor server (if enabled): shares the command channel + broadcast.
+    let mut web_ok = false;
     if args.web_port > 0 {
         let web_addr = any_addr(args.web_port);
         let web_ctx = web::WebContext {
@@ -674,7 +710,10 @@ async fn run_headless(args: Args) {
             macro_manager: macro_manager.clone(),
         };
         match web::start_web_server(web_addr, cancel_token.clone(), web_allowlist, web_ctx).await {
-            Ok(()) => info!(port = args.web_port, "Web server started"),
+            Ok(()) => {
+                info!(port = args.web_port, "Web server started");
+                web_ok = true;
+            }
             Err(e) => error!("Failed to start web server: {e}"),
         }
     }
@@ -696,6 +735,25 @@ async fn run_headless(args: Args) {
             std::process::exit(1);
         }
     };
+
+    // Go.dot, when it is the show's cueing system: declare the app as the
+    // device /s21 (its answers come to the trigger listener started above),
+    // and again whenever the menu changes. The outcome goes to the log.
+    if let Some(link) = headless_godot_link(&args, show.as_ref(), web_ok) {
+        tokio::spawn(console::godot_link::run_declare_loop(
+            link,
+            cue_manager.clone(),
+            macro_manager.clone(),
+            cancel_token.clone(),
+            |notice| {
+                if notice.is_problem() {
+                    warn!("{}", notice.sentence());
+                } else {
+                    info!("{}", notice.sentence());
+                }
+            },
+        ));
+    }
 
     // Spawn trigger processing task
     let trigger_cue_mgr = cue_manager.clone();
@@ -851,5 +909,60 @@ fn load_app_icon() -> Option<eframe::egui::IconData> {
             warn!("Failed to decode app icon: {e}");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use persistence::show_file::{CueingSystem, ShowFile};
+
+    fn go_dot_show() -> ShowFile {
+        let mut show = ShowFile::new(model::config::ConsoleConfig::default());
+        show.connection.cueing_system = CueingSystem::GoDot;
+        show.connection.godot_ip = "10.0.0.7".into();
+        show.connection.godot_port = 9010;
+        show
+    }
+
+    /// Headless declares only for a Go.dot show, with the show's address
+    /// unless the command line says otherwise, and the web port as the query
+    /// port only when the web server is up.
+    #[test]
+    fn headless_declares_for_a_go_dot_show() {
+        let args = Args::parse_from(["s21_hijack", "--headless", "--trigger-port", "53001"]);
+        let link = headless_godot_link(&args, Some(&go_dot_show()), true).unwrap();
+        assert_eq!(
+            link,
+            console::godot_link::GoDotLink {
+                godot_ip: "10.0.0.7".into(),
+                godot_port: 9010,
+                trigger_port: 53001,
+                query_port: 8080,
+            }
+        );
+        assert_eq!(
+            headless_godot_link(&args, Some(&go_dot_show()), false)
+                .unwrap()
+                .query_port,
+            0
+        );
+
+        let args = Args::parse_from([
+            "s21_hijack",
+            "--godot-ip",
+            "192.168.1.20",
+            "--godot-port",
+            "8011",
+        ]);
+        let link = headless_godot_link(&args, Some(&go_dot_show()), true).unwrap();
+        assert_eq!(
+            (link.godot_ip.as_str(), link.godot_port),
+            ("192.168.1.20", 8011)
+        );
+
+        let qlab = ShowFile::new(model::config::ConsoleConfig::default());
+        assert!(headless_godot_link(&args, Some(&qlab), true).is_none());
+        assert!(headless_godot_link(&args, None, true).is_none());
     }
 }

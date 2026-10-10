@@ -269,6 +269,10 @@ pub enum UiEvent {
     /// The QLab / external trigger listener didn't start (a bad allowlist,
     /// or the port in use). It used to be logged only (audit M14).
     TriggerListenerFailed(String),
+    /// What declaring the app in Go.dot came to: its `/godot/declared` and
+    /// `/godot/described` answers, or why it failed. Shown as the Setup
+    /// status line.
+    GoDotNotice(crate::console::godot_link::GoDotNotice),
 
     // ─── App-internal commands triggered by macro steps ──────────────
     //
