@@ -2,7 +2,7 @@
 
 S21_HiJack writes cues into a cue system and is driven back by it. It has done that with QLab
 from the start; it can now do it with **Go.dot** instead, through a protocol made for the job.
-Added in v0.3.0.
+Added in v0.4.0.
 The protocol is Go.dot's: `docs/godot-authoring-protocol-0.1.md` in the Go.dot repository is
 the contract, and this page is what S21_HiJack does with it (its §7.2 and §7.3). The names of
 the Go.dot commands, the answer addresses, the on-screen words and the template names are draft
