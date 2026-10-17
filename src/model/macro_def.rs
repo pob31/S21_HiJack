@@ -391,6 +391,7 @@ mod tests {
     fn recording_captures_steps_with_delays() {
         let mut rec = MacroRecording::new();
 
+        let bracket_start = std::time::Instant::now();
         rec.record(
             make_addr(1, ParameterPath::Mute),
             ParameterValue::Bool(true),
@@ -403,12 +404,19 @@ mod tests {
             make_addr(1, ParameterPath::Fader),
             ParameterValue::Float(-5.0),
         );
+        let bracket_ms = bracket_start.elapsed().as_millis();
         assert_eq!(rec.step_count(), 2);
 
-        // The second step should have a delay of roughly 50ms
+        // The second step's delay covers the 50ms sleep. Its ceiling is the
+        // time this test saw around both `record` calls, not a fixed number:
+        // a loaded CI runner can stall the thread well past the sleep (a
+        // macOS runner measured 207ms against the old 200ms ceiling).
         let delay = rec.steps[1].elapsed_ms;
         assert!(delay >= 30, "Expected delay >= 30ms, got {delay}ms");
-        assert!(delay <= 200, "Expected delay <= 200ms, got {delay}ms");
+        assert!(
+            u128::from(delay) <= bracket_ms,
+            "Expected delay <= {bracket_ms}ms (time around both records), got {delay}ms"
+        );
     }
 
     #[test]
