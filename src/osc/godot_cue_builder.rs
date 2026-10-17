@@ -218,11 +218,17 @@ pub fn is_cue_id(id: &str) -> bool {
 // ── The datagrams ───────────────────────────────────────────────────
 
 /// The datagrams that capture `cue` (contract §4): the first carries the
-/// head — `where`, `target`, the identifier, name, number, notes and an
-/// empty `messageIds` — then as many `address value` pairs as fit in
-/// [`MAX_DATAGRAM_BYTES`]; each following one is `where = more`,
-/// `target = <the cue's id>`, the other head fields empty, and the next
-/// pairs (§4.4). Every argument is an OSC string.
+/// head — `from` ([`S21_ROOT`], who is asking), `where`, `target`, the
+/// identifier, name, number, notes and an empty `messageIds` — then as many
+/// `address value` pairs as fit in [`MAX_DATAGRAM_BYTES`]; each following
+/// one is `from` again, `where = more`, `target = <the cue's id>`, the other
+/// head fields empty, and the next pairs (§4.4). Every argument is an OSC
+/// string.
+///
+/// `from` makes Go.dot answer S21_HiJack itself, even when the cue aims at
+/// the desk and another processor declared in Go.dot shares this computer's
+/// address (Go.dot's namespace draft §56.7). A Go.dot older than 2026-10-17
+/// reads `/s21` as `where` and refuses the capture (`bad-value`).
 ///
 /// A pair too long to share a datagram goes alone in one, over the ceiling.
 /// A cue with no message gives one datagram with no pair, which Go.dot
@@ -235,6 +241,7 @@ pub fn capture_messages(where_: &str, target: &str, cue: &GoDotCue) -> Vec<OscMe
         .collect();
 
     let first_head = [
+        S21_ROOT,
         where_,
         target,
         cue.id.as_str(),
@@ -243,10 +250,10 @@ pub fn capture_messages(where_: &str, target: &str, cue: &GoDotCue) -> Vec<OscMe
         cue.notes.as_str(),
         "",
     ];
-    let more_head = [WHERE_MORE, cue.id.as_str(), "", "", "", "", ""];
+    let more_head = [S21_ROOT, WHERE_MORE, cue.id.as_str(), "", "", "", "", ""];
 
     let mut out = Vec::new();
-    let mut head: &[&str; 7] = &first_head;
+    let mut head: &[&str; 8] = &first_head;
     let mut chunk: Vec<&(String, String)> = Vec::new();
     for pair in &pairs {
         if !chunk.is_empty() {
@@ -264,8 +271,8 @@ pub fn capture_messages(where_: &str, target: &str, cue: &GoDotCue) -> Vec<OscMe
     out
 }
 
-/// One capture datagram: the head's seven strings, then the pairs.
-fn capture_message(head: &[&str; 7], pairs: &[&(String, String)]) -> OscMessage {
+/// One capture datagram: the head's eight strings, then the pairs.
+fn capture_message(head: &[&str; 8], pairs: &[&(String, String)]) -> OscMessage {
     let mut args: Vec<OscType> = head
         .iter()
         .map(|s| OscType::String(s.to_string()))
@@ -283,7 +290,7 @@ fn capture_message(head: &[&str; 7], pairs: &[&(String, String)]) -> OscMessage 
 /// The encoded size of a capture datagram with `head` and `pairs`, without
 /// encoding it: the address, the type tags and every string, each padded to
 /// four bytes as OSC writes them.
-fn capture_size<'a>(head: &[&str; 7], pairs: impl Iterator<Item = &'a (String, String)>) -> usize {
+fn capture_size<'a>(head: &[&str; 8], pairs: impl Iterator<Item = &'a (String, String)>) -> usize {
     let mut count = head.len();
     let mut size = osc_string_size(GODOT_CAPTURE_ADDR.len());
     size += head.iter().map(|s| osc_string_size(s.len())).sum::<usize>();
@@ -611,6 +618,7 @@ mod tests {
         assert_eq!(
             strings(&msgs[0]),
             vec![
+                "/s21",
                 "standby",
                 "",
                 "0123ABCD",
@@ -624,8 +632,8 @@ mod tests {
                 "",
             ]
         );
-        // Seven head strings, then pairs: an odd count never leaves.
-        assert_eq!((msgs[0].args.len() - 7) % 2, 0);
+        // Eight head strings, then pairs: an odd count never leaves.
+        assert_eq!((msgs[0].args.len() - 8) % 2, 0);
     }
 
     #[test]
@@ -649,20 +657,29 @@ mod tests {
             assert!(len <= MAX_DATAGRAM_BYTES, "chunk {i} is {len} bytes");
             // The estimate is the encoder's size, to the byte.
             let s = strings(msg);
-            let head: [&str; 7] = s[..7].try_into().unwrap();
-            let pairs: Vec<(String, String)> = s[7..]
+            let head: [&str; 8] = s[..8].try_into().unwrap();
+            let pairs: Vec<(String, String)> = s[8..]
                 .chunks(2)
                 .map(|p| (p[0].to_string(), p[1].to_string()))
                 .collect();
             assert_eq!(capture_size(&head, pairs.iter()), len);
-            assert_eq!((s.len() - 7) % 2, 0, "pair parity in chunk {i}");
+            assert_eq!((s.len() - 8) % 2, 0, "pair parity in chunk {i}");
             if i == 0 {
                 assert_eq!(
-                    &s[..7],
-                    &["standby", "", "0123ABCD", "Snapshot 'Big'", "", "", ""]
+                    &s[..8],
+                    &[
+                        "/s21",
+                        "standby",
+                        "",
+                        "0123ABCD",
+                        "Snapshot 'Big'",
+                        "",
+                        "",
+                        ""
+                    ]
                 );
             } else {
-                assert_eq!(&s[..7], &["more", "0123ABCD", "", "", "", "", ""]);
+                assert_eq!(&s[..8], &["/s21", "more", "0123ABCD", "", "", "", "", ""]);
             }
             pairs_seen.extend(pairs);
         }
@@ -673,9 +690,9 @@ mod tests {
             .collect();
         assert_eq!(pairs_seen, expected);
         // Full chunks: the next pair would not have fitted.
-        let first_pairs = (msgs[0].args.len() - 7) / 2;
+        let first_pairs = (msgs[0].args.len() - 8) / 2;
         let s0 = strings(&msgs[0]);
-        let head0: [&str; 7] = s0[..7].try_into().unwrap();
+        let head0: [&str; 8] = s0[..8].try_into().unwrap();
         assert!(
             capture_size(&head0, expected[..=first_pairs].iter()) > MAX_DATAGRAM_BYTES,
             "the first chunk was cut early"
@@ -697,7 +714,7 @@ mod tests {
             ],
         };
         let msgs = capture_messages(WHERE_STANDBY, "", &cue);
-        let counts: Vec<usize> = msgs.iter().map(|m| (m.args.len() - 7) / 2).collect();
+        let counts: Vec<usize> = msgs.iter().map(|m| (m.args.len() - 8) / 2).collect();
         assert_eq!(counts, vec![1, 1, 1]);
     }
 

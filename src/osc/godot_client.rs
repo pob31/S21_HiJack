@@ -324,9 +324,11 @@ mod tests {
                     other => panic!("argument {i} is not a string: {other:?}"),
                 };
                 if msg.addr == "/godot/cmd/cue/capture" {
+                    // Every chunk names S21_HiJack first, as Go.dot answers by it.
+                    assert_eq!(s(0), "/s21", "a capture names its sender");
                     // The cue's id: the head's for the first chunk, the
                     // target for a `more` chunk.
-                    let id = if s(0) == "more" { s(1) } else { s(2) };
+                    let id = if s(1) == "more" { s(2) } else { s(3) };
                     let outcome = match (refuse_with, first) {
                         (Some(reason), _) => reason,
                         (None, true) => "created",
@@ -415,13 +417,14 @@ mod tests {
         assert_eq!(msg.addr, "/godot/cmd/cue/capture");
         assert_eq!(
             msg.args.len(),
-            7 + 2 * 2,
-            "seven head strings and two pairs"
+            8 + 2 * 2,
+            "eight head strings and two pairs"
         );
         assert!(msg.args.iter().all(|a| matches!(a, OscType::String(_))));
-        assert_eq!(msg.args[0], OscType::String("standby".into()));
-        assert_eq!(msg.args[2], OscType::String("0123ABCD".into()));
-        assert_eq!(msg.args[8], OscType::String("f:-3.5".into()));
+        assert_eq!(msg.args[0], OscType::String("/s21".into()));
+        assert_eq!(msg.args[1], OscType::String("standby".into()));
+        assert_eq!(msg.args[3], OscType::String("0123ABCD".into()));
+        assert_eq!(msg.args[9], OscType::String("f:-3.5".into()));
     }
 
     #[tokio::test]
@@ -440,13 +443,14 @@ mod tests {
         assert!(outcomes[1..].iter().all(|o| o == "appended"));
         let got = fake.await.unwrap();
         assert_eq!(got.len(), acks.len());
-        let pairs: usize = got.iter().map(|m| (m.args.len() - 7) / 2).sum();
+        let pairs: usize = got.iter().map(|m| (m.args.len() - 8) / 2).sum();
         assert_eq!(pairs, 150);
         assert!(
             got[1..]
                 .iter()
-                .all(|m| m.args[0] == OscType::String("more".into())
-                    && m.args[1] == OscType::String("0123ABCD".into()))
+                .all(|m| m.args[0] == OscType::String("/s21".into())
+                    && m.args[1] == OscType::String("more".into())
+                    && m.args[2] == OscType::String("0123ABCD".into()))
         );
     }
 

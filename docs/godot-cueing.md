@@ -99,6 +99,11 @@ recall cue created: Recall 'Verse 1' (1 message)*), or Go.dot's reason for refus
 A long console capture is sent in several datagrams of at most 1,200 bytes, the first carrying
 the cue's head, the rest appending to the same cue; each waits for Go.dot's answer.
 
+Every capture datagram names S21_HiJack first, as its sender (`/s21`), so Go.dot's answer comes
+back to S21_HiJack even though a console capture aims at the desk and even when another app
+declared in Go.dot - WFS-DIY, say - runs on the same computer. Since v0.3.1; it needs a Go.dot
+from 2026-10-17 or later, as an older one refuses these captures (`bad-value`).
+
 ### Declaring the console in Go.dot, by hand
 
 The console capture's messages go straight to the desk, so Go.dot needs a device for it. The app
