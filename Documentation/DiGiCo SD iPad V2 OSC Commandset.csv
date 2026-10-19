@@ -1,0 +1,779 @@
+section,osc_path,command_name,param_id,index,type,min,max,units,status,sample_value
+Input_Channels,/Input_Channels/{n}/Channel_Input/trim,trim,0x0101,0,float,-40.0,60.0,dB,verified (strip dump),-2.54
+Input_Channels,/Input_Channels/{n}/Channel_Input/phase,phase,0x0102,0,int,0.0,3.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Channel_Input/main/alt_in,main/alt in,0x010e,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Channel_Input/stereo_mode,stereo mode,0x011a,0,int,1.0,2.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/Channel_Input/pre_meter/left,pre meter/left,0x0120,0,meter,,,,verified (strip dump),<text>
+Input_Channels,/Input_Channels/{n}/Channel_Input/pre_meter/right,pre meter/right,0x0124,0,meter,,,,verified (strip dump),<text>
+Input_Channels,/Input_Channels/{n}/Channel_Input/post_meter/left,post meter/left,0x0130,0,meter,,,,verified (strip dump),[]
+Input_Channels,/Input_Channels/{n}/Channel_Input/post_meter/right,post meter/right,0x0134,0,meter,,,,verified (strip dump),[]
+Input_Channels,/Input_Channels/{n}/Channel_Input/phantom,phantom,0x0183,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Channel_Input/alt_phantom,alt phantom,0x0183,1,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Channel_Input/analog_gain,analog gain,0x0186,0,float,-20.0,60.0,dB,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Channel_Input/alt_analog_gain,alt analog gain,0x0186,1,float,-20.0,60.0,dB,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Channel_Input/input_pad,input pad,0x0189,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Channel_Input/alt_input_pad,alt input pad,0x0189,1,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Channel_Input/input_type,input type,0x01e0,0,int,0.0,2.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Channel_Input/name,name,0x01ff,0,string,,,,verified (strip dump),<text>
+Input_Channels,/Input_Channels/{n}/Aux_Send/{k}/send_level,send level,0x0201,0,float,-150.0,10.0,"dB, %",verified (strip dump),-150
+Input_Channels,/Input_Channels/{n}/Aux_Send/{k}/send_on,send on,0x0202,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Aux_Send/{k}/send_pan,send pan,0x0203,0,float,-1.0,1.0,%,verified (strip dump),0.5
+Input_Channels,/Input_Channels/{n}/Group_Send/{k}/group,group,0x0309,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/EQ/eq_in,eq in,0x0402,0,bool,0.0,1.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/EQ/eq_on_1,eq on 1,0x0403,0,bool,0.0,1.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/EQ/eq_on_2,eq on 2,0x0403,1,bool,0.0,1.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/EQ/eq_on_3,eq on 3,0x0403,2,bool,0.0,1.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/EQ/eq_on_4,eq on 4,0x0403,3,bool,0.0,1.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/EQ/eq_curve_1,eq curve 1,0x0404,0,int,1.0,4.0,,verified (strip dump),4
+Input_Channels,/Input_Channels/{n}/EQ/eq_curve_2,eq curve 2,0x0404,1,int,1.0,4.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/EQ/eq_curve_3,eq curve 3,0x0404,2,int,1.0,4.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/EQ/eq_curve_4,eq curve 4,0x0404,3,int,1.0,4.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/EQ/eq_freq_1,eq freq 1,0x0405,0,float,20.0,20000.0,Hz,verified (strip dump),2768
+Input_Channels,/Input_Channels/{n}/EQ/eq_freq_2,eq freq 2,0x0405,1,float,20.0,20000.0,Hz,verified (strip dump),2688
+Input_Channels,/Input_Channels/{n}/EQ/eq_freq_3,eq freq 3,0x0405,2,float,20.0,20000.0,Hz,verified (strip dump),427
+Input_Channels,/Input_Channels/{n}/EQ/eq_freq_4,eq freq 4,0x0405,3,float,20.0,20000.0,Hz,verified (strip dump),438.7
+Input_Channels,/Input_Channels/{n}/EQ/eq_Q_1,eq Q 1,0x0406,0,float,0.10000000149011612,20.0,,verified (strip dump),0.5792
+Input_Channels,/Input_Channels/{n}/EQ/eq_Q_2,eq Q 2,0x0406,1,float,0.10000000149011612,20.0,,verified (strip dump),0.71
+Input_Channels,/Input_Channels/{n}/EQ/eq_Q_3,eq Q 3,0x0406,2,float,0.10000000149011612,20.0,,verified (strip dump),2.018
+Input_Channels,/Input_Channels/{n}/EQ/eq_Q_4,eq Q 4,0x0406,3,float,0.10000000149011612,20.0,,verified (strip dump),0.7768
+Input_Channels,/Input_Channels/{n}/EQ/eq_gain_1,eq gain 1,0x0407,0,float,-18.0,18.0,dB,verified (strip dump),-1.341
+Input_Channels,/Input_Channels/{n}/EQ/eq_gain_2,eq gain 2,0x0407,1,float,-18.0,18.0,dB,verified (strip dump),1.341
+Input_Channels,/Input_Channels/{n}/EQ/eq_gain_3,eq gain 3,0x0407,2,float,-18.0,18.0,dB,verified (strip dump),0.9176
+Input_Channels,/Input_Channels/{n}/EQ/eq_gain_4,eq gain 4,0x0407,3,float,-18.0,18.0,dB,verified (strip dump),-7.129
+Input_Channels,/Input_Channels/{n}/EQ/eq_over-under_1,eq over-under 1,0x040b,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/EQ/eq_over-under_2,eq over-under 2,0x040b,1,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/EQ/eq_over-under_3,eq over-under 3,0x040b,2,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/EQ/eq_over-under_4,eq over-under 4,0x040b,3,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/GR_meter_1 or /Input_Channels/{n}/EQ/GR_meter_1,GR meter 1,0x040c,0,meter,,,,verified (strip dump),<text>
+Input_Channels,/Input_Channels/{n}/Dynamics/GR_meter_2 or /Input_Channels/{n}/EQ/GR_meter_2,GR meter 2,0x040c,1,meter,,,,verified (strip dump),<text>
+Input_Channels,/Input_Channels/{n}/Dynamics/GR_meter_3 or /Input_Channels/{n}/EQ/GR_meter_3,GR meter 3,0x040c,2,meter,,,,verified (strip dump),<text>
+Input_Channels,/Input_Channels/{n}/Dynamics/GR_meter_4 or /Input_Channels/{n}/EQ/GR_meter_4,GR meter 4,0x040c,3,meter,,,,verified (strip dump),<text>
+Input_Channels,/Input_Channels/{n}/EQ/eq_thresh_1,eq thresh 1,0x040e,0,float,-60.0,0.0,dB,verified (strip dump),-36
+Input_Channels,/Input_Channels/{n}/EQ/eq_thresh_2,eq thresh 2,0x040e,1,float,-60.0,0.0,dB,verified (strip dump),-36
+Input_Channels,/Input_Channels/{n}/EQ/eq_thresh_3,eq thresh 3,0x040e,2,float,-60.0,0.0,dB,verified (strip dump),-36
+Input_Channels,/Input_Channels/{n}/EQ/eq_thresh_4,eq thresh 4,0x040e,3,float,-60.0,0.0,dB,verified (strip dump),-36
+Input_Channels,/Input_Channels/{n}/EQ/eq_ratio_1,eq ratio 1,0x0410,0,float,1.0,10.0,: 1,verified (strip dump),2
+Input_Channels,/Input_Channels/{n}/EQ/eq_ratio_2,eq ratio 2,0x0410,1,float,1.0,10.0,: 1,verified (strip dump),2
+Input_Channels,/Input_Channels/{n}/EQ/eq_ratio_3,eq ratio 3,0x0410,2,float,1.0,10.0,: 1,verified (strip dump),2
+Input_Channels,/Input_Channels/{n}/EQ/eq_ratio_4,eq ratio 4,0x0410,3,float,1.0,10.0,: 1,verified (strip dump),2
+Input_Channels,/Input_Channels/{n}/EQ/eq_attack_1,eq attack 1,0x0411,0,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.01
+Input_Channels,/Input_Channels/{n}/EQ/eq_attack_2,eq attack 2,0x0411,1,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.015
+Input_Channels,/Input_Channels/{n}/EQ/eq_attack_3,eq attack 3,0x0411,2,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.025
+Input_Channels,/Input_Channels/{n}/EQ/eq_attack_4,eq attack 4,0x0411,3,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.05
+Input_Channels,/Input_Channels/{n}/EQ/eq_release_1,eq release 1,0x0412,0,float,0.009999999776482582,10.0,s,verified (strip dump),0.3
+Input_Channels,/Input_Channels/{n}/EQ/eq_release_2,eq release 2,0x0412,1,float,0.009999999776482582,10.0,s,verified (strip dump),0.35
+Input_Channels,/Input_Channels/{n}/EQ/eq_release_3,eq release 3,0x0412,2,float,0.009999999776482582,10.0,s,verified (strip dump),0.4
+Input_Channels,/Input_Channels/{n}/EQ/eq_release_4,eq release 4,0x0412,3,float,0.009999999776482582,10.0,s,verified (strip dump),0.6
+Input_Channels,/Input_Channels/{n}/EQ/eq_symm_Q_1,eq symm Q 1,0x047c,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/EQ/eq_symm_Q_2,eq symm Q 2,0x047c,1,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/EQ/eq_symm_Q_3,eq symm Q 3,0x047c,2,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/EQ/eq_symm_Q_4,eq symm Q 4,0x047c,3,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/EQ/dynamic_eq_on_1,dynamic eq on 1,0x047d,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/EQ/dynamic_eq_on_2,dynamic eq on 2,0x047d,1,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/EQ/dynamic_eq_on_3,dynamic eq on 3,0x047d,2,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/EQ/dynamic_eq_on_4,dynamic eq on 4,0x047d,3,bool,0.0,1.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_in,comp in,0x0502,0,bool,0.0,1.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/Dynamics/gate_in,gate in,0x0502,3,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_band_in_1,comp band in 1,0x0503,0,bool,0.0,1.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_band_in_2,comp band in 2,0x0503,1,bool,0.0,1.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_band_in_3,comp band in 3,0x0503,2,bool,0.0,1.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_LP_crossover,comp LP crossover,0x0505,0,float,20.0,20000.0,Hz,verified (strip dump),130
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_HP_crossover,comp HP crossover,0x0505,1,float,20.0,20000.0,Hz,verified (strip dump),1000
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_gain_1,comp gain 1,0x0509,0,float,0.0,40.0,dB,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_gain_2,comp gain 2,0x0509,1,float,0.0,40.0,dB,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_gain_3,comp gain 3,0x0509,2,float,0.0,40.0,dB,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_gain_4,comp gain 4,0x0509,3,float,0.0,40.0,dB,verified (strip dump),0
+Input_Channels,,gate range,0x050a,3,float,0.0,90.0,dB,not answered,
+Input_Channels,,gate-duck-comp,0x050b,3,int,0.0,2.0,,not answered,
+Input_Channels,/Input_Channels/{n}/Dynamics/GR_meter_1 or /Input_Channels/{n}/EQ/GR_meter_1,GR meter 1,0x050c,0,meter,,,,verified (strip dump),<text>
+Input_Channels,/Input_Channels/{n}/Dynamics/GR_meter_3 or /Input_Channels/{n}/EQ/GR_meter_3,GR meter 3,0x050c,1,meter,,,,verified (strip dump),<text>
+Input_Channels,/Input_Channels/{n}/Dynamics/GR_meter_2 or /Input_Channels/{n}/EQ/GR_meter_2,GR meter 2,0x050c,2,meter,,,,verified (strip dump),<text>
+Input_Channels,/Input_Channels/{n}/Dynamics/GR_meter_4 or /Input_Channels/{n}/EQ/GR_meter_4,GR meter 4,0x050c,3,meter,,,,verified (strip dump),<text>
+Input_Channels,,gate meter,0x050d,3,meter,,,,not answered,
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_thresh_1,comp thresh 1,0x050e,0,float,-60.0,0.0,dB,verified (strip dump),-22.35
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_thresh_2,comp thresh 2,0x050e,1,float,-60.0,0.0,dB,verified (strip dump),-21.41
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_thresh_3,comp thresh 3,0x050e,2,float,-60.0,0.0,dB,verified (strip dump),-21.41
+Input_Channels,/Input_Channels/{n}/Dynamics/gate_thresh,gate thresh,0x050e,3,float,-60.0,0.0,dB,verified (strip dump),-20
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_knee_1,comp knee 1,0x050f,0,int,0.0,2.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_knee_2,comp knee 2,0x050f,1,int,0.0,2.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_knee_3,comp knee 3,0x050f,2,int,0.0,2.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_knee_4,comp knee 4,0x050f,3,int,0.0,2.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_ratio_1,comp ratio 1,0x0510,0,float,1.0,50.0,: 1,verified (strip dump),5.324
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_ratio_2,comp ratio 2,0x0510,1,float,1.0,50.0,: 1,verified (strip dump),2
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_ratio_3,comp ratio 3,0x0510,2,float,1.0,50.0,: 1,verified (strip dump),2
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_ratio_4,comp ratio 4,0x0510,3,float,1.0,50.0,: 1,verified (strip dump),3
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_attack_1,comp attack 1,0x0511,0,float,1.9999999494757503e-05,0.10000000149011612,s,verified (strip dump),0.01266
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_attack_2,comp attack 2,0x0511,1,float,1.9999999494757503e-05,0.10000000149011612,s,verified (strip dump),0.005
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_attack_3,comp attack 3,0x0511,2,float,1.9999999494757503e-05,0.10000000149011612,s,verified (strip dump),0.025
+Input_Channels,/Input_Channels/{n}/Dynamics/gate_attack,gate attack,0x0511,3,float,4.999999873689376e-05,0.10000000149011612,s,verified (strip dump),0.002
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_release_1,comp release 1,0x0512,0,float,0.0010000000474974513,10.0,s,verified (strip dump),0.02413
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_release_2,comp release 2,0x0512,1,float,0.0010000000474974513,10.0,s,verified (strip dump),0.2
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_release_3,comp release 3,0x0512,2,float,0.0010000000474974513,10.0,s,verified (strip dump),0.4
+Input_Channels,/Input_Channels/{n}/Dynamics/gate_release,gate release,0x0512,3,float,0.004999999888241291,10.0,s,verified (strip dump),0.14
+Input_Channels,,gate hold,0x0513,3,float,0.0020000000949949026,2.0,s,not answered,
+Input_Channels,/Input_Channels/{n}/Dynamics/key_solo,key solo,0x0517,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_listen_1,comp listen 1,0x0518,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_listen_2,comp listen 2,0x0518,1,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_listen_3,comp listen 3,0x0518,2,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/input_meter/left,input meter/left,0x0530,0,meter,,,,verified (strip dump),[]
+Input_Channels,/Input_Channels/{n}/Dynamics/input_meter/right,input meter/right,0x0534,0,meter,,,,verified (strip dump),[]
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_all_gain,comp all gain,0x0538,0,float,0.0,40.0,dB,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_all_thresh,comp all thresh,0x0539,0,float,-60.0,0.0,dB,verified (strip dump),-22.35
+Input_Channels,/Input_Channels/{n}/Dynamics/comp-multiband-desser,comp-multiband-desser,0x053a,0,int,0.0,2.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_auto-gain_1,comp auto-gain 1,0x053b,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_auto-gain_2,comp auto-gain 2,0x053b,1,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_auto-gain_3,comp auto-gain 3,0x053b,2,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/comp_auto-gain_4,comp auto-gain 4,0x053b,3,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Dynamics/desser_centre_freq,desser centre freq,0x057e,0,float,0.0,255.0,,verified (strip dump),127
+Input_Channels,/Input_Channels/{n}/Dynamics/gate_centre_freq,gate centre freq,0x057e,3,float,0.0,255.0,,verified (strip dump),127
+Input_Channels,/Input_Channels/{n}/Dynamics/desser_freq_width,desser freq width,0x057f,0,float,0.0,255.0,,verified (strip dump),255
+Input_Channels,/Input_Channels/{n}/Dynamics/gate_freq_width,gate freq width,0x057f,3,float,0.0,255.0,,verified (strip dump),255
+Input_Channels,/Input_Channels/{n}/Filters/hi_filter_in,hi filter in,0x0703,0,bool,0.0,1.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/Filters/lo_filter_in,lo filter in,0x0703,1,bool,0.0,1.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/Filters/hi_filter_freq,hi filter freq,0x0705,0,float,20.0,20000.0,Hz,verified (strip dump),2e+04
+Input_Channels,/Input_Channels/{n}/Filters/lo_filter_freq,lo filter freq,0x0705,1,float,20.0,20000.0,Hz,verified (strip dump),81.81
+Input_Channels,/Input_Channels/{n}/Insert/insert_A_in,insert A in,0x0802,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Insert/insert_B_in,insert B in,0x0802,1,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Insert/insert_A_phantom,insert A phantom,0x0883,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Insert/insert_B_phantom,insert B phantom,0x0883,1,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Insert/insert_A_analog_gain,insert A analog gain,0x0886,0,float,-20.0,60.0,dB,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Insert/insert_B_analog_gain,insert B analog gain,0x0886,1,float,-20.0,60.0,dB,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Insert/insert_A_input_pad,insert A input pad,0x0889,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Insert/insert_B_input_pad,insert B input pad,0x0889,1,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Channel_Delay/delay_on,delay on,0x0907,0,bool,0.0,1.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/Channel_Delay/delay,delay,0x0908,0,float,0.0,1.2999999523162842,s,verified (strip dump),0.02448
+Input_Channels,/Input_Channels/{n}/Channel_Delay/fine_delay,fine delay,0x0917,0,float,-127.0,127.0,samples,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/CGs_level,CGs level,0x0c01,0,float,-150.0,10.0,"dB, %",verified (strip dump),0.694
+Input_Channels,/Input_Channels/{n}/solo,solo,0x0c03,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/CGs_mute,CGs mute,0x0c1c,0,bool,0.0,1.0,,verified (strip dump),1
+Input_Channels,/Input_Channels/{n}/fader,fader,0x0c21,0,float,-150.0,10.0,"dB, %",verified (strip dump),-1.667
+Input_Channels,/Input_Channels/{n}/mute,mute,0x0c22,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/fader_meter/left,fader meter/left,0x0c30,0,meter,,,,verified (strip dump),[]
+Input_Channels,/Input_Channels/{n}/fader_meter/right,fader meter/right,0x0c34,0,meter,,,,verified (strip dump),[]
+Input_Channels,/Input_Channels/{n}/Panner/f-b,f-b,0x0d16,0,float,0.0,1.0,%,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Panner/LFE_level,LFE level,0x0d17,0,float,-18.0,18.0,dB,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Panner/LFE_off-only-all,LFE off-only-all,0x0d18,0,bool,0.0,1.0,,verified (strip dump),0
+Input_Channels,/Input_Channels/{n}/Panner/pan,pan,0x0d23,0,float,-1.0,1.0,%,verified (strip dump),0.3454
+Input_Channels,/Input_Channels/{n}/Output/meter/left,meter/left,0x0e40,0,meter,,,,verified (strip dump),[]
+Input_Channels,/Input_Channels/{n}/Output/meter2,meter2,0x0e41,0,meter,,,,verified (strip dump),[]
+Input_Channels,/Input_Channels/{n}/Output/meter/centre,meter/centre,0x0e42,0,meter,,,,verified (strip dump),[]
+Input_Channels,/Input_Channels/{n}/Output/meter4,meter4,0x0e43,0,meter,,,,verified (strip dump),[]
+Input_Channels,/Input_Channels/{n}/Output/meter/right,meter/right,0x0e44,0,meter,,,,verified (strip dump),[]
+Input_Channels,/Input_Channels/{n}/Output/meter/SL,meter/SL,0x0e45,0,meter,,,,verified (strip dump),[]
+Input_Channels,/Input_Channels/{n}/Output/meter/SR,meter/SR,0x0e46,0,meter,,,,verified (strip dump),[]
+Input_Channels,/Input_Channels/{n}/Output/meter/LFE,meter/LFE,0x0e47,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_in,eq in,0x0402,0,bool,0.0,1.0,,verified (strip dump),1
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_on_1,eq on 1,0x0403,0,bool,0.0,1.0,,verified (strip dump),1
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_on_2,eq on 2,0x0403,1,bool,0.0,1.0,,verified (strip dump),1
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_on_3,eq on 3,0x0403,2,bool,0.0,1.0,,verified (strip dump),1
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_on_4,eq on 4,0x0403,3,bool,0.0,1.0,,verified (strip dump),1
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_curve_1,eq curve 1,0x0404,0,int,1.0,4.0,,verified (strip dump),1
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_curve_2,eq curve 2,0x0404,1,int,1.0,4.0,,verified (strip dump),1
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_curve_3,eq curve 3,0x0404,2,int,1.0,4.0,,verified (strip dump),1
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_curve_4,eq curve 4,0x0404,3,int,1.0,4.0,,verified (strip dump),1
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_freq_1,eq freq 1,0x0405,0,float,20.0,20000.0,Hz,verified (strip dump),6300
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_freq_2,eq freq 2,0x0405,1,float,20.0,20000.0,Hz,verified (strip dump),4759
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_freq_3,eq freq 3,0x0405,2,float,20.0,20000.0,Hz,verified (strip dump),300
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_freq_4,eq freq 4,0x0405,3,float,20.0,20000.0,Hz,verified (strip dump),100
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_Q_1,eq Q 1,0x0406,0,float,0.10000000149011612,20.0,,verified (strip dump),0.71
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_Q_2,eq Q 2,0x0406,1,float,0.10000000149011612,20.0,,verified (strip dump),0.71
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_Q_3,eq Q 3,0x0406,2,float,0.10000000149011612,20.0,,verified (strip dump),0.71
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_Q_4,eq Q 4,0x0406,3,float,0.10000000149011612,20.0,,verified (strip dump),0.71
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_gain_1,eq gain 1,0x0407,0,float,-18.0,18.0,dB,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_gain_2,eq gain 2,0x0407,1,float,-18.0,18.0,dB,verified (strip dump),-2.612
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_gain_3,eq gain 3,0x0407,2,float,-18.0,18.0,dB,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_gain_4,eq gain 4,0x0407,3,float,-18.0,18.0,dB,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_over-under_1,eq over-under 1,0x040b,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_over-under_2,eq over-under 2,0x040b,1,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_over-under_3,eq over-under 3,0x040b,2,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_over-under_4,eq over-under 4,0x040b,3,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/EQ/GR_meter_1 or /Aux_Outputs/{n}/Dynamics/GR_meter_1,GR meter 1,0x040c,0,meter,,,,verified (strip dump),<text>
+Aux_Outputs,/Aux_Outputs/{n}/EQ/GR_meter_2 or /Aux_Outputs/{n}/Dynamics/GR_meter_2,GR meter 2,0x040c,1,meter,,,,verified (strip dump),<text>
+Aux_Outputs,/Aux_Outputs/{n}/EQ/GR_meter_3 or /Aux_Outputs/{n}/Dynamics/GR_meter_3,GR meter 3,0x040c,2,meter,,,,verified (strip dump),<text>
+Aux_Outputs,/Aux_Outputs/{n}/EQ/GR_meter_4 or /Aux_Outputs/{n}/Dynamics/GR_meter_4,GR meter 4,0x040c,3,meter,,,,verified (strip dump),<text>
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_thresh_1,eq thresh 1,0x040e,0,float,-60.0,0.0,dB,verified (strip dump),-36
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_thresh_2,eq thresh 2,0x040e,1,float,-60.0,0.0,dB,verified (strip dump),-36
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_thresh_3,eq thresh 3,0x040e,2,float,-60.0,0.0,dB,verified (strip dump),-36
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_thresh_4,eq thresh 4,0x040e,3,float,-60.0,0.0,dB,verified (strip dump),-36
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_ratio_1,eq ratio 1,0x0410,0,float,1.0,10.0,: 1,verified (strip dump),2
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_ratio_2,eq ratio 2,0x0410,1,float,1.0,10.0,: 1,verified (strip dump),2
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_ratio_3,eq ratio 3,0x0410,2,float,1.0,10.0,: 1,verified (strip dump),2
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_ratio_4,eq ratio 4,0x0410,3,float,1.0,10.0,: 1,verified (strip dump),2
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_attack_1,eq attack 1,0x0411,0,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.01
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_attack_2,eq attack 2,0x0411,1,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.015
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_attack_3,eq attack 3,0x0411,2,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.025
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_attack_4,eq attack 4,0x0411,3,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.05
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_release_1,eq release 1,0x0412,0,float,0.009999999776482582,10.0,s,verified (strip dump),0.3
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_release_2,eq release 2,0x0412,1,float,0.009999999776482582,10.0,s,verified (strip dump),0.35
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_release_3,eq release 3,0x0412,2,float,0.009999999776482582,10.0,s,verified (strip dump),0.4
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_release_4,eq release 4,0x0412,3,float,0.009999999776482582,10.0,s,verified (strip dump),0.6
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_symm_Q_1,eq symm Q 1,0x047c,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_symm_Q_2,eq symm Q 2,0x047c,1,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_symm_Q_3,eq symm Q 3,0x047c,2,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/EQ/eq_symm_Q_4,eq symm Q 4,0x047c,3,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/EQ/dynamic_eq_on_1,dynamic eq on 1,0x047d,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/EQ/dynamic_eq_on_2,dynamic eq on 2,0x047d,1,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/EQ/dynamic_eq_on_3,dynamic eq on 3,0x047d,2,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/EQ/dynamic_eq_on_4,dynamic eq on 4,0x047d,3,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_in,comp in,0x0502,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/gate_in,gate in,0x0502,3,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_band_in_1,comp band in 1,0x0503,0,bool,0.0,1.0,,verified (strip dump),1
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_band_in_2,comp band in 2,0x0503,1,bool,0.0,1.0,,verified (strip dump),1
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_band_in_3,comp band in 3,0x0503,2,bool,0.0,1.0,,verified (strip dump),1
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_LP_crossover,comp LP crossover,0x0505,0,float,20.0,20000.0,Hz,verified (strip dump),130
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_HP_crossover,comp HP crossover,0x0505,1,float,20.0,20000.0,Hz,verified (strip dump),1000
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_gain_1,comp gain 1,0x0509,0,float,0.0,40.0,dB,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_gain_2,comp gain 2,0x0509,1,float,0.0,40.0,dB,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_gain_3,comp gain 3,0x0509,2,float,0.0,40.0,dB,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_gain_4,comp gain 4,0x0509,3,float,0.0,40.0,dB,verified (strip dump),0
+Aux_Outputs,,gate range,0x050a,3,float,0.0,90.0,dB,not answered,
+Aux_Outputs,,gate-duck-comp,0x050b,3,int,0.0,2.0,,not answered,
+Aux_Outputs,/Aux_Outputs/{n}/EQ/GR_meter_1 or /Aux_Outputs/{n}/Dynamics/GR_meter_1,GR meter 1,0x050c,0,meter,,,,verified (strip dump),<text>
+Aux_Outputs,/Aux_Outputs/{n}/EQ/GR_meter_3 or /Aux_Outputs/{n}/Dynamics/GR_meter_3,GR meter 3,0x050c,1,meter,,,,verified (strip dump),<text>
+Aux_Outputs,/Aux_Outputs/{n}/EQ/GR_meter_2 or /Aux_Outputs/{n}/Dynamics/GR_meter_2,GR meter 2,0x050c,2,meter,,,,verified (strip dump),<text>
+Aux_Outputs,/Aux_Outputs/{n}/EQ/GR_meter_4 or /Aux_Outputs/{n}/Dynamics/GR_meter_4,GR meter 4,0x050c,3,meter,,,,verified (strip dump),<text>
+Aux_Outputs,,gate meter,0x050d,3,meter,,,,not answered,
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_thresh_1,comp thresh 1,0x050e,0,float,-60.0,0.0,dB,verified (strip dump),-20
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_thresh_2,comp thresh 2,0x050e,1,float,-60.0,0.0,dB,verified (strip dump),-20
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_thresh_3,comp thresh 3,0x050e,2,float,-60.0,0.0,dB,verified (strip dump),-20
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/gate_thresh,gate thresh,0x050e,3,float,-60.0,0.0,dB,verified (strip dump),-20
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_knee_1,comp knee 1,0x050f,0,int,0.0,2.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_knee_2,comp knee 2,0x050f,1,int,0.0,2.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_knee_3,comp knee 3,0x050f,2,int,0.0,2.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_knee_4,comp knee 4,0x050f,3,int,0.0,2.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_ratio_1,comp ratio 1,0x0510,0,float,1.0,50.0,: 1,verified (strip dump),3
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_ratio_2,comp ratio 2,0x0510,1,float,1.0,50.0,: 1,verified (strip dump),2
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_ratio_3,comp ratio 3,0x0510,2,float,1.0,50.0,: 1,verified (strip dump),2
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_ratio_4,comp ratio 4,0x0510,3,float,1.0,50.0,: 1,verified (strip dump),3
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_attack_1,comp attack 1,0x0511,0,float,1.9999999494757503e-05,0.10000000149011612,s,verified (strip dump),0.01
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_attack_2,comp attack 2,0x0511,1,float,1.9999999494757503e-05,0.10000000149011612,s,verified (strip dump),0.005
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_attack_3,comp attack 3,0x0511,2,float,1.9999999494757503e-05,0.10000000149011612,s,verified (strip dump),0.025
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/gate_attack,gate attack,0x0511,3,float,4.999999873689376e-05,0.10000000149011612,s,verified (strip dump),0.002
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_release_1,comp release 1,0x0512,0,float,0.0010000000474974513,10.0,s,verified (strip dump),0.5
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_release_2,comp release 2,0x0512,1,float,0.0010000000474974513,10.0,s,verified (strip dump),0.2
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_release_3,comp release 3,0x0512,2,float,0.0010000000474974513,10.0,s,verified (strip dump),0.4
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/gate_release,gate release,0x0512,3,float,0.004999999888241291,10.0,s,verified (strip dump),0.14
+Aux_Outputs,,gate hold,0x0513,3,float,0.0020000000949949026,2.0,s,not answered,
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/key_solo,key solo,0x0517,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_listen_1,comp listen 1,0x0518,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_listen_2,comp listen 2,0x0518,1,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_listen_3,comp listen 3,0x0518,2,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/input_meter/left,input meter/left,0x0530,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/input_meter/right,input meter/right,0x0534,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_all_gain,comp all gain,0x0538,0,float,0.0,40.0,dB,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_all_thresh,comp all thresh,0x0539,0,float,-60.0,0.0,dB,verified (strip dump),-20
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp-multiband-desser,comp-multiband-desser,0x053a,0,int,0.0,2.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_auto-gain_1,comp auto-gain 1,0x053b,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_auto-gain_2,comp auto-gain 2,0x053b,1,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_auto-gain_3,comp auto-gain 3,0x053b,2,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/comp_auto-gain_4,comp auto-gain 4,0x053b,3,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/desser_centre_freq,desser centre freq,0x057e,0,float,0.0,255.0,,verified (strip dump),127
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/gate_centre_freq,gate centre freq,0x057e,3,float,0.0,255.0,,verified (strip dump),127
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/desser_freq_width,desser freq width,0x057f,0,float,0.0,255.0,,verified (strip dump),255
+Aux_Outputs,/Aux_Outputs/{n}/Dynamics/gate_freq_width,gate freq width,0x057f,3,float,0.0,255.0,,verified (strip dump),255
+Aux_Outputs,/Aux_Outputs/{n}/Filters/hi_filter_in,hi filter in,0x0703,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Filters/lo_filter_in,lo filter in,0x0703,1,bool,0.0,1.0,,verified (strip dump),1
+Aux_Outputs,/Aux_Outputs/{n}/Filters/hi_filter_freq,hi filter freq,0x0705,0,float,20.0,20000.0,Hz,verified (strip dump),2e+04
+Aux_Outputs,/Aux_Outputs/{n}/Filters/lo_filter_freq,lo filter freq,0x0705,1,float,20.0,20000.0,Hz,verified (strip dump),91.17
+Aux_Outputs,/Aux_Outputs/{n}/Insert/insert_A_in,insert A in,0x0802,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Insert/insert_B_in,insert B in,0x0802,1,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Channel_Delay/delay_on,delay on,0x0907,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Channel_Delay/delay,delay,0x0908,0,float,0.0,1.2999999523162842,s,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Channel_Delay/fine_delay,fine delay,0x0917,0,float,-127.0,127.0,samples,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Buss_Trim/trim,trim,0x0b01,0,float,-40.0,60.0,dB,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Buss_Trim/phase,phase,0x0b02,0,int,0.0,3.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Buss_Trim/pre_meter,pre meter,0x0b20,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Buss_Trim/pre_meter/right,pre meter/right,0x0b24,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Buss_Trim/post_meter,post meter,0x0b30,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Buss_Trim/post_meter/right,post meter/right,0x0b34,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Buss_Trim/tube_meter/left,tube meter/left,0x0b58,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Buss_Trim/tube_meter/right,tube meter/right,0x0b5c,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Buss_Trim/name,name,0x0bff,0,string,,,,verified (strip dump),<text>
+Aux_Outputs,/Aux_Outputs/{n}/CGs_level,CGs level,0x0c01,0,float,-150.0,10.0,"dB, %",verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/hard_mute,hard mute,0x0c02,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/solo,solo,0x0c03,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/solo_1_or_2,solo 1 or 2,0x0c0b,0,int,0.0,2.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/sends_to_rotaries,sends to rotaries,0x0c0d,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/sends_to_faders,sends to faders,0x0c10,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/auto_solo,auto solo,0x0c11,0,int,0.0,3.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/CGs_mute,CGs mute,0x0c1c,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/fader,fader,0x0c21,0,float,-150.0,10.0,"dB, %",verified (strip dump),0.005
+Aux_Outputs,/Aux_Outputs/{n}/mute,mute,0x0c22,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/fader_meter/left,fader meter/left,0x0c30,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/fader_meter/right,fader meter/right,0x0c34,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/alternate_solo,alternate solo,0x0ce4,0,bool,0.0,1.0,,verified (strip dump),0
+Aux_Outputs,/Aux_Outputs/{n}/Output/dir_meter/left,dir meter/left,0x0e28,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Output/dir_meter/right,dir meter/right,0x0e2c,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Output/meter/left,meter/left,0x0e40,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Output/meter2,meter2,0x0e41,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Output/meter/centre,meter/centre,0x0e42,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Output/meter4,meter4,0x0e43,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Output/meter/right,meter/right,0x0e44,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Output/meter/SL,meter/SL,0x0e45,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Output/meter/SR,meter/SR,0x0e46,0,meter,,,,verified (strip dump),[]
+Aux_Outputs,/Aux_Outputs/{n}/Output/meter/LFE,meter/LFE,0x0e47,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Aux_Send/{k}/send_level,send level,0x0201,0,float,-150.0,10.0,"dB, %",verified (strip dump),-150
+Group_Outputs,/Group_Outputs/{n}/Aux_Send/{k}/send_on,send on,0x0202,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Aux_Send/{k}/send_pan,send pan,0x0203,0,float,-1.0,1.0,%,verified (strip dump),0.5
+Group_Outputs,/Group_Outputs/{n}/Aux_Send/{k}/send_pre-post,send pre-post,0x0204,0,int,0.0,2.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Group_Send/{k}/group,group,0x0309,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_in,eq in,0x0402,0,bool,0.0,1.0,,verified (strip dump),1
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_on_1,eq on 1,0x0403,0,bool,0.0,1.0,,verified (strip dump),1
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_on_2,eq on 2,0x0403,1,bool,0.0,1.0,,verified (strip dump),1
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_on_3,eq on 3,0x0403,2,bool,0.0,1.0,,verified (strip dump),1
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_on_4,eq on 4,0x0403,3,bool,0.0,1.0,,verified (strip dump),1
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_curve_1,eq curve 1,0x0404,0,int,1.0,4.0,,verified (strip dump),1
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_curve_2,eq curve 2,0x0404,1,int,1.0,4.0,,verified (strip dump),1
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_curve_3,eq curve 3,0x0404,2,int,1.0,4.0,,verified (strip dump),1
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_curve_4,eq curve 4,0x0404,3,int,1.0,4.0,,verified (strip dump),1
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_freq_1,eq freq 1,0x0405,0,float,20.0,20000.0,Hz,verified (strip dump),5024
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_freq_2,eq freq 2,0x0405,1,float,20.0,20000.0,Hz,verified (strip dump),719.7
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_freq_3,eq freq 3,0x0405,2,float,20.0,20000.0,Hz,verified (strip dump),91.17
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_freq_4,eq freq 4,0x0405,3,float,20.0,20000.0,Hz,verified (strip dump),41.56
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_Q_1,eq Q 1,0x0406,0,float,0.10000000149011612,20.0,,verified (strip dump),4.703
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_Q_2,eq Q 2,0x0406,1,float,0.10000000149011612,20.0,,verified (strip dump),3.402
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_Q_3,eq Q 3,0x0406,2,float,0.10000000149011612,20.0,,verified (strip dump),1.404
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_Q_4,eq Q 4,0x0406,3,float,0.10000000149011612,20.0,,verified (strip dump),6.42
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_gain_1,eq gain 1,0x0407,0,float,-18.0,18.0,dB,verified (strip dump),-2.047
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_gain_2,eq gain 2,0x0407,1,float,-18.0,18.0,dB,verified (strip dump),-2.308
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_gain_3,eq gain 3,0x0407,2,float,-18.0,18.0,dB,verified (strip dump),-2.894
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_gain_4,eq gain 4,0x0407,3,float,-18.0,18.0,dB,verified (strip dump),-3.176
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_over-under_1,eq over-under 1,0x040b,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_over-under_2,eq over-under 2,0x040b,1,bool,0.0,1.0,,verified (strip dump),1
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_over-under_3,eq over-under 3,0x040b,2,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_over-under_4,eq over-under 4,0x040b,3,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/EQ/GR_meter_1 or /Group_Outputs/{n}/Dynamics/GR_meter_1,GR meter 1,0x040c,0,meter,,,,verified (strip dump),<text>
+Group_Outputs,/Group_Outputs/{n}/EQ/GR_meter_2 or /Group_Outputs/{n}/Dynamics/GR_meter_2,GR meter 2,0x040c,1,meter,,,,verified (strip dump),<text>
+Group_Outputs,/Group_Outputs/{n}/EQ/GR_meter_3 or /Group_Outputs/{n}/Dynamics/GR_meter_3,GR meter 3,0x040c,2,meter,,,,verified (strip dump),<text>
+Group_Outputs,/Group_Outputs/{n}/EQ/GR_meter_4 or /Group_Outputs/{n}/Dynamics/GR_meter_4,GR meter 4,0x040c,3,meter,,,,verified (strip dump),<text>
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_thresh_1,eq thresh 1,0x040e,0,float,-60.0,0.0,dB,verified (strip dump),-36
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_thresh_2,eq thresh 2,0x040e,1,float,-60.0,0.0,dB,verified (strip dump),-33.59
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_thresh_3,eq thresh 3,0x040e,2,float,-60.0,0.0,dB,verified (strip dump),-36
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_thresh_4,eq thresh 4,0x040e,3,float,-60.0,0.0,dB,verified (strip dump),-36.31
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_ratio_1,eq ratio 1,0x0410,0,float,1.0,10.0,: 1,verified (strip dump),2
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_ratio_2,eq ratio 2,0x0410,1,float,1.0,10.0,: 1,verified (strip dump),2
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_ratio_3,eq ratio 3,0x0410,2,float,1.0,10.0,: 1,verified (strip dump),2
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_ratio_4,eq ratio 4,0x0410,3,float,1.0,10.0,: 1,verified (strip dump),2
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_attack_1,eq attack 1,0x0411,0,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.01
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_attack_2,eq attack 2,0x0411,1,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.015
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_attack_3,eq attack 3,0x0411,2,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.025
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_attack_4,eq attack 4,0x0411,3,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.05
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_release_1,eq release 1,0x0412,0,float,0.009999999776482582,10.0,s,verified (strip dump),0.3
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_release_2,eq release 2,0x0412,1,float,0.009999999776482582,10.0,s,verified (strip dump),0.35
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_release_3,eq release 3,0x0412,2,float,0.009999999776482582,10.0,s,verified (strip dump),0.4
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_release_4,eq release 4,0x0412,3,float,0.009999999776482582,10.0,s,verified (strip dump),0.7582
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_symm_Q_1,eq symm Q 1,0x047c,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_symm_Q_2,eq symm Q 2,0x047c,1,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_symm_Q_3,eq symm Q 3,0x047c,2,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/EQ/eq_symm_Q_4,eq symm Q 4,0x047c,3,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/EQ/dynamic_eq_on_1,dynamic eq on 1,0x047d,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/EQ/dynamic_eq_on_2,dynamic eq on 2,0x047d,1,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/EQ/dynamic_eq_on_3,dynamic eq on 3,0x047d,2,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/EQ/dynamic_eq_on_4,dynamic eq on 4,0x047d,3,bool,0.0,1.0,,verified (strip dump),1
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_in,comp in,0x0502,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/gate_in,gate in,0x0502,3,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_band_in_1,comp band in 1,0x0503,0,bool,0.0,1.0,,verified (strip dump),1
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_band_in_2,comp band in 2,0x0503,1,bool,0.0,1.0,,verified (strip dump),1
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_band_in_3,comp band in 3,0x0503,2,bool,0.0,1.0,,verified (strip dump),1
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_LP_crossover,comp LP crossover,0x0505,0,float,20.0,20000.0,Hz,verified (strip dump),130
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_HP_crossover,comp HP crossover,0x0505,1,float,20.0,20000.0,Hz,verified (strip dump),1000
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_gain_1,comp gain 1,0x0509,0,float,0.0,40.0,dB,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_gain_2,comp gain 2,0x0509,1,float,0.0,40.0,dB,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_gain_3,comp gain 3,0x0509,2,float,0.0,40.0,dB,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_gain_4,comp gain 4,0x0509,3,float,0.0,40.0,dB,verified (strip dump),0
+Group_Outputs,,gate range,0x050a,3,float,0.0,90.0,dB,not answered,
+Group_Outputs,,gate-duck-comp,0x050b,3,int,0.0,2.0,,not answered,
+Group_Outputs,/Group_Outputs/{n}/EQ/GR_meter_1 or /Group_Outputs/{n}/Dynamics/GR_meter_1,GR meter 1,0x050c,0,meter,,,,verified (strip dump),<text>
+Group_Outputs,/Group_Outputs/{n}/EQ/GR_meter_3 or /Group_Outputs/{n}/Dynamics/GR_meter_3,GR meter 3,0x050c,1,meter,,,,verified (strip dump),<text>
+Group_Outputs,/Group_Outputs/{n}/EQ/GR_meter_2 or /Group_Outputs/{n}/Dynamics/GR_meter_2,GR meter 2,0x050c,2,meter,,,,verified (strip dump),<text>
+Group_Outputs,/Group_Outputs/{n}/EQ/GR_meter_4 or /Group_Outputs/{n}/Dynamics/GR_meter_4,GR meter 4,0x050c,3,meter,,,,verified (strip dump),<text>
+Group_Outputs,,gate meter,0x050d,3,meter,,,,not answered,
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_thresh_1,comp thresh 1,0x050e,0,float,-60.0,0.0,dB,verified (strip dump),-0.7058
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_thresh_2,comp thresh 2,0x050e,1,float,-60.0,0.0,dB,verified (strip dump),-20
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_thresh_3,comp thresh 3,0x050e,2,float,-60.0,0.0,dB,verified (strip dump),-20
+Group_Outputs,/Group_Outputs/{n}/Dynamics/gate_thresh,gate thresh,0x050e,3,float,-60.0,0.0,dB,verified (strip dump),-19.76
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_knee_1,comp knee 1,0x050f,0,int,0.0,2.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_knee_2,comp knee 2,0x050f,1,int,0.0,2.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_knee_3,comp knee 3,0x050f,2,int,0.0,2.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_knee_4,comp knee 4,0x050f,3,int,0.0,2.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_ratio_1,comp ratio 1,0x0510,0,float,1.0,50.0,: 1,verified (strip dump),49.24
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_ratio_2,comp ratio 2,0x0510,1,float,1.0,50.0,: 1,verified (strip dump),2
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_ratio_3,comp ratio 3,0x0510,2,float,1.0,50.0,: 1,verified (strip dump),2
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_ratio_4,comp ratio 4,0x0510,3,float,1.0,50.0,: 1,verified (strip dump),3
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_attack_1,comp attack 1,0x0511,0,float,1.9999999494757503e-05,0.10000000149011612,s,verified (strip dump),0.009388
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_attack_2,comp attack 2,0x0511,1,float,1.9999999494757503e-05,0.10000000149011612,s,verified (strip dump),0.005
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_attack_3,comp attack 3,0x0511,2,float,1.9999999494757503e-05,0.10000000149011612,s,verified (strip dump),0.025
+Group_Outputs,/Group_Outputs/{n}/Dynamics/gate_attack,gate attack,0x0511,3,float,4.999999873689376e-05,0.10000000149011612,s,verified (strip dump),0.002
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_release_1,comp release 1,0x0512,0,float,0.0010000000474974513,10.0,s,verified (strip dump),0.5662
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_release_2,comp release 2,0x0512,1,float,0.0010000000474974513,10.0,s,verified (strip dump),0.2
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_release_3,comp release 3,0x0512,2,float,0.0010000000474974513,10.0,s,verified (strip dump),0.4
+Group_Outputs,/Group_Outputs/{n}/Dynamics/gate_release,gate release,0x0512,3,float,0.004999999888241291,10.0,s,verified (strip dump),0.14
+Group_Outputs,,gate hold,0x0513,3,float,0.0020000000949949026,2.0,s,not answered,
+Group_Outputs,/Group_Outputs/{n}/Dynamics/key_solo,key solo,0x0517,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_listen_1,comp listen 1,0x0518,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_listen_2,comp listen 2,0x0518,1,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_listen_3,comp listen 3,0x0518,2,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/input_meter/left,input meter/left,0x0530,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Dynamics/input_meter/right,input meter/right,0x0534,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_all_gain,comp all gain,0x0538,0,float,0.0,40.0,dB,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_all_thresh,comp all thresh,0x0539,0,float,-60.0,0.0,dB,verified (strip dump),-0.7058
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp-multiband-desser,comp-multiband-desser,0x053a,0,int,0.0,2.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_auto-gain_1,comp auto-gain 1,0x053b,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_auto-gain_2,comp auto-gain 2,0x053b,1,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_auto-gain_3,comp auto-gain 3,0x053b,2,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/comp_auto-gain_4,comp auto-gain 4,0x053b,3,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Dynamics/desser_centre_freq,desser centre freq,0x057e,0,float,0.0,255.0,,verified (strip dump),127
+Group_Outputs,/Group_Outputs/{n}/Dynamics/gate_centre_freq,gate centre freq,0x057e,3,float,0.0,255.0,,verified (strip dump),127
+Group_Outputs,/Group_Outputs/{n}/Dynamics/desser_freq_width,desser freq width,0x057f,0,float,0.0,255.0,,verified (strip dump),255
+Group_Outputs,/Group_Outputs/{n}/Dynamics/gate_freq_width,gate freq width,0x057f,3,float,0.0,255.0,,verified (strip dump),255
+Group_Outputs,/Group_Outputs/{n}/Filters/hi_filter_in,hi filter in,0x0703,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Filters/lo_filter_in,lo filter in,0x0703,1,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Filters/hi_filter_freq,hi filter freq,0x0705,0,float,20.0,20000.0,Hz,verified (strip dump),2e+04
+Group_Outputs,/Group_Outputs/{n}/Filters/lo_filter_freq,lo filter freq,0x0705,1,float,20.0,20000.0,Hz,verified (strip dump),20
+Group_Outputs,/Group_Outputs/{n}/Insert/insert_A_in,insert A in,0x0802,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Insert/insert_B_in,insert B in,0x0802,1,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Channel_Delay/delay_on,delay on,0x0907,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Channel_Delay/delay,delay,0x0908,0,float,0.0,1.2999999523162842,s,verified (strip dump),0.001999
+Group_Outputs,/Group_Outputs/{n}/Channel_Delay/fine_delay,fine delay,0x0917,0,float,-127.0,127.0,samples,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Buss_Trim/trim,trim,0x0b01,0,float,-40.0,60.0,dB,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Buss_Trim/phase,phase,0x0b02,0,int,0.0,3.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Buss_Trim/pre_meter,pre meter,0x0b20,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Buss_Trim/pre_meter/right,pre meter/right,0x0b24,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Buss_Trim/post_meter,post meter,0x0b30,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Buss_Trim/post_meter/right,post meter/right,0x0b34,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Buss_Trim/tube_meter/left,tube meter/left,0x0b58,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Buss_Trim/tube_meter/right,tube meter/right,0x0b5c,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Buss_Trim/name,name,0x0bff,0,string,,,,verified (strip dump),<text>
+Group_Outputs,/Group_Outputs/{n}/CGs_level,CGs level,0x0c01,0,float,-150.0,10.0,"dB, %",verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/hard_mute,hard mute,0x0c02,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/solo,solo,0x0c03,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/solo_1_or_2,solo 1 or 2,0x0c0b,0,int,0.0,2.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/sends_to_rotaries,sends to rotaries,0x0c0d,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/sends_to_faders,sends to faders,0x0c10,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/auto_solo,auto solo,0x0c11,0,int,0.0,3.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/CGs_mute,CGs mute,0x0c1c,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/fader,fader,0x0c21,0,float,-150.0,10.0,"dB, %",verified (strip dump),-2.639
+Group_Outputs,/Group_Outputs/{n}/mute,mute,0x0c22,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/fader_meter/left,fader meter/left,0x0c30,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/fader_meter/right,fader meter/right,0x0c34,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/alternate_solo,alternate solo,0x0ce4,0,bool,0.0,1.0,,verified (strip dump),0
+Group_Outputs,/Group_Outputs/{n}/Output/dir_meter/left,dir meter/left,0x0e28,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Output/dir_meter/right,dir meter/right,0x0e2c,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Output/meter/left,meter/left,0x0e40,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Output/meter2,meter2,0x0e41,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Output/meter/centre,meter/centre,0x0e42,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Output/meter4,meter4,0x0e43,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Output/meter/right,meter/right,0x0e44,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Output/meter/SL,meter/SL,0x0e45,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Output/meter/SR,meter/SR,0x0e46,0,meter,,,,verified (strip dump),[]
+Group_Outputs,/Group_Outputs/{n}/Output/meter/LFE,meter/LFE,0x0e47,0,meter,,,,verified (strip dump),[]
+Control_Groups,/Control_Groups/{n}/solo,solo,0x1003,0,bool,0.0,1.0,,verified (exact query),0
+Control_Groups,/Control_Groups/{n}/auto-mute,auto-mute,0x1016,0,bool,0.0,1.0,,verified (exact query),0
+Control_Groups,/Control_Groups/{n}/mode,mode,0x1019,0,int,0.0,2.0,,verified (exact query),1
+Control_Groups,/Control_Groups/{n}/aux_send,aux send,0x101e,0,float,-18.0,18.0,dB,verified (exact query),0
+Control_Groups,/Control_Groups/{n}/fader,fader,0x1021,0,float,-150.0,10.0,"dB, %",verified (exact query),0.694
+Control_Groups,/Control_Groups/{n}/mute,mute,0x1022,0,bool,0.0,1.0,,verified (exact query),1
+Control_Groups,/Control_Groups/{n}/name,name,0x10ff,0,string,,,,verified (exact query),<text>
+strip type 0x0b,,name,0x17ff,0,string,,,,not answered,
+strip type 0x0c,,name,0x01ff,0,string,,,,not answered,
+Matrix_Inputs,,name,0x01ff,0,string,,,,not answered,
+Matrix_Inputs,/Matrix_Inputs/{n}/Matrix_Send/{k}/send_level,send level,0x0624,0,float,-150.0,10.0,"dB, %",verified (exact query),0
+Matrix_Inputs,/Matrix_Inputs/{n}/Matrix_Send/{k}/send_on,send on,0x0625,0,bool,0.0,1.0,,verified (exact query),1
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_in,eq in,0x0402,0,bool,0.0,1.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_on_1,eq on 1,0x0403,0,bool,0.0,1.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_on_2,eq on 2,0x0403,1,bool,0.0,1.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_on_3,eq on 3,0x0403,2,bool,0.0,1.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_on_4,eq on 4,0x0403,3,bool,0.0,1.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_curve_1,eq curve 1,0x0404,0,int,1.0,4.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_curve_2,eq curve 2,0x0404,1,int,1.0,4.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_curve_3,eq curve 3,0x0404,2,int,1.0,4.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_curve_4,eq curve 4,0x0404,3,int,1.0,4.0,,verified (strip dump),3
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_freq_1,eq freq 1,0x0405,0,float,20.0,20000.0,Hz,verified (strip dump),2967
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_freq_2,eq freq 2,0x0405,1,float,20.0,20000.0,Hz,verified (strip dump),278.3
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_freq_3,eq freq 3,0x0405,2,float,20.0,20000.0,Hz,verified (strip dump),1445
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_freq_4,eq freq 4,0x0405,3,float,20.0,20000.0,Hz,verified (strip dump),98.89
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_Q_1,eq Q 1,0x0406,0,float,0.10000000149011612,20.0,,verified (strip dump),0.6114
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_Q_2,eq Q 2,0x0406,1,float,0.10000000149011612,20.0,,verified (strip dump),1.486
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_Q_3,eq Q 3,0x0406,2,float,0.10000000149011612,20.0,,verified (strip dump),1.004
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_Q_4,eq Q 4,0x0406,3,float,0.10000000149011612,20.0,,verified (strip dump),0.4533
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_gain_1,eq gain 1,0x0407,0,float,-18.0,18.0,dB,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_gain_2,eq gain 2,0x0407,1,float,-18.0,18.0,dB,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_gain_3,eq gain 3,0x0407,2,float,-18.0,18.0,dB,verified (strip dump),-3.063
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_gain_4,eq gain 4,0x0407,3,float,-18.0,18.0,dB,verified (strip dump),-1.906
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_over-under_1,eq over-under 1,0x040b,0,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_over-under_2,eq over-under 2,0x040b,1,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_over-under_3,eq over-under 3,0x040b,2,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_over-under_4,eq over-under 4,0x040b,3,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/GR_meter_1 or /Matrix_Outputs/{n}/Dynamics/GR_meter_1,GR meter 1,0x040c,0,meter,,,,verified (strip dump),<text>
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/GR_meter_2 or /Matrix_Outputs/{n}/Dynamics/GR_meter_2,GR meter 2,0x040c,1,meter,,,,verified (strip dump),<text>
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/GR_meter_3 or /Matrix_Outputs/{n}/Dynamics/GR_meter_3,GR meter 3,0x040c,2,meter,,,,verified (strip dump),<text>
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/GR_meter_4 or /Matrix_Outputs/{n}/Dynamics/GR_meter_4,GR meter 4,0x040c,3,meter,,,,verified (strip dump),<text>
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_thresh_1,eq thresh 1,0x040e,0,float,-60.0,0.0,dB,verified (strip dump),-36
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_thresh_2,eq thresh 2,0x040e,1,float,-60.0,0.0,dB,verified (strip dump),-39.23
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_thresh_3,eq thresh 3,0x040e,2,float,-60.0,0.0,dB,verified (strip dump),-35.29
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_thresh_4,eq thresh 4,0x040e,3,float,-60.0,0.0,dB,verified (strip dump),-49.18
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_ratio_1,eq ratio 1,0x0410,0,float,1.0,10.0,: 1,verified (strip dump),2
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_ratio_2,eq ratio 2,0x0410,1,float,1.0,10.0,: 1,verified (strip dump),1.711
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_ratio_3,eq ratio 3,0x0410,2,float,1.0,10.0,: 1,verified (strip dump),2.423
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_ratio_4,eq ratio 4,0x0410,3,float,1.0,10.0,: 1,verified (strip dump),1.184
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_attack_1,eq attack 1,0x0411,0,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.01
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_attack_2,eq attack 2,0x0411,1,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.015
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_attack_3,eq attack 3,0x0411,2,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.01159
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_attack_4,eq attack 4,0x0411,3,float,0.0005000000237487257,0.10000000149011612,s,verified (strip dump),0.05
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_release_1,eq release 1,0x0412,0,float,0.009999999776482582,10.0,s,verified (strip dump),0.3
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_release_2,eq release 2,0x0412,1,float,0.009999999776482582,10.0,s,verified (strip dump),0.748
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_release_3,eq release 3,0x0412,2,float,0.009999999776482582,10.0,s,verified (strip dump),0.3754
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_release_4,eq release 4,0x0412,3,float,0.009999999776482582,10.0,s,verified (strip dump),0.9256
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_symm_Q_1,eq symm Q 1,0x047c,0,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_symm_Q_2,eq symm Q 2,0x047c,1,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_symm_Q_3,eq symm Q 3,0x047c,2,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/eq_symm_Q_4,eq symm Q 4,0x047c,3,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/dynamic_eq_on_1,dynamic eq on 1,0x047d,0,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/dynamic_eq_on_2,dynamic eq on 2,0x047d,1,bool,0.0,1.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/dynamic_eq_on_3,dynamic eq on 3,0x047d,2,bool,0.0,1.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/dynamic_eq_on_4,dynamic eq on 4,0x047d,3,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_in,comp in,0x0502,0,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/gate_in,gate in,0x0502,3,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_band_in_1,comp band in 1,0x0503,0,bool,0.0,1.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_band_in_2,comp band in 2,0x0503,1,bool,0.0,1.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_band_in_3,comp band in 3,0x0503,2,bool,0.0,1.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_LP_crossover,comp LP crossover,0x0505,0,float,20.0,20000.0,Hz,verified (strip dump),130
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_HP_crossover,comp HP crossover,0x0505,1,float,20.0,20000.0,Hz,verified (strip dump),1000
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_gain_1,comp gain 1,0x0509,0,float,0.0,40.0,dB,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_gain_2,comp gain 2,0x0509,1,float,0.0,40.0,dB,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_gain_3,comp gain 3,0x0509,2,float,0.0,40.0,dB,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_gain_4,comp gain 4,0x0509,3,float,0.0,40.0,dB,verified (strip dump),0
+Matrix_Outputs,,gate range,0x050a,3,float,0.0,90.0,dB,not answered,
+Matrix_Outputs,,gate-duck-comp,0x050b,3,int,0.0,2.0,,not answered,
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/GR_meter_1 or /Matrix_Outputs/{n}/Dynamics/GR_meter_1,GR meter 1,0x050c,0,meter,,,,verified (strip dump),<text>
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/GR_meter_3 or /Matrix_Outputs/{n}/Dynamics/GR_meter_3,GR meter 3,0x050c,1,meter,,,,verified (strip dump),<text>
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/GR_meter_2 or /Matrix_Outputs/{n}/Dynamics/GR_meter_2,GR meter 2,0x050c,2,meter,,,,verified (strip dump),<text>
+Matrix_Outputs,/Matrix_Outputs/{n}/EQ/GR_meter_4 or /Matrix_Outputs/{n}/Dynamics/GR_meter_4,GR meter 4,0x050c,3,meter,,,,verified (strip dump),<text>
+Matrix_Outputs,,gate meter,0x050d,3,meter,,,,not answered,
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_thresh_1,comp thresh 1,0x050e,0,float,-60.0,0.0,dB,verified (strip dump),-20
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_thresh_2,comp thresh 2,0x050e,1,float,-60.0,0.0,dB,verified (strip dump),-20
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_thresh_3,comp thresh 3,0x050e,2,float,-60.0,0.0,dB,verified (strip dump),-20
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/gate_thresh,gate thresh,0x050e,3,float,-60.0,0.0,dB,verified (strip dump),-20.24
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_knee_1,comp knee 1,0x050f,0,int,0.0,2.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_knee_2,comp knee 2,0x050f,1,int,0.0,2.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_knee_3,comp knee 3,0x050f,2,int,0.0,2.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_knee_4,comp knee 4,0x050f,3,int,0.0,2.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_ratio_1,comp ratio 1,0x0510,0,float,1.0,50.0,: 1,verified (strip dump),3
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_ratio_2,comp ratio 2,0x0510,1,float,1.0,50.0,: 1,verified (strip dump),2
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_ratio_3,comp ratio 3,0x0510,2,float,1.0,50.0,: 1,verified (strip dump),2
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_ratio_4,comp ratio 4,0x0510,3,float,1.0,50.0,: 1,verified (strip dump),3
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_attack_1,comp attack 1,0x0511,0,float,1.9999999494757503e-05,0.10000000149011612,s,verified (strip dump),0.01
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_attack_2,comp attack 2,0x0511,1,float,1.9999999494757503e-05,0.10000000149011612,s,verified (strip dump),0.005
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_attack_3,comp attack 3,0x0511,2,float,1.9999999494757503e-05,0.10000000149011612,s,verified (strip dump),0.025
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/gate_attack,gate attack,0x0511,3,float,4.999999873689376e-05,0.10000000149011612,s,verified (strip dump),0.002
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_release_1,comp release 1,0x0512,0,float,0.0010000000474974513,10.0,s,verified (strip dump),0.5
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_release_2,comp release 2,0x0512,1,float,0.0010000000474974513,10.0,s,verified (strip dump),0.2
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_release_3,comp release 3,0x0512,2,float,0.0010000000474974513,10.0,s,verified (strip dump),0.4
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/gate_release,gate release,0x0512,3,float,0.004999999888241291,10.0,s,verified (strip dump),0.14
+Matrix_Outputs,,gate hold,0x0513,3,float,0.0020000000949949026,2.0,s,not answered,
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/key_solo,key solo,0x0517,0,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_listen_1,comp listen 1,0x0518,0,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_listen_2,comp listen 2,0x0518,1,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_listen_3,comp listen 3,0x0518,2,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/input_meter/left,input meter/left,0x0530,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/input_meter/right,input meter/right,0x0534,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_all_gain,comp all gain,0x0538,0,float,0.0,40.0,dB,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_all_thresh,comp all thresh,0x0539,0,float,-60.0,0.0,dB,verified (strip dump),-20
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp-multiband-desser,comp-multiband-desser,0x053a,0,int,0.0,2.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_auto-gain_1,comp auto-gain 1,0x053b,0,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_auto-gain_2,comp auto-gain 2,0x053b,1,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_auto-gain_3,comp auto-gain 3,0x053b,2,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/comp_auto-gain_4,comp auto-gain 4,0x053b,3,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/desser_centre_freq,desser centre freq,0x057e,0,float,0.0,255.0,,verified (strip dump),127
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/gate_centre_freq,gate centre freq,0x057e,3,float,0.0,255.0,,verified (strip dump),127
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/desser_freq_width,desser freq width,0x057f,0,float,0.0,255.0,,verified (strip dump),255
+Matrix_Outputs,/Matrix_Outputs/{n}/Dynamics/gate_freq_width,gate freq width,0x057f,3,float,0.0,255.0,,verified (strip dump),255
+Matrix_Outputs,/Matrix_Outputs/{n}/Filters/hi_filter_in,hi filter in,0x0703,0,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Filters/lo_filter_in,lo filter in,0x0703,1,bool,0.0,1.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/Filters/hi_filter_freq,hi filter freq,0x0705,0,float,20.0,20000.0,Hz,verified (strip dump),1.651e+04
+Matrix_Outputs,/Matrix_Outputs/{n}/Filters/lo_filter_freq,lo filter freq,0x0705,1,float,20.0,20000.0,Hz,verified (strip dump),49.2
+Matrix_Outputs,/Matrix_Outputs/{n}/Insert/insert_A_in,insert A in,0x0802,0,bool,0.0,1.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/Insert/insert_B_in,insert B in,0x0802,1,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Channel_Delay/delay_on,delay on,0x0907,0,bool,0.0,1.0,,verified (strip dump),1
+Matrix_Outputs,/Matrix_Outputs/{n}/Channel_Delay/delay,delay,0x0908,0,float,0.0,1.2999999523162842,s,verified (strip dump),0.001999
+Matrix_Outputs,/Matrix_Outputs/{n}/Channel_Delay/fine_delay,fine delay,0x0917,0,float,-127.0,127.0,samples,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Buss_Trim/trim,trim,0x0b01,0,float,-40.0,60.0,dB,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Buss_Trim/phase,phase,0x0b02,0,int,0.0,3.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Buss_Trim/pre_meter,pre meter,0x0b20,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Buss_Trim/pre_meter/right,pre meter/right,0x0b24,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Buss_Trim/post_meter,post meter,0x0b30,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Buss_Trim/post_meter/right,post meter/right,0x0b34,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Buss_Trim/tube_meter/left,tube meter/left,0x0b58,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Buss_Trim/tube_meter/right,tube meter/right,0x0b5c,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Buss_Trim/name,name,0x0bff,0,string,,,,verified (strip dump),<text>
+Matrix_Outputs,/Matrix_Outputs/{n}/CGs_level,CGs level,0x0c01,0,float,-150.0,10.0,"dB, %",verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/hard_mute,hard mute,0x0c02,0,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/solo,solo,0x0c03,0,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/solo_1_or_2,solo 1 or 2,0x0c0b,0,int,0.0,2.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/CGs_mute,CGs mute,0x0c1c,0,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/fader,fader,0x0c21,0,float,-150.0,10.0,"dB, %",verified (strip dump),-10
+Matrix_Outputs,/Matrix_Outputs/{n}/mute,mute,0x0c22,0,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/fader_meter/left,fader meter/left,0x0c30,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/fader_meter/right,fader meter/right,0x0c34,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/alternate_solo,alternate solo,0x0ce4,0,bool,0.0,1.0,,verified (strip dump),0
+Matrix_Outputs,/Matrix_Outputs/{n}/Output/dir_meter/left,dir meter/left,0x0e28,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Output/dir_meter/right,dir meter/right,0x0e2c,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Output/meter/left,meter/left,0x0e40,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Output/meter2,meter2,0x0e41,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Output/meter/centre,meter/centre,0x0e42,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Output/meter4,meter4,0x0e43,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Output/meter/right,meter/right,0x0e44,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Output/meter/SL,meter/SL,0x0e45,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Output/meter/SR,meter/SR,0x0e46,0,meter,,,,verified (strip dump),[]
+Matrix_Outputs,/Matrix_Outputs/{n}/Output/meter/LFE,meter/LFE,0x0e47,0,meter,,,,verified (strip dump),[]
+Graphic_EQ,/Graphic_EQ/{n}/geq_in,geq in,0x0f02,0,bool,0.0,1.0,,verified (exact query),1
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_1,geq gain 1,0x0f07,0,float,-12.0,12.0,dB,verified (exact query),-12
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_2,geq gain 2,0x0f07,1,float,-12.0,12.0,dB,verified (exact query),-12
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_3,geq gain 3,0x0f07,2,float,-12.0,12.0,dB,verified (exact query),-1.43
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_4,geq gain 4,0x0f07,3,float,-12.0,12.0,dB,verified (exact query),-0.9844
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_5,geq gain 5,0x0f07,4,float,-12.0,12.0,dB,verified (exact query),-8.109
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_6,geq gain 6,0x0f07,5,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_7,geq gain 7,0x0f07,6,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_8,geq gain 8,0x0f07,7,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_9,geq gain 9,0x0f07,8,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_10,geq gain 10,0x0f07,9,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_11,geq gain 11,0x0f07,10,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_12,geq gain 12,0x0f07,11,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_13,geq gain 13,0x0f07,12,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_14,geq gain 14,0x0f07,13,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_15,geq gain 15,0x0f07,14,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_16,geq gain 16,0x0f07,15,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_17,geq gain 17,0x0f07,16,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_18,geq gain 18,0x0f07,17,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_19,geq gain 19,0x0f07,18,float,-12.0,12.0,dB,verified (exact query),-1.758
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_20,geq gain 20,0x0f07,19,float,-12.0,12.0,dB,verified (exact query),-4.758
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_21,geq gain 21,0x0f07,20,float,-12.0,12.0,dB,verified (exact query),-4.828
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_22,geq gain 22,0x0f07,21,float,-12.0,12.0,dB,verified (exact query),-2.812
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_23,geq gain 23,0x0f07,22,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_24,geq gain 24,0x0f07,23,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_25,geq gain 25,0x0f07,24,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_26,geq gain 26,0x0f07,25,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_27,geq gain 27,0x0f07,26,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_28,geq gain 28,0x0f07,27,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_29,geq gain 29,0x0f07,28,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_30,geq gain 30,0x0f07,29,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_31,geq gain 31,0x0f07,30,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/geq_gain_32,geq gain 32,0x0f07,31,float,-12.0,12.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/input_meter,input meter,0x0f30,0,meter,,,,verified (exact query),[]
+Graphic_EQ,/Graphic_EQ/{n}/geq__trim,geq  trim,0x0f3c,0,float,-18.0,18.0,dB,verified (exact query),0
+Graphic_EQ,/Graphic_EQ/{n}/output_meter,output meter,0x0f40,0,meter,,,,verified (exact query),[]
+Graphic_EQ,/Graphic_EQ/{n}/name,name,0x0fff,0,string,,,,verified (exact query),<text>
+Solo,,solo,0x1003,0,bool,0.0,1.0,,not answered,
+Solo,,fader,0x1021,0,float,-150.0,10.0,"dB, %",not answered,
+Solo,,mute,0x1022,0,bool,0.0,1.0,,not answered,
+Solo,/Solo/{n}/name,name,0x10ff,0,string,,,,verified (exact query),<text>
+console 0xc9,,Save Session,0x0000,0,bool,0.0,1.0,,prefix unknown,
+console 0xc9,,Save current Session,0x0000,0,int,0.0,0.0,,prefix unknown,
+Layout,/Layout/Layout/Banks,Layout/Banks,0x0001,0,int,0.0,0.0,,from command set (not sent),
+Layout,/Layout/Layout/Banks/?,Layout/Banks/?,0x0002,0,int,0.0,0.0,,verified (query),"/Layout/Layout/Banks [""<text>"", ""<text>"", 0, 0, ""<text>"", 1, ""<text>"","
+Layout,/Layout/Layout/Banks/!,Layout/Banks/!,0x0003,0,int,0.0,0.0,,from command set (not sent),
+Layout,/Layout/Fader_Banks,Fader Banks,0x0000,0,bool,0.0,1.0,,from command set (not sent),
+Layout,/Layout/Channel_List,Channel List,0x0000,0,bool,0.0,1.0,,from command set (not sent),
+console 0xcc,,Snapshot Notes view,0x0000,0,bool,0.0,1.0,,prefix unknown,
+Console,/Console/Session/Filename,Session/Filename,0x0000,0,string,,,,from command set (not sent),
+Console,/Console/Session/Filename/?,Session/Filename/?,0x0002,0,int,0.0,0.0,,verified (query),"/Console/Session/Filename [""<text>""]"
+Console,/Console/Session/Name,Session/Name,0x0000,0,string,,,,from command set (not sent),
+Console,/Console/Session/Name/?,Session/Name/?,0x0002,0,int,0.0,0.0,,verified (query),"/Console/Session/Name [""<text>""]"
+Console,/Console/Channels/?,Channels/?,0x0002,0,int,0.0,0.0,,verified (query),/Console/Input_Channels [90]
+Console,/Console/Input_Channels,Input Channels,0x0001,0,int,0.0,46280.0,,from command set (not sent),
+Console,/Console/Aux_Outputs,Aux Outputs,0x0001,0,int,0.0,30240.0,,from command set (not sent),
+Console,/Console/Group_Outputs,Group Outputs,0x0001,0,int,0.0,256.0,,from command set (not sent),
+Console,/Console/Talkback_Outputs,Talkback Outputs,0x0001,0,int,0.0,0.0,,from command set (not sent),
+Console,/Console/Control_Groups,Control Groups,0x0001,0,bool,0.0,1.0,,from command set (not sent),
+Console,/Console/Matrix_Inputs,Matrix Inputs,0x0001,0,int,0.0,0.0,,from command set (not sent),
+Console,/Console/Matrix_Outputs,Matrix Outputs,0x0001,0,int,0.0,36.0,,from command set (not sent),
+Console,/Console/Graphic_EQ,Graphic EQ,0x0001,0,int,0.0,36.0,,from command set (not sent),
+Console,/Console/Multis,Multis,0x0001,0,int,0.0,36.0,,from command set (not sent),
+Console,/Console/Name,Name,0x0001,0,string,,,,from command set (not sent),
+Console,/Console/Name/?,Name/?,0x0002,0,int,0.0,0.0,,verified (query),"/Console/Name [""<text>""]"
+Console,/Console/Session/!,Session/!,0x0003,0,int,0.0,0.0,,from command set (not sent),
+Console,/Console/Tubes/limit,Tubes/limit,0x0001,0,int,0.0,255.0,,from command set (not sent),
+Console,/Console/Tubes/limit/?,Tubes/limit/?,0x0002,0,int,0.0,0.0,,verified (query),/Console/Tubes/limit [255]
+Console,/Console/DynamicEQs/limit,DynamicEQs/limit,0x0001,0,int,0.0,255.0,,from command set (not sent),
+Console,/Console/DynamicEQs/limit/?,DynamicEQs/limit/?,0x0002,0,int,0.0,0.0,,verified (query),/Console/DynamicEQs/limit [255]
+Console,/Console/MultibandDynamics/limit,MultibandDynamics/limit,0x0001,0,int,0.0,255.0,,from command set (not sent),
+Console,/Console/MultibandDynamics/limit/?,MultibandDynamics/limit/?,0x0002,0,int,0.0,0.0,,verified (query),/Console/MultibandDynamics/limit [255]
+Console,/Console/Input_Channels/modes,Input Channels/modes,0x0001,0,int,1.0,2.0,,from command set (not sent),
+Console,/Console/Input_Channels/modes/?,Input Channels/modes/?,0x0002,0,int,0.0,0.0,,verified (query),"/Console/Input_Channels/modes [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, "
+Console,/Console/Aux_Outputs/modes,Aux Outputs/modes,0x0001,0,int,1.0,2.0,,from command set (not sent),
+Console,/Console/Aux_Outputs/modes/?,Aux Outputs/modes/?,0x0002,0,int,0.0,0.0,,verified (query),"/Console/Aux_Outputs/modes [1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]"
+Console,/Console/Group_Outputs/modes,Group Outputs/modes,0x0001,0,int,1.0,6.0,,from command set (not sent),
+Console,/Console/Group_Outputs/modes/?,Group Outputs/modes/?,0x0002,0,int,0.0,0.0,,verified (query),"/Console/Group_Outputs/modes [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2"
+Console,/Console/Monitoring/modes,Monitoring/modes,0x0001,0,int,1.0,6.0,,from command set (not sent),
+Console,/Console/Monitoring/modes/?,Monitoring/modes/?,0x0002,0,int,0.0,0.0,,verified (query),/Console/Monitoring/modes [2]
+Console,/Console/Solo/modes,Solo/modes,0x0001,0,int,1.0,6.0,,from command set (not sent),
+Console,/Console/Solo/modes/?,Solo/modes/?,0x0002,0,int,0.0,0.0,,verified (query),"/Console/Solo/modes [2, 2]"
+Console,/Console/Input_Channels/*/group_sends,Input Channels/*/group_sends,0x0001,0,int,0.0,0.0,,from command set (not sent),
+Console,/Console/Input_Channels/*/group_sends/?,Input Channels/*/group_sends/?,0x0002,0,int,0.0,0.0,,no reply to query,
+Console,/Console/Group_Outputs/*/group_sends,Group Outputs/*/group_sends,0x0001,0,int,0.0,0.0,,from command set (not sent),
+Console,/Console/Group_Outputs/*/group_sends/?,Group Outputs/*/group_sends/?,0x0002,0,int,0.0,0.0,,no reply to query,
+Console,/Console/Matrix_Inputs/*/send_levels,Matrix Inputs/*/send_levels,0x0001,0,int,0.0,0.0,,from command set (not sent),
+Console,/Console/Matrix_Inputs/*/send_levels/?,Matrix Inputs/*/send_levels/?,0x0002,0,int,0.0,0.0,,no reply to query,
+Console,/Console/Matrix_Inputs/*/send_ons,Matrix Inputs/*/send_ons,0x0001,0,int,0.0,0.0,,from command set (not sent),
+Console,/Console/Matrix_Inputs/*/send_ons/?,Matrix Inputs/*/send_ons/?,0x0002,0,int,0.0,0.0,,no reply to query,
+console 0xcf,,clear,0x0000,0,int,0.0,0.0,,prefix unknown,
+console 0xcf,,request,0x0000,0,string,,,,prefix unknown,
+console 0xcf,,values,0x0000,0,int,0.0,0.0,,prefix unknown,
+Presets,/Presets/count,count,0x000b,0,int,0.0,0.0,,from command set (not sent),
+Presets,/Presets/count/?,count/?,0x000c,0,int,0.0,0.0,,verified (query),/Presets/count [34]
+Presets,/Presets/names/?,names/?,0x000f,0,int,0.0,0.0,,verified (query),"/Presets/name [0, 1, 2, ""<text>"", ""<text>"", ""<text>""]"
+Presets,/Presets/name,name,0x0015,0,int,0.0,9999.0,,from command set (not sent),
+Presets,/Presets/name/?,name/?,0x0016,0,int,0.0,9999.0,,verified (query),"/Presets/name [0, 1, 2, ""<text>"", ""<text>"", ""<text>""]"
+Presets,/Presets/Recall_Preset,Recall Preset,0x00c8,0,string,,,,from command set (not sent),
+Presets,/Presets/New_Preset,New Preset,0x00c9,0,string,,,,from command set (not sent),
+Presets,/Presets/Update_Preset,Update Preset,0x00cc,0,string,,,,from command set (not sent),
+Presets,/Presets/Rename_Preset,Rename Preset,0x00ce,0,string,,,,from command set (not sent),
+Presets,/Presets/Rename_Preset_Group,Rename Preset Group,0x00cf,0,string,,,,from command set (not sent),
+Presets,/Presets/Delete_Preset,Delete Preset,0x00d1,0,int,0.0,0.0,,from command set (not sent),
+Presets,/Presets/Lock_Preset,Lock Preset,0x00d2,0,bool,0.0,1.0,,from command set (not sent),
+Presets,/Presets/Recall_Scope,Recall Scope,0x00d3,0,int,0.0,2.0,,from command set (not sent),
+Macros,/Macros/count,count,0x000b,0,int,0.0,0.0,,from command set (not sent),
+Macros,/Macros/count/?,count/?,0x000c,0,int,0.0,0.0,,verified (query),/Macros/count [22]
+Macros,/Macros/names/?,names/?,0x000f,0,int,0.0,0.0,,verified (query),"/Macros/name [0, ""<text>""]"
+Macros,/Macros/name,name,0x0015,0,int,0.0,9999.0,,from command set (not sent),
+Macros,/Macros/name/?,name/?,0x0016,0,int,0.0,9999.0,,verified (query),"/Macros/name [0, ""<text>""]"
+Macros,/Macros/Recall_Macro,Recall Macro,0x00c8,0,int,0.0,0.0,,from command set (not sent),
+Macros,/Macros/Buttons/count,Buttons/count,0x00d3,0,int,0.0,0.0,,from command set (not sent),
+Macros,/Macros/Buttons/count/?,Buttons/count/?,0x00d4,0,int,0.0,0.0,,verified (query),/Macros/Buttons/count [0]
+Macros,/Macros/Buttons/?,Buttons/?,0x00d9,0,int,0.0,0.0,,no reply to query,
+Macros,/Macros/Buttons/!,Buttons/!,0x00da,0,int,0.0,0.0,,from command set (not sent),
+Macros,/Macros/Buttons/state,Buttons/state,0x00dd,0,int,0.0,255.0,,from command set (not sent),
+Macros,/Macros/Buttons/state/?,Buttons/state/?,0x00de,0,int,0.0,255.0,,no reply to query,
+Macros,/Macros/Buttons/press,Buttons/press,0x00fa,0,int,0.0,255.0,,from command set (not sent),
+Snapshots,/Snapshots/Snapshots,Snapshots,0x0000,0,bool,0.0,1.0,,from command set (not sent),
+Snapshots,/Snapshots/count,count,0x000b,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/count/?,count/?,0x000c,0,int,0.0,0.0,,verified (query),/Snapshots/count [40]
+Snapshots,/Snapshots/names/?,names/?,0x000f,0,int,0.0,0.0,,verified (query),"/Snapshots/name [0, 100, 0, ""<text>""]"
+Snapshots,/Snapshots/name,name,0x0015,0,int,0.0,9999.0,,from command set (not sent),
+Snapshots,/Snapshots/name/?,name/?,0x0016,0,int,0.0,9999.0,,verified (query),"/Snapshots/name [0, 100, 0, ""<text>""]"
+Snapshots,/Snapshots/notes,notes,0x0033,0,int,0.0,9999.0,,from command set (not sent),
+Snapshots,/Snapshots/notes/?,notes/?,0x0034,0,int,0.0,9999.0,,verified (query),"/Snapshots/notes [0, 15, 16777215, 65793, ""<text>""]"
+Snapshots,/Snapshots/Surface_Snapshot,Surface_Snapshot,0x0038,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/Surface_Snapshot/?,Surface_Snapshot/?,0x0039,0,int,0.0,0.0,,verified (query),/Snapshots/Surface_Snapshot [4]
+Snapshots,/Snapshots/Current_Snapshot,Current_Snapshot,0x003d,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/Current_Snapshot/?,Current_Snapshot/?,0x003e,0,int,0.0,0.0,,verified (query),/Snapshots/Current_Snapshot [3]
+Snapshots,/Snapshots/Renumber_Snapshot,Renumber Snapshot,0x0097,0,int,0.0,99999.0,,from command set (not sent),
+Snapshots,/Snapshots/Update_Snapshot_Group,Update Snapshot Group,0x00a1,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/Change_Surface_Snapshot,Change Surface Snapshot,0x00bb,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/Recall_Snapshot,Recall Snapshot,0x00c8,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/New_Snapshot,New Snapshot,0x00c9,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/Fire_Snapshot_number,Fire Snapshot number,0x00ca,0,int,0.0,9999.0,,from command set (not sent),
+Snapshots,/Snapshots/Update_Current_Snapshot,Update Current Snapshot,0x00cb,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/Update_Snapshot,Update Snapshot,0x00cc,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/Rename_Snapshot,Rename Snapshot,0x00cd,0,string,,,,from command set (not sent),
+Snapshots,/Snapshots/Delete_Snapshot,Delete Snapshot,0x00ce,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/Move_Snapshot,Move Snapshot,0x00cf,0,int,0.0,9999.0,,from command set (not sent),
+Snapshots,/Snapshots/Insert_New_Snapshot,Insert New Snapshot,0x00d3,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/Update_Waves_only,Update Waves only,0x00d4,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/Fire_Selected_Snapshot,Fire Selected Snapshot,0x00d5,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/Fire_Prev_Snapshot,Fire Prev Snapshot,0x00e8,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/Fire_Next_Snapshot,Fire Next Snapshot,0x00e9,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/MIDI_fires_Snapshots,MIDI fires Snapshots,0x00ea,0,bool,0.0,1.0,,from command set (not sent),
+Snapshots,/Snapshots/Fire_Snapshot_sends_MIDI,Fire Snapshot sends MIDI,0x00eb,0,bool,0.0,1.0,,from command set (not sent),
+Snapshots,/Snapshots/Undo_Snapshot,Undo Snapshot,0x00fb,0,int,0.0,0.0,,from command set (not sent),
+Snapshots,/Snapshots/End_Recall_Snapshot,End Recall Snapshot,0x00ff,0,int,0.0,0.0,,from command set (not sent),
