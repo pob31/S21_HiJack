@@ -413,22 +413,65 @@ EQ band 1 → 20 kHz / Q 0.1 / −18 dB, Dyn 1 threshold → −60, Dyn 2 thresh
 **Mustard types and modes** (controlled save on input 6, checked against the
 type-picker screens):
 
-- `1d0b` = Mustard Dynamics 1 type. 0 = Classic (DYN Blue), 8 = Levelling Amp
-  (DYN Silver) **[E]**. VCA / Opto / FET codes are not yet seen; 0/2/4/6/8 is
-  only a guess **[H]**.
+- `1d0b` = Mustard Dynamics 1 type, complete **[E]**: 0 = Classic (DYN
+  Blue), 3 = Vintage VCA (DYN Red), 4 = FET Limiter (DYN Green), 5 = Optical
+  (DYN Purple), 8 = Levelling Amp (DYN Silver). Codes 1, 2, 6, 7 are unused or
+  hidden.
+- FET Limiter (controlled save on input 9) **[E]**: `1d41` = input dB,
+  `1d11` = attack s (827 µs), `1d12` = release s, `1d4a` = ratio as a list
+  index (ALL 0 / 4 1 / 8 2 / 12 3 / 20 4), `1d4d` = output dB, `1d47` = mix.
+- Optical (controlled save on input 8) **[E]**: `1d48` = attack slow 0 /
+  medium 1 / fast 2, `1d49` = recovery (slow = 0, unchanged default) **[H]**,
+  plus mix `1d47`, threshold `1d0e`, ratio `1d10`, gain `1d09` and the common
+  fields.
+- Vintage VCA (controlled save on input 7, every on-screen value matched)
+  **[E]**: `1d47` mix 0…1 (95 % → 0.949), `1d0e` threshold dB, `1d10` ratio,
+  `1d09` gain dB, plus the common on and filter fields. `1d37` 0 → 1 with no
+  visible counterpart **[H]**.
 - Levelling Amp (second controlled save, every on-screen value changed and
   matched) **[E]**: `1d51` = gain (25 → 100), `1d52` = peak reduction (20 →
   100), `1d50` = compress 0 / limit 1, `1d47` = mix 0…1 (100 % → 0 %).
 - Dyn 1 common fields **[E]**: `1d02` = on, `1d03` = side-chain filter on,
   `1d05[0]` / `1d05[1]` = filter high / low in plain Hz (6.07 kHz / 205 Hz).
-- `1e0b` = Mustard Dynamics 2 type. 0 = Gate, 2 = MSE (Mustard Source
-  Expander) **[E]**; 1 = Duck by elimination **[H]**.
+- `1e0b` = Mustard Dynamics 2 type. 0 = Gate, 1 = Duck, 2 = MSE (Mustard
+  Source Expander) **[E]**.
+- Duck (controlled save on input 7) **[E]**: `1e0e` threshold, `1e11`
+  attack s, `1e13` hold s, `1e12` release s, `1e0a` range dB, plus the common
+  on and filter fields. **External key** `1e16` = `0x01000000` = strip type 01
+  (input), index 0 → "Ch 1", the same strip-reference encoding as the
+  insert routing and Spice Rack back-links. `1e37` 0 → 1, probably "external
+  key in use" **[H]**.
 - MSE **[E]**: `1e0e` = threshold dB, `1e0a` = depth dB (the gate's range
   field; 10 → 39.84), `1e4c` = release slow 0 / medium 1 (/ fast 2 **[H]**).
 - Dyn 2 common fields **[E]**: `1e02` = on, `1e03` = key filter on,
   `1e05[0]` / `1e05[1]` = key filter high / low in plain Hz.
-- Not yet mapped: object `0x1a`, the SD/M selector, and the Mustard on
-  switches.
+- **`0x1a` = Mustard Tubes** (controlled save on input 6, checked against the
+  Mustard Tubes screen): `1a02` = on **[E]**, `1a1b` = drive 0…1 (0.5 →
+  1.00) **[E]**, `1a3c` = output dB (default −6.00 matches the screen) **[E]**,
+  `1a45` = harmonic character, all six seen on inputs 6–11 **[E]**: 0 odd
+  harm, 1 even harm, 2 overdrive, 3 distortion, 4 crunch, 5 hi distortion.
+- **`1ae1` = Mustard insert position** in the channel chain (one value for the
+  whole Mustard block; the object order in the file does not change) **[E]**:
+  0 = post-fader, 3 = mid-EQ/dyn (default), 5 = pre-proc **[E]**. It uses the
+  same **signal-chain point scale** as the aux send point (below), so the
+  greyed-out pre-fader is 1 and pre-EQ/dyn is 4 **[H]** (scale **[E]**). The
+  editor's menu says the position is "in Input/Trim Snapshot Scope", so it is
+  stored per snapshot. `1a1a` (= 11) and `1a3b` (= 1) are still unknown.
+- **Mustard EQ on** = `1c02` (input 4, controlled save) **[E]**.
+- Only pre-proc, mid-EQ/dyn and post-fader are selectable on an input
+  (pre-EQ/dyn and pre-fader are greyed out). A reader should print any other
+  value as an unknown position.
+- **Hard mute** (input 1, controlled save) **[E]**: `0c02` in the fader object
+  `0x0c`, next to mute `0c22` and fader `0c21`. The ID matches the Pad
+  command "hard mute", but the Pad set lists it only for matrix outputs. On
+  an input, OSC does not answer it (`/Input_Channels/1/hard_mute/?` gets no
+  reply) and `mute` stays 0, so hard mute is file-only on inputs.
+- **SD / M strip buttons are a view switch, not a chain selector.** Both
+  chains run; the strip shows "active" above M when a Mustard block is on.
+  Which Mustard blocks are in use comes from their own on switches (`1a02`,
+  `1d02`, `1e02`; Mustard EQ on not yet seen).
+- **Spice Rack models**: Chilli 6 and Naga 6 are the only two available
+  (2026-10), and both are mapped.
 
 **Spice Rack** (controlled save: Chilli 6 on input 5 insert A, checked
 against the Spice Rack screen) **[E]**:
@@ -445,7 +488,80 @@ against the Spice Rack screen) **[E]**:
   gain dB, `1f05[1/2/3]` = crossover low/mid/high Hz, `1f05[5]` / `1f07[5]` =
   P2 freq / gain. Q, range, attack, release, threshold, side chain and output
   are not yet exercised.
-- Nodal processing: nothing seen in a fresh session. **[H]**
+- **The plugin model is a property of the slot**, not of the object type.
+  Changing slot #2 from Chilli 6 to **Naga 6** keeps object `0x1f`, renames
+  the strip, and sets `1fff` 0 → 1 (model: Chilli 6 = 0, Naga 6 = 1 **[H]**)
+  and `1f80` 0 → 1 **[H]**. Confirmed on a second insert (input 7 insert A →
+  `0x18010000`, slot index 1; back-link `0x01060008`), so the slot-index and
+  host-index bytes are **[E]**.
+- **Naga 6** (6-band dynamic EQ, checked against the Spice Rack screen)
+  **[E]**: band index 0–5 = bands 1–6. `1f05[n]` = freq Hz, `1f06[n]` = Q,
+  `1f07[n]` = gain dB, `1f11[n]` = attack s, `1f4d` = release shape (0.82).
+  `1f04[0]` / `1f04[5]` = 1: outer-band curve **[H]**. Release (`1f12`) and
+  threshold (`1f0e`) were left at their defaults **[H]**.
+- So **the same IDs mean different bands per plugin model** (Chilli 6 index 4
+  = P1; Naga 6 index 4 = band 5). A reader must check the model field before
+  naming bands.
+- **SD EQ details** (input 2, controlled save, checked against the EQ and
+  dynamic-EQ screens; same object `0x04` as the SD12) **[E]**:
+  - Band index 0–3 runs **high to low** (index 0 = the top band; defaults
+    6300 / 1600 / 300 / 100 Hz).
+  - `0404[n]` curve: 1 = bell, 4 = hi shelf.
+  - `047c[n]` = 1 → band in **classic** mode (prec/class per band). The Pad
+    command set calls it "eq symm Q".
+  - Dynamic EQ: `047d[n]` dynamic on, `040e[n]` threshold, `0411[n]` /
+    `0412[n]` attack / release s, `0410[n]` ratio, `040b[n]` 0 = over /
+    1 = under.
+  - Channel filter scaling confirmed again (HPF 22.75 × 1.25 = 28.4 Hz,
+    LPF 14942 × 0.8 = 12.0 kHz).
+- **Insert routing to I/O** (inputs 1 and 2, controlled save) **[E]**: in the
+  insert object `0x08`, index 0 = insert A and 1 = insert B. `08fe[n]` =
+  **send** and `0800[n]` = **return**, both as strip references
+  (`type << 24 | index << 16`). Example: input 1 insert A sends to strip type
+  `0x4e` index 6 ("0:Line 7", local output) and returns from strip type
+  `0x1c` index 6 (local input). `0802[n]` = insert in. For a Spice Rack
+  insert, send and return are the same slot.
+- The output socket (strip type `0x4e`, object `0x12`) links back in
+  `1200[0]`: `0x01000008` = input index 0, insert A; `0x01011008` = input
+  index 1, insert B. The second byte is the insert (`0x00` A, `0x10` B).
+- **Nodal processing** (input 28 → aux 2, controlled save, checked against
+  the nodal EQ and nodal multiband dynamics screens) **[E]**:
+  - Adding processing to a send creates a **new strip, type `0x14`**, named
+    `"Ch 28 > Aux 2"` (source > destination). It holds a standard SD EQ
+    `0x04` and SD dynamics `0x05` object with the same parameter IDs as a
+    channel. So one EQ/dynamics decoder covers channels and nodes.
+  - Nodal EQ: `047c[n]` = 0 → precision; bands, dynamic EQ and over/under
+    as on a channel.
+  - Nodal dynamics: `053a` = mode (comp 0 / **multi 1** / desser 2), `0502[0]`
+    all on. **Multiband index order is lo 0, hi 1, mid 2** (not low to high):
+    threshold `050e`, attack `0511`, release `0512`, ratio `0510`, gain
+    `0509`, auto gain `053b`, crossovers `0505[0]` lo / `0505[1]` hi, knee
+    `050f[0]` hard 0 / med 1 (soft 2 **[H]**).
+  - **Comp mode** (`053a` = 0) uses band index 0 (single band). **De-esser
+    mode** (`053a` = 2) uses band index 2, with the eSS band edges in
+    `0505[0]` (hp) / `0505[1]` (lp), the same fields as the crossovers in
+    multi mode.
+  - Index 3 = gate/duck/comp section: `050b[3]` = mode (gate 0 / duck 1 /
+    comp 2), `0502[3]` on, `050e/0511/0512/0510/0513/050a[3]`, filter
+    `0505[3]` hp / `0505[2]` lp (unscaled Hz).
+  - Second save (aux 9 comp, aux 4 desser + duck) confirmed the modes.
+  - **`01ff` on the channel's input object (`0x01`) = nodal processing master
+    switch** for all of that channel's sends **[E]**. It was off (0) in the
+    first nodal save, although the node already existed, and on (1) in the
+    second, as the user observed on screen. Node strips can therefore exist
+    while inactive. (The Pad command set uses `01ff` for "name"; in the file
+    object it is this switch.)
+  - On the source channel: aux send `0201[k]` level, `0202[k]` on,
+    **`0204[k]` = send point** (index k = 0 → aux 1 in this session; the SD12
+    session had a shifted bus-slot order, so always map through the bus
+    table). Send point scale (controlled save, aux 2–7 on input 28) **[E]**:
+    0 post-fade, 1 pre-fade, 2 pre-mute, 3 mid EQ/dyn, 4 pre EQ/dyn,
+    5 pre-proc. This is the same scale as the Mustard insert position
+    (`1ae1`).
+  - The node strip's tail carries only type, index and name. The link to
+    the send is stored elsewhere: sections `c9` (+125 bytes), `d2`, `d4` (a
+    counter 1 → 2) and `f3` changed in the same save **[H]**. Until decoded,
+    the strip name identifies source and destination.
 - Consequence: Mustard, Spice Rack and nodal settings can only be **read from
   the file**. Live OSC can't reach them, and an S21 has no equivalent, so a
   conversion report must list them per channel as not converted.
