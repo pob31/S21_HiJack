@@ -95,10 +95,7 @@ fn palette_matches_filter(
         }
     }
     let q = name_query.trim().to_lowercase();
-    if !q.is_empty() && !p.name.to_lowercase().contains(&q) {
-        return false;
-    }
-    true
+    q.is_empty() || p.name.to_lowercase().contains(&q)
 }
 
 /// State for the Palettes UI section within the Snapshots tab.
