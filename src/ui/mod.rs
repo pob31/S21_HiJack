@@ -225,6 +225,8 @@ pub enum UiEvent {
         fingerprint: u64,
     },
     ShowFileError(String),
+    /// Setup → Session report… finished: the written path, or the error.
+    SessionReportDone(Result<String, String>),
     /// New finished clearing the show, so the UI can take a fresh
     /// "no unsaved changes" baseline.
     NewShowCreated,

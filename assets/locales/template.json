@@ -235,6 +235,7 @@
   "setup.qlab_port": "QLab's OSC listen port — daemon sends cue-build commands here.",
   "setup.save_show": "Save to the path shown above. If empty, prompts for a location.",
   "setup.save_show_as": "Pick a new location and save there. Useful when the path field already points at a different file.",
+  "setup.session_report": "Write a printable report of a console session file (S21/S31 .session, SD or Quantum .ses): cue sheet with notes, setup sheet, processing, sends and the changes from snapshot to snapshot. It opens in your browser; print it from there. The current show is not touched.",
   "setup.trigger_port": "Local port the daemon listens on for cue triggers from QLab.",
   "setup.warn_connection_failed": "The daemon couldn't connect to the console. Check the IP, ports, and that the console is reachable on the selected network.",
   "setup.warn_file_path_required": "Enter or pick a show-file path first.",

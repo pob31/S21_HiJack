@@ -19,6 +19,7 @@ mod model;
 mod osc;
 mod persistence;
 mod platform;
+mod session;
 mod ui;
 mod version;
 mod web;
@@ -57,6 +58,24 @@ struct Args {
     /// redirect into a `locales/<code>.json` file) and exit.
     #[arg(long)]
     dump_help_template: bool,
+
+    /// Write a printable HTML report of a console session file (S21/S31
+    /// `.session`, SD or Quantum `.ses`) and exit.
+    #[arg(long, value_name = "SESSION")]
+    session_report: Option<PathBuf>,
+
+    /// Where `--session-report` writes (default: `<session>_report.html`
+    /// next to the session file).
+    #[arg(long, value_name = "HTML", requires = "session_report")]
+    out: Option<PathBuf>,
+
+    /// Print a console session file as JSON and exit.
+    #[arg(long, value_name = "SESSION")]
+    dump_session: Option<PathBuf>,
+
+    /// With `--dump-session`: also list the fields that are not decoded yet.
+    #[arg(long, requires = "dump_session")]
+    raw: bool,
 
     /// Console IP address
     #[arg(long, default_value = "192.168.1.1")]
@@ -162,6 +181,42 @@ fn main() {
     // it into a `locales/<code>.json` file, set `_name`, and translate values.
     if args.dump_help_template {
         println!("{}", ui::help::english_template_json());
+        return;
+    }
+
+    // Console session files: one-shot commands that exit before logging, so
+    // stdout carries only their output.
+    if let Some(path) = &args.dump_session {
+        let opts = session::LoadOptions {
+            include_raw: args.raw,
+        };
+        match session::load_with(path, opts) {
+            Ok(doc) => match serde_json::to_string_pretty(&doc) {
+                Ok(json) => println!("{json}"),
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            },
+            Err(e) => {
+                eprintln!("{}: {e}", path.display());
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if let Some(path) = &args.session_report {
+        let out = args
+            .out
+            .clone()
+            .unwrap_or_else(|| session::default_report_path(path));
+        match session::write_report(path, &out) {
+            Ok(()) => println!("{}", out.display()),
+            Err(e) => {
+                eprintln!("{}: {e}", path.display());
+                std::process::exit(1);
+            }
+        }
         return;
     }
 

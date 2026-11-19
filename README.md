@@ -101,6 +101,22 @@ Communicates with the console over **GP OSC** (the documented open protocol) and
 - Console variant (S21 / S21+) and channel layout are restored on load, so offline editing reflects the saved console shape until you reconnect
 - Backward-compatible — older show files load cleanly with sensible defaults
 
+### Console Session Reports
+- **Setup → Session report…** turns a console session file into a printable HTML page that opens in your browser:
+  - DiGiCo **S21/S31** `.session`;
+  - **SD** range (SD8 → SD12) and **Quantum** `.ses`.
+- The report holds:
+  - a cue sheet with snapshot notes, groups and crossfades;
+  - a setup sheet: patch, preamp, trim, filters, inserts, fader, mute, pan;
+  - processing: EQ, dynamics and gate, plus Quantum Mustard, Spice Rack and nodal processing;
+  - sends and routing;
+  - the changes from one snapshot to the next.
+- Read-only: the session file and the current show are never modified.
+- Values decoded from fields that are not yet confirmed are marked †. The evidence for every field is in [Documentation/SESSION_FILES_FIELD_NOTES.md](Documentation/SESSION_FILES_FIELD_NOTES.md).
+- From the command line:
+  - `s21_hijack --session-report <file> [--out report.html]`
+  - `s21_hijack --dump-session <file>` (JSON)
+
 ## Getting Started
 
 ### Prerequisites
@@ -170,6 +186,8 @@ cargo run --release -- --console-ip 127.0.0.1 --console-port 8000
 | `--godot-ip` | — | Go.dot's IP, when the show's cueing system is Go.dot (overrides the show's) |
 | `--godot-port` | — | Go.dot's OSC port, when the show's cueing system is Go.dot (overrides the show's) |
 | `--headless` | `false` | Run without the GUI |
+| `--session-report <file>` | — | Write a printable HTML report of a console session file and exit (`--out` sets the path) |
+| `--dump-session <file>` | — | Print a console session file as JSON and exit (`--raw` adds undecoded fields) |
 
 ## OSC Trigger Commands
 
@@ -221,6 +239,8 @@ src/
                        monitor/gang/pan_link engines, fade controller,
                        palette manager, iPad handshake & proxy
   persistence/         Show file save/load (versioned, backward-compatible)
+  session/             Console session files: S21 .session (SQLite) and
+                       SD/Quantum .ses readers, HTML session report
   ui/                  Native egui desktop UI (one file per tab + scope editor)
   web/                 Browser monitor server — axum HTTP + WebSocket, JSON
                        protocol (protocol.rs), embedded static UI (assets.rs),

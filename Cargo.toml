@@ -81,6 +81,10 @@ mime_guess = "2"
 # their mix). Core only — we rasterize the modules to an egui texture ourselves.
 qrcode = { version = "0.14", default-features = false }
 ureq = "3.3.0"
+# Console session files: S21/S31 `.session` files are SQLite databases. Read
+# for session reports (and later written for SD → S21 conversion). `bundled`
+# compiles SQLite in, so no system library is needed on any CI platform.
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # ── Physical display metrics (real PPI) for DPI-aware UI scaling ──
 # Per-platform: macOS via Core Graphics, Windows via the raw-DPI monitor API,

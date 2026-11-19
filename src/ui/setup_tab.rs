@@ -405,6 +405,50 @@ pub(crate) fn seed_last_open_dir(
     dlg
 }
 
+/// Setup → Session report…: pick a console session file and where to write
+/// its HTML report, then build it off the UI thread and open it in the
+/// browser. The outcome comes back as `UiEvent::SessionReportDone`.
+fn start_session_report(
+    setup: &mut SetupTabState,
+    runtime: &tokio::runtime::Handle,
+    ui_tx: &std::sync::mpsc::Sender<UiEvent>,
+    ctx: &egui::Context,
+) {
+    let picker = seed_last_open_dir(
+        rfd::FileDialog::new()
+            .add_filter("Console sessions", &["session", "ses"])
+            .add_filter("All files", &["*"]),
+        setup,
+    );
+    let Some(session) = picker.pick_file() else {
+        return;
+    };
+    let suggested = crate::session::default_report_path(&session);
+    let mut saver = rfd::FileDialog::new().add_filter("HTML", &["html"]);
+    if let Some(name) = suggested.file_name() {
+        saver = saver.set_file_name(name.to_string_lossy());
+    }
+    if let Some(dir) = suggested.parent() {
+        saver = saver.set_directory(dir);
+    }
+    let Some(out) = saver.save_file() else {
+        return;
+    };
+    setup.status_message = Some("Writing session report…".into());
+    let tx = ui_tx.clone();
+    let ctx = ctx.clone();
+    runtime.spawn_blocking(move || {
+        let result = crate::session::write_report(&session, &out)
+            .map(|()| out.display().to_string())
+            .map_err(|e| format!("{}: {e}", session.display()));
+        if result.is_ok() {
+            ctx.open_url(egui::OpenUrl::new_tab(crate::session::file_url(&out)));
+        }
+        let _ = tx.send(UiEvent::SessionReportDone(result));
+        ctx.request_repaint();
+    });
+}
+
 /// Record the folder a show file was just opened from or saved to so the next
 /// Open / Save dialog starts there. Persists immediately via the app
 /// preferences (cross-platform path string). No-op when the path has no parent
@@ -1645,6 +1689,23 @@ pub fn draw_setup_tab(
                             // Carried out by the app once it has checked for
                             // unsaved changes (audit H8). See `new_show`.
                             setup.pending_show_action = Some(ShowAction::New);
+                        }
+                    });
+                    ui.add_space(4.0);
+                    // Read-only tool for console session files; it never
+                    // touches the current show, so no unsaved-changes check.
+                    ui.horizontal(|ui| {
+                        ui.add_space(subrow_indent);
+                        if ui
+                            .add(theme::action_button(
+                                "Session report…",
+                                theme::ACCENT_BLUE,
+                                egui::Vec2::new(action_btn_w * 2.0 + 4.0, 28.0),
+                            ))
+                            .on_hover_text(help(HelpKey::SetupSessionReport))
+                            .clicked()
+                        {
+                            start_session_report(setup, runtime, ui_tx, ui.ctx());
                         }
                     });
                 });

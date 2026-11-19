@@ -286,6 +286,7 @@ pub enum HelpKey {
     SetupNetwork,
     SetupCoverage,
     SetupNewShow,
+    SetupSessionReport,
 
     // ── Palettes (capture form) ──
     PaletteChannelType,
@@ -1371,6 +1372,13 @@ fn meta(key: HelpKey) -> HelpMeta {
             "Start a new, empty show — clears the current snapshots, macros, gangs \
              and palettes.",
         ),
+        SetupSessionReport => (
+            "setup.session_report",
+            "Write a printable report of a console session file (S21/S31 .session, \
+             SD or Quantum .ses): cue sheet with notes, setup sheet, processing, \
+             sends and the changes from snapshot to snapshot. It opens in your \
+             browser; print it from there. The current show is not touched.",
+        ),
 
         // ── Palettes (capture form) ──
         PaletteChannelType => (
@@ -2139,6 +2147,7 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::SetupNetwork,
     HelpKey::SetupCoverage,
     HelpKey::SetupNewShow,
+    HelpKey::SetupSessionReport,
     HelpKey::PaletteChannelType,
     HelpKey::PaletteChannelNumber,
     HelpKey::PaletteName,

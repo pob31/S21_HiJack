@@ -1483,6 +1483,15 @@ impl HiJackApp {
                         HelpKey::SetupWarnShowFileError,
                     ));
                 }
+                UiEvent::SessionReportDone(result) => {
+                    self.setup.status_message = Some(match result {
+                        Ok(path) => format!("Session report written: {path}").into(),
+                        Err(msg) => StatusMessage::with_help(
+                            format!("Session report failed — {msg}"),
+                            HelpKey::SetupSessionReport,
+                        ),
+                    });
+                }
                 UiEvent::AutosaveCompleted {
                     fingerprint,
                     wrote,
@@ -2663,12 +2672,13 @@ impl HiJackApp {
             ),
             self.snapshots.scope_editor.console_recall.clone(),
         );
+        // The timeout is built inside the async block: tokio timers need the
+        // runtime as they're created, and the UI thread is not inside it.
         let show = self
             .runtime
-            .block_on(tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                build,
-            ))
+            .block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(2), build).await
+            })
             .ok()?;
         Some(show.edit_fingerprint())
     }
@@ -2777,16 +2787,19 @@ impl HiJackApp {
             self.snapshots.scope_editor.console_recall.clone(),
         );
         // This blocks the UI thread, so it can't wait on the locks for ever.
+        // Timeouts are built inside the async blocks (see
+        // `current_edit_fingerprint`).
         let show = self
             .runtime
-            .block_on(tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                build,
-            ))
+            .block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(2), build).await
+            })
             .map_err(|_| "Save failed: the show stayed busy for 2 s. Try again.".to_string())?;
         let fingerprint = show.edit_fingerprint();
         let path = std::path::PathBuf::from(&target);
-        let write = tokio::time::timeout(std::time::Duration::from_secs(10), show.save(&path));
+        let write = async {
+            tokio::time::timeout(std::time::Duration::from_secs(10), show.save(&path)).await
+        };
         match self.runtime.block_on(write) {
             Ok(Ok(())) => {
                 tracing::info!("Show file saved: {}", path.display());

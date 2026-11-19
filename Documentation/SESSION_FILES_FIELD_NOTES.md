@@ -566,6 +566,25 @@ against the Spice Rack screen) **[E]**:
   the file**. Live OSC can't reach them, and an S21 has no equivalent, so a
   conversion report must list them per channel as not converted.
 
+## 3c. Code
+
+The Rust readers live in `src/session/`:
+
+- `s21.rs`: the S21 SQLite reader.
+- `ses/`: the SD/Quantum reader. `container.rs` handles the header and
+  sections, `records.rs` the objects, strips and snapshots.
+- **`ses/params.rs`**: the single table of confirmed parameter IDs, scaling
+  rules and type codes. It must stay in step with §2–3b of this file: a
+  field goes in as confirmed only once it is **[E]** here. **[H]** fields are
+  emitted with `confirmed: false`, printed with † in reports.
+- `report.rs`: the HTML report.
+
+Tests (`src/session/tests.rs`) assert every controlled-save fact against
+the Quantum fixtures in `tests/fixtures/sessions/`. Set
+`S21H_SESSION_SAMPLES="D:/Projects;E:/Régie"` to also parse and render every
+local real show. As of 2026-10-20, 103 files (SD8 v9 → Quantum vO, S21
+schema 82 → 100) parse and render.
+
 ## 4. Open questions
 
 S21: which of `x` / `x_saved` the desk recalls; `controlGroupMemberIds` flag;
