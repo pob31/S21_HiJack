@@ -189,7 +189,7 @@ impl Db {
             None => format!("SELECT * FROM \"{table}\""),
         };
         let mut stmt = self.conn.prepare(&sql)?;
-        let names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+        let names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
         let map = |r: &rusqlite::Row| {
             let mut row = Row::with_capacity(names.len());
             for (i, n) in names.iter().enumerate() {
