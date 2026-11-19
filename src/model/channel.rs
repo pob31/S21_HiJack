@@ -53,7 +53,8 @@ impl ChannelId {
             ChannelId::Aux(n) => gp_bus_number(true, *n, mix_output_types),
             ChannelId::Group(n) => gp_bus_number(false, *n, mix_output_types),
             ChannelId::ControlGroup(n) => within(*n, 10, 109), // CG 1 → 110
-            ChannelId::Matrix(n) => within(*n, 8, 119),        // Matrix 1 → 120
+            // Matrix 1 → 100; long listed as 120 (OSC field note 14).
+            ChannelId::Matrix(n) => within(*n, 8, 99),
             // GraphicEq and MatrixInput are not in the GP OSC number space
             ChannelId::GraphicEq(_) | ChannelId::MatrixInput(_) => None,
         }
@@ -105,7 +106,7 @@ impl ChannelId {
                 }
             }
             110..=119 => Some(ChannelId::ControlGroup((n - 109) as u16)),
-            120..=127 => Some(ChannelId::Matrix((n - 119) as u16)),
+            100..=107 => Some(ChannelId::Matrix((n - 99) as u16)),
             _ => None,
         }
     }
@@ -297,13 +298,19 @@ mod tests {
             assert_eq!(osc as u16, 77 + n);
             assert_eq!(ChannelId::from_gp_osc_number(osc), Some(ch));
         }
-        // Matrix
+        // Matrix: 100–107, as an S21 sends them (OSC field note 14).
         for n in 1..=8u16 {
             let ch = ChannelId::Matrix(n);
             let osc = ch.to_gp_osc_number().unwrap();
-            assert_eq!(osc as u16, 119 + n);
+            assert_eq!(osc as u16, 99 + n);
             assert_eq!(ChannelId::from_gp_osc_number(osc), Some(ch));
         }
+        // Matrix 7 is channel 106 on the desk; 120–127 is nothing.
+        assert_eq!(
+            ChannelId::from_gp_osc_number(106),
+            Some(ChannelId::Matrix(7))
+        );
+        assert_eq!(ChannelId::from_gp_osc_number(120), None);
         // Control Groups
         for n in 1..=10u16 {
             let ch = ChannelId::ControlGroup(n);

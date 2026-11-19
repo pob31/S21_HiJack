@@ -153,7 +153,7 @@ impl MockConsole {
                 format!("Group {}", n16 - first_group + 1)
             }
             110..=119 if n16 - 109 <= u16::from(c.control_groups) => format!("CG {}", n16 - 109),
-            120..=127 if n16 - 119 <= u16::from(c.matrices) => format!("Matrix {}", n16 - 119),
+            100..=107 if n16 - 99 <= u16::from(c.matrices) => format!("Matrix {}", n16 - 99),
             _ => format!("unassigned GP channel {n}"),
         }
     }
@@ -185,9 +185,9 @@ impl MockConsole {
             msg_count += 4;
         }
 
-        // Matrix outputs: OSC 120–(120+N-1)
+        // Matrix outputs: OSC 100–(100+N-1), as an S21 numbers them
         for i in 1..=self.config.matrices {
-            let ch = 119 + i as i32;
+            let ch = 99 + i as i32;
             self.send_channel_state(dest, ch, &format!("Matrix {i}"))
                 .await;
             msg_count += 4;

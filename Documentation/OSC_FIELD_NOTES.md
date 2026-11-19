@@ -63,6 +63,7 @@ Used consistently in the findings below:
 | 11 | Enumeration pacing and heartbeat timings | Assumed (our choice) | SD / Quantum |
 | 12 | An S21 volunteers aux/group counts that were never asked for | Confirmed on hardware (S21); unknown elsewhere | S21 |
 | 13 | An S21 reports its whole mix-bus pool as both the aux and the group count | Inferred from a capture | S21 |
+| 14 | GP OSC matrix outputs are channels 100–107, not the 120–127 our channel table said | Confirmed on hardware | S21 |
 
 ---
 
@@ -509,6 +510,43 @@ taken from the types. A console that reports per-type counts is left as reported
 pool size (a pool that is all aux, say), the result is the same; otherwise the aux/group
 counts shown and scoped would be wrong. Worth checking in the next hardware session: change
 an aux to a group on the desk and compare the reported counts and types.
+
+### 14. GP OSC matrix outputs are channels 100–107, not the 120–127 our channel table said
+
+**Claim.** On the general-purpose OSC surface an S21 addresses matrix output *n* as
+channel `99 + n`: moving Matrix 7's fader sends `/channel/106/fader` and
+`/channel/106/total/gain`. Nothing arrives on 120–127.
+
+**The table was wrong.** `Documentation/DiGiCo S OSC Commandset_channelNumbers.csv` listed
+matrices at 120–127 from the project's first commit (`787d70c`), and the app's numbering was
+built from it. The operator believes the file was altered at some point after it was taken
+from the desk's command list, and corrected it to 100–107 on 19 Nov 2026.
+
+**Source and attribution.** Measured by the operator on their own S21+ (19 Nov 2026), while
+trying to learn a matrix fader onto the D700 sidecar: learn caught inputs, auxes, groups and
+CGs but never a matrix, and the OSC log showed the matrix moves arriving on channel 106. In
+the same session the control groups arrived on 110–119 as documented. Only Matrix 7 was
+checked directly; the 100 base follows from it. The operator notes that the GP OSC numbers
+are fixed: they don't move with the channel count, so the extended-channel S21+ numbers its
+matrices like a standard S21.
+
+**Status.** Confirmed on hardware (Matrix 7 → 106; CGs at 110–119).
+
+**Firmware / console.** S21+ (extended channel count), firmware not recorded. Session with
+10 auxes, 14 groups, 8 matrices, 10 CGs, 1 master.
+
+**Date.** 19 Nov 2026.
+
+**Code that relies on it.** `src/model/channel.rs` — `to_gp_osc_number_with_config` and
+`from_gp_osc_number_with_config` (Matrix *n* ↔ `99 + n`, 100–107); the mock console
+(`src/bin/mock_console.rs`) numbers its matrices the same way.
+
+**Consequence if wrong.** Before the fix every matrix message was lost both ways: inbound
+moves decoded to no channel and were dropped (never mirrored, never learned), and writes to
+matrices (snapshot recall, gangs, macros, the sidecar) went to 120–127, where nothing
+listens. If the base differs on another session layout or console, the same symptom comes
+back. Worth confirming Matrix 1 (100) and Matrix 8 (107) on the next hardware session, and
+whether the master bus has a number of its own.
 
 ---
 

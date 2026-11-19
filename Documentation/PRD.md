@@ -130,8 +130,11 @@ The GP protocol uses a unified channel number space:
 | 1–60 | Input | 1–60 |
 | 70–77 | Aux | 1–8 |
 | 78–93 | Group | 1–16 |
-| 120–127 | Matrix | 1–8 |
+| 100–107 | Matrix | 1–8 |
 | 110–119 | Control Group | 1–10 |
+
+Matrices are at 100–107 on the desk, not the 120–127 DiGiCo's table gives (OSC field
+note 14).
 
 Note: The actual channel counts depend on console configuration (48/16 base or 60/24 expanded) and the aux/group split. The aux range (70–77) and group range (78–93) shown are for the base 8-aux configuration.
 
