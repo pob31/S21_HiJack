@@ -330,7 +330,7 @@ pub struct ShowFile {
 /// The show file format this build writes, and the newest it opens. Bump it
 /// with every format change; there is one constant so a save path can't stamp
 /// a stale number (audit M5).
-pub const SHOW_FORMAT_VERSION: u32 = 20;
+pub const SHOW_FORMAT_VERSION: u32 = 21;
 
 /// A load error for text that didn't deserialize. A damaged file (not JSON,
 /// or cut short) is `InvalidData`/`UnexpectedEof`, which the UI treats as
@@ -1263,7 +1263,10 @@ mod tests {
                 touch: mcu_default_touch_note(1),
                 relative_step: 1.0 / 300.0,
                 enabled: true,
+                port: 0,
+                color: None,
             }],
+            ..Default::default()
         };
 
         let dir = std::env::temp_dir().join("s21_hijack_test");
@@ -1469,6 +1472,8 @@ mod tests {
             touch: None,
             relative_step: 1.0 / 300.0,
             enabled: true,
+            port: 0,
+            color: None,
         }];
         let json = serde_json::to_string(&show).unwrap();
         assert!(
@@ -1508,6 +1513,8 @@ mod tests {
             touch: None,
             relative_step: 1.0 / 300.0,
             enabled: true,
+            port: 0,
+            color: None,
         };
         let mut show = ShowFile::new(ConsoleConfig::default());
         show.sidecar.bindings = vec![mk(1, ParameterPath::TotalGain), mk(2, ParameterPath::Fader)];

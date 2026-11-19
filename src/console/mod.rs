@@ -22,6 +22,7 @@ pub mod palette_tracker;
 pub mod pan_link_engine;
 pub mod recall_cache;
 pub mod sidecar_decode;
+pub mod sidecar_display;
 pub mod sidecar_engine;
 pub mod sidecar_learn;
 pub mod sidecar_service;

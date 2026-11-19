@@ -42,6 +42,48 @@ pub struct SidecarMidiSettings {
     /// whose name matches the input (MCU surfaces expose matching names).
     #[serde(default)]
     pub output_port_name: Option<String>,
+    /// Port 2's input, for a surface that presents one port pair per bank
+    /// of eight (the D700 rack, an X-Touch + Extender). `None` = unused.
+    /// The fields above are port 1, named as they were before port 2.
+    #[serde(default)]
+    pub input_port_name_2: Option<String>,
+    /// Port 2's output; `None` = auto, as for port 1. Windows names the two
+    /// halves differently (`MIDIIN2 (D 700)` / `MIDIOUT2 (D 700)`), so the
+    /// auto match also tries the input name with `IN` swapped for `OUT`.
+    #[serde(default)]
+    pub output_port_name_2: Option<String>,
+}
+
+impl SidecarMidiSettings {
+    /// The configured input for a port slot (0 = port 1).
+    pub fn input(&self, port: u8) -> Option<&String> {
+        match port {
+            0 => self.input_port_name.as_ref(),
+            _ => self.input_port_name_2.as_ref(),
+        }
+    }
+
+    /// The configured output for a port slot; `None` = auto.
+    pub fn output(&self, port: u8) -> Option<&String> {
+        match port {
+            0 => self.output_port_name.as_ref(),
+            _ => self.output_port_name_2.as_ref(),
+        }
+    }
+
+    pub fn set_input(&mut self, port: u8, name: Option<String>) {
+        match port {
+            0 => self.input_port_name = name,
+            _ => self.input_port_name_2 = name,
+        }
+    }
+
+    pub fn set_output(&mut self, port: u8, name: Option<String>) {
+        match port {
+            0 => self.output_port_name = name,
+            _ => self.output_port_name_2 = name,
+        }
+    }
 }
 
 /// Application-wide UI preferences. Lives outside any show file: tracks
@@ -275,8 +317,10 @@ mod tests {
                 use_virtual_port: false,
             },
             sidecar_midi: SidecarMidiSettings {
-                input_port_name: Some("X-Touch".into()),
+                input_port_name: Some("D 700".into()),
                 output_port_name: None,
+                input_port_name_2: Some("MIDIIN2 (D 700)".into()),
+                output_port_name_2: Some("MIDIOUT2 (D 700)".into()),
             },
             console_family: Some(ConsoleFamily::Quantum),
             pad_quirk_overrides: Some(PadQuirks {

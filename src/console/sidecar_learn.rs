@@ -16,7 +16,12 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::console::sidecar_decode::HwEvent;
-use crate::model::sidecar::{BindingTarget, ControlMode, ControlSelector, RelativeMode};
+use crate::model::sidecar::{
+    BindingTarget, ControlMode, ControlSelector, RelativeMode, SIDECAR_PORTS,
+};
+
+/// A learned control: its port slot, selector and mode.
+pub type Learned = (u8, ControlSelector, ControlMode);
 
 /// Pitch bend: how many events and how much travel (of 16383) before a
 /// fader counts as deliberately moved.
@@ -49,6 +54,8 @@ pub enum LearnPhase {
     /// Both halves known — waiting for Confirm / re-arm / Cancel.
     Ready {
         target: BindingTarget,
+        /// Port slot the control was moved on (0 = port 1).
+        port: u8,
         control: ControlSelector,
         mode: ControlMode,
     },
@@ -262,8 +269,10 @@ impl LearnAccumulator {
 #[derive(Debug, Default)]
 pub struct LearnShared {
     pub active: bool,
-    pub acc: LearnAccumulator,
-    pub result: Option<(ControlSelector, ControlMode)>,
+    /// One accumulator per port slot: the same message on two ports is two
+    /// different controls.
+    pub acc: [LearnAccumulator; SIDECAR_PORTS as usize],
+    pub result: Option<Learned>,
     /// When the capture was armed, for [`LEARN_TIMEOUT`].
     armed_at: Option<Instant>,
     /// Set when the capture gave up; the UI takes it with
@@ -282,7 +291,7 @@ impl LearnShared {
     pub fn arm(shared: &Mutex<Self>) {
         let mut g = shared.lock().unwrap();
         g.active = true;
-        g.acc = LearnAccumulator::default();
+        g.acc = Default::default();
         g.result = None;
         g.armed_at = Some(Instant::now());
         g.timed_out = false;
@@ -292,7 +301,7 @@ impl LearnShared {
     pub fn disarm(shared: &Mutex<Self>) {
         let mut g = shared.lock().unwrap();
         g.active = false;
-        g.acc = LearnAccumulator::default();
+        g.acc = Default::default();
         g.result = None;
         g.armed_at = None;
         g.timed_out = false;
@@ -310,7 +319,7 @@ impl LearnShared {
                 .is_some_and(|t| now.duration_since(t) >= LEARN_TIMEOUT)
         {
             g.active = false;
-            g.acc = LearnAccumulator::default();
+            g.acc = Default::default();
             g.timed_out = true;
         }
         g.active
@@ -319,13 +328,16 @@ impl LearnShared {
     /// Service side: feed one event while active. The first detection
     /// disarms the capture, so bound controls work again while the
     /// operator reviews it (audit M20); later movement can't steal it.
-    pub fn feed(shared: &Mutex<Self>, ev: &HwEvent, now: Instant) {
+    pub fn feed(shared: &Mutex<Self>, port: u8, ev: &HwEvent, now: Instant) {
         let mut g = shared.lock().unwrap();
         if !g.active || g.result.is_some() {
             return;
         }
-        if let Some(found) = g.acc.feed(ev, now) {
-            g.result = Some(found);
+        let Some(acc) = g.acc.get_mut(usize::from(port)) else {
+            return;
+        };
+        if let Some((control, mode)) = acc.feed(ev, now) {
+            g.result = Some((port, control, mode));
             g.active = false;
         }
     }
@@ -336,7 +348,7 @@ impl LearnShared {
     }
 
     /// UI side: take the detection once available.
-    pub fn take_result(shared: &Mutex<Self>) -> Option<(ControlSelector, ControlMode)> {
+    pub fn take_result(shared: &Mutex<Self>) -> Option<Learned> {
         shared.lock().unwrap().result.take()
     }
 }
@@ -569,16 +581,17 @@ mod tests {
         LearnShared::arm(&shared);
         let t = Instant::now();
         for v in [4000u16, 5000, 6000, 9000] {
-            LearnShared::feed(&shared, &pb(1, v), t);
+            LearnShared::feed(&shared, 0, &pb(1, v), t);
         }
         // Movement on another control after capture doesn't steal it.
-        LearnShared::feed(&shared, &pb(2, 0), t);
-        LearnShared::feed(&shared, &pb(2, 8000), t);
-        LearnShared::feed(&shared, &pb(2, 16000), t);
+        LearnShared::feed(&shared, 0, &pb(2, 0), t);
+        LearnShared::feed(&shared, 0, &pb(2, 8000), t);
+        LearnShared::feed(&shared, 0, &pb(2, 16000), t);
         let got = LearnShared::take_result(&shared);
         assert_eq!(
             got,
             Some((
+                0,
                 ControlSelector::PitchBend { channel: 1 },
                 ControlMode::PitchBend14
             ))
@@ -596,7 +609,7 @@ mod tests {
         let t = Instant::now();
         assert!(LearnShared::wants(&shared, t));
         for v in [4000u16, 5000, 6000, 9000] {
-            LearnShared::feed(&shared, &pb(1, v), t);
+            LearnShared::feed(&shared, 0, &pb(1, v), t);
         }
         assert!(
             !LearnShared::wants(&shared, t),
@@ -617,10 +630,34 @@ mod tests {
     fn learn_shared_inactive_ignores_events() {
         let shared = Mutex::new(LearnShared::default());
         let t = Instant::now();
-        LearnShared::feed(&shared, &pb(1, 0), t);
-        LearnShared::feed(&shared, &pb(1, 8000), t);
-        LearnShared::feed(&shared, &pb(1, 16000), t);
+        LearnShared::feed(&shared, 0, &pb(1, 0), t);
+        LearnShared::feed(&shared, 0, &pb(1, 8000), t);
+        LearnShared::feed(&shared, 0, &pb(1, 16000), t);
         assert_eq!(LearnShared::take_result(&shared), None);
+    }
+
+    /// Two ports' streams never combine into one detection, and the result
+    /// names the port the control was moved on.
+    #[test]
+    fn learn_keeps_ports_apart_and_reports_the_port() {
+        let shared = Mutex::new(LearnShared::default());
+        LearnShared::arm(&shared);
+        let t = Instant::now();
+        // Fader 1 brushed on each port: neither alone is deliberate.
+        LearnShared::feed(&shared, 0, &pb(1, 4000), t);
+        LearnShared::feed(&shared, 1, &pb(1, 5000), t);
+        LearnShared::feed(&shared, 0, &pb(1, 6000), t);
+        assert_eq!(LearnShared::take_result(&shared), None);
+        LearnShared::feed(&shared, 1, &pb(1, 7000), t);
+        LearnShared::feed(&shared, 1, &pb(1, 9000), t);
+        assert_eq!(
+            LearnShared::take_result(&shared),
+            Some((
+                1,
+                ControlSelector::PitchBend { channel: 1 },
+                ControlMode::PitchBend14
+            ))
+        );
     }
 
     #[test]

@@ -1,9 +1,10 @@
 //! Sidecar tab — hardware MIDI faders/encoders bound to console
 //! parameters or external OSC targets.
 //!
-//! Layout: left column = device card (port selection + ON/OFF rocker +
-//! status dot) and the learn card (staged wizard); right column = the
-//! binding list with per-row editing.
+//! Layout: left column = device card (ON/OFF rocker + status dot, the
+//! display protocol, and an input/output pair per port slot) and the learn
+//! card (staged wizard); right column = the binding list with per-row
+//! editing.
 //!
 //! Shared-state discipline matches the other tabs: `try_read` a clone
 //! of the config each frame, collect edits as [`Action`]s while
@@ -16,13 +17,14 @@ use eframe::egui;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::console::sidecar_engine::SidecarMidiEngine;
+use crate::console::sidecar_engine::{SidecarMidiEngine, SidecarMidiState};
 use crate::console::sidecar_learn::{LearnPhase, LearnShared};
 use crate::console::sidecar_service::SvcCmd;
 use crate::model::parameter::{ParameterAddress, ParameterValue};
 use crate::model::sidecar::{
-    BindingTarget, ControlMode, ControlSelector, RelativeMode, SidecarBinding, SidecarConfig,
-    TAPER_LIMIT, Taper, default_taper_for, is_valid_console_target, mcu_default_touch_note,
+    BindingTarget, ControlMode, ControlSelector, RelativeMode, SIDECAR_PORTS, SidecarBinding,
+    SidecarConfig, SurfaceDisplay, TAPER_LIMIT, Taper, default_taper_for, is_valid_console_target,
+    mcu_default_touch_note,
 };
 use crate::model::state::ConsoleState;
 use crate::ui::help::{HelpKey, help};
@@ -53,6 +55,7 @@ pub struct SidecarTabState {
 /// Edits collected while drawing, applied after via `runtime.spawn`.
 enum Action {
     SetEnabled(bool),
+    SetDisplay(SurfaceDisplay),
     /// Insert a new binding; `replace` removes bindings claiming the
     /// same control (duplicate replace) or the given id (re-learn).
     AddBinding {
@@ -130,7 +133,7 @@ fn draw_device_card(
             // green = enabled + input connected (macros-tab convention).
             let (color, hover) = if !cfg.enabled {
                 (theme::label_weak(), "Sidecar off")
-            } else if snap.connected_input.is_some() {
+            } else if snap.any_connected() {
                 (theme::ACCENT_GREEN, "Sidecar active")
             } else {
                 (theme::ACCENT_AMBER, "Enabled — no MIDI device connected")
@@ -169,112 +172,36 @@ fn draw_device_card(
         });
         ui.add_space(8.0);
 
-        // Input port combo.
+        // Displays and colour feedback (per show).
         ui.horizontal(|ui| {
-            theme::row_label(ui, "Input:", theme::label_weak());
-            let selected_label = match (&setup.sidecar_midi.input_port_name, &snap.connected_input)
-            {
-                (Some(name), Some(conn)) if name == conn => format!("{name} ●"),
-                (Some(name), _) if snap.available_inputs.iter().any(|n| n == name) => name.clone(),
-                (Some(name), _) => format!("{name} (unplugged)"),
-                (None, _) => "(select a MIDI input)".to_string(),
-            };
+            theme::row_label(ui, "Displays:", theme::label_weak());
             let combo_response = theme::row_combo(ui, 0, |ui| {
-                egui::ComboBox::from_id_salt("sidecar_input_combo")
+                egui::ComboBox::from_id_salt("sidecar_display_combo")
                     .width(220.0)
-                    .selected_text(selected_label)
+                    .selected_text(cfg.display.label())
                     .show_ui(ui, |ui| {
-                        ui.set_min_width(220.0);
-                        if snap.available_inputs.is_empty() {
-                            ui.label(
-                                egui::RichText::new("(none — plug one in)")
-                                    .color(theme::label_weak()),
-                            );
-                        }
-                        for name in &snap.available_inputs {
-                            let is_sel =
-                                setup.sidecar_midi.input_port_name.as_deref() == Some(name);
-                            let label = if snap.connected_input.as_deref() == Some(name) {
-                                format!("{name} ●")
-                            } else {
-                                name.clone()
-                            };
-                            if ui.selectable_label(is_sel, label).clicked() {
-                                setup.sidecar_midi.input_port_name = Some(name.clone());
-                                crate::ui::setup_tab::save_app_preferences(setup);
-                                midi.connect(
-                                    name.clone(),
-                                    setup.sidecar_midi.output_port_name.clone(),
-                                );
+                        for d in [
+                            SurfaceDisplay::Off,
+                            SurfaceDisplay::Mackie,
+                            SurfaceDisplay::AsparionD700,
+                        ] {
+                            if ui.selectable_label(cfg.display == d, d.label()).clicked()
+                                && cfg.display != d
+                            {
+                                actions.push(Action::SetDisplay(d));
                             }
                         }
                     })
                     .response
             });
-            combo_response.on_hover_text(help(HelpKey::SidecarInputPort));
-
-            if snap.connected_input.is_some()
-                && ui
-                    .small_button("✕")
-                    .on_hover_text(help(HelpKey::SidecarMidiDisconnect))
-                    .clicked()
-            {
-                setup.sidecar_midi.input_port_name = None;
-                crate::ui::setup_tab::save_app_preferences(setup);
-                midi.disconnect();
-            }
+            combo_response.on_hover_text(help(HelpKey::SidecarDisplay));
         });
 
-        // Output port combo (motor feedback).
-        ui.horizontal(|ui| {
-            theme::row_label(ui, "Output:", theme::label_weak());
-            let selected_label = match &setup.sidecar_midi.output_port_name {
-                Some(name) => name.clone(),
-                None => "Auto (match input)".to_string(),
-            };
-            let combo_response = theme::row_combo(ui, 0, |ui| {
-                egui::ComboBox::from_id_salt("sidecar_output_combo")
-                    .width(220.0)
-                    .selected_text(selected_label)
-                    .show_ui(ui, |ui| {
-                        ui.set_min_width(220.0);
-                        let auto_sel = setup.sidecar_midi.output_port_name.is_none();
-                        if ui
-                            .selectable_label(auto_sel, "Auto (match input)")
-                            .clicked()
-                        {
-                            setup.sidecar_midi.output_port_name = None;
-                            crate::ui::setup_tab::save_app_preferences(setup);
-                            reconnect_if_configured(setup, midi);
-                        }
-                        for name in &snap.available_outputs {
-                            let is_sel =
-                                setup.sidecar_midi.output_port_name.as_deref() == Some(name);
-                            if ui.selectable_label(is_sel, name.clone()).clicked() {
-                                setup.sidecar_midi.output_port_name = Some(name.clone());
-                                crate::ui::setup_tab::save_app_preferences(setup);
-                                reconnect_if_configured(setup, midi);
-                            }
-                        }
-                    })
-                    .response
-            });
-            combo_response.on_hover_text(help(HelpKey::SidecarOutputPort));
-        });
-
-        if let Some(out) = &snap.connected_output {
-            ui.label(
-                egui::RichText::new(format!("Motor feedback via {out}"))
-                    .color(theme::label_weak())
-                    .small(),
-            );
-        } else if snap.connected_input.is_some() {
-            ui.label(
-                egui::RichText::new("No feedback output — motors will not follow the console")
-                    .color(theme::ACCENT_AMBER)
-                    .small(),
-            );
+        for port in 0..SIDECAR_PORTS {
+            ui.add_space(6.0);
+            draw_port_rows(ui, setup, midi, &snap, port);
         }
+
         if let Some(err) = &snap.last_error {
             ui.label(
                 egui::RichText::new(err.as_str())
@@ -282,14 +209,163 @@ fn draw_device_card(
                     .small(),
             );
         }
-        // Suppress unused warning when no action used it this frame.
-        let _ = actions;
     });
 }
 
-fn reconnect_if_configured(setup: &SetupTabState, midi: &Arc<SidecarMidiEngine>) {
-    if let Some(input) = setup.sidecar_midi.input_port_name.clone() {
-        midi.connect(input, setup.sidecar_midi.output_port_name.clone());
+/// One port slot's input and output pickers and its feedback status.
+fn draw_port_rows(
+    ui: &mut egui::Ui,
+    setup: &mut SetupTabState,
+    midi: &Arc<SidecarMidiEngine>,
+    snap: &SidecarMidiState,
+    port: u8,
+) {
+    let status = snap.ports[usize::from(port)].clone();
+    ui.label(egui::RichText::new(format!("Port {}", port + 1)).strong());
+
+    // Input port combo.
+    ui.horizontal(|ui| {
+        theme::row_label(ui, "Input:", theme::label_weak());
+        let configured = setup.sidecar_midi.input(port).cloned();
+        let selected_label = match (&configured, &status.connected_input) {
+            (Some(name), Some(conn)) if name == conn => format!("{name} ●"),
+            (Some(name), _) if snap.available_inputs.iter().any(|n| n == name) => name.clone(),
+            (Some(name), _) => format!("{name} (unplugged)"),
+            (None, _) if port == 0 => "(select a MIDI input)".to_string(),
+            (None, _) => "(not used)".to_string(),
+        };
+        let combo_response = theme::row_combo(ui, 0, |ui| {
+            egui::ComboBox::from_id_salt(("sidecar_input_combo", port))
+                .width(220.0)
+                .selected_text(selected_label)
+                .show_ui(ui, |ui| {
+                    ui.set_min_width(220.0);
+                    if snap.available_inputs.is_empty() {
+                        ui.label(
+                            egui::RichText::new("(none — plug one in)").color(theme::label_weak()),
+                        );
+                    }
+                    for name in &snap.available_inputs {
+                        let is_sel = configured.as_deref() == Some(name);
+                        let label = if status.connected_input.as_deref() == Some(name) {
+                            format!("{name} ●")
+                        } else {
+                            name.clone()
+                        };
+                        if ui.selectable_label(is_sel, label).clicked() {
+                            setup.sidecar_midi.set_input(port, Some(name.clone()));
+                            crate::ui::setup_tab::save_app_preferences(setup);
+                            midi.connect(
+                                port,
+                                name.clone(),
+                                setup.sidecar_midi.output(port).cloned(),
+                            );
+                        }
+                    }
+                })
+                .response
+        });
+        combo_response.on_hover_text(help(HelpKey::SidecarInputPort));
+
+        // Shown while configured, so an unplugged port can be cleared too.
+        if configured.is_some()
+            && ui
+                .small_button("✕")
+                .on_hover_text(help(HelpKey::SidecarMidiDisconnect))
+                .clicked()
+        {
+            setup.sidecar_midi.set_input(port, None);
+            crate::ui::setup_tab::save_app_preferences(setup);
+            midi.disconnect(port);
+        }
+    });
+
+    // Output port combo (motor, display and colour feedback).
+    ui.horizontal(|ui| {
+        theme::row_label(ui, "Output:", theme::label_weak());
+        let selected_label = match setup.sidecar_midi.output(port) {
+            Some(name) => name.clone(),
+            None => "Auto (match input)".to_string(),
+        };
+        let combo_response = theme::row_combo(ui, 0, |ui| {
+            egui::ComboBox::from_id_salt(("sidecar_output_combo", port))
+                .width(220.0)
+                .selected_text(selected_label)
+                .show_ui(ui, |ui| {
+                    ui.set_min_width(220.0);
+                    let auto_sel = setup.sidecar_midi.output(port).is_none();
+                    if ui
+                        .selectable_label(auto_sel, "Auto (match input)")
+                        .clicked()
+                    {
+                        setup.sidecar_midi.set_output(port, None);
+                        crate::ui::setup_tab::save_app_preferences(setup);
+                        reconnect_if_configured(setup, midi, port);
+                    }
+                    for name in &snap.available_outputs {
+                        let is_sel = setup.sidecar_midi.output(port) == Some(name);
+                        if ui.selectable_label(is_sel, name.clone()).clicked() {
+                            setup.sidecar_midi.set_output(port, Some(name.clone()));
+                            crate::ui::setup_tab::save_app_preferences(setup);
+                            reconnect_if_configured(setup, midi, port);
+                        }
+                    }
+                })
+                .response
+        });
+        combo_response.on_hover_text(help(HelpKey::SidecarOutputPort));
+    });
+
+    if let Some(out) = &status.connected_output {
+        ui.label(
+            egui::RichText::new(format!("Feedback via {out}"))
+                .color(theme::label_weak())
+                .small(),
+        );
+    } else if status.connected_input.is_some() {
+        ui.label(
+            egui::RichText::new(
+                "No feedback output — motors and displays will not follow the console",
+            )
+            .color(theme::ACCENT_AMBER)
+            .small(),
+        );
+    }
+}
+
+/// The Sidecar tab's bottom warning, if something stops the sidecar from
+/// working: (title, text, help). Most fundamental first, one at a time.
+pub fn banner(
+    enabled: bool,
+    surface_connected: bool,
+    console_connected: bool,
+) -> Option<(&'static str, &'static str, HelpKey)> {
+    if !enabled {
+        Some((
+            "⚠ SIDECAR OFF",
+            "— hardware moves and feedback are paused. Switch it ON above.",
+            HelpKey::BannerSidecarOff,
+        ))
+    } else if !surface_connected {
+        Some((
+            "⚠ NO SURFACE",
+            "— no MIDI port connected. Pick the surface's input under Port 1.",
+            HelpKey::BannerSidecarNoSurface,
+        ))
+    } else if !console_connected {
+        Some((
+            "⚠ DISCONNECTED",
+            "— connect to the console; hardware moves go nowhere until then.",
+            HelpKey::BannerSidecarDisconnected,
+        ))
+    } else {
+        None
+    }
+}
+
+fn reconnect_if_configured(setup: &SetupTabState, midi: &Arc<SidecarMidiEngine>, port: u8) {
+    if let Some(input) = setup.sidecar_midi.input(port).cloned() {
+        midi.connect(port, input, setup.sidecar_midi.output(port).cloned());
     }
 }
 
@@ -398,13 +474,15 @@ fn draw_learn_card(
             }
             LearnPhase::Ready {
                 target,
+                port,
                 control,
                 mode,
             } => {
                 ui.label(egui::RichText::new("Ready to bind:").color(theme::label_weak()));
                 ui.label(
                     egui::RichText::new(format!(
-                        "{}  ({})  →  {}",
+                        "Port {} · {}  ({})  →  {}",
+                        port + 1,
                         control.summary(),
                         mode.summary(),
                         describe_target(&target, state)
@@ -416,7 +494,7 @@ fn draw_learn_card(
                 // One control drives one binding: confirming over an
                 // existing claim replaces it (shown explicitly).
                 let duplicate = cfg
-                    .binding_for_control(&control)
+                    .binding_for_control(port, &control)
                     .filter(|b| Some(b.id) != tab.relearn_id)
                     .map(|b| (b.id, b.label.clone()));
                 if let Some((_, ref label)) = duplicate {
@@ -440,7 +518,7 @@ fn draw_learn_card(
                     .clicked()
                 {
                     let replace = tab.relearn_id.or(duplicate.map(|(id, _)| id));
-                    let binding = build_binding(&target, control, mode, tab.relearn_id, cfg);
+                    let binding = build_binding(&target, port, control, mode, tab.relearn_id, cfg);
                     actions.push(Action::AddBinding { binding, replace });
                     tab.status_message = Some("Binding saved".into());
                     cancel_learn(tab, learn_shared);
@@ -480,9 +558,10 @@ fn poll_learn_progress(
             }
         }
         LearnPhase::ArmedHardware { target } => {
-            if let Some((control, mode)) = LearnShared::take_result(learn_shared) {
+            if let Some((port, control, mode)) = LearnShared::take_result(learn_shared) {
                 tab.learn = LearnPhase::Ready {
                     target: target.clone(),
+                    port,
                     control,
                     mode,
                 };
@@ -586,6 +665,7 @@ fn describe_target(target: &BindingTarget, state: &Arc<RwLock<ConsoleState>>) ->
 /// carry over; only the control/mode (and derived touch) change.
 fn build_binding(
     target: &BindingTarget,
+    port: u8,
     control: ControlSelector,
     mode: ControlMode,
     relearn_id: Option<Uuid>,
@@ -619,6 +699,8 @@ fn build_binding(
         touch,
         relative_step: existing.map(|b| b.relative_step).unwrap_or(1.0 / 300.0),
         enabled: existing.map(|b| b.enabled).unwrap_or(true),
+        port,
+        color: existing.and_then(|b| b.color),
     }
 }
 
@@ -633,9 +715,13 @@ fn draw_bindings_card(
 ) {
     theme::card_frame().show(ui, |ui| {
         theme::section_heading_with(ui, &format!("Bindings ({})", cfg.bindings.len()), |ui| {
+            // Greyed out while the sidecar is off: the service ignores a
+            // sync then, and a button that silently does nothing reads as
+            // broken. Switching ON syncs by itself.
             if ui
-                .small_button("Sync surface now")
+                .add_enabled(cfg.enabled, egui::Button::new("Sync surface now").small())
                 .on_hover_text(help(HelpKey::SidecarSyncNow))
+                .on_disabled_hover_text(help(HelpKey::SidecarSyncOff))
                 .clicked()
             {
                 actions.push(Action::Sync);
@@ -658,7 +744,7 @@ fn draw_bindings_card(
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 for b in &cfg.bindings {
-                    draw_binding_row(ui, tab, b, state, actions);
+                    draw_binding_row(ui, tab, cfg, b, state, actions);
                     ui.separator();
                 }
             });
@@ -668,6 +754,7 @@ fn draw_bindings_card(
 fn draw_binding_row(
     ui: &mut egui::Ui,
     tab: &mut SidecarTabState,
+    cfg: &SidecarConfig,
     b: &SidecarBinding,
     state: &Arc<RwLock<ConsoleState>>,
     actions: &mut Vec<Action>,
@@ -690,8 +777,13 @@ fn draw_binding_row(
             changed = true;
         }
         ui.label(
-            egui::RichText::new(format!("{} ({})", b.control.summary(), b.mode.summary()))
-                .color(theme::label_weak()),
+            egui::RichText::new(format!(
+                "P{} · {} ({})",
+                b.port + 1,
+                b.control.summary(),
+                b.mode.summary()
+            ))
+            .color(theme::label_weak()),
         );
         ui.label("→");
         ui.label(describe_target(&b.target, state));
@@ -718,7 +810,7 @@ fn draw_binding_row(
 
     if tab.expanded == Some(b.id) {
         ui.indent(("sidecar_expand", b.id), |ui| {
-            changed |= draw_binding_editor(ui, tab, &mut edited, actions);
+            changed |= draw_binding_editor(ui, tab, cfg, &mut edited, actions);
         });
     }
 
@@ -731,6 +823,7 @@ fn draw_binding_row(
 fn draw_binding_editor(
     ui: &mut egui::Ui,
     tab: &mut SidecarTabState,
+    cfg: &SidecarConfig,
     edited: &mut SidecarBinding,
     actions: &mut Vec<Action>,
 ) -> bool {
@@ -871,6 +964,57 @@ fn draw_binding_editor(
         );
     }
 
+    // Port. A port where another binding already claims this control is
+    // off limits: one control drives one binding.
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Port").color(theme::label_weak()));
+        for port in 0..SIDECAR_PORTS {
+            let taken = cfg
+                .binding_for_control(port, &edited.control)
+                .is_some_and(|other| other.id != edited.id);
+            if ui
+                .add_enabled(
+                    !taken,
+                    egui::Button::selectable(edited.port == port, format!("{}", port + 1)),
+                )
+                .on_hover_text(help(HelpKey::SidecarBindingPort))
+                .clicked()
+                && edited.port != port
+            {
+                edited.port = port;
+                changed = true;
+            }
+        }
+    });
+
+    // Strip colour, for controls that sit on a strip.
+    if edited.display_strip().is_some() {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Colour").color(theme::label_weak()));
+            let mut rgb = edited.strip_color();
+            if ui
+                .color_edit_button_srgb(&mut rgb)
+                .on_hover_text(help(HelpKey::SidecarBindingColor))
+                .changed()
+            {
+                edited.color = Some(rgb);
+                changed = true;
+            }
+            if edited.color.is_some() {
+                if ui.small_button("Auto").clicked() {
+                    edited.color = None;
+                    changed = true;
+                }
+            } else {
+                ui.label(
+                    egui::RichText::new("auto (channel type)")
+                        .color(theme::label_weak())
+                        .small(),
+                );
+            }
+        });
+    }
+
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         if ui
@@ -922,10 +1066,17 @@ fn apply_actions(
                         let _ = svc_tx.send(SvcCmd::SyncSurface);
                     }
                 }
+                Action::SetDisplay(display) => {
+                    // The service notices on its next refresh: it blanks
+                    // what the old protocol wrote, then paints the new one.
+                    config.write().await.display = display;
+                }
                 Action::AddBinding { binding, replace } => {
                     let mut cfg = config.write().await;
-                    cfg.bindings
-                        .retain(|b| Some(b.id) != replace && b.control != binding.control);
+                    cfg.bindings.retain(|b| {
+                        Some(b.id) != replace
+                            && !(b.port == binding.port && b.control == binding.control)
+                    });
                     cfg.bindings.push(binding);
                     drop(cfg);
                     let _ = svc_tx.send(SvcCmd::SyncSurface);
@@ -945,4 +1096,27 @@ fn apply_actions(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One warning at a time, the most fundamental first; none when
+    /// everything is up.
+    #[test]
+    fn banner_names_the_first_thing_in_the_way() {
+        let key = |e, s, c| banner(e, s, c).map(|(_, _, k)| k);
+        assert_eq!(key(false, false, false), Some(HelpKey::BannerSidecarOff));
+        assert_eq!(key(false, true, true), Some(HelpKey::BannerSidecarOff));
+        assert_eq!(
+            key(true, false, true),
+            Some(HelpKey::BannerSidecarNoSurface)
+        );
+        assert_eq!(
+            key(true, true, false),
+            Some(HelpKey::BannerSidecarDisconnected)
+        );
+        assert_eq!(key(true, true, true), None);
+    }
 }

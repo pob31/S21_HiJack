@@ -35,6 +35,20 @@
 //! then drops both directions while the MIDI connection and port scans
 //! stay warm, so re-enable is instant and starts with a sync sweep.
 //!
+//! ## Ports
+//! A surface wider than eight strips presents one MIDI port pair per bank,
+//! so every hardware event carries its port slot and every binding names
+//! one. Echo and touch state is keyed by (port, control): fader 1 on port 2
+//! is not fader 1 on port 1.
+//!
+//! ## Displays and colour
+//! When the show turns them on ([`SidecarConfig::display`]), each strip's
+//! display shows the bound console channel's name and the parameter's
+//! value, and its colour LEDs the channel's colour (see
+//! `sidecar_display`). Text is diffed against what was last written, so
+//! only changed rows go out; colour is re-asserted every second because
+//! the D700's firmware takes idle LEDs back (field note 35b).
+//!
 //! ## Operator changes
 //! A hardware move is an operator change, so after sending it the service
 //! runs `inbound::apply_operator_change`: the same chain as a move on the
@@ -53,12 +67,13 @@ use uuid::Uuid;
 use crate::console::connection::DaemonState;
 use crate::console::console_tx::ConsoleTx;
 use crate::console::cue_manager::CueManager;
-use crate::console::sidecar_decode::{DecodeState, HwEvent, decode, event_matches};
+use crate::console::sidecar_decode::{DecodeState, HwEvent, SurfaceEvent, decode, event_matches};
+use crate::console::sidecar_display::{self, StripContent};
 use crate::console::sidecar_learn::LearnShared;
 use crate::model::parameter::{ParameterAddress, ParameterValue};
 use crate::model::sidecar::{
-    BindingTarget, ControlMode, ControlSelector, SidecarBinding, SidecarConfig, taper_to_norm,
-    taper_to_value,
+    BindingTarget, ControlMode, ControlSelector, SIDECAR_PORTS, STRIPS_PER_PORT, SidecarBinding,
+    SidecarConfig, SurfaceDisplay, taper_to_norm, taper_to_value,
 };
 use crate::model::state::ConsoleState;
 
@@ -73,6 +88,11 @@ const CONSOLE_SEND_FLOOR: Duration = Duration::from_millis(15);
 /// Motor poll / coalesce-flush cadence (~40 Hz — motors can't usefully
 /// track faster).
 const TICK: Duration = Duration::from_millis(25);
+/// Display refresh cadence: every fourth tick (~10 Hz) is plenty for text.
+const DISPLAY_EVERY_TICKS: u32 = 4;
+/// How often strip colour is re-sent even when unchanged: the D700's idle
+/// animation takes LEDs back from a host that stops asserting them.
+const COLOR_REASSERT: Duration = Duration::from_secs(1);
 /// Largest motor move in one command, in 14-bit steps: a full-travel move
 /// becomes a ramp of about 20 steps, one per tick (~0.5 s). A single
 /// full-travel command slams the fader into its end stop; about 20 steps
@@ -103,11 +123,13 @@ pub enum SvcCmd {
     /// "Sync surface now" button. Also clears decode state and ramps so
     /// edited bindings restart clean.
     SyncSurface,
-    /// The sidecar's MIDI device (re)connected: forget everything known
-    /// about the surface (fader positions, ramps, echo windows, held
-    /// touches), then sync. Positions kept from before the reconnect made
-    /// ramps start from where a fader used to be (audit M19).
-    SurfaceReconnected,
+    /// A sidecar port (re)connected: forget everything known about that
+    /// port's half of the surface (fader positions, ramps, echo windows,
+    /// held touches, what its displays show), then sync. Positions kept
+    /// from before the reconnect made ramps start from where a fader used
+    /// to be (audit M19). The other port's state stays: forgetting it
+    /// would ramp its faders from mid-travel.
+    SurfaceReconnected { port: u8 },
 }
 
 /// The live console connection as the sidecar sees it.
@@ -125,8 +147,9 @@ pub struct SidecarLink {
 pub struct SidecarDeps {
     pub config: Arc<RwLock<SidecarConfig>>,
     pub state: Arc<RwLock<ConsoleState>>,
-    /// Decoded hardware events from the sidecar MIDI engine.
-    pub hw_rx: mpsc::UnboundedReceiver<HwEvent>,
+    /// Decoded hardware events from the sidecar MIDI engine, with their
+    /// port slot.
+    pub hw_rx: mpsc::UnboundedReceiver<SurfaceEvent>,
     /// UI commands (sync requests).
     pub svc_rx: mpsc::UnboundedReceiver<SvcCmd>,
     /// Live console link, rewired after each (re)connect from
@@ -136,9 +159,13 @@ pub struct SidecarDeps {
     pub cue_manager: Arc<RwLock<CueManager>>,
     /// Learn capture shared with the Sidecar tab.
     pub learn: Arc<std::sync::Mutex<LearnShared>>,
-    /// Motor output — the app passes a closure onto
-    /// `SidecarMidiEngine::motor_move`; tests pass a channel writer.
-    pub motor: Arc<dyn Fn(ControlSelector, ControlMode, u16) + Send + Sync>,
+    /// Motor output (port, control, mode, 14-bit position) — the app
+    /// passes a closure onto `SidecarMidiEngine::motor_move`; tests pass a
+    /// channel writer.
+    pub motor: Arc<dyn Fn(u8, ControlSelector, ControlMode, u16) + Send + Sync>,
+    /// Raw output for display text and colour (port, messages) — the app
+    /// passes `SidecarMidiEngine::send`.
+    pub surface: Arc<dyn Fn(u8, Vec<Vec<u8>>) + Send + Sync>,
 }
 
 /// Spawn the service on the ambient tokio runtime. Runs until the
@@ -154,10 +181,10 @@ struct Runtime {
     /// Console-echo suppression: what we sent, consumed on match.
     sent_to_console: HashMap<ParameterAddress, (f32, Instant)>,
     /// Hardware-echo suppression: the positions we just drove each motor
-    /// through.
-    motor_echo: HashMap<ControlSelector, MotorEcho>,
-    /// Touch selectors currently held down.
-    touched: HashSet<ControlSelector>,
+    /// (port, control) through.
+    motor_echo: HashMap<(u8, ControlSelector), MotorEcho>,
+    /// Touch selectors currently held down, with their port.
+    touched: HashSet<(u8, ControlSelector)>,
     /// Where each binding's fader is, as far as we know: the last position
     /// its hardware reported, or the last we commanded. The motor poll
     /// dedups against it.
@@ -172,6 +199,32 @@ struct Runtime {
     pending_console: HashMap<Uuid, f32>,
     /// Console-state generation at the last motor poll.
     last_generation: u64,
+    /// What the displays and colour LEDs were last sent.
+    display: DisplayCache,
+    /// Ticks since the last display refresh.
+    display_ticks: u32,
+}
+
+/// What the surface's displays were last told, so a refresh sends only
+/// what changed.
+#[derive(Default)]
+struct DisplayCache {
+    /// The protocol the cache was written in.
+    mode: SurfaceDisplay,
+    /// (port, strip, row) → text sent.
+    text: HashMap<(u8, u8, u8), String>,
+    /// Per port: the eight strip colours sent.
+    colors: HashMap<u8, Vec<[u8; 3]>>,
+    /// When colour was last sent, per port.
+    colors_at: HashMap<u8, Instant>,
+}
+
+impl DisplayCache {
+    fn forget_all(&mut self) {
+        self.text.clear();
+        self.colors.clear();
+        self.colors_at.clear();
+    }
 }
 
 /// The positions a motor was just driven through, until `until`. Reports
@@ -192,6 +245,7 @@ impl MotorEcho {
 /// A long motor move, spread over ticks (audit M19).
 #[derive(Clone, Copy, Debug)]
 struct MotorRamp {
+    port: u8,
     control: ControlSelector,
     mode: ControlMode,
     touch: Option<ControlSelector>,
@@ -219,11 +273,20 @@ pub async fn run(mut deps: SidecarDeps) {
             cmd = deps.svc_rx.recv() => {
                 match cmd {
                     Some(SvcCmd::SyncSurface) => sync_surface(&deps, &mut rt).await,
-                    Some(SvcCmd::SurfaceReconnected) => {
-                        rt.fader_pos.clear();
-                        rt.ramps.clear();
-                        rt.motor_echo.clear();
-                        rt.touched.clear();
+                    Some(SvcCmd::SurfaceReconnected { port }) => {
+                        let on_port: HashSet<Uuid> = deps
+                            .config
+                            .read()
+                            .await
+                            .bindings
+                            .iter()
+                            .filter(|b| b.port == port)
+                            .map(|b| b.id)
+                            .collect();
+                        rt.fader_pos.retain(|id, _| !on_port.contains(id));
+                        rt.ramps.retain(|_, r| r.port != port);
+                        rt.motor_echo.retain(|(p, _), _| *p != port);
+                        rt.touched.retain(|(p, _)| *p != port);
                         sync_surface(&deps, &mut rt).await;
                     }
                     None => {
@@ -251,6 +314,11 @@ pub async fn run(mut deps: SidecarDeps) {
                 flush_pending_console(&deps, &mut rt).await;
                 motor_poll(&deps, &mut rt).await;
                 advance_ramps(&deps, &mut rt).await;
+                rt.display_ticks += 1;
+                if rt.display_ticks >= DISPLAY_EVERY_TICKS {
+                    rt.display_ticks = 0;
+                    refresh_display(&deps, &mut rt, Instant::now()).await;
+                }
             }
         }
     }
@@ -261,19 +329,22 @@ async fn handle_hw_event(
     deps: &SidecarDeps,
     rt: &mut Runtime,
     raw_osc_socket: &mut Option<tokio::net::UdpSocket>,
-    ev: &HwEvent,
+    sev: &SurfaceEvent,
 ) {
+    let port = sev.port;
+    let ev = &sev.ev;
     // A touch release always lets go, even while learning or switched off:
     // dropped there, the fader stayed "touched" and its motor never
     // followed the console again.
     if let HwEvent::Note { on: false, .. } = ev {
-        rt.touched.retain(|t| !event_matches(t, ev));
+        rt.touched
+            .retain(|(p, t)| !(*p == port && event_matches(t, ev)));
     }
 
     // Learn swallows everything while armed (it lets go on detection or
     // after its timeout; audit M20).
     if LearnShared::wants(&deps.learn, Instant::now()) {
-        LearnShared::feed(&deps.learn, ev, Instant::now());
+        LearnShared::feed(&deps.learn, port, ev, Instant::now());
         return;
     }
 
@@ -288,17 +359,18 @@ async fn handle_hw_event(
     if let HwEvent::Note { on, .. } = ev {
         let mut matched = false;
         for b in &config.bindings {
-            if let Some(touch) = &b.touch
+            if b.port == port
+                && let Some(touch) = &b.touch
                 && event_matches(touch, ev)
             {
                 matched = true;
                 if *on {
                     // The hand has it: stop moving the motor under it.
-                    rt.touched.insert(*touch);
+                    rt.touched.insert((port, *touch));
                     rt.ramps.remove(&b.id);
-                    rt.motor_echo.remove(&b.control);
+                    rt.motor_echo.remove(&(port, b.control));
                 } else {
-                    rt.touched.remove(touch);
+                    rt.touched.remove(&(port, *touch));
                     push_binding_to_motor(deps, rt, b).await;
                 }
             }
@@ -310,7 +382,7 @@ async fn handle_hw_event(
 
     let now = Instant::now();
     for b in &config.bindings {
-        if !b.enabled {
+        if !b.enabled || b.port != port {
             continue;
         }
         if b.mode.is_absolute()
@@ -375,7 +447,7 @@ fn hand_moved(rt: &mut Runtime, b: &SidecarBinding, v14: u16) {
 /// Is `v14`, reported by `b`'s control, our own motor movement coming back?
 fn is_motor_echo(rt: &Runtime, b: &SidecarBinding, v14: u16, now: Instant) -> bool {
     rt.motor_echo
-        .get(&b.control)
+        .get(&(b.port, b.control))
         .is_some_and(|echo| now <= echo.until && echo.covers(v14, motor_echo_tolerance(&b.mode)))
 }
 
@@ -572,7 +644,7 @@ async fn motor_poll(deps: &SidecarDeps, rt: &mut Runtime) {
         }
         // Never fight the operator's hand.
         if let Some(touch) = &b.touch
-            && rt.touched.contains(touch)
+            && rt.touched.contains(&(b.port, *touch))
         {
             continue;
         }
@@ -616,6 +688,7 @@ fn drive_motor(deps: &SidecarDeps, rt: &mut Runtime, b: &SidecarBinding, v14: u1
         rt.ramps.insert(
             b.id,
             MotorRamp {
+                port: b.port,
                 control: b.control,
                 mode: b.mode,
                 touch: b.touch,
@@ -626,7 +699,7 @@ fn drive_motor(deps: &SidecarDeps, rt: &mut Runtime, b: &SidecarBinding, v14: u1
         step_ramp(deps, rt, b.id);
     } else {
         rt.ramps.remove(&b.id);
-        command_motor(deps, rt, b.id, b.control, b.mode, v14);
+        command_motor(deps, rt, b.id, b.port, b.control, b.mode, v14);
     }
 }
 
@@ -635,13 +708,14 @@ fn command_motor(
     deps: &SidecarDeps,
     rt: &mut Runtime,
     id: Uuid,
+    port: u8,
     control: ControlSelector,
     mode: ControlMode,
     v14: u16,
 ) {
     let now = Instant::now();
     rt.fader_pos.insert(id, v14);
-    let echo = rt.motor_echo.entry(control).or_insert(MotorEcho {
+    let echo = rt.motor_echo.entry((port, control)).or_insert(MotorEcho {
         lo: v14,
         hi: v14,
         until: now,
@@ -653,7 +727,7 @@ fn command_motor(
     echo.lo = echo.lo.min(v14);
     echo.hi = echo.hi.max(v14);
     echo.until = now + SUPPRESSION_WINDOW;
-    (deps.motor)(control, mode, v14);
+    (deps.motor)(port, control, mode, v14);
 }
 
 /// One step of a ramp: at most [`MOTOR_MAX_STEP`] toward its target. A ramp
@@ -662,7 +736,7 @@ fn step_ramp(deps: &SidecarDeps, rt: &mut Runtime, id: Uuid) {
     let Some(r) = rt.ramps.get(&id).copied() else {
         return;
     };
-    if r.touch.is_some_and(|t| rt.touched.contains(&t)) {
+    if r.touch.is_some_and(|t| rt.touched.contains(&(r.port, t))) {
         rt.ramps.remove(&id);
         return;
     }
@@ -671,7 +745,7 @@ fn step_ramp(deps: &SidecarDeps, rt: &mut Runtime, id: Uuid) {
     } else {
         r.at.saturating_sub(MOTOR_MAX_STEP).max(r.to)
     };
-    command_motor(deps, rt, id, r.control, r.mode, next);
+    command_motor(deps, rt, id, r.port, r.control, r.mode, next);
     if next == r.to {
         rt.ramps.remove(&id);
     } else if let Some(ramp) = rt.ramps.get_mut(&id) {
@@ -695,6 +769,7 @@ async fn advance_ramps(deps: &SidecarDeps, rt: &mut Runtime) {
                     b.id == *id
                         && b.enabled
                         && b.wants_motor_feedback()
+                        && b.port == r.port
                         && b.control == r.control
                         && b.mode == r.mode
                 })
@@ -730,6 +805,8 @@ async fn sync_surface(deps: &SidecarDeps, rt: &mut Runtime) {
     let config = deps.config.read().await.clone();
     rt.decode.clear();
     rt.pending_console.clear();
+    // Repaint every display and colour on the next refresh.
+    rt.display.forget_all();
     // Every motor is driven afresh below; a ramp from before may be for a
     // binding that has since changed.
     rt.ramps.clear();
@@ -755,6 +832,78 @@ async fn sync_surface(deps: &SidecarDeps, rt: &mut Runtime) {
     // newer changes.
     rt.last_generation = deps.state.read().await.generation();
     info!(pushed, "Sidecar surface synced from console state");
+}
+
+/// Bring the displays and colour LEDs in line with the bindings and the
+/// console: write the rows that changed, and colour when it changed or is
+/// due for re-assertion. Switching the protocol (or the sidecar) off blanks
+/// what was written, in the protocol it was written in.
+async fn refresh_display(deps: &SidecarDeps, rt: &mut Runtime, now: Instant) {
+    let config = deps.config.read().await.clone();
+    let mode = config.display;
+    if rt.display.mode != mode {
+        let old = rt.display.mode;
+        if old != SurfaceDisplay::Off {
+            write_display(deps, &mut rt.display, old, &HashMap::new(), now);
+        }
+        rt.display = DisplayCache {
+            mode,
+            ..DisplayCache::default()
+        };
+    }
+    if mode == SurfaceDisplay::Off {
+        return;
+    }
+    let contents = if config.enabled {
+        sidecar_display::strip_contents(&config, &*deps.state.read().await)
+    } else {
+        HashMap::new()
+    };
+    write_display(deps, &mut rt.display, mode, &contents, now);
+}
+
+/// Send whatever differs between `contents` (absent strips are blank) and
+/// what the cache says the surface shows.
+fn write_display(
+    deps: &SidecarDeps,
+    cache: &mut DisplayCache,
+    mode: SurfaceDisplay,
+    contents: &HashMap<(u8, u8), StripContent>,
+    now: Instant,
+) {
+    let blank = StripContent::default();
+    for port in 0..SIDECAR_PORTS {
+        let mut out = Vec::new();
+        let mut colors = Vec::with_capacity(usize::from(STRIPS_PER_PORT));
+        for strip in 0..STRIPS_PER_PORT {
+            let content = contents.get(&(port, strip)).unwrap_or(&blank);
+            for &(row, _) in sidecar_display::rows(mode) {
+                let text = sidecar_display::row_text(content, row);
+                if cache.text.get(&(port, strip, row)).map(String::as_str) != Some(text)
+                    && let Some(msg) = sidecar_display::encode_text(mode, port, strip, row, text)
+                {
+                    out.push(msg);
+                    cache.text.insert((port, strip, row), text.to_string());
+                }
+            }
+            colors.push(content.color);
+        }
+        let lit = colors.iter().any(|c| *c != [0, 0, 0]);
+        let changed = cache.colors.get(&port) != Some(&colors);
+        let due = lit
+            && cache
+                .colors_at
+                .get(&port)
+                .is_none_or(|t| now.duration_since(*t) >= COLOR_REASSERT);
+        if changed || due {
+            out.extend(sidecar_display::encode_colors(mode, port, &colors));
+            cache.colors.insert(port, colors);
+            cache.colors_at.insert(port, now);
+        }
+        if !out.is_empty() {
+            (deps.surface)(port, out);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -791,20 +940,39 @@ mod tests {
             touch: crate::model::sidecar::mcu_default_touch_note(midi_channel),
             relative_step: 1.0 / 300.0,
             enabled: true,
+            port: 0,
+            color: None,
         }
     }
 
     struct Harness {
         config: Arc<RwLock<SidecarConfig>>,
-        hw_tx: mpsc::UnboundedSender<HwEvent>,
+        hw_tx: HwTx,
         svc_tx: mpsc::UnboundedSender<SvcCmd>,
         senders_tx: watch::Sender<Option<SidecarLink>>,
         state: Arc<RwLock<ConsoleState>>,
         daemon: DaemonState,
         motor_log: Arc<StdMutex<Vec<(ControlSelector, u16)>>>,
+        /// Every motor command with its port.
+        port_log: Arc<StdMutex<Vec<(u8, ControlSelector, u16)>>>,
+        /// Every display / colour message with its port.
+        surface_log: Arc<StdMutex<Vec<(u8, Vec<u8>)>>>,
         /// Socket standing in for the console.
         console_sock: UdpSocket,
         _task: tokio::task::JoinHandle<()>,
+    }
+
+    /// Sends hardware events into the service; `send` as port 1's.
+    struct HwTx(mpsc::UnboundedSender<SurfaceEvent>);
+
+    impl HwTx {
+        fn send(&self, ev: HwEvent) -> Result<(), mpsc::error::SendError<SurfaceEvent>> {
+            self.on(0, ev)
+        }
+
+        fn on(&self, port: u8, ev: HwEvent) -> Result<(), mpsc::error::SendError<SurfaceEvent>> {
+            self.0.send(SurfaceEvent { port, ev })
+        }
     }
 
     async fn harness(config: SidecarConfig) -> Harness {
@@ -831,6 +999,11 @@ mod tests {
         let motor_log: Arc<StdMutex<Vec<(ControlSelector, u16)>>> =
             Arc::new(StdMutex::new(Vec::new()));
         let motor_log_clone = motor_log.clone();
+        let port_log: Arc<StdMutex<Vec<(u8, ControlSelector, u16)>>> =
+            Arc::new(StdMutex::new(Vec::new()));
+        let port_log_clone = port_log.clone();
+        let surface_log: Arc<StdMutex<Vec<(u8, Vec<u8>)>>> = Arc::new(StdMutex::new(Vec::new()));
+        let surface_log_clone = surface_log.clone();
 
         let deps = SidecarDeps {
             config: config.clone(),
@@ -842,19 +1015,26 @@ mod tests {
                 crate::model::snapshot::CueList::default(),
             ))),
             learn: Arc::new(StdMutex::new(LearnShared::default())),
-            motor: Arc::new(move |c, _m, v| {
+            surface: Arc::new(move |p, msgs| {
+                let mut log = surface_log_clone.lock().unwrap();
+                log.extend(msgs.into_iter().map(|m| (p, m)));
+            }),
+            motor: Arc::new(move |p, c, _m, v| {
                 motor_log_clone.lock().unwrap().push((c, v));
+                port_log_clone.lock().unwrap().push((p, c, v));
             }),
         };
         let task = spawn(deps);
         Harness {
             config,
-            hw_tx,
+            hw_tx: HwTx(hw_tx),
             svc_tx,
             senders_tx,
             state,
             daemon,
             motor_log,
+            port_log,
+            surface_log,
             console_sock,
             _task: task,
         }
@@ -885,6 +1065,7 @@ mod tests {
         let cfg = SidecarConfig {
             enabled: true,
             bindings: vec![pb_binding(1, 12)],
+            ..Default::default()
         };
         let h = harness(cfg).await;
         let mut gang = GangGroup::new(
@@ -935,6 +1116,7 @@ mod tests {
         let cfg = SidecarConfig {
             enabled: true,
             bindings: vec![pb_binding(1, 12)],
+            ..Default::default()
         };
         let h = harness(cfg).await;
 
@@ -974,6 +1156,7 @@ mod tests {
         let cfg = SidecarConfig {
             enabled: false,
             bindings: vec![pb_binding(1, 12)],
+            ..Default::default()
         };
         let h = harness(cfg).await;
         h.hw_tx
@@ -993,6 +1176,7 @@ mod tests {
         let cfg = SidecarConfig {
             enabled: true,
             bindings: vec![pb_binding(1, 12)],
+            ..Default::default()
         };
         let h = harness(cfg).await;
 
@@ -1038,6 +1222,7 @@ mod tests {
         let h = harness(SidecarConfig {
             enabled: true,
             bindings: vec![b],
+            ..Default::default()
         })
         .await;
 
@@ -1136,6 +1321,7 @@ mod tests {
         let h = harness(SidecarConfig {
             enabled: true,
             bindings: vec![pb_binding(1, 12)],
+            ..Default::default()
         })
         .await;
         start_a_long_ramp(&h).await;
@@ -1151,6 +1337,7 @@ mod tests {
         let h = harness(SidecarConfig {
             enabled: true,
             bindings: vec![pb_binding(1, 12)],
+            ..Default::default()
         })
         .await;
         start_a_long_ramp(&h).await;
@@ -1169,6 +1356,7 @@ mod tests {
         let h = harness(SidecarConfig {
             enabled: true,
             bindings: vec![b],
+            ..Default::default()
         })
         .await;
         start_a_long_ramp(&h).await;
@@ -1192,6 +1380,7 @@ mod tests {
         let h = harness(SidecarConfig {
             enabled: true,
             bindings: vec![pb_binding(1, 12)],
+            ..Default::default()
         })
         .await;
         h.state
@@ -1207,7 +1396,9 @@ mod tests {
         assert_eq!(log[0].1, 0);
 
         h.motor_log.lock().unwrap().clear();
-        h.svc_tx.send(SvcCmd::SurfaceReconnected).unwrap();
+        h.svc_tx
+            .send(SvcCmd::SurfaceReconnected { port: 0 })
+            .unwrap();
         let log = await_motor(&h, "the reconnect sync", |log| !log.is_empty()).await;
         assert_eq!(log[0].1, MOTOR_UNKNOWN_POS - MOTOR_MAX_STEP);
     }
@@ -1219,6 +1410,7 @@ mod tests {
         let h = harness(SidecarConfig {
             enabled: true,
             bindings: vec![pb_binding(1, 12)],
+            ..Default::default()
         })
         .await;
         let Some(ControlSelector::Note { channel, note }) =
@@ -1252,6 +1444,7 @@ mod tests {
         let cfg = SidecarConfig {
             enabled: true,
             bindings: vec![pb_binding(1, 12)],
+            ..Default::default()
         };
         let h = harness(cfg).await;
         h.state
@@ -1313,10 +1506,13 @@ mod tests {
             touch: None,
             relative_step: 1.0 / 100.0,
             enabled: true,
+            port: 0,
+            color: None,
         };
         let h = harness(SidecarConfig {
             enabled: true,
             bindings: vec![encoder],
+            ..Default::default()
         })
         .await;
         let fader = |h: &Harness| {
@@ -1362,6 +1558,7 @@ mod tests {
         let cfg = SidecarConfig {
             enabled: true,
             bindings: vec![pb_binding(1, 12)],
+            ..Default::default()
         };
         let h = harness(cfg).await;
         let touch = crate::model::sidecar::mcu_default_touch_note(1).unwrap();
@@ -1415,6 +1612,7 @@ mod tests {
         let cfg = SidecarConfig {
             enabled: true,
             bindings: vec![pb_binding(1, 12), pb_binding(2, 13)],
+            ..Default::default()
         };
         let h = harness(cfg).await;
         h.state
@@ -1444,6 +1642,7 @@ mod tests {
         let cfg = SidecarConfig {
             enabled: true,
             bindings: vec![pb_binding(1, 12)],
+            ..Default::default()
         };
         let h = harness(cfg).await;
         h.state
@@ -1485,6 +1684,7 @@ mod tests {
         let cfg = SidecarConfig {
             enabled: true,
             bindings: vec![pb_binding(1, 12)],
+            ..Default::default()
         };
         let h = harness(cfg).await;
         // Arm learn via the shared slot — grab it from the harness by
@@ -1515,6 +1715,7 @@ mod tests {
             config: Arc::new(RwLock::new(SidecarConfig {
                 enabled: true,
                 bindings: vec![pb_binding(1, 12)],
+                ..Default::default()
             })),
             state,
             hw_rx,
@@ -1524,15 +1725,19 @@ mod tests {
                 crate::model::snapshot::CueList::default(),
             ))),
             learn: learn.clone(),
-            motor: Arc::new(|_, _, _| {}),
+            motor: Arc::new(|_, _, _, _| {}),
+            surface: Arc::new(|_, _| {}),
         };
         let _task = spawn(deps);
 
         for v in [2000u16, 5000, 9000] {
             hw_tx
-                .send(HwEvent::PitchBend {
-                    channel: 1,
-                    value: v,
+                .send(SurfaceEvent {
+                    port: 0,
+                    ev: HwEvent::PitchBend {
+                        channel: 1,
+                        value: v,
+                    },
                 })
                 .unwrap();
         }
@@ -1550,6 +1755,7 @@ mod tests {
         assert_eq!(
             result,
             Some((
+                0,
                 ControlSelector::PitchBend { channel: 1 },
                 ControlMode::PitchBend14
             ))
@@ -1579,7 +1785,10 @@ mod tests {
                 touch: None,
                 relative_step: 1.0 / 300.0,
                 enabled: true,
+                port: 0,
+                color: None,
             }],
+            ..Default::default()
         };
         let h = harness(cfg).await;
         h.hw_tx
@@ -1593,5 +1802,156 @@ mod tests {
         assert_eq!(path, "/x/dim");
         assert_eq!(args[0], rosc::OscType::Int(4));
         assert_eq!(args[1], rosc::OscType::Float(1.0));
+    }
+
+    /// Fader 1 on port 2 is not fader 1 on port 1: each port's binding
+    /// answers its own port, and motor feedback goes out where it belongs.
+    #[tokio::test]
+    async fn ports_keep_their_controls_apart() {
+        let mut second = pb_binding(1, 13);
+        second.id = Uuid::from_bytes([42; 16]);
+        second.port = 1;
+        let h = harness(SidecarConfig {
+            enabled: true,
+            bindings: vec![pb_binding(1, 12), second],
+            ..Default::default()
+        })
+        .await;
+
+        h.hw_tx
+            .on(
+                1,
+                HwEvent::PitchBend {
+                    channel: 1,
+                    value: 12287,
+                },
+            )
+            .unwrap();
+        let (path, _) = recv_osc(&h.console_sock).await.expect("console datagram");
+        assert_eq!(path, "/channel/13/fader");
+
+        // A move on the desk drives port 1's motor only.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        h.port_log.lock().unwrap().clear();
+        h.state
+            .write()
+            .await
+            .update(fader_addr(12), ParameterValue::Float(0.0));
+        await_motor_at(&h, "port 1's motor", 0.75).await;
+        let log = h.port_log.lock().unwrap().clone();
+        assert!(!log.is_empty());
+        assert!(log.iter().all(|(p, _, _)| *p == 0), "{log:?}");
+    }
+
+    /// Replugging port 2 forgets only port 2's faders: port 1's faders keep
+    /// their known positions instead of ramping from mid-travel.
+    #[tokio::test]
+    async fn a_reconnect_on_one_port_keeps_the_other_ports_faders() {
+        let mut second = pb_binding(2, 13);
+        second.port = 1;
+        let h = harness(SidecarConfig {
+            enabled: true,
+            bindings: vec![pb_binding(1, 12), second],
+            ..Default::default()
+        })
+        .await;
+        h.state
+            .write()
+            .await
+            .update(fader_addr(12), ParameterValue::Float(FADER_INF_DB));
+        await_motor_at(&h, "port 1's fader at the bottom", 0.0).await;
+
+        h.port_log.lock().unwrap().clear();
+        h.motor_log.lock().unwrap().clear();
+        h.svc_tx
+            .send(SvcCmd::SurfaceReconnected { port: 1 })
+            .unwrap();
+        await_motor(&h, "the reconnect sync", |log| !log.is_empty()).await;
+        let first_on_port_1 = h
+            .port_log
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(p, _, _)| *p == 0)
+            .map(|(_, _, v)| *v);
+        assert_eq!(first_on_port_1, Some(0), "port 1's fader was ramped");
+    }
+
+    /// Wait until the surface log satisfies `done`; returns the log.
+    async fn await_surface(
+        h: &Harness,
+        what: &str,
+        done: impl Fn(&[(u8, Vec<u8>)]) -> bool,
+    ) -> Vec<(u8, Vec<u8>)> {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let log = h.surface_log.lock().unwrap().clone();
+                if done(&log) {
+                    return log;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+    }
+
+    /// Each strip shows its channel's name and value and takes its colour;
+    /// a value change rewrites only the value row; switching the displays
+    /// off blanks them.
+    #[tokio::test]
+    async fn displays_show_name_value_and_colour() {
+        let mut second = pb_binding(4, 13);
+        second.port = 1;
+        let h = harness(SidecarConfig {
+            enabled: true,
+            bindings: vec![pb_binding(1, 12), second],
+            display: SurfaceDisplay::Mackie,
+        })
+        .await;
+        {
+            let mut st = h.state.write().await;
+            st.update(
+                ParameterAddress {
+                    channel: ChannelId::Input(12),
+                    parameter: ParameterPath::Name,
+                },
+                ParameterValue::String("Kick In".into()),
+            );
+            st.update(fader_addr(12), ParameterValue::Float(-6.2));
+        }
+        let text = |port, strip, row, t: &str| {
+            sidecar_display::encode_text(SurfaceDisplay::Mackie, port, strip, row, t).unwrap()
+        };
+        let has = |log: &[(u8, Vec<u8>)], port: u8, msg: &[u8]| {
+            log.iter().any(|(p, m)| *p == port && m == msg)
+        };
+        let name = text(0, 0, 0, "Kick In");
+        let value = text(0, 0, 1, "-6.2 dB");
+        let other = text(1, 3, 0, "In 13");
+        let log = await_surface(&h, "the strips", |log| {
+            has(log, 0, &name) && has(log, 0, &value) && has(log, 1, &other)
+        })
+        .await;
+        // Port 1: strip 1 in the desk's input blue, the rest unlit.
+        let colors = sidecar_display::encode_colors(
+            SurfaceDisplay::Mackie,
+            0,
+            &[ChannelId::Input(12).led_color()],
+        );
+        assert!(has(&log, 0, &colors[0]), "{log:?}");
+
+        h.surface_log.lock().unwrap().clear();
+        h.state
+            .write()
+            .await
+            .update(fader_addr(12), ParameterValue::Float(0.0));
+        let unity = text(0, 0, 1, "0.0 dB");
+        let log = await_surface(&h, "the new value", |log| has(log, 0, &unity)).await;
+        assert!(!has(&log, 0, &name), "the name row was rewritten");
+
+        h.config.write().await.display = SurfaceDisplay::Off;
+        let blank = text(0, 0, 0, "");
+        await_surface(&h, "the blanked strip", |log| has(log, 0, &blank)).await;
     }
 }

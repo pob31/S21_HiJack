@@ -258,6 +258,47 @@ fn split_ipad_prefix(path: &str) -> Option<((&str, &str), &str)> {
     Some(((channel_type, num_str), rest))
 }
 
+/// The desk's strip colours. They're hard-coded by channel type, the same
+/// as its channel selector, so the app's channel pickers and the sidecar
+/// surface both draw from here. Masters are groups.
+pub const INPUT_COLOR: [u8; 3] = [0x2D, 0x6E, 0x8E]; // blue
+pub const AUX_COLOR: [u8; 3] = [0x8E, 0x3A, 0x8E]; // purple
+pub const GROUP_COLOR: [u8; 3] = [0x8E, 0x3A, 0x3A]; // burgundy
+pub const MATRIX_COLOR: [u8; 3] = [0x2E, 0x7D, 0x4F]; // green
+pub const CG_COLOR: [u8; 3] = [0x6B, 0x5D, 0x35]; // yellow
+
+impl ChannelId {
+    /// This channel's strip colour on the desk (8-bit RGB).
+    pub fn type_color(&self) -> [u8; 3] {
+        match self {
+            ChannelId::Input(_) => INPUT_COLOR,
+            ChannelId::Aux(_) => AUX_COLOR,
+            ChannelId::Group(_) => GROUP_COLOR,
+            ChannelId::Matrix(_) | ChannelId::GraphicEq(_) | ChannelId::MatrixInput(_) => {
+                MATRIX_COLOR
+            }
+            ChannelId::ControlGroup(_) => CG_COLOR,
+        }
+    }
+
+    /// The same colour for LEDs (the sidecar's strips and encoders). The
+    /// picker colours are muted UI fills that LEDs show dim and washed out,
+    /// so each is set by hand at full strength. Most keep the picker's
+    /// hue; matrix green is pure green, because its picker hue reads teal
+    /// on the D700.
+    pub fn led_color(&self) -> [u8; 3] {
+        match self {
+            ChannelId::Input(_) => [0, 170, 255],
+            ChannelId::Aux(_) => [255, 0, 255],
+            ChannelId::Group(_) => [255, 0, 0],
+            ChannelId::Matrix(_) | ChannelId::GraphicEq(_) | ChannelId::MatrixInput(_) => {
+                [0, 255, 0]
+            }
+            ChannelId::ControlGroup(_) => [255, 189, 0],
+        }
+    }
+}
+
 impl fmt::Display for ChannelId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

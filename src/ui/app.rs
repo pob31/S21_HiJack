@@ -498,8 +498,10 @@ impl HiJackApp {
         let (sidecar_hw_tx, sidecar_hw_rx) = tokio::sync::mpsc::unbounded_channel();
         let sidecar_midi =
             crate::console::sidecar_engine::SidecarMidiEngine::new(sidecar_hw_tx, ui_tx.clone());
-        if let Some(input) = prefs.sidecar_midi.input_port_name.clone() {
-            sidecar_midi.connect(input, prefs.sidecar_midi.output_port_name.clone());
+        for port in 0..crate::model::sidecar::SIDECAR_PORTS {
+            if let Some(input) = prefs.sidecar_midi.input(port).cloned() {
+                sidecar_midi.connect(port, input, prefs.sidecar_midi.output(port).cloned());
+            }
         }
         let (sidecar_svc_tx, sidecar_svc_rx) = tokio::sync::mpsc::unbounded_channel();
         let (sidecar_senders_tx, sidecar_senders_rx) = tokio::sync::watch::channel(None);
@@ -508,6 +510,7 @@ impl HiJackApp {
         ));
         {
             let midi_for_motor = sidecar_midi.clone();
+            let midi_for_surface = sidecar_midi.clone();
             runtime.spawn(crate::console::sidecar_service::run(
                 crate::console::sidecar_service::SidecarDeps {
                     config: sidecar_config.clone(),
@@ -517,7 +520,8 @@ impl HiJackApp {
                     senders: sidecar_senders_rx,
                     cue_manager: cue_manager.clone(),
                     learn: sidecar_learn.clone(),
-                    motor: Arc::new(move |c, m, v| midi_for_motor.motor_move(c, m, v)),
+                    motor: Arc::new(move |p, c, m, v| midi_for_motor.motor_move(p, c, m, v)),
+                    surface: Arc::new(move |p, msgs| midi_for_surface.send(p, msgs)),
                 },
             ));
         }
@@ -1817,20 +1821,26 @@ impl HiJackApp {
                     tracing::warn!("Stream Deck error: {message}");
                     self.macros.status_message = Some(format!("Stream Deck: {message}").into());
                 }
-                UiEvent::SidecarMidiConnected { input, output } => {
-                    tracing::info!(input = %input, output = ?output, "Sidecar MIDI connected");
+                UiEvent::SidecarMidiConnected {
+                    port,
+                    input,
+                    output,
+                } => {
+                    tracing::info!(port = port + 1, input = %input, output = ?output, "Sidecar MIDI connected");
                     // Console wins on connect: the surface may sit at
                     // stale positions — push mirror values to the
                     // motors rather than trusting the hardware, and forget
                     // what was known about it before (audit M19).
                     let _ = self
                         .sidecar_svc_tx
-                        .send(crate::console::sidecar_service::SvcCmd::SurfaceReconnected);
-                    self.sidecar_tab.status_message = Some(format!("Connected: {input}"));
+                        .send(crate::console::sidecar_service::SvcCmd::SurfaceReconnected { port });
+                    self.sidecar_tab.status_message =
+                        Some(format!("Port {}: connected to {input}", port + 1));
                 }
-                UiEvent::SidecarMidiDisconnected => {
-                    tracing::info!("Sidecar MIDI disconnected");
-                    self.sidecar_tab.status_message = Some("Sidecar MIDI disconnected".into());
+                UiEvent::SidecarMidiDisconnected { port } => {
+                    tracing::info!(port = port + 1, "Sidecar MIDI disconnected");
+                    self.sidecar_tab.status_message =
+                        Some(format!("Port {}: MIDI disconnected", port + 1));
                 }
                 UiEvent::SidecarError { message } => {
                     tracing::warn!("Sidecar MIDI error: {message}");
@@ -3695,6 +3705,37 @@ impl eframe::App for HiJackApp {
                             .color(super::theme::TEXT_ON_BRIGHT),
                         )
                         .on_hover_help_inline(HelpKey::BannerWebMonitorOff);
+                    });
+                });
+        }
+
+        // Sidecar tab: why the surface isn't doing anything — switched off,
+        // no MIDI port, or no console. A lock miss hides it for one frame.
+        if self.active_tab == Tab::Sidecar
+            && !self.offline_mode.load(Ordering::Relaxed)
+            && let Ok(cfg) = self.sidecar_config.try_read()
+            && let Some((title, text, key)) = super::sidecar_tab::banner(
+                cfg.enabled,
+                self.sidecar_midi.is_connected(),
+                self.connected.load(Ordering::Relaxed),
+            )
+        {
+            egui::TopBottomPanel::bottom("sidecar_warning")
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(super::theme::ACCENT_AMBER)
+                        .inner_margin(egui::Margin::symmetric(10, 6)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(title)
+                                .strong()
+                                .color(super::theme::TEXT_ON_BRIGHT),
+                        );
+                        ui.label(egui::RichText::new(text).color(super::theme::TEXT_ON_BRIGHT))
+                            .on_hover_help_inline(key);
                     });
                 });
         }

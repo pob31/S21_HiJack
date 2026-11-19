@@ -372,13 +372,17 @@ pub enum UiEvent {
     // don't pass through here — they flow straight to the sidecar
     // service over its own channel.
     //
-    /// Sidecar MIDI input (+ optional feedback output) connected.
+    /// A sidecar port slot's MIDI input (+ optional feedback output)
+    /// connected. `port` is 0-based.
     SidecarMidiConnected {
+        port: u8,
         input: String,
         output: Option<String>,
     },
-    /// Sidecar MIDI device dropped (unplugged or operator disconnect).
-    SidecarMidiDisconnected,
+    /// A sidecar port slot dropped (unplugged or operator disconnect).
+    SidecarMidiDisconnected {
+        port: u8,
+    },
     /// Driver-level error, surfaced as a status string for the UI.
     SidecarError {
         message: String,

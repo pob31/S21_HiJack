@@ -24,6 +24,15 @@ pub enum HwEvent {
     Note { channel: u8, note: u8, on: bool },
 }
 
+/// A hardware event and the port slot it arrived on (0 = port 1). The
+/// bank of a multi-port surface is the port, so the same message on two
+/// ports is two different controls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SurfaceEvent {
+    pub port: u8,
+    pub ev: HwEvent,
+}
+
 /// How long an MSB waits for its LSB before we treat the device as
 /// 7-bit-only and emit the MSB alone.
 const PAIR_WINDOW: Duration = Duration::from_millis(30);
@@ -225,6 +234,8 @@ mod tests {
             touch: None,
             relative_step: 1.0 / 100.0,
             enabled: true,
+            port: 0,
+            color: None,
         }
     }
 

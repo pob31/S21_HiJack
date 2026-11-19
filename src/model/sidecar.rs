@@ -16,13 +16,23 @@ use uuid::Uuid;
 use crate::model::cue_trigger::OscArg;
 use crate::model::parameter::{FADER_INF_DB, ParameterAddress, ParameterPath};
 
+/// How many MIDI port pairs the sidecar drives. Surfaces with more than
+/// eight strips (the D700 rack, an X-Touch with an Extender) present one
+/// port pair per bank of eight, and the bank is selected by the port, never
+/// by the message — so each binding names its port slot (0 = port 1).
+pub const SIDECAR_PORTS: u8 = 2;
+
+/// Strips per port: the Mackie Control bank width.
+pub const STRIPS_PER_PORT: u8 = 8;
+
 /// How a physical control announces itself on the MIDI wire.
 ///
-/// Deliberately port-agnostic: the port name is machine-bound
-/// (preferences), while the selector travels with the show — so a
-/// binding survives WinMM port renumbering and moving the show file to
-/// another computer. MIDI channels are 1-based (1..=16), matching how
-/// they're printed on hardware.
+/// Deliberately port-agnostic: which port slot it arrives on is the
+/// binding's [`SidecarBinding::port`], and the port *name* behind each slot
+/// is machine-bound (preferences), while the selector travels with the
+/// show — so a binding survives WinMM port renumbering and moving the show
+/// file to another computer. MIDI channels are 1-based (1..=16), matching
+/// how they're printed on hardware.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ControlSelector {
     /// Control Change on (channel, controller number). Covers both the
@@ -389,6 +399,16 @@ pub struct SidecarBinding {
     /// deleting it (the master switch lives on [`SidecarConfig`]).
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Port slot the control lives on, 0-based (0 = port 1). Shows saved
+    /// before two-port support (≤ v20) load as port 1. The touch selector
+    /// and every feedback message (motor, display, colour) use this port too.
+    #[serde(default)]
+    pub port: u8,
+    /// Strip colour override (8-bit RGB), sent as picked. `None` = the
+    /// desk's colour for the channel type ([`ChannelId::type_color`]),
+    /// in its LED form ([`ChannelId::led_color`]).
+    #[serde(default)]
+    pub color: Option<[u8; 3]>,
 }
 
 impl SidecarBinding {
@@ -399,6 +419,83 @@ impl SidecarBinding {
             && self.mode.is_absolute()
             && matches!(self.target, BindingTarget::ConsoleParameter { .. })
     }
+
+    /// The display strip (0..8, within this binding's port) this control
+    /// belongs to under the Mackie layout: fader `n` rides pitch bend on
+    /// channel `n + 1`, and V-pot `n` sends CC `0x10 + n`. Anything else
+    /// (the master fader on pitch-bend channel 9, a generic CC box) has no
+    /// strip.
+    pub fn display_strip(&self) -> Option<u8> {
+        match self.control {
+            ControlSelector::PitchBend { channel } if (1..=STRIPS_PER_PORT).contains(&channel) => {
+                Some(channel - 1)
+            }
+            ControlSelector::Cc { cc, .. }
+                if matches!(self.mode, ControlMode::Relative(_))
+                    && (0x10..0x10 + STRIPS_PER_PORT).contains(&cc) =>
+            {
+                Some(cc - 0x10)
+            }
+            _ => None,
+        }
+    }
+
+    /// The strip colour: the operator's override, else the desk's colour
+    /// for the target's channel type at full strength. External OSC targets
+    /// are white.
+    pub fn strip_color(&self) -> [u8; 3] {
+        self.color.unwrap_or_else(|| match &self.target {
+            BindingTarget::ConsoleParameter { address } => address.channel.led_color(),
+            BindingTarget::RawOsc { .. } => [255, 255, 255],
+        })
+    }
+}
+
+/// What the surface's displays and colour LEDs speak. Off sends nothing:
+/// SysEx a surface doesn't know is at best ignored, and an undocumented
+/// command once put the D700's displays into a state that needed a power
+/// cycle (D700 control guide, gotcha 2) — so feedback beyond the motors is
+/// opt-in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SurfaceDisplay {
+    #[default]
+    Off,
+    /// Mackie Control LCD (two rows of 7 characters per strip, SysEx
+    /// `0x12`) plus the X-Touch strip colour (SysEx `0x72`, 8 colours).
+    Mackie,
+    /// Asparion D700 native displays (rows of 12 / 12 / 8 characters,
+    /// SysEx `0x1A` / `0x19`) plus full-RGB encoder colour (note-ons on
+    /// channels 2–4).
+    AsparionD700,
+}
+
+impl SurfaceDisplay {
+    pub fn label(&self) -> &'static str {
+        match self {
+            SurfaceDisplay::Off => "Off",
+            SurfaceDisplay::Mackie => "Mackie Control (X-Touch)",
+            SurfaceDisplay::AsparionD700 => "Asparion D700",
+        }
+    }
+}
+
+/// The hue of an RGB colour in degrees (0..360), or `None` for a grey.
+pub fn hue(rgb: [u8; 3]) -> Option<f32> {
+    let [r, g, b] = rgb.map(f32::from);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    if d == 0.0 {
+        return None;
+    }
+    let h = if max == r {
+        60.0 * ((g - b) / d)
+    } else if max == g {
+        60.0 * ((b - r) / d) + 120.0
+    } else {
+        60.0 * ((r - g) / d) + 240.0
+    };
+    Some(h.rem_euclid(360.0))
 }
 
 /// Per-show sidecar configuration (one per show file).
@@ -411,13 +508,24 @@ pub struct SidecarConfig {
     pub enabled: bool,
     #[serde(default)]
     pub bindings: Vec<SidecarBinding>,
+    /// Scribble-strip and colour feedback. Travels with the show like the
+    /// bindings, which are already written in the surface's dialect. New
+    /// in v21; older shows load with it off.
+    #[serde(default)]
+    pub display: SurfaceDisplay,
 }
 
 impl SidecarConfig {
-    /// The binding already claiming this control, if any (one control
-    /// drives one binding).
-    pub fn binding_for_control(&self, control: &ControlSelector) -> Option<&SidecarBinding> {
-        self.bindings.iter().find(|b| b.control == *control)
+    /// The binding already claiming this control on this port, if any (one
+    /// control drives one binding).
+    pub fn binding_for_control(
+        &self,
+        port: u8,
+        control: &ControlSelector,
+    ) -> Option<&SidecarBinding> {
+        self.bindings
+            .iter()
+            .find(|b| b.port == port && b.control == *control)
     }
 }
 
@@ -662,6 +770,8 @@ mod tests {
             touch: None,
             relative_step: default_relative_step(),
             enabled: true,
+            port: 0,
+            color: None,
         };
         assert!(b.wants_motor_feedback());
         // Relative encoders have no position to drive.
@@ -697,6 +807,8 @@ mod tests {
                     touch: mcu_default_touch_note(3),
                     relative_step: default_relative_step(),
                     enabled: true,
+                    port: 0,
+                    color: None,
                 },
                 SidecarBinding {
                     id: Uuid::from_bytes([3; 16]),
@@ -715,6 +827,8 @@ mod tests {
                     touch: None,
                     relative_step: default_relative_step(),
                     enabled: false,
+                    port: 0,
+                    color: None,
                 },
                 SidecarBinding {
                     id: Uuid::from_bytes([4; 16]),
@@ -732,8 +846,11 @@ mod tests {
                     touch: None,
                     relative_step: 1.0 / 100.0,
                     enabled: true,
+                    port: 1,
+                    color: Some([10, 200, 30]),
                 },
             ],
+            display: SurfaceDisplay::AsparionD700,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: SidecarConfig = serde_json::from_str(&json).unwrap();
@@ -748,6 +865,7 @@ mod tests {
         assert_eq!(cfg, SidecarConfig::default());
         assert!(!cfg.enabled);
         assert!(cfg.bindings.is_empty());
+        assert_eq!(cfg.display, SurfaceDisplay::Off);
     }
 
     #[test]
@@ -767,6 +885,50 @@ mod tests {
         assert!(b.touch.is_none());
         assert!((b.relative_step - 1.0 / 300.0).abs() < 1e-9);
         assert_eq!(b.label, "");
+        // Shows from before two-port support (≤ v20): port 1, auto colour.
+        assert_eq!(b.port, 0);
+        assert_eq!(b.color, None);
+    }
+
+    #[test]
+    fn strips_follow_the_mackie_layout() {
+        let mut b = SidecarBinding {
+            id: Uuid::from_bytes([6; 16]),
+            label: String::new(),
+            control: ControlSelector::PitchBend { channel: 3 },
+            mode: ControlMode::PitchBend14,
+            target: BindingTarget::ConsoleParameter {
+                address: ParameterAddress {
+                    channel: ChannelId::Aux(2),
+                    parameter: ParameterPath::Fader,
+                },
+            },
+            taper: FADER,
+            motor_feedback: true,
+            touch: None,
+            relative_step: default_relative_step(),
+            enabled: true,
+            port: 0,
+            color: None,
+        };
+        assert_eq!(b.display_strip(), Some(2));
+        // The desk's purple, at full strength.
+        assert_eq!(b.strip_color(), [255, 0, 255]);
+        b.color = Some([1, 2, 3]);
+        assert_eq!(b.strip_color(), [1, 2, 3]);
+        // The master fader (pitch bend 9) has no strip.
+        b.control = ControlSelector::PitchBend { channel: 9 };
+        assert_eq!(b.display_strip(), None);
+        // V-pots: CC 0x10 + n, relative.
+        b.control = ControlSelector::Cc {
+            channel: 1,
+            cc: 0x17,
+        };
+        b.mode = ControlMode::Relative(RelativeMode::SignMagnitude);
+        assert_eq!(b.display_strip(), Some(7));
+        // The same CC as an absolute fader isn't a V-pot.
+        b.mode = ControlMode::Absolute7;
+        assert_eq!(b.display_strip(), None);
     }
 
     #[test]
@@ -787,12 +949,17 @@ mod tests {
                 touch: None,
                 relative_step: default_relative_step(),
                 enabled: true,
+                port: 0,
+                color: None,
             }],
+            ..Default::default()
         };
-        assert!(cfg.binding_for_control(&control).is_some());
+        assert!(cfg.binding_for_control(0, &control).is_some());
         assert!(
-            cfg.binding_for_control(&ControlSelector::Cc { channel: 1, cc: 8 })
+            cfg.binding_for_control(0, &ControlSelector::Cc { channel: 1, cc: 8 })
                 .is_none()
         );
+        // The same control on the other port is a different control.
+        assert!(cfg.binding_for_control(1, &control).is_none());
     }
 }

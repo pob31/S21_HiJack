@@ -114,7 +114,11 @@ pub enum HelpKey {
     SidecarBindingStep,
     SidecarBindingRelearn,
     SidecarBindingDelete,
+    SidecarBindingPort,
+    SidecarBindingColor,
+    SidecarDisplay,
     SidecarSyncNow,
+    SidecarSyncOff,
 
     // ── Pan Link ──
     PanLinkRevert,
@@ -388,6 +392,9 @@ pub enum HelpKey {
     BannerNetworkMismatch,
     BannerGangOverlap,
     BannerWebMonitorOff,
+    BannerSidecarOff,
+    BannerSidecarNoSurface,
+    BannerSidecarDisconnected,
 
     // ── Show recovery dialog (text) ──
     RecoveryInfoCorrupt,
@@ -659,9 +666,10 @@ fn meta(key: HelpKey) -> HelpMeta {
         ),
         SidecarOutputPort => (
             "sidecar.output_port",
-            "MIDI output for motor-fader feedback. Auto matches the \
-             input's port name (right for most surfaces); override if \
-             your device exposes differently-named ports.",
+            "MIDI output for motor, display and colour feedback. Auto \
+             matches the input's port name, including Windows' \
+             MIDIIN2/MIDIOUT2 pairs; override if your device exposes \
+             differently-named ports.",
         ),
         SidecarMidiDisconnect => (
             "sidecar.midi_disconnect",
@@ -740,6 +748,31 @@ fn meta(key: HelpKey) -> HelpMeta {
              target).",
         ),
         SidecarBindingDelete => ("sidecar.binding_delete", "Delete this binding."),
+        SidecarBindingPort => (
+            "sidecar.binding_port",
+            "Which MIDI port this control is on. A surface with more than \
+             eight faders has one port per bank of eight; Learn sets this.",
+        ),
+        SidecarBindingColor => (
+            "sidecar.binding_color",
+            "Strip colour shown on the surface. Auto uses the desk's colour \
+             for the channel type, as in the channel pickers: blue inputs, \
+             purple auxes, burgundy groups and masters, yellow control \
+             groups, green matrices.",
+        ),
+        SidecarDisplay => (
+            "sidecar.display",
+            "What the surface's displays and colour LEDs speak. Each strip \
+             then shows the bound channel's name, the value, and the \
+             channel's colour. Mackie Control: two rows of 7 characters and \
+             8 colours (X-Touch and compatibles). Asparion D700: three rows \
+             and full RGB on the encoders. Off sends no display traffic.",
+        ),
+        SidecarSyncOff => (
+            "sidecar.sync_off",
+            "The sidecar is off, so there is nothing to sync. Switch it ON \
+             first; switching on syncs the surface by itself.",
+        ),
         SidecarSyncNow => (
             "sidecar.sync_now",
             "Push the console's current values to all motorized controls \
@@ -1658,6 +1691,24 @@ fn meta(key: HelpKey) -> HelpMeta {
             "The web monitor is configured but not running. Connect to start it; \
              its URLs and QR codes won't work until then.",
         ),
+        BannerSidecarOff => (
+            "app.banner_sidecar_off",
+            "The sidecar is switched off: hardware moves don't reach the \
+             console, and motors, displays and colours don't follow it. The \
+             bindings are kept. Switch it ON in the Sidecar surface card.",
+        ),
+        BannerSidecarNoSurface => (
+            "app.banner_sidecar_no_surface",
+            "The sidecar is on but no MIDI port is connected. Pick the \
+             surface's input under Port 1 (and Port 2 for a second bank), \
+             or plug it in.",
+        ),
+        BannerSidecarDisconnected => (
+            "app.banner_sidecar_disconnected",
+            "The sidecar is on but the console isn't connected: hardware \
+             moves go nowhere and motors can't follow the desk. Connect in \
+             the Setup tab.",
+        ),
 
         // ── Show recovery dialog (text) ──
         RecoveryInfoCorrupt => (
@@ -2009,7 +2060,11 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::SidecarBindingStep,
     HelpKey::SidecarBindingRelearn,
     HelpKey::SidecarBindingDelete,
+    HelpKey::SidecarBindingPort,
+    HelpKey::SidecarBindingColor,
+    HelpKey::SidecarDisplay,
     HelpKey::SidecarSyncNow,
+    HelpKey::SidecarSyncOff,
     HelpKey::PanLinkRevert,
     HelpKey::PanLinkApply,
     HelpKey::SetupConsoleIp,
@@ -2218,6 +2273,9 @@ pub const ALL_KEYS: &[HelpKey] = &[
     HelpKey::BannerNetworkMismatch,
     HelpKey::BannerGangOverlap,
     HelpKey::BannerWebMonitorOff,
+    HelpKey::BannerSidecarOff,
+    HelpKey::BannerSidecarNoSurface,
+    HelpKey::BannerSidecarDisconnected,
     HelpKey::RecoveryInfoCorrupt,
     HelpKey::RecoveryInfoNoBackups,
     HelpKey::RecoveryInfoChoose,

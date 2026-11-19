@@ -106,12 +106,17 @@ pub fn border_focus() -> egui::Color32 {
 }
 
 // ─── Channel type colors (from DiGiCo channel selector) ───────────────
+// Defined in the model (`model::channel`), which the sidecar surface shares.
 
-pub const CH_INPUT: egui::Color32 = egui::Color32::from_rgb(0x2D, 0x6E, 0x8E);
-pub const CH_AUX: egui::Color32 = egui::Color32::from_rgb(0x8E, 0x3A, 0x8E);
-pub const CH_GROUP: egui::Color32 = egui::Color32::from_rgb(0x8E, 0x3A, 0x3A);
-pub const CH_MATRIX: egui::Color32 = egui::Color32::from_rgb(0x2E, 0x7D, 0x4F);
-pub const CH_CG: egui::Color32 = egui::Color32::from_rgb(0x6B, 0x5D, 0x35);
+const fn rgb(c: [u8; 3]) -> egui::Color32 {
+    egui::Color32::from_rgb(c[0], c[1], c[2])
+}
+
+pub const CH_INPUT: egui::Color32 = rgb(crate::model::channel::INPUT_COLOR);
+pub const CH_AUX: egui::Color32 = rgb(crate::model::channel::AUX_COLOR);
+pub const CH_GROUP: egui::Color32 = rgb(crate::model::channel::GROUP_COLOR);
+pub const CH_MATRIX: egui::Color32 = rgb(crate::model::channel::MATRIX_COLOR);
+pub const CH_CG: egui::Color32 = rgb(crate::model::channel::CG_COLOR);
 
 // ─── UI accent colors ─────────────────────────────────────────────────
 
@@ -927,15 +932,7 @@ pub fn toggle_block_tristate(
 
 /// Returns the DiGiCo color for a channel type.
 pub fn channel_color(channel: &ChannelId) -> egui::Color32 {
-    match channel {
-        ChannelId::Input(_) => CH_INPUT,
-        ChannelId::Aux(_) => CH_AUX,
-        ChannelId::Group(_) => CH_GROUP,
-        ChannelId::Matrix(_) => CH_MATRIX,
-        ChannelId::ControlGroup(_) => CH_CG,
-        ChannelId::GraphicEq(_) => CH_MATRIX,
-        ChannelId::MatrixInput(_) => CH_MATRIX,
-    }
+    rgb(channel.type_color())
 }
 
 /// Lighten a color by adding a fixed amount to each channel.
