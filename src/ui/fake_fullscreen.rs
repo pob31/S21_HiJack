@@ -158,10 +158,22 @@ mod mac {
         window.setFrame_display(s.frame, true);
     }
 
+    /// AppKit's own rule: a window marked `FullScreenPrimary` offers full
+    /// screen, and so does any resizable window not marked `FullScreenNone`
+    /// or `FullScreenAuxiliary`. winit sets none of these flags (unlike JUCE,
+    /// which sets `FullScreenPrimary`), so the flag alone misses its windows.
     fn offers_full_screen(window: &NSWindow) -> bool {
-        window
-            .collectionBehavior()
-            .contains(NSWindowCollectionBehavior::FullScreenPrimary)
+        let behaviour = window.collectionBehavior();
+        if behaviour.contains(NSWindowCollectionBehavior::FullScreenPrimary) {
+            return true;
+        }
+        if behaviour.intersects(
+            NSWindowCollectionBehavior::FullScreenNone
+                | NSWindowCollectionBehavior::FullScreenAuxiliary,
+        ) {
+            return false;
+        }
+        window.styleMask().contains(NSWindowStyleMask::Resizable)
     }
 
     /// Toggles our full screen; false when the window is not one we handle.
