@@ -1,17 +1,17 @@
 //! Full screen that stays on the current Space (macOS).
 //!
-//! winit gives every resizable window the collection behaviour
-//! `FullScreenPrimary`, so the green button sends `toggleFullScreen:` and
-//! AppKit moves the window to a Space of its own: with QLab video out on
-//! another display, the operator loses sight of the desktop. [`install`]
+//! AppKit offers full screen for every resizable window, so the green button
+//! sends `toggleFullScreen:` and moves the window to a Space of its own: with
+//! QLab video out on another display, the operator loses sight of the desktop. [`install`]
 //! replaces `-[NSWindow toggleFullScreen:]` once for the whole app (winit's
 //! `WinitWindow` subclass does not override it), which catches the green
 //! button and the system full-screen shortcut for every window. A window
 //! already in native full screen keeps AppKit's behaviour.
 //!
-//! Full screen here is: borderless style, frame = the display's whole frame,
-//! menu bar and Dock hidden while any such window sits on a display that has
-//! a menu bar. Presentation options belong to the app, not to a display, and
+//! Full screen here is: frame = the display's whole frame, menu bar and Dock
+//! hidden while any such window sits on a display that has a menu bar. The
+//! title bar stays, so the green button is there to come back; the window
+//! can't be dragged meanwhile, and minimising it ends full screen. Presentation options belong to the app, not to a display, and
 //! macOS drops them by itself while another app is frontmost.
 //!
 //! Port of WFS-DIY's `installFakeFullScreenMac` (`Source/gui/WindowUtils.mm`).
@@ -44,9 +44,10 @@ mod mac {
     use objc2_app_kit::{
         NSApp, NSApplicationDidChangeScreenParametersNotification,
         NSApplicationPresentationOptions, NSEvent, NSEventMask, NSEventModifierFlags, NSScreen,
-        NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWindowWillCloseNotification,
+        NSWindow, NSWindowCollectionBehavior, NSWindowDidMiniaturizeNotification,
+        NSWindowStyleMask, NSWindowWillCloseNotification,
     };
-    use objc2_foundation::{NSNotification, NSNotificationCenter, NSRect, NSString};
+    use objc2_foundation::{NSNotification, NSNotificationCenter, NSRect};
 
     /// NSWindow's own `toggleFullScreen:`, for windows we leave to AppKit.
     static ORIGINAL_TOGGLE: OnceLock<Imp> = OnceLock::new();
@@ -56,7 +57,7 @@ mod mac {
     struct State {
         window: Retained<NSWindow>,
         frame: NSRect,
-        style_mask: NSWindowStyleMask,
+        movable: bool,
         hides_menu_bar: bool,
     }
 
@@ -116,7 +117,7 @@ mod mac {
                 State {
                     window: window.retain(),
                     frame: window.frame(),
-                    style_mask: window.styleMask(),
+                    movable: window.isMovable(),
                     hides_menu_bar,
                 },
             )
@@ -126,12 +127,14 @@ mod mac {
             change_menu_bar_hiders(1, mtm);
         }
 
-        window.setStyleMask(NSWindowStyleMask::Borderless);
+        // Title bar kept (green button to come back), but not draggable.
+        window.setMovable(false);
         window.setFrame_display(target, true);
         window.makeKeyAndOrderFront(None);
     }
 
     /// `restore = false` when the window is closing: only the bookkeeping goes.
+    /// A minimised window is restored: it comes back from the Dock windowed.
     fn exit(key: usize, restore: bool, mtm: MainThreadMarker) {
         // Out of the map first: the frame change below must already see the
         // window as windowed.
@@ -147,15 +150,8 @@ mod mac {
             return;
         }
 
-        let window = &s.window;
-        window.setStyleMask(s.style_mask);
-
-        // AppKit draws no title after a borderless -> titled switch until it changes.
-        let title = NSString::from_str(&window.title().to_string());
-        window.setTitle(&NSString::from_str(" "));
-        window.setTitle(&title);
-
-        window.setFrame_display(s.frame, true);
+        s.window.setMovable(s.movable);
+        s.window.setFrame_display(s.frame, true);
     }
 
     /// AppKit's own rule: a window marked `FullScreenPrimary` offers full
@@ -314,9 +310,17 @@ mod mac {
                 exit(Retained::as_ptr(&object) as usize, false, mtm);
             }
         });
+        // Minimised: the app stays frontmost, so the menu bar and Dock would
+        // stay hidden with nothing full screen on show.
+        let miniaturized = RcBlock::new(move |note: NonNull<NSNotification>| {
+            // SAFETY: AppKit passes a live notification.
+            if let Some(object) = unsafe { note.as_ref() }.object() {
+                exit(Retained::as_ptr(&object) as usize, true, mtm);
+            }
+        });
         let screens_changed = RcBlock::new(move |_note: NonNull<NSNotification>| refit(mtm));
 
-        // SAFETY: both notifications are posted on the main thread (queue nil
+        // SAFETY: these notifications are posted on the main thread (queue nil
         // runs the block there), and the blocks capture only the marker.
         unsafe {
             std::mem::forget(centre.addObserverForName_object_queue_usingBlock(
@@ -324,6 +328,12 @@ mod mac {
                 None,
                 None,
                 &will_close,
+            ));
+            std::mem::forget(centre.addObserverForName_object_queue_usingBlock(
+                Some(NSWindowDidMiniaturizeNotification),
+                None,
+                None,
+                &miniaturized,
             ));
             std::mem::forget(centre.addObserverForName_object_queue_usingBlock(
                 Some(NSApplicationDidChangeScreenParametersNotification),
