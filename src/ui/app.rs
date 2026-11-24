@@ -750,6 +750,10 @@ impl HiJackApp {
         if !self.window_sized {
             return;
         }
+        // Full screen covers the display: not a geometry to reopen with.
+        if super::fake_fullscreen::is_active() {
+            return;
+        }
         let (inner, outer) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().outer_rect));
         let (Some(inner), Some(outer)) = (inner, outer) else {
             return;

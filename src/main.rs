@@ -996,7 +996,12 @@ fn run_ui(args: Args) {
     eframe::run_native(
         "S21 HiJack",
         native_options,
-        Box::new(|_cc| Ok(Box::new(app))),
+        Box::new(|_cc| {
+            // macOS: full screen stays on the current Space instead of moving
+            // the window to its own (main thread, NSApp up). No-op elsewhere.
+            ui::fake_fullscreen::install();
+            Ok(Box::new(app))
+        }),
     )
     .unwrap_or_else(|e| {
         error!("eframe error: {e}");
